@@ -11,7 +11,7 @@ export const useOrganizationMutations = () => {
     payload: CreateOrganizationPayload, 
     createdBy: string,
     logoFile: File | null,
-    officers: { roleId: string; studentId: string; studentName: string; email: string; }[]
+    officers: { roleId: string; studentId: string; studentName: string; email: string; password?: string; }[]
   ): Promise<{ success: boolean; id?: string; error?: string }> => {
     setIsSaving(true);
     setError(null);

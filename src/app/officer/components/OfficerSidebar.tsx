@@ -14,6 +14,7 @@ import {
   Wallet,
   Files,
 } from 'lucide-react';
+import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 
 const navItems = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/officer/dashboard', badge: null },
@@ -31,10 +32,19 @@ const navItems = [
 export function OfficerSidebar() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { profile, logout } = useOfficerProfile();
 
   const handleLogout = () => {
-    navigate('/');
+    logout();
+    navigate('/officer/login');
   };
+
+  const initials = profile?.studentName
+    ?.split(' ')
+    .map(n => n[0])
+    .join('')
+    .substring(0, 2)
+    .toUpperCase() || 'OG';
 
   return (
     <div className="fixed left-0 top-0 h-screen w-[240px] bg-white border-r border-[#E0E0E0] flex flex-col">
@@ -47,8 +57,10 @@ export function OfficerSidebar() {
 
         {/* Organization Context Switcher */}
         <button className="w-full flex items-center justify-between px-3 py-2 bg-[#EEEDFE] rounded-lg hover:bg-[#EEEDFE]/80 transition-colors">
-          <span className="text-[#7F77DD] text-sm font-medium">STI IT Guild</span>
-          <ChevronDown className="w-4 h-4 text-[#7F77DD]" />
+          <span className="text-[#7F77DD] text-sm font-medium truncate pr-2">
+            {profile?.activeOrganizationId ? 'Managing Organization' : 'Select Organization'}
+          </span>
+          <ChevronDown className="w-4 h-4 text-[#7F77DD] flex-shrink-0" />
         </button>
       </div>
 
@@ -84,12 +96,12 @@ export function OfficerSidebar() {
       {/* Officer Profile */}
       <div className="p-4 border-t border-[#E0E0E0]">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-semibold">
-            JD
+          <div className="w-10 h-10 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0">
+            {initials}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[#001A4D] text-sm font-medium truncate">Juan Dela Cruz</div>
-            <div className="text-[#888780] text-xs">Organization Officer</div>
+            <div className="text-[#001A4D] text-sm font-medium truncate">{profile?.studentName || 'Officer'}</div>
+            <div className="text-[#888780] text-xs truncate">Organization Officer</div>
           </div>
           <button
             onClick={handleLogout}

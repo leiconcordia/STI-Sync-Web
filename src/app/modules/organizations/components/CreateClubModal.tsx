@@ -249,7 +249,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       roleId: o.roleId,
       studentId: o.studentId!,
       studentName: o.studentName!,
-      email: o.email!
+      email: o.email!,
+      password: o.password!
     }));
 
     const result = await create(payload, createdBy, formData.logo, officersPayload);

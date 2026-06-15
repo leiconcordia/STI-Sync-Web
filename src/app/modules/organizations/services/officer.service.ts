@@ -6,6 +6,7 @@ interface OfficerAssignmentData {
   studentId: string;
   studentName: string;
   email: string;
+  password?: string;
 }
 
 export const batchCreateOfficers = async (organizationId: string, officers: OfficerAssignmentData[]) => {
@@ -21,6 +22,7 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
       studentId: officer.studentId,
       studentName: officer.studentName,
       email: officer.email,
+      temporaryPassword: officer.password, // Store temporary password
       isActive: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Search, Bell, ChevronDown, User, Settings, LogOut } from 'lucide-react';
 import { useNavigate } from 'react-router';
+import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 
 interface OfficerTopNavProps {
   title: string;
@@ -10,10 +11,20 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
 
+  const { profile, logout } = useOfficerProfile();
+
   const handleLogout = () => {
     setShowUserMenu(false);
-    navigate('/');
+    logout();
+    navigate('/officer/login');
   };
+
+  const initials = profile?.studentName
+    ?.split(' ')
+    .map(n => n[0])
+    .join('')
+    .substring(0, 2)
+    .toUpperCase() || 'OG';
 
   const handleSettings = () => {
     setShowUserMenu(false);
@@ -52,9 +63,9 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
             className="flex items-center gap-2 hover:bg-gray-100 rounded-lg px-3 py-2 transition-colors"
           >
             <div className="w-8 h-8 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-semibold text-sm">
-              JD
+              {initials}
             </div>
-            <span className="text-sm font-medium text-[#001A4D]">Juan Dela Cruz</span>
+            <span className="text-sm font-medium text-[#001A4D]">{profile?.studentName || 'Officer'}</span>
             <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
           </button>
 
@@ -67,7 +78,7 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
               />
               <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-20 overflow-hidden">
                 <div className="p-3 border-b border-[#E0E0E0]">
-                  <p className="text-sm font-bold text-[#001A4D]">Juan Dela Cruz</p>
+                  <p className="text-sm font-bold text-[#001A4D]">{profile?.studentName || 'Officer'}</p>
                   <p className="text-xs text-[#888780]">Organization Officer</p>
                 </div>
                 <div className="py-2">

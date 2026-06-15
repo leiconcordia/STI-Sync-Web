@@ -3,18 +3,22 @@ import { useNavigate } from 'react-router';
 import { ArrowLeft, IdCard, Lock, Eye, EyeOff, LogIn, AlertCircle, Info } from 'lucide-react';
 import stiSyncLogo from '../../imports/STI_SYNC_LOGO.jpg';
 
+import { useOfficerAuth } from './hooks/useOfficerAuth';
+
 export default function OfficerLogin() {
   const navigate = useNavigate();
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(false);
+  const { login, isLoggingIn, error } = useOfficerAuth();
 
-  const handleLogin = () => {
-    setError(false);
-    setIsLoading(true);
-    setTimeout(() => {
+  const handleLogin = async () => {
+    if (!identifier.trim() || !password.trim()) return;
+    
+    const success = await login(identifier, password);
+    if (success) {
       navigate('/officer/dashboard');
-    }, 1500);
+    }
   };
 
   return (
@@ -95,6 +99,9 @@ export default function OfficerLogin() {
                 <IdCard className="absolute left-4 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-gray-400" />
                 <input
                   type="text"
+                  value={identifier}
+                  onChange={(e) => setIdentifier(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                   placeholder="Enter your username or student ID"
                   className="w-full h-[52px] pl-12 pr-4 border border-[#E0E0E0] rounded-lg text-[14px] focus:border-[#0E4EBD] focus:ring-2 focus:ring-[#0E4EBD]/20 outline-none transition-all"
                 />
@@ -108,6 +115,9 @@ export default function OfficerLogin() {
                 <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-gray-400" />
                 <input
                   type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
                   placeholder="Enter your password"
                   className="w-full h-[52px] pl-12 pr-12 border border-[#E0E0E0] rounded-lg text-[14px] focus:border-[#0E4EBD] focus:ring-2 focus:ring-[#0E4EBD]/20 outline-none transition-all"
                 />
@@ -129,10 +139,10 @@ export default function OfficerLogin() {
           {/* Login Button */}
           <button
             onClick={handleLogin}
-            disabled={isLoading}
+            disabled={isLoggingIn || !identifier.trim() || !password.trim()}
             className="w-full h-[52px] bg-gradient-to-r from-[#0E4EBD] to-[#1E70E8] text-white rounded-lg font-bold text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-70"
           >
-            {isLoading ? (
+            {isLoggingIn ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 Signing in...
@@ -149,7 +159,7 @@ export default function OfficerLogin() {
           {error && (
             <div className="mt-4 bg-[#EF4444]/8 border border-[#EF4444] rounded-lg p-3 flex items-start gap-3">
               <AlertCircle className="w-[18px] h-[18px] text-[#EF4444] flex-shrink-0 mt-0.5" />
-              <p className="text-[#EF4444] text-[13px]">Invalid username or password. Please try again.</p>
+              <p className="text-[#EF4444] text-[13px]">{error}</p>
             </div>
           )}
 
