@@ -1,0 +1,372 @@
+Here's the complete, polished Figma prompt:
+
+---
+
+**Figma AI / Prompt-to-Design Prompt:**
+
+> Design a complete **STI Sync Mobile Application** — a campus event management, QR attendance, and organizational finance app for STI College Ormoc. This prompt covers the full authentication flow and officer dashboard experience across 8 screens with full prototype navigation connections.
+>
+> **SAS stands for Student Affairs Services.** The SAS Admin is the SAO Adviser — the highest authority in the system. Officers are student organization leaders. Students are the general campus population.
+>
+> Use the exact color system throughout all screens:
+> **Primary Dark Navy** `#001A4D` · **Violet** `#83358E` · **Golden Yellow** `#FFD41C` · **Cobalt Blue** `#0E4EBD` · **Royal Blue** `#1E70E8` · **Success Green** `#22C55E` · **Warning Amber** `#FFC107` · **Danger Red-Orange** `#EF4444` · **Surface White** `#FFFFFF` · **Border Gray** `#E0E0E0` · **Subtext Gray** `#9E9E9E`
+>
+> All screens are designed for **mobile (375px × 812px)**. Apply Inter font throughout. Minimum 48px tap targets. Bottom safe area 34px. Status bar 44px. Pill buttons use 100px border radius. Cards use 16px radius. Inputs use 12px radius.
+
+---
+
+## PROTOTYPE NAVIGATION MAP
+
+> Before designing, establish these prototype connections:
+> - Welcome Screen → "Student Login" button → Student Dashboard (direct, no validation)
+> - Welcome Screen → "Officer Login" button → Officer Login Screen
+> - Welcome Screen → "SAS Admin Login" button → SAS Admin Login Screen
+> - Officer Login Screen → "Login" button → Officer Dashboard (direct, no validation)
+> - Officer Login Screen → back arrow → Welcome Screen
+> - SAS Admin Login Screen → "Login" button → SAS Admin Dashboard (direct, no validation)
+> - SAS Admin Login Screen → back arrow → Welcome Screen
+> - Officer Dashboard bottom nav → all 5 tabs navigate to their respective dashboard screens
+
+---
+
+## SCREEN 1 — WELCOME SCREEN
+
+> **Background:**
+> Full-screen Dark Navy `#001A4D` background. A large soft radial gradient behind the logo area: Violet `#83358E` at 25% opacity, 400px diameter, centered in the top 50% of the screen. A second smaller radial glow: Golden Yellow `#FFD41C` at 10% opacity, 200px diameter, overlapping the first glow slightly offset to the right. These two glows create a subtle depth effect without being distracting.
+>
+> A very subtle geometric pattern overlay (thin diagonal lines or dot grid) at 4% white opacity across the entire background — adds texture without competing with content.
+>
+> **Top Section (top 50% of screen):**
+> Vertically and horizontally centered within the top half:
+>
+> STI Sync logo mark: a geometric abstract mark (interlocking rings or a shield with a sync/refresh symbol inside) in Golden Yellow `#FFD41C`, 72px × 72px, with a soft Golden Yellow glow ring at 20% opacity around it (96px diameter).
+>
+> Below the mark: "STI Sync" wordmark in white bold 32px, letter-spacing 1px, centered.
+>
+> Below the wordmark: a thin Golden Yellow `#FFD41C` horizontal divider line (60px wide, 1.5px height, centered, 12px top margin).
+>
+> Below the divider: "Student Affairs Services" in Golden Yellow `#FFD41C` 12px light weight, centered, letter-spacing 1.5px, uppercase.
+>
+> Below that (16px gap): "Connect, Participate, and Stay Updated" in white 15px, centered, line-height 1.5, 32px horizontal padding. This is the welcome message — make it feel warm and inviting.
+>
+> **Bottom Section (bottom 50% of screen, white bottom sheet):**
+> A white surface that slides up from the bottom with 28px top-left and top-right border radius. 32px horizontal padding. This creates a clean contrast between the dark branded top and the action area below.
+>
+> Top of white section: a short horizontal drag-handle pill (40px × 4px, Light Gray `#E0E0E0`, centered, 12px top margin) — gives a native bottom-sheet feel.
+>
+> Below drag handle (20px gap): "Welcome Back" in Dark Navy `#001A4D` bold 20px, centered. "Choose how you want to log in." in Subtext Gray `#9E9E9E` 13px, centered, 6px below.
+>
+> **Three Login Buttons (stacked, 12px gap between each):**
+>
+> Button 1 — Student Login:
+> Full width, 56px height, pill shape. Dark Navy `#001A4D` background. Golden Yellow `#FFD41C` text bold 16px. Left icon: ti-user-circle (Golden Yellow, 20px). Right: ti-arrow-right (Golden Yellow, 16px). This is the primary CTA — most students use this.
+>
+> Button 2 — Officer Login:
+> Full width, 56px height, pill shape. Violet `#83358E` background. White text bold 16px. Left icon: ti-shield (white, 20px). Right: ti-arrow-right (white, 16px).
+>
+> Button 3 — SAS Admin Login:
+> Full width, 52px height, pill shape. White background. Dark Navy `#001A4D` border 1.5px. Dark Navy text bold 15px. Left icon: ti-lock (Dark Navy, 18px). Slightly smaller than the other two — de-emphasizes the admin login for casual users.
+>
+> Below the buttons (20px gap): "STI College Ormoc" in Subtext Gray `#9E9E9E` 12px centered + a small STI logo mark (16px) beside the text. Bottom safe area padding.
+
+---
+
+## SCREEN 2 — SAS ADMIN LOGIN
+
+> **Background:**
+> Same Dark Navy `#001A4D` full-screen background as the Welcome Screen. Same Violet + Golden Yellow radial glow treatment in the top section. Consistent branded feel.
+>
+> **Top Section (top 42% of screen):**
+> Back arrow: ti-arrow-left (white, 24px) in the top-left corner, 20px from left, 60px from top (within status bar safe area). Tapping navigates back to the Welcome Screen.
+>
+> Centered in the top section:
+> A Dark Navy `#001A4D` inner card (slightly lighter: `#0A2560`) with 20px radius, 20px padding, centered horizontally — 280px wide. Contains:
+> - ti-shield-lock icon (Golden Yellow `#FFD41C`, 40px, centered)
+> - "SAS Admin" in Golden Yellow bold 18px, centered, 8px below icon
+> - "Student Affairs Services" in white 12px light, centered, 4px below
+> A thin Golden Yellow bottom border (1.5px) on this inner card.
+>
+> Below the card (12px gap): "Authorized Personnel Only" in white 12px italic, centered, with a small ti-alert-circle white icon (12px) to the left.
+>
+> **Bottom White Sheet (bottom 58%, 28px top radius):**
+> Same white bottom sheet treatment as Welcome Screen.
+>
+> Top of sheet: "SAS Admin Login" in Dark Navy bold 22px, 24px left padding, 24px top margin.
+> Below title: "Enter your SAS credentials to access the admin panel." in Subtext Gray 13px, same left padding, 4px below title.
+>
+> **Form Fields (24px horizontal padding, 20px top margin):**
+>
+> Email Address field:
+> 52px height, white bg, `#E0E0E0` border 1.5px, 12px radius. Left inner icon: ti-mail (Cobalt Blue `#0E4EBD`, 18px). Label floats above on focus: "Email Address" in Violet `#83358E` 12px. Placeholder: "adviser@ormoc.sti.edu.ph". Violet 2px focus ring.
+>
+> Password field (16px gap below email):
+> Same styling. Left icon: ti-lock (Cobalt Blue, 18px). Right: ti-eye toggle (gray, 18px). Label: "Password". Placeholder: "Enter your password."
+>
+> "Forgot Password?" text link: Violet `#83358E` 13px, aligned right, 8px below password field.
+>
+> **Login Button (20px top margin):**
+> Full width, 56px height, pill. Dark Navy `#001A4D` background. Golden Yellow `#FFD41C` text bold 16px. ti-login icon left (Golden Yellow). "Login to Admin Panel" as button label.
+> Loading state: Golden Yellow spinner replacing icon, text becomes "Authenticating..." — shown for 1.5 seconds before navigating.
+>
+> **Security Note (below button, 16px gap):**
+> A light gray `#F5F5F5` rounded card (12px radius, 12px padding): ti-info-circle Cobalt Blue icon (14px) + "This portal is restricted to authorized SAS staff only. Unauthorized access attempts are logged." Subtext Gray 11px. This reinforces the admin-only nature without being alarming.
+>
+> Error state (shown below login button when credentials fail — for prototype, never shown):
+> Red-Orange `#EF4444` at 10% opacity card, red-orange 1px border: ti-alert-circle red icon + "Invalid credentials. Please check your email and password." red-orange 13px.
+
+---
+
+## SCREEN 3 — OFFICER LOGIN
+
+> **Background:**
+> Same Dark Navy full-screen background. Same glow treatment. Consistent.
+>
+> **Top Section (top 40% of screen):**
+> Back arrow top-left same as Screen 2.
+>
+> Centered inner card (same style as Screen 2 but with Violet accent instead of Golden Yellow):
+> - ti-shield icon (Violet `#83358E`, 40px, centered)
+> - "Officer Login" in white bold 20px, centered
+> - "Student Organization Portal" in white 12px light, centered
+> Violet bottom border (1.5px) on the inner card.
+>
+> Below card: "Log in with your assigned officer credentials." in white 12px italic, centered.
+>
+> **Bottom White Sheet (bottom 60%, 28px top radius):**
+>
+> Title: "Officer Login" in Dark Navy bold 22px, 24px left padding, 24px top margin.
+> Subtitle: "Access your organization dashboard." in Subtext Gray 13px, same padding.
+>
+> **Form Fields (24px horizontal padding, 20px top margin):**
+>
+> Username field:
+> Same input styling as Screen 2. Left icon: ti-user (Violet `#83358E`, 18px). Label: "Username". Placeholder: "Enter your officer username." Violet focus ring.
+>
+> Password field (16px gap):
+> Same styling. Left icon: ti-lock (Violet, 18px). Right: ti-eye toggle. Label: "Password". Placeholder: "Enter your password."
+>
+> No "Forgot Password?" link on this screen — officers contact SAS Admin directly for credential issues. Instead: "Contact SAS Admin for credential issues." in Subtext Gray 12px centered, 8px below password field. ti-mail Subtext Gray icon beside the text.
+>
+> **Login Button (20px top margin):**
+> Full width, 56px height, pill. Violet `#83358E` background. White text bold 16px. ti-login white icon left. "Login as Officer" label.
+> Loading state: white spinner, text "Logging in..." — 1.5 seconds before navigating.
+>
+> **Organization Selector (below login button, 16px gap):**
+> A white rounded card (12px radius, 14px padding, `#E0E0E0` border): "Logging in as an officer of:" Dark Navy bold 13px + a dropdown row showing the current organization (e.g., "STI IT Guild" with a small circle avatar chip in Violet, chevron-down icon). This is for prototype visual completeness only — not functionally required.
+
+---
+
+## SCREEN 4 — STUDENT DASHBOARD
+
+> This is a simplified placeholder screen — the Student Dashboard is not fully detailed in this prompt but must exist for prototype navigation from the Welcome Screen's Student Login button.
+>
+> **Background:** White screen with the standard app shell.
+>
+> **Top App Bar (56px, Dark Navy `#001A4D` bg):**
+> Left: STI Sync logo mark (Golden Yellow, 24px) + "STI Sync" white bold 16px. Right: ti-bell white icon with a red badge count + student circle avatar (36px, white border).
+>
+> **Welcome Card (full width, 16px margin, Dark Navy gradient):**
+> "Good morning, [Student Name] 👋" white bold 18px. "A.Y. 2025–2026 · 2nd Semester" Golden Yellow 13px. A "Pending Re-enrollment" amber pill badge if applicable.
+>
+> **Quick Access Grid (2×2, 16px margin, 12px gap):**
+> Four large rounded cards:
+> - "My QR ID" (Violet gradient, ti-qrcode white 32px, white label) — most important feature
+> - "Events" (Cobalt Blue gradient, ti-calendar-event white 32px)
+> - "My Finances" (Green gradient, ti-receipt white 32px)
+> - "Announcements" (Dark Navy gradient, ti-bell white 32px)
+>
+> **Upcoming Events Card (below grid):** "Upcoming Events" Dark Navy bold header + 2 event preview rows.
+>
+> **Bottom Navigation Bar (56px, white, 0.5px top border):**
+> Five tabs: Home (ti-home), Events (ti-calendar), QR ID (ti-qrcode — center, larger, Violet bg circle 52px), Finances (ti-receipt), Profile (ti-user). Active tab uses Violet icon and label. Inactive uses gray.
+
+---
+
+## SCREEN 5 — SAS ADMIN DASHBOARD
+
+> Simplified placeholder for prototype navigation. Full design is in the SAO Admin Panel prompt.
+>
+> **Top App Bar (56px, Dark Navy `#001A4D`):**
+> "SAS Admin Panel" white bold 16px centered. Left: ti-arrow-left white (back — logs out and returns to Welcome). Right: adviser circle avatar (36px, Golden Yellow border).
+>
+> **Admin Welcome Banner (full width, 16px margin, Dark Navy to Violet gradient, 16px radius):**
+> ti-shield-check Golden Yellow 32px icon. "SAS Admin Dashboard" white bold 18px. "Student Affairs Services — STI College Ormoc" Golden Yellow 13px. "SAO Adviser" white pill badge.
+>
+> **Quick Stats Row (4 gradient mini cards, 2×2 grid):**
+> - Pending Verifications (Red-Orange gradient)
+> - Pending Event Approvals (Amber gradient)
+> - Active Students (Green gradient)
+> - Active Organizations (Cobalt gradient)
+>
+> **Quick Actions Card (white, full width, 16px margin):**
+> "Quick Actions" Dark Navy bold header. Three action rows: "Review Pending Registrations" (Violet), "Review Event Proposals" (Cobalt Blue), "Generate Reports" (Dark Navy). Each row: icon left + label + ti-chevron-right right.
+>
+> **Bottom Navigation Bar:**
+> Five tabs: Dashboard (ti-layout-dashboard), Students (ti-users), Events (ti-calendar-event), Finance (ti-receipt), Settings (ti-settings). Active = Golden Yellow icon + label. Inactive = gray.
+
+---
+
+## SCREEN 6 — OFFICER DASHBOARD (OVERVIEW)
+
+> The main landing screen after officer login. This is the most feature-rich mobile screen in the entire flow.
+>
+> **Top App Bar (56px, white, 0.5px bottom border `#E0E0E0`):**
+> Left: STI Sync logo mark (Violet `#83358E`, 28px) + "STI Sync" Dark Navy bold 15px.
+> Center: Organization context pill — Violet `#83358E` bg, white text 13px bold, current org name (e.g., "STI IT Guild"), ti-chevron-down white 14px. Tapping opens an org switcher bottom sheet (if officer belongs to multiple orgs).
+> Right: ti-bell Dark Navy 22px with red count badge + officer circle avatar (36px, Violet border 2px).
+>
+> **Welcome Banner Card (full width, 16px horizontal margin, 12px top margin):**
+> Dark Navy `#001A4D` to Violet `#83358E` gradient background. 16px radius. 16px padding.
+> Left side: "Good morning," white 14px + officer's full name in white bold 20px below + "Organization Officer" Golden Yellow `#FFD41C` 12px pill badge below name.
+> Right side: officer circle avatar (52px, white border 2px, Violet bg with white initials). A small golden yellow dot indicator (8px) at the bottom-right of the avatar (online status).
+> Below the name/avatar row (12px gap): a thin white divider at 20% opacity. Below divider: current date and semester in white 12px: "Tuesday, June 9 · A.Y. 2025–2026, 2nd Semester".
+>
+> **4 Metric Cards (horizontal scroll row, 16px horizontal padding, 12px gap):**
+> Each card: 140px × 88px, 12px radius, gradient bg, white text. Not full-width — horizontal scroll allows more cards without clutter.
+> - "Upcoming Events" — Cobalt Blue gradient (`#0E4EBD` → `#1E70E8`), ti-calendar-event white 20px top-right, bold number 28px white, "Events" label white 12px
+> - "Pending Approvals" — Amber gradient (`#FFC107` → `#F59E0B`), ti-clock white 20px, bold number, "Proposals" label
+> - "Pending Liquidations" — Red-Orange gradient (`#EF4444` → `#F97316`), ti-receipt white 20px, bold number, "Reports" label
+> - "Total Members" — Green gradient (`#22C55E` → `#16A34A`), ti-users white 20px, bold number, "Members" label
+> Each card has a small white trending arrow (ti-trending-up or ti-trending-down, 14px) in the top-left at 60% opacity.
+>
+> **Pending Tasks Card (full width, 16px horizontal margin, 12px top margin):**
+> White card, 0.5px `#E0E0E0` border, 16px radius, 16px padding.
+> Header row: "Pending Tasks" Dark Navy bold 15px left + "View All" Violet text link 13px right.
+> Three task rows (12px gap between each, thin `#E0E0E0` divider between rows):
+> Each row: left side: priority dot (red = overdue, amber = due soon, green = upcoming) + task label Dark Navy 14px bold + due date gray 12px below label. Right side: Violet "Act" pill button (28px height, 12px radius, Violet bg, white text 12px).
+> Sample tasks:
+> - "Submit liquidation — Acquaintance Party" · red dot · "Overdue — 3 days ago"
+> - "Upload receipts — Team Building Event" · amber dot · "Due in 2 days"
+> - "Review attendance report — JS Night" · green dot · "Due in 5 days"
+>
+> **Upcoming Events Card (full width, 16px horizontal margin, 12px top margin):**
+> White card, same border and radius. 16px padding.
+> Header row: "Upcoming Events" Dark Navy bold 15px + "View All" Violet text link.
+> Three event preview rows (dividers between):
+> Each row: left side: colored event type dot (Violet = org, Cobalt = academic, Coral = cultural) + event name Dark Navy 14px bold + date/time gray 12px below. Right side: status pill badge (Approved = green gradient mini pill, Pending = amber mini pill, Draft = gray mini pill).
+> Sample events:
+> - "IT Guild General Assembly" · Violet dot · "Jun 15 · 8:00 AM" · Approved green pill
+> - "Leadership Summit 2026" · Cobalt dot · "Jun 22 · 9:00 AM" · Pending amber pill
+> - "Acquaintance Party" · Coral dot · "Jul 5 · 2:00 PM" · Draft gray pill
+>
+> **Quick Actions Row (full width, 16px horizontal margin, 12px top margin):**
+> "Quick Actions" Dark Navy bold 15px label above. Below: a horizontal row of 4 equal action buttons (each ~76px wide, 72px tall, white bg, `#E0E0E0` border 0.5px, 12px radius, centered content):
+> - ti-calendar-event (Violet, 24px) + "New Event" Dark Navy 11px bold below icon
+> - ti-receipt (Cobalt Blue, 24px) + "New Report"
+> - ti-qrcode (Green, 24px) + "Scanner"
+> - ti-bell (Amber, 24px) + "Announce"
+> Tapping "Scanner" navigates to a scanner activation screen. Others navigate to their respective screens.
+>
+> **Recent Attendance Activity Card (full width, 16px horizontal margin, 12px top margin, 16px bottom margin):**
+> White card, same styling. 16px padding.
+> Header: "Recent Scan Activity" Dark Navy bold 15px + "Live" green dot indicator (8px, pulsing) + "View Logs" Violet text link.
+> Five attendance feed rows (compact, 10px gap):
+> Each row: small circle avatar (32px) + student name Dark Navy 13px bold + scan type pill (Check-In = green mini pill, Check-Out = gray mini pill, Flagged = amber mini pill) + timestamp gray 11px right-aligned.
+> Sample rows: Juan dela Cruz · Check-In · 2m ago / Maria Santos · Check-In · 5m ago / Carlo Reyes · Flagged · 8m ago (amber pill) / Ana Cruz · Check-Out · 12m ago / Paolo Tan · Check-In · 15m ago.
+>
+> **Bottom Navigation Bar (56px, white, 0.5px top border):**
+> Five navigation tabs evenly spaced:
+> - ti-layout-dashboard — "Dashboard" (active: Violet icon + Violet bold label + thin Violet top line indicator 3px)
+> - ti-calendar-event — "Events" (inactive: gray icon + gray label)
+> - ti-qrcode — "Scanner" (center tab: Violet circle bg 52px, white ti-qrcode 24px inside, elevated with subtle shadow — most used action gets special treatment)
+> - ti-receipt — "Finance" (inactive: gray)
+> - ti-user-circle — "Profile" (inactive: gray)
+> Active state: Violet icon (22px), Violet bold label (10px), 3px Violet top border on the tab. Inactive: gray icon (20px), gray label (10px).
+
+---
+
+## SCREEN 7 — OFFICER EVENTS SCREEN
+
+> Accessed via the "Events" bottom nav tab or "View All" from Dashboard.
+>
+> **Top App Bar:** Same as Dashboard. "Events" Dark Navy bold 16px centered replaces the org pill.
+>
+> **Filter Tabs (horizontal scroll, 16px left padding, 12px top margin):**
+> Pill tabs: All · Draft · Pending · Approved · Completed · Rejected. Active: Dark Navy bg, white text bold. Inactive: white bg, `#E0E0E0` border, gray text. 8px gap between tabs.
+>
+> **Search Bar (16px horizontal padding, 8px top margin):**
+> Full width input, 44px height, 12px radius, `#E0E0E0` border. ti-search gray 16px icon left inside input. Placeholder: "Search events..."
+>
+> **Event Cards (16px horizontal padding, 12px top margin, 12px gap between cards):**
+> Each card: white bg, `#E0E0E0` border 0.5px, 16px radius. No horizontal scroll — full-width stacked list.
+>
+> Card structure:
+> - Top color strip (8px height, full width, top radius): Violet for org events, Cobalt for academic, Coral for cultural
+> - Card body (16px padding):
+>   - Status pill (right-aligned, top): Approved = green gradient, Pending = amber, Draft = gray, Rejected = red-orange
+>   - Event name Dark Navy bold 16px
+>   - Organization name Violet 13px below event name
+>   - Date row: ti-calendar gray 14px + date/time gray 13px
+>   - Venue row: ti-map-pin gray 14px + venue name gray 13px
+>   - Expected attendance: ti-users gray 14px + count gray 13px
+>   - Bottom action row (12px top gap, thin `#E0E0E0` top divider): "View Details" Violet text link left + ti-edit Dark Navy icon button (if editable) + ti-trash Red-Orange icon button (if deletable, draft only) right
+>
+> **Floating Action Button:**
+> Violet circle (56px, shadow: `0 4px 12px rgba(131,53,142,0.4)`), white ti-plus icon (24px), fixed bottom-right (20px from right, 80px from bottom — above nav bar). Tapping opens the 6-step Event Proposal Wizard as a bottom sheet modal.
+
+---
+
+## SCREEN 8 — OFFICER PROFILE SCREEN
+
+> Accessed via the "Profile" bottom nav tab.
+>
+> **Profile Header (full width, Dark Navy to Violet gradient, 28px bottom radius):**
+> 160px tall. Centered: circle avatar (80px, white border 3px, Violet bg if no photo). Officer name white bold 20px below avatar. Student ID Golden Yellow 13px. "Organization Officer" white pill badge (Dark Navy bg at 30% opacity). Organization name Golden Yellow 13px below badge.
+>
+> **Quick Stats Row (16px horizontal margin, -20px top margin — overlaps the header for a layered effect):**
+> Three white mini cards side by side (equal width, 12px radius, shadow: `0 2px 8px rgba(0,0,0,0.08)`):
+> - "Events" + count number Violet bold 20px + "This Semester" gray 11px
+> - "Members" + count Dark Navy bold 20px + "In Your Org" gray 11px
+> - "Reports" + count Cobalt bold 20px + "Submitted" gray 11px
+>
+> **Profile Details Card (full width, 16px horizontal margin, 16px top margin):**
+> White card, `#E0E0E0` border, 16px radius, 16px padding. Rows with Cobalt Blue icons:
+> - ti-mail — email address
+> - ti-phone — contact number
+> - ti-book — course and year level
+> - ti-users — section and department
+> - ti-building — organization name + role
+> - ti-calendar — member since date
+>
+> **Actions Card (full width, 16px horizontal margin, 12px top margin):**
+> White card, same styling. Four action rows with right chevrons:
+> - ti-settings Violet — "Account Settings"
+> - ti-bell Dark Navy — "Notification Preferences"
+> - ti-lock Cobalt — "Change Password"
+> - ti-logout Red-Orange — "Log Out" (red-orange text, opens confirmation bottom sheet)
+
+---
+
+## GLOBAL MOBILE DESIGN NOTES
+
+> Apply these rules across all 8 screens:
+>
+> - **Status Bar**: Always 44px. White text/icons on Dark Navy screens, Dark Navy text/icons on white screens.
+>
+> - **Bottom Safe Area**: Always 34px padding below the last interactive element and below the bottom nav bar.
+>
+> - **Bottom Navigation**: Consistent across all Officer screens (Screens 6, 7, 8 and any subsequent officer screens). Never appears on auth screens (Screens 1, 2, 3).
+>
+> - **Back Navigation**: Auth screens (2, 3) always have a back arrow top-left returning to the Welcome Screen. Dashboard screens use the bottom nav — no back arrow needed.
+>
+> - **Tap Targets**: Every button, nav item, and interactive row minimum 48px height. No exceptions.
+>
+> - **Loading States**: Every login button shows a spinner and loading text for 1.5 seconds before navigating — makes the prototype feel realistic even without actual authentication.
+>
+> - **Floating Action Button**: Appears only on list screens (Events Screen 7). Always Violet, always 56px, always positioned 20px right and 80px bottom (above nav bar).
+>
+> - **Card Shadows**: Subtle on all raised white cards: `0 2px 8px rgba(0,0,0,0.06)`. More prominent on the floating action button: `0 4px 12px rgba(131,53,142,0.4)`.
+>
+> - **Typography Scale**: Page titles 22–26px bold Dark Navy. Card headers 15–16px bold Dark Navy. Body text 13–14px Dark Navy. Secondary text 12–13px Subtext Gray `#9E9E9E`. Labels and badges 11–12px.
+>
+> - **Color Usage Rule**: Golden Yellow `#FFD41C` is reserved for the Welcome Screen branding and the SAS Admin portal only — it signals institutional authority. Violet `#83358E` is the Officer portal color. Dark Navy `#001A4D` is the universal base. Never use Golden Yellow as a background fill on officer screens.
+>
+> - **Empty States**: Every list screen (Events, Finance, Members) has an empty state: centered Cobalt Blue Tabler icon (48px) + Dark Navy bold message + gray description + a Violet action button ("Create your first event" etc.).
+>
+> - **Prototype Fidelity**: All 8 screens must be connected per the Navigation Map at the top of this prompt. Every tap target that leads to another screen must have a prototype connection. The flow must be completable without dead ends.
+>
+> - Optimized for 375px × 812px (iPhone 14). All content works at 390px × 844px and 360px × 800px without layout breaking.
+
+---
+
+This gives you a complete, prototype-ready Figma file. Want me to now generate the **Student Mobile App Main Features** prompt — covering the QR Digital ID, Event Feed, Attendance, and Finance screens?

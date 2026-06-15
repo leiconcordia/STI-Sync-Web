@@ -1,0 +1,190 @@
+import { useState } from 'react';
+import { X, Shield, Rocket } from 'lucide-react';
+import Step1EventDetails from './sao-event-steps/Step1EventDetails';
+import Step2Schedule from './sao-event-steps/Step2Schedule';
+import Step3Participants from './sao-event-steps/Step3Participants';
+import Step4Staff from './sao-event-steps/Step4Staff';
+import Step5Budget from './sao-event-steps/Step5Budget';
+import Step6Documents from './sao-event-steps/Step6Documents';
+import Step7Publish from './sao-event-steps/Step7Publish';
+
+interface SaoEventCreationModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+const STEPS = [
+  'Event Details',
+  'Schedule',
+  'Participants',
+  'Staff',
+  'Budget',
+  'Documents',
+  'Publish'
+];
+
+export default function SaoEventCreationModal({ isOpen, onClose }: SaoEventCreationModalProps) {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [formData, setFormData] = useState({});
+
+  if (!isOpen) return null;
+
+  const updateFormData = (stepData: any) => {
+    setFormData({ ...formData, ...stepData });
+  };
+
+  const nextStep = () => {
+    if (currentStep < STEPS.length - 1) {
+      setCurrentStep(currentStep + 1);
+    }
+  };
+
+  const prevStep = () => {
+    if (currentStep > 0) {
+      setCurrentStep(currentStep - 1);
+    }
+  };
+
+  const goToStep = (step: number) => {
+    if (step <= currentStep) {
+      setCurrentStep(step);
+    }
+  };
+
+  const handleSubmit = () => {
+    console.log('Creating event:', formData);
+    // Handle event creation
+    onClose();
+  };
+
+  const renderStep = () => {
+    switch (currentStep) {
+      case 0:
+        return <Step1EventDetails data={formData} onUpdate={updateFormData} />;
+      case 1:
+        return <Step2Schedule data={formData} onUpdate={updateFormData} />;
+      case 2:
+        return <Step3Participants data={formData} onUpdate={updateFormData} />;
+      case 3:
+        return <Step4Staff data={formData} onUpdate={updateFormData} />;
+      case 4:
+        return <Step5Budget data={formData} onUpdate={updateFormData} />;
+      case 5:
+        return <Step6Documents data={formData} onUpdate={updateFormData} />;
+      case 6:
+        return <Step7Publish data={formData} onUpdate={updateFormData} />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-hidden">
+      {/* Overlay */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose}></div>
+
+      {/* Modal */}
+      <div className="absolute inset-0 flex items-center justify-center p-4">
+        <div className="relative w-full max-w-[1280px] h-[90vh] bg-white rounded-lg shadow-2xl flex flex-col">
+
+          {/* Sticky Header */}
+          <div className="sticky top-0 z-10 bg-gradient-to-r from-[#001A4D] to-[#83358E] px-6 py-4 flex items-center justify-between rounded-t-lg">
+            <div className="flex items-center gap-4">
+              <div className="text-white font-bold text-lg flex items-center gap-2">
+                <span>STI Sync</span>
+                <span className="font-normal">Event Creation — Admin</span>
+              </div>
+              <div className="px-3 py-1 bg-[#001A4D] rounded-full flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-[#FFC107]" />
+                <span className="text-[#FFC107] text-sm font-medium">SAO Admin</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <div className="text-[#FFC107] font-bold">
+                Step {currentStep + 1} of {STEPS.length} — {STEPS[currentStep]}
+              </div>
+              <button
+                onClick={onClose}
+                className="text-white hover:bg-white/10 p-1.5 rounded transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Progress Line */}
+          <div className="h-1 bg-white/20">
+            <div
+              className="h-full bg-[#FFC107] transition-all duration-300"
+              style={{ width: `${((currentStep + 1) / STEPS.length) * 100}%` }}
+            ></div>
+          </div>
+
+          {/* Step Navigator */}
+          <div className="px-6 py-4 border-b border-gray-200 flex gap-2 overflow-x-auto">
+            {STEPS.map((step, index) => (
+              <button
+                key={index}
+                onClick={() => goToStep(index)}
+                disabled={index > currentStep}
+                className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
+                  index === currentStep
+                    ? 'bg-[#83358E] text-white'
+                    : index < currentStep
+                    ? 'bg-[#1E70E8] text-white hover:bg-[#0E4EBD]'
+                    : 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                }`}
+              >
+                {step}
+              </button>
+            ))}
+          </div>
+
+          {/* Scrollable Content */}
+          <div className="flex-1 overflow-y-auto">
+            <div className="p-6">
+              {renderStep()}
+            </div>
+          </div>
+
+          {/* Sticky Footer */}
+          <div className="sticky bottom-0 border-t border-gray-200 bg-white px-6 py-4 flex items-center justify-between rounded-b-lg">
+            <button
+              onClick={prevStep}
+              disabled={currentStep === 0}
+              className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Previous
+            </button>
+
+            {currentStep < STEPS.length - 1 ? (
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => console.log('Save as draft:', formData)}
+                  className="px-6 py-2.5 border border-[#83358E] text-[#83358E] rounded-lg font-medium hover:bg-[#83358E]/5 transition-colors"
+                >
+                  Save as Draft
+                </button>
+                <button
+                  onClick={nextStep}
+                  className="px-6 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 transition-colors"
+                >
+                  Next Step
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={handleSubmit}
+                className="px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-500 text-white rounded-lg font-medium hover:from-green-700 hover:to-green-600 transition-all flex items-center gap-2"
+              >
+                <Rocket className="w-4 h-4" />
+                Create & Publish Event
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
