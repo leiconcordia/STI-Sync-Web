@@ -615,6 +615,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
         <div className="flex items-start gap-4">
           <div className="w-14 h-14 bg-gradient-to-br from-[#0E4EBD] to-[#83358E] rounded-full flex items-center justify-center text-white font-bold text-xl overflow-hidden shadow-inner">
             {formData.logo ? (
+              // Local preview of the selected File only. The real upload to Cloudinary
+              // happens in organization.service.ts on submit; Firestore stores the secureUrl.
               <img src={URL.createObjectURL(formData.logo)} alt="Logo" className="w-full h-full object-cover" />
             ) : (
               formData.acronym || 'ORG'

@@ -420,6 +420,86 @@ interface OrganizationOfficerDocument {
 
 ---
 
+<!-- AGENT-UPDATED: 2026-06-17 — Added `students` collection. Profile/school-ID photos are stored in Cloudinary (cloud `djwlkcgnx`, unsigned preset `sti_sync_uploads`); Firestore holds only the Cloudinary `secure_url`. -->
+
+### 1.8 `students`
+
+**Path:** `/students/{authUid}`
+
+> Document ID equals the student's Firebase Auth UID. Created either by self-registration
+> (mobile app) or manually from the SAO Admin panel via `AddStudentManuallyModal.tsx` →
+> `createStudentManually()` in `src/app/modules/students/services/student.service.ts`.
+
+```typescript
+type StudentSex       = 'Male' | 'Female';
+type StudentYearLevel = '1st Year' | '2nd Year' | '3rd Year' | '4th Year';
+type StudentSemester  = '1st Semester' | '2nd Semester';
+type StudentStatus    = 'ACTIVE' | 'PENDING' | 'RETURNED' | 'INACTIVE' | 'SUSPENDED' | 'ARCHIVED';
+
+interface StudentDocument {
+  // ─── Identity ───
+  id: string;                              // Firestore doc id (= Firebase Auth UID)
+  lastName: string;
+  firstName: string;
+  middleName: string;                      // empty string if not provided
+  studentId: string;                       // official STI student ID — 11 digits
+  dateOfBirth: string;                     // ISO date string YYYY-MM-DD
+  sex: StudentSex;
+  contactNumber: string;                   // digits only, no country code
+
+  // ─── Academic ───
+  courseId: string;                        // FK → /courses
+  courseName: string;                      // Denormalized
+  courseCode: string;                      // Denormalized
+  departmentId: string;                    // FK → /departments
+  departmentName: string;                  // Denormalized
+  yearLevel: StudentYearLevel;
+  section: string;
+  schoolYear: string;                      // e.g., "2026-2027"
+  semester: StudentSemester;
+
+  // ─── Account ───
+  email: string;                           // Lowercased; matches Firebase Auth email
+  authUid: string;                         // Firebase Auth UID (mirrors doc id)
+
+  // ─── Media (Cloudinary) ───
+  profilePhotoUrl: string;                 // Cloudinary secure_url for selfie; '' if not uploaded
+  schoolIdPhotoUrl: string;                // Cloudinary secure_url for school ID; '' if not uploaded
+
+  // ─── Registry ───
+  status: StudentStatus;
+  registrationSource: 'MANUAL' | 'SELF_REGISTER';
+  addedBy: string;                         // Admin UID who created the record (manual flow)
+  rejectionReason?: string;                // Set when status === 'RETURNED'
+
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Image Storage Model (Cloudinary):**
+- Student selfie + school-ID photos are **not** stored in Firebase Storage. They are uploaded
+  to **Cloudinary** (cloud name `djwlkcgnx`, unsigned upload preset `sti_sync_uploads`) using `axios`.
+- Firestore persists **only** the returned `secure_url` string in `profilePhotoUrl` /
+  `schoolIdPhotoUrl`. `PendingVerification.tsx` renders these URLs directly (with a `ui-avatars`
+  fallback on load error).
+- This is a **client-side unsigned upload**: only the cloud name + preset are used in the browser.
+  The Cloudinary **API Secret must never appear in client code** — an unsigned preset needs no secret.
+
+**Access Pattern:**
+- Document ID = Firebase Auth UID (one-to-one with Auth user).
+- Real-time list via `useStudents()` (`onSnapshot` ordered by `lastName` ASC).
+- Uniqueness guards before create: `isStudentIdTaken(studentId)` and `isEmailTaken(email)`.
+- Status transitions: `updateStudentStatus(id, status)`; return/reject via `returnStudent(id, reason)`.
+
+**Indexes Required:**
+- `status` ASC, `lastName` ASC — registry queues (pending / active / etc.)
+- `studentId` ASC — uniqueness lookup
+- `email` ASC — uniqueness lookup
+
+---
+
 ### 1.2 `events`
 
 **Path:** `/events/{eventId}`

@@ -1,6 +1,6 @@
-import { collection, addDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage } from '../../../../services/firebase';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../../../services/firebase';
+import { uploadToCloudinary } from '../../../../services/cloudinary';
 import type { CreateOrganizationPayload } from '../types/organization.types';
 
 const COLLECTION = 'organizations';
@@ -10,24 +10,14 @@ export const createOrganization = async (
   createdBy: string,
   logoFile?: File | null
 ): Promise<string> => {
+  // ── Logo upload → Cloudinary (app-wide upload standard; see services/cloudinary.ts) ──
+  // We store ONLY the returned secure URL in Firestore — never the binary, never a blob: URL.
   let logoUrl: string | null = null;
   if (logoFile) {
-    try {
-      const fileRef = ref(storage, `organizations/${Date.now()}_${logoFile.name}`);
-      
-      // Implement a 15-second timeout for the upload to prevent infinite hanging
-      const uploadPromise = uploadBytes(fileRef, logoFile);
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("Firebase Storage upload timed out. Your storage bucket may not be configured properly or has CORS issues.")), 15000);
-      });
-      
-      const snapshot = await Promise.race([uploadPromise, timeoutPromise]);
-      logoUrl = await getDownloadURL(snapshot.ref);
-    } catch (error: any) {
-      console.error("Logo upload failed (Storage may not be initialized). Falling back to acronym.", error);
-      alert(`Warning: Logo upload failed. The organization will be created without a logo. Please initialize Firebase Storage in your Firebase Console.\n\nDetails: ${error.message}`);
-      logoUrl = null; // Fallback so the org still gets created
-    }
+    const { secureUrl } = await uploadToCloudinary(logoFile, {
+      folder: 'organizations/logos',
+    });
+    logoUrl = secureUrl;
   }
 
   try {

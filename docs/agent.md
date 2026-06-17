@@ -258,6 +258,7 @@ src/
 │
 ├── services/                           # Initialization engines (global singletons)
 │   ├── firebase.ts                     # Firebase app init, Firestore/Auth/Storage instances
+│   ├── cloudinary.ts                   # APP-WIDE upload engine — uploadToCloudinary() for ALL image/file uploads
 │   └── websocket.ts                    # WebSocket client hub — connection, reconnect, dispatch
 │
 ├── styles/
@@ -344,6 +345,32 @@ export function useEventStream(filters?: EventFilters) {
 - Images: Figma asset imports via `import img from "figma:asset/hash.png"`.
 - Use `<ImageWithFallback />` instead of raw `<img>` tags.
 
+<!-- AGENT-UPDATED: 2026-06-17 — Documented Cloudinary as the store for user-uploaded images (student photos). -->
+<!-- AGENT-UPDATED: 2026-06-17 — Cloudinary is the APP-WIDE upload standard for ALL forms (logos, covers, receipts, docs), not just student photos. Added `src/services/cloudinary.ts`. -->
+### 3.7 User-Uploaded Images & Files (Cloudinary — APP-WIDE STANDARD)
+
+**This applies to EVERY form in the app that uploads an image or file** — not just
+student photos. Examples: student selfie/school-ID photos, **organization & club logos**,
+event cover images, certificate template backgrounds, liquidation receipts, document
+attachments, adviser avatars, and any future upload field.
+
+**Rules (mandatory):**
+- **All uploads go through `src/services/cloudinary.ts`** via `uploadToCloudinary(file, { folder })`. Do **not** call the Cloudinary endpoint directly, and do **not** use Firebase Storage for user uploads.
+- **Firestore stores ONLY the returned `secureUrl`** (a string) in the relevant `*Url` field — never the binary, never a `blob:`/`object` URL. (e.g. `logoUrl`, `coverImageUrl`, `profilePhotoUrl`, `avatarUrl`.)
+- **Never store a `URL.createObjectURL()` blob URL** in Firestore — it is temporary and dies on refresh. Upload first, then store the `secureUrl`.
+- Use a sensible `folder` per domain to keep the media library organised: `students/profile`, `students/school-id`, `organizations/logos`, `events/covers`, `finance/receipts`, etc.
+- Disable the form's submit/next button while an upload is in flight; surface upload errors inline.
+
+**Config & security:**
+- Cloud name `djwlkcgnx`, **unsigned** upload preset `sti_sync_uploads`, uploaded from the browser via `axios`.
+- This is a frontend app — anything in code ships to the browser. **Never** place the Cloudinary **API Secret** (or API Key, or any signed-upload credential) in client code. Unsigned presets require only the cloud name + preset name (both already in `cloudinary.ts`).
+
+**Two upload patterns (both valid):**
+- **Upload-on-select (UI layer):** call `uploadToCloudinary` the moment the file is chosen, show progress, store the `secureUrl` in form state. Block the form's Next/Submit while uploading. — Reference: `AddStudentManuallyModal.tsx` → `PhotoStep` (→ `profilePhotoUrl` / `schoolIdPhotoUrl`).
+- **Upload-on-submit (service layer):** keep the raw `File` in form state, pass it to the service, which uploads then writes the `secureUrl` to Firestore in the same call. — Reference: `organization.service.ts` `createOrganization()` (logo `File` → `organizations/logos` → `logoUrl`). Used by `CreateClubModal.tsx`.
+
+> Note: Firebase Storage is **no longer used** for user uploads — `organization.service.ts` was migrated from `firebase/storage` to Cloudinary. `storage` is still exported from `services/firebase.ts` but should not be used for new upload features.
+
 ---
 
 ## 4. Self-Documentation Update Rule
@@ -358,6 +385,7 @@ export function useEventStream(filters?: EventFilters) {
 | New officer-facing hook, service, or backend flow | `docs/officer-backend-context.md` — document the hook signature and data flow |
 | New module directory created | `docs/agent.md` — update the directory tree in Section 2.1 |
 | Route added or changed | `docs/agent.md` — update the route table if one exists, and update `src/app/routes.tsx` |
+| New image/file upload field added to any form | Upload via `src/services/cloudinary.ts` (§3.7); store only `secureUrl` in the matching `*Url` field in `docs/database-schema.md` |
 
 ### Update Format
 When updating a doc, append to the relevant section with a change marker:

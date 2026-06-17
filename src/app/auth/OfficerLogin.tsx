@@ -14,7 +14,7 @@ export default function OfficerLogin() {
 
   const handleLogin = async () => {
     if (!identifier.trim() || !password.trim()) return;
-    
+
     const success = await login(identifier, password);
     if (success) {
       navigate('/officer/dashboard');

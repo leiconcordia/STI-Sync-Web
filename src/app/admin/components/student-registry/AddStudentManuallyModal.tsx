@@ -12,7 +12,7 @@
  *  5. School ID Photo
  */
 
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   X,
   User,
@@ -39,6 +39,7 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { createStudentManually } from '../../../modules/students/services/student.service';
+import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { useDepartments, useCourses, useSections, useSemesters } from '../../../modules/academic/hooks/useAcademicStream';
 import type {
   StudentSex,
@@ -158,6 +159,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
   const [done, setDone] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [showCpw, setShowCpw] = useState(false);
+  const [photoUploading, setPhotoUploading] = useState(false);
 
   // Firestore streams for courses / departments / sections / semesters
   const { data: courses } = useCourses();
@@ -168,6 +170,20 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
   const activeCourses = courses.filter((c) => !c.archived);
   const activeSections = sections.filter((s) => !s.archived && s.courseId === form.courseId);
   const schoolYears = Array.from(new Set(semesters.map(s => s.academicYear))).sort().reverse();
+
+  // Auto-select active semester
+  useEffect(() => {
+    if (semesters.length > 0 && !form.schoolYear && !form.semester) {
+      const activeSem = semesters.find(s => s.status === 'ACTIVE');
+      if (activeSem) {
+        setForm(f => ({
+          ...f,
+          schoolYear: activeSem.academicYear,
+          semester: activeSem.semester as StudentSemester,
+        }));
+      }
+    }
+  }, [semesters, form.schoolYear, form.semester]);
 
   // Password strength
   const pwStrength = useMemo(() => getPasswordStrength(form.password), [form.password]);
@@ -346,7 +362,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             const isDone = i < step;
             return (
               <div key={i} className="flex items-center gap-1 flex-shrink-0">
-                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${isActive ? 'bg-[#83358E] text-white'
+                <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all ${isActive ? 'bg-[#001A4D] text-[#FFD41C]'
                   : isDone ? 'bg-green-500 text-white'
                     : 'bg-gray-200 text-gray-500'
                   }`}>
@@ -577,42 +593,36 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
                 <p className="text-gray-400 text-xs mt-1">Auto-filled from your selected course.</p>
               </div>
 
-              {/* School Year */}
-              <div>
-                <FieldLabel>School Year <span className="text-red-500">*</span></FieldLabel>
-                <select
-                  className={`${inputCls(!!errors.schoolYear)} appearance-none`}
-                  value={form.schoolYear}
-                  onChange={(e) => set('schoolYear', e.target.value)}
-                >
-                  <option value="">Select school year…</option>
-                  {schoolYears.map((y) => (
-                    <option key={y} value={y}>{y}</option>
-                  ))}
-                </select>
-                {errors.schoolYear && <p className="text-red-500 text-xs mt-1">{errors.schoolYear}</p>}
-              </div>
-
-              {/* Semester */}
-              <div>
-                <FieldLabel>Semester <span className="text-red-500">*</span></FieldLabel>
-                <div className="flex gap-2">
-                  {SEMESTERS.map((sem) => (
-                    <button
-                      key={sem}
-                      type="button"
-                      onClick={() => set('semester', sem)}
-                      className={`flex-1 h-[52px] rounded-lg text-xs font-medium border transition-all ${form.semester === sem
-                        ? 'bg-[#83358E] text-white border-[#83358E]'
-                        : 'bg-white text-gray-500 border-gray-300 hover:border-gray-400'
-                        }`}
-                    >
-                      {sem}
-                    </button>
-                  ))}
+              {/* Academic Term (School Year & Semester) — read-only, auto-filled */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <FieldLabel>School Year</FieldLabel>
+                  <div className="relative">
+                    <Lock className="w-3.5 h-3.5 text-gray-300 absolute right-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      readOnly
+                      type="text"
+                      value={form.schoolYear || 'Loading...'}
+                      className="w-full px-4 pr-9 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-500 italic"
+                    />
+                  </div>
                 </div>
-                {errors.semester && <p className="text-red-500 text-xs mt-1">{errors.semester}</p>}
+                <div>
+                  <FieldLabel>Semester</FieldLabel>
+                  <div className="relative">
+                    <Lock className="w-3.5 h-3.5 text-gray-300 absolute right-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      readOnly
+                      type="text"
+                      value={form.semester || 'Loading...'}
+                      className="w-full px-4 pr-9 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-500 italic"
+                    />
+                  </div>
+                </div>
               </div>
+              <p className="text-gray-400 text-xs mt-0">Auto-filled based on the currently active semester.</p>
+              {errors.schoolYear && <p className="text-red-500 text-xs mt-1">{errors.schoolYear}</p>}
+              {errors.semester && <p className="text-red-500 text-xs mt-1">{errors.semester}</p>}
 
               {/* Info card */}
               <div className="p-3 bg-[#F3E8FF] border border-[#83358E]/30 rounded-xl flex items-start gap-2">
@@ -747,6 +757,8 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
               circle
               value={form.profilePhotoUrl}
               onChange={(url) => set('profilePhotoUrl', url)}
+              folder="students/profile"
+              onUploadingChange={setPhotoUploading}
               requirements={[
                 'Face clearly visible and centered',
                 'Good lighting, no shadows on face',
@@ -764,6 +776,8 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
               circle={false}
               value={form.schoolIdPhotoUrl}
               onChange={(url) => set('schoolIdPhotoUrl', url)}
+              folder="students/school-id"
+              onUploadingChange={setPhotoUploading}
               requirements={[
                 'Full card visible, no cropping',
                 'All text readable',
@@ -790,7 +804,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             {STEPS.map((_, i) => (
               <div
                 key={i}
-                className={`rounded-full transition-all ${i === step ? 'w-4 h-2 bg-[#83358E]' : i < step ? 'w-2 h-2 bg-green-400' : 'w-2 h-2 bg-gray-200'
+                className={`rounded-full transition-all ${i === step ? 'w-4 h-2 bg-[#001A4D]' : i < step ? 'w-2 h-2 bg-green-400' : 'w-2 h-2 bg-gray-200'
                   }`}
               />
             ))}
@@ -800,20 +814,21 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             <button
               type="button"
               onClick={goNext}
-              className="flex items-center gap-1.5 px-5 py-2.5 bg-[#83358E] text-white rounded-lg text-sm font-medium hover:bg-[#6D2A78] transition-colors"
+              disabled={photoUploading}
+              className="flex items-center gap-1.5 px-5 py-2.5 bg-[#83358E] text-white rounded-lg text-sm font-medium hover:bg-[#6D2A78] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
-              Next
-              <ChevronRight className="w-4 h-4" />
+              {photoUploading ? 'Uploading…' : 'Next'}
+              {photoUploading ? <Loader className="w-4 h-4 animate-spin" /> : <ChevronRight className="w-4 h-4" />}
             </button>
           ) : (
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={saving}
-              className="flex items-center gap-2 px-6 py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 transition-colors disabled:opacity-60"
+              disabled={saving || photoUploading}
+              className="flex items-center gap-2 px-6 py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {saving ? <Loader className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-              {saving ? 'Registering…' : 'Register Student'}
+              {saving ? 'Registering…' : photoUploading ? 'Uploading…' : 'Register Student'}
             </button>
           )}
         </div>
@@ -829,15 +844,35 @@ interface PhotoStepProps {
   circle: boolean;
   value: string;
   onChange: (url: string) => void;
+  folder: string;
+  onUploadingChange: (uploading: boolean) => void;
   requirements: string[];
 }
 
-function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: PhotoStepProps) {
+function PhotoStep({ title, subtitle, circle, value, onChange, folder, onUploadingChange, requirements }: PhotoStepProps) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [uploadError, setUploadError] = useState('');
 
-  function handleFile(file: File) {
-    const url = URL.createObjectURL(file);
-    onChange(url);
+  async function handleFile(file: File) {
+    setUploadError('');
+    setProgress(0);
+    setUploading(true);
+    onUploadingChange(true);
+    try {
+      const result = await uploadToCloudinary(file, {
+        folder,
+        onProgress: setProgress,
+      });
+      onChange(result.secureUrl);
+    } catch (err: unknown) {
+      setUploadError((err as Error).message);
+      onChange('');
+    } finally {
+      setUploading(false);
+      onUploadingChange(false);
+    }
   }
 
   return (
@@ -853,7 +888,12 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
           /* Profile photo — circle */
           <div className="relative">
             <div className="w-52 h-52 rounded-full border-2 border-dashed border-[#83358E] bg-[#F3E8FF] flex items-center justify-center overflow-hidden ring-4 ring-[#83358E]/20">
-              {value ? (
+              {uploading ? (
+                <div className="text-center">
+                  <Loader className="w-10 h-10 text-[#83358E] mx-auto mb-2 animate-spin" />
+                  <p className="text-[#83358E] font-bold text-sm">Uploading… {progress}%</p>
+                </div>
+              ) : value ? (
                 <img src={value} alt="Profile" className="w-full h-full object-cover" />
               ) : (
                 <div className="text-center">
@@ -862,7 +902,7 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
                 </div>
               )}
             </div>
-            {value && (
+            {value && !uploading && (
               <div className="absolute bottom-2 right-2 w-7 h-7 bg-gradient-to-br from-green-500 to-green-600 rounded-full flex items-center justify-center shadow">
                 <Check className="w-3.5 h-3.5 text-white" />
               </div>
@@ -873,9 +913,14 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
           <div
             className="relative w-full border-2 border-dashed border-[#83358E] bg-[#F3E8FF] rounded-xl overflow-hidden cursor-pointer"
             style={{ height: 180 }}
-            onClick={() => fileRef.current?.click()}
+            onClick={() => !uploading && fileRef.current?.click()}
           >
-            {value ? (
+            {uploading ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                <Loader className="w-10 h-10 text-[#83358E] animate-spin" />
+                <p className="text-[#83358E] font-bold text-sm">Uploading… {progress}%</p>
+              </div>
+            ) : value ? (
               <>
                 <img src={value} alt="School ID" className="w-full h-full object-cover" />
                 <div className="absolute top-2 right-2 px-2 py-1 bg-gradient-to-r from-green-500 to-green-600 rounded-full flex items-center gap-1">
@@ -893,7 +938,14 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
           </div>
         )}
 
-        {value && (
+        {uploadError && (
+          <div className="w-full p-3 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-red-700 text-xs">{uploadError}</p>
+          </div>
+        )}
+
+        {value && !uploading && (
           <button
             type="button"
             onClick={() => onChange('')}
@@ -907,16 +959,18 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
         <div className="flex gap-3 w-full">
           <button
             type="button"
+            disabled={uploading}
             onClick={() => fileRef.current?.click()}
-            className="flex-1 h-11 bg-[#83358E] text-white rounded-lg text-sm font-bold flex items-center justify-center gap-2 hover:bg-[#6D2A78] transition-colors"
+            className="flex-1 h-11 bg-[#83358E] text-white rounded-lg text-sm font-bold flex items-center justify-center gap-2 hover:bg-[#6D2A78] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Camera className="w-4 h-4" />
             {circle ? 'Take Selfie' : 'Take Photo'}
           </button>
           <button
             type="button"
+            disabled={uploading}
             onClick={() => fileRef.current?.click()}
-            className="flex-1 h-11 border border-[#83358E] text-[#83358E] rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F3E8FF] transition-colors"
+            className="flex-1 h-11 border border-[#83358E] text-[#83358E] rounded-lg text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F3E8FF] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
           >
             <Upload className="w-4 h-4" />
             Upload from Gallery
@@ -932,6 +986,7 @@ function PhotoStep({ title, subtitle, circle, value, onChange, requirements }: P
           onChange={(e) => {
             const file = e.target.files?.[0];
             if (file) handleFile(file);
+            e.target.value = ''; // allow re-selecting the same file
           }}
         />
       </div>
