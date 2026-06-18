@@ -1,4 +1,11 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+
+import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
+import { addOrgLedgerTransaction } from '../../modules/finance/services/finance.service';
+import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
+import type { OrgLedgerDocument } from '../../modules/finance/types/finance.types';
+import { Timestamp } from 'firebase/firestore';
+
 import {
   Building2,
   TrendingUp,
@@ -23,6 +30,8 @@ import {
   ArrowRight,
   Shield,
   RefreshCw,
+  Info,
+  Minus,
 } from "lucide-react";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -60,18 +69,8 @@ interface PayableType {
 }
 
 // ─── Mock Data ─────────────────────────────────────────────────────────────────
-const CEILING = 25000;
-const TOTAL_BUDGETED = 22500;
-const TOTAL_SPENT = 18400;
-
-const MOCK_BUDGET_ITEMS: BudgetItem[] = [
-  { id: "1", category: "Venue", description: "Venue rental for GenAss", estimated: 5000, actual: 4800, status: "Approved" },
-  { id: "2", category: "Food", description: "Catering for induction ceremony", estimated: 4500, actual: 4500, status: "Approved" },
-  { id: "3", category: "Equipment", description: "AV rental for symposium", estimated: 3000, actual: 3200, status: "Overspent" },
-  { id: "4", category: "Supplies", description: "Printing and materials", estimated: 2000, actual: 1900, status: "Approved" },
-  { id: "5", category: "Transportation", description: "Team transport to competition", estimated: 3000, actual: 0, status: "Planned" },
-  { id: "6", category: "Venue", description: "Sports Fest venue deposit", estimated: 5000, actual: 4000, status: "Approved" },
-];
+const MOCK_ORG_ID = "org1";
+// Removed mock budget items
 
 const MOCK_MEMBERS: Member[] = [
   { id: "1", name: "Juan Dela Cruz", studentId: "2021-00123", course: "BSIT 3A", totalAssigned: 500, totalPaid: 500, lastPayment: "Mar 2, 2026", status: "Paid" },
@@ -155,15 +154,25 @@ function SemesterSelector({ current, onSelect }: { current: string; onSelect: (s
 }
 
 // ─── Metrics Row ───────────────────────────────────────────────────────────────
-function MetricsRow({ isPast }: { isPast: boolean }) {
+
+function MetricsRow({ isPast, ledgerData, semesterId }: { isPast: boolean, ledgerData: OrgLedgerDocument[], semesterId: string }) {
   const totalPayables = MOCK_MEMBERS.reduce((a, m) => a + m.totalAssigned, 0);
   const totalCollected = MOCK_MEMBERS.reduce((a, m) => a + m.totalPaid, 0);
   const totalOutstanding = totalPayables - totalCollected;
 
+  const currentSemTransactions = useMemo(() => {
+    if (semesterId === "all") return ledgerData;
+    return ledgerData.filter(t => t.semesterId === semesterId);
+  }, [ledgerData, semesterId]);
+
+  const totalIncome = currentSemTransactions.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const totalExpenses = currentSemTransactions.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const currentBalance = totalIncome - totalExpenses;
+
   const cards = [
-    { label: "Club Budget Ceiling", value: `₱${CEILING.toLocaleString()}`, note: "set by SAO Adviser", color: "text-[#83358E]", icon: Building2 },
-    { label: "Total Club Expenditures", value: `₱${TOTAL_SPENT.toLocaleString()}`, note: "this semester", color: "text-blue-600", icon: TrendingUp },
-    { label: "Remaining Budget", value: `₱${(CEILING - TOTAL_SPENT).toLocaleString()}`, note: "unspent this semester", color: "text-green-600", icon: Wallet },
+    { label: "Club Total Funds (Income)", value: `₱${totalIncome.toLocaleString()}`, note: "this semester", color: "text-[#83358E]", icon: Building2 },
+    { label: "Total Club Expenditures", value: `₱${totalExpenses.toLocaleString()}`, note: "this semester", color: "text-blue-600", icon: TrendingUp },
+    { label: "Current Club Balance", value: `₱${currentBalance.toLocaleString()}`, note: "available funds", color: "text-green-600", icon: Wallet },
     { label: "Total Payables Assigned", value: `₱${totalPayables.toLocaleString()}`, note: `across ${MOCK_MEMBERS.length} members`, color: "text-[#001A4D]", icon: Coins },
     { label: "Total Collected", value: `₱${totalCollected.toLocaleString()}`, note: "+₱250 this month", color: "text-green-600", icon: CheckCircle },
     { label: "Total Outstanding", value: `₱${totalOutstanding.toLocaleString()}`, note: `across ${MOCK_MEMBERS.filter((m) => m.status !== "Paid").length} members`, color: "text-red-600", icon: AlertCircle },
@@ -188,99 +197,237 @@ function MetricsRow({ isPast }: { isPast: boolean }) {
   );
 }
 
-// ─── Budget Tracker Tab ────────────────────────────────────────────────────────
-function BudgetTrackerTab({ isPast }: { isPast: boolean }) {
-  const [showAddItem, setShowAddItem] = useState(false);
 
-  const spentPct = Math.round((TOTAL_SPENT / CEILING) * 100);
-  const budgetedPct = Math.round((TOTAL_BUDGETED / CEILING) * 100);
+// ─── Budget Tracker Tab ────────────────────────────────────────────────────────
+
+function AddOrgIncomeModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const { data: semesters } = useSemesters();
+  const availableSemesters = semesters.filter(s => s.status === 'ACTIVE' || s.status === 'UPCOMING');
+  const activeSemester = semesters.find(s => s.status === 'ACTIVE');
+  const [form, setForm] = useState({ amount: "", notes: "", semesterId: activeSemester?.id || "" });
+  const [carryOver, setCarryOver] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.amount || isNaN(Number(form.amount))) return;
+    setLoading(true);
+    try {
+      await addOrgLedgerTransaction({
+        organizationId: MOCK_ORG_ID,
+        semesterId: form.semesterId || null,
+        date: Timestamp.now(),
+        description: carryOver ? "Carry-over from previous semester" : (form.notes || "Budget Allocation/Income"),
+        eventId: null,
+        type: "income",
+        source: carryOver ? "carry_over" : "allocation",
+        amount: parseFloat(form.amount),
+        addedBy: "Officer User"
+      });
+      onSuccess();
+    } catch (e) {
+      console.error(e);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[520px] overflow-hidden">
+        <div className="bg-[#83358E] px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Plus className="w-5 h-5 text-white" />
+            <h3 className="text-white font-bold text-base">Add Club Income / Allocation</h3>
+            <span className="px-2.5 py-0.5 bg-[#FFD41C] text-[#001A4D] text-xs font-bold rounded-full">STI IT Guild</span>
+          </div>
+          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Academic Semester <span className="text-red-500">*</span></label>
+            <select
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
+              value={form.semesterId}
+              onChange={(e) => setForm({ ...form, semesterId: e.target.value })}
+            >
+              <option value="">Select semester...</option>
+              {availableSemesters.map(sem => (
+                <option key={sem.id} value={sem.id}>{sem.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Amount (₱) <span className="text-red-500">*</span></label>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">₱</span>
+              <input
+                type="number"
+                placeholder="0.00"
+                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
+                value={form.amount}
+                onChange={(e) => setForm({ ...form, amount: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Notes / Justification</label>
+            <textarea
+              rows={2}
+              placeholder="Why is this income added? (e.g. Sponsorship, Allocation)"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            />
+          </div>
+          <div className="flex items-center gap-3 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+             <input type="checkbox" id="carryOver" checked={carryOver} onChange={(e) => setCarryOver(e.target.checked)} className="w-4 h-4 text-[#83358E] rounded focus:ring-[#83358E]" />
+             <label htmlFor="carryOver" className="text-sm text-gray-700 font-medium">Mark as carry-over from previous semester</label>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-gray-200 flex justify-between">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="px-5 py-2.5 bg-[#83358E] text-white rounded-lg text-sm font-medium hover:bg-[#6D2A78] transition-colors disabled:opacity-50"
+          >
+            {loading ? "Saving..." : "Save Income"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddOrgExpenseModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+  const { data: semesters } = useSemesters();
+  const activeSemester = semesters.find(s => s.status === 'ACTIVE');
+  const [form, setForm] = useState({ amount: "", notes: "", eventId: "" });
+  const [loading, setLoading] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.amount || isNaN(Number(form.amount))) return;
+    setLoading(true);
+    try {
+      await addOrgLedgerTransaction({
+        organizationId: MOCK_ORG_ID,
+        semesterId: activeSemester?.id || null,
+        date: Timestamp.now(),
+        description: form.notes || "Manual Expense",
+        eventId: form.eventId || null,
+        type: "expense",
+        source: "manual_expense",
+        amount: parseFloat(form.amount),
+        addedBy: "Officer User"
+      });
+      onSuccess();
+    } catch (e) {
+      console.error(e);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[520px] overflow-hidden">
+        <div className="bg-blue-600 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Minus className="w-5 h-5 text-white" />
+            <h3 className="text-white font-bold text-base">Record Manual Expense</h3>
+          </div>
+          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Amount (₱) <span className="text-red-500">*</span></label>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">₱</span>
+              <input
+                type="number"
+                placeholder="0.00"
+                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                value={form.amount}
+                onChange={(e) => setForm({ ...form, amount: e.target.value })}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Description <span className="text-red-500">*</span></label>
+            <input
+              type="text"
+              placeholder="e.g. Purchased supplies for event"
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            />
+          </div>
+          <div className="p-4 bg-blue-50 border border-blue-100 rounded-xl flex items-start gap-2">
+            <Info className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
+            <p className="text-blue-800 text-xs">
+              Use this form to record expenses that were not processed through a formal Liquidation Report.
+            </p>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t border-gray-200 flex justify-between">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="px-5 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {loading ? "Saving..." : "Record Expense"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BudgetTrackerTab({ isPast, ledgerData, semesterId }: { isPast: boolean, ledgerData: OrgLedgerDocument[], semesterId: string }) {
+  const [showAddIncome, setShowAddIncome] = useState(false);
+  const [showAddExpense, setShowAddExpense] = useState(false);
+
+  const currentSemTransactions = useMemo(() => {
+    if (semesterId === "all") return ledgerData;
+    return ledgerData.filter(t => t.semesterId === semesterId);
+  }, [ledgerData, semesterId]);
+
+  let runningBalance = 0;
+  const tableRows = currentSemTransactions.map((t) => {
+    if (t.type === 'income') runningBalance += t.amount;
+    else runningBalance -= t.amount;
+    return { ...t, runningBalance };
+  }).reverse(); // newest first
 
   return (
     <div className="space-y-4">
-      {/* Budget Summary Card */}
-      <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden">
-        <div className="bg-gradient-to-r from-[#001A4D] to-[#83358E] px-5 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Wallet className="w-5 h-5 text-[#FFD41C]" />
-            <p className="text-white font-bold text-base">Club Budget — STI IT Guild</p>
-            <span className="text-[#FFD41C] text-xs">2nd Semester · A.Y. 2025–2026</span>
-          </div>
-          {!isPast && (
-            <button className="p-1.5 text-white/70 hover:text-white hover:bg-white/10 rounded-lg transition-colors">
-              <Edit className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-
-        <div className="p-5 grid grid-cols-[1fr_300px] gap-6">
-          {/* Left — breakdown */}
-          <div className="space-y-3">
-            {[
-              { label: "SAO-Approved Ceiling", value: `₱${CEILING.toLocaleString()}`, color: "text-[#001A4D]", note: "" },
-              { label: "Amount Budgeted by Club", value: `₱${TOTAL_BUDGETED.toLocaleString()}`, color: "text-[#83358E]", note: "" },
-              { label: "Actually Spent (Approved Liquidations)", value: `₱${TOTAL_SPENT.toLocaleString()}`, color: "text-blue-600", note: "" },
-              { label: "Remaining Budget", value: `₱${(CEILING - TOTAL_SPENT).toLocaleString()}`, color: "text-green-600", note: "" },
-            ].map((row) => (
-              <div key={row.label} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
-                <p className="text-gray-500 text-sm">{row.label}</p>
-                <p className={`font-bold text-lg ${row.color}`}>{row.value}</p>
-              </div>
-            ))}
-            {/* Segmented progress bar */}
-            <div className="mt-2">
-              <div className="h-4 rounded-full overflow-hidden bg-gray-100 flex">
-                <div className="h-full bg-blue-500 transition-all" style={{ width: `${spentPct}%` }} title={`Spent: ${spentPct}%`} />
-                <div className="h-full bg-[#83358E]/40 transition-all" style={{ width: `${budgetedPct - spentPct}%` }} title="Budgeted not yet spent" />
-              </div>
-              <div className="flex gap-4 mt-2">
-                <span className="flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 bg-blue-500 rounded-full inline-block" /> Spent ({spentPct}%)</span>
-                <span className="flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 bg-[#83358E]/40 rounded-full inline-block" /> Budgeted ({budgetedPct - spentPct}%)</span>
-                <span className="flex items-center gap-1 text-xs text-gray-500"><span className="w-2 h-2 bg-gray-100 rounded-full inline-block border" /> Unbudgeted</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right — donut placeholder */}
-          <div className="flex flex-col items-center justify-center">
-            <div className="w-32 h-32 rounded-full border-[12px] border-[#83358E] flex items-center justify-center mb-2" style={{
-              background: `conic-gradient(#83358E 0% 35%, #1E70E8 35% 55%, #FFD41C 55% 70%, #10B981 70% 85%, #F97316 85% 100%)`
-            }}>
-              <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center">
-                <p className="text-[#001A4D] font-bold text-sm">₱{CEILING.toLocaleString()}</p>
-              </div>
-            </div>
-            <div className="space-y-1 text-xs text-gray-500">
-              {[
-                { label: "Venue", color: "bg-[#83358E]" },
-                { label: "Food", color: "bg-blue-500" },
-                { label: "Equipment", color: "bg-[#FFD41C]" },
-                { label: "Supplies", color: "bg-green-500" },
-                { label: "Other", color: "bg-orange-400" },
-              ].map((cat) => (
-                <div key={cat.label} className="flex items-center gap-2">
-                  <span className={`w-2 h-2 rounded-full ${cat.color}`} />
-                  {cat.label}
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Budget Line Items Table */}
       <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <div className="border-l-4 border-[#83358E] pl-3">
-            <h3 className="text-[#001A4D] font-bold text-sm">Club Budget Plan</h3>
+            <h3 className="text-[#001A4D] font-bold text-sm">Organization Ledger</h3>
           </div>
           {!isPast && (
-            <button
-              onClick={() => setShowAddItem(true)}
-              className="px-3 py-1.5 border border-[#83358E] text-[#83358E] text-xs rounded-lg hover:bg-[#83358E]/5 transition-colors flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Budget Item
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowAddExpense(true)}
+                className="px-3 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-lg hover:bg-gray-50 transition-colors flex items-center gap-1.5"
+              >
+                <Minus className="w-3.5 h-3.5 text-blue-600" />
+                Record Expense
+              </button>
+              <button
+                onClick={() => setShowAddIncome(true)}
+                className="px-3 py-1.5 bg-[#83358E] text-white text-xs rounded-lg hover:bg-[#6D2A78] transition-colors flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Income
+              </button>
+            </div>
           )}
         </div>
         {isPast && (
@@ -293,129 +440,47 @@ function BudgetTrackerTab({ isPast }: { isPast: boolean }) {
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
-                {["#", "Category", "Description", "Estimated (₱)", "Actual Spent (₱)", "Variance (₱)", "Status", ...(!isPast ? ["Actions"] : [])].map((col) => (
+                {["Date", "Description", "Source", "Amount (₱)", "Balance (₱)"].map((col) => (
                   <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {MOCK_BUDGET_ITEMS.map((item, i) => {
-                const variance = item.estimated - item.actual;
+              {tableRows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-gray-500 text-sm">
+                    No transactions found for this semester.
+                  </td>
+                </tr>
+              ) : tableRows.map((item) => {
                 return (
-                  <tr key={item.id} className="hover:bg-gray-50 transition-colors group">
-                    <td className="px-4 py-3 text-gray-400 text-sm">{i + 1}</td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded font-medium">{item.category}</span>
+                  <tr key={item.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 text-gray-500 text-sm">
+                      {item.date?.toDate ? item.date.toDate().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Unknown'}
                     </td>
                     <td className="px-4 py-3 text-[#001A4D] text-sm">{item.description}</td>
-                    <td className="px-4 py-3 text-gray-700 text-sm">₱{item.estimated.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-gray-700 text-sm">{item.actual > 0 ? `₱${item.actual.toLocaleString()}` : "—"}</td>
-                    <td className={`px-4 py-3 text-sm font-medium ${variance >= 0 ? "text-green-600" : "text-red-600"}`}>
-                      {item.actual > 0 ? `${variance >= 0 ? "+" : ""}₱${variance.toLocaleString()}` : "—"}
-                    </td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
-                        item.status === "Approved" ? "bg-green-100 text-green-700" :
-                        item.status === "Overspent" ? "bg-red-100 text-red-700" :
-                        "bg-gray-100 text-gray-600"
-                      }`}>{item.status}</span>
+                      <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded font-medium capitalize">{item.source.replace('_', ' ')}</span>
                     </td>
-                    {!isPast && (
-                      <td className="px-4 py-3">
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-gray-500 transition-colors">
-                            <Edit className="w-3.5 h-3.5" />
-                          </button>
-                          <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-500 transition-colors">
-                            <Archive className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    )}
+                    <td className={`px-4 py-3 text-sm font-medium ${item.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
+                      {item.type === 'income' ? '+' : '-'}₱{item.amount.toLocaleString()}
+                    </td>
+                    <td className="px-4 py-3 text-gray-900 font-bold text-sm">₱{item.runningBalance.toLocaleString()}</td>
                   </tr>
                 );
               })}
             </tbody>
-            <tfoot>
-              <tr className="bg-[#001A4D]">
-                <td colSpan={3} className="px-4 py-3 text-white font-bold text-sm">Total</td>
-                <td className="px-4 py-3 text-white font-bold text-sm">₱{MOCK_BUDGET_ITEMS.reduce((a, i) => a + i.estimated, 0).toLocaleString()}</td>
-                <td className="px-4 py-3 text-white font-bold text-sm">₱{MOCK_BUDGET_ITEMS.reduce((a, i) => a + i.actual, 0).toLocaleString()}</td>
-                <td className="px-4 py-3 text-[#FFD41C] font-bold text-sm">+₱{(MOCK_BUDGET_ITEMS.reduce((a, i) => a + i.estimated - i.actual, 0)).toLocaleString()}</td>
-                <td colSpan={!isPast ? 2 : 1} />
-              </tr>
-            </tfoot>
           </table>
         </div>
       </div>
 
-      {/* Add Budget Item Modal */}
-      {showAddItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50" onClick={() => setShowAddItem(false)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[520px] overflow-hidden">
-            <div className="bg-[#83358E] px-6 py-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Plus className="w-5 h-5 text-white" />
-                <h3 className="text-white font-bold text-base">Add Budget Item</h3>
-                <span className="px-2.5 py-0.5 bg-[#FFD41C] text-[#001A4D] text-xs font-bold rounded-full">STI IT Guild</span>
-              </div>
-              <button onClick={() => setShowAddItem(false)} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Category <span className="text-red-500">*</span></label>
-                <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-                  <option>Venue & Facilities</option>
-                  <option>Food & Catering</option>
-                  <option>Equipment Rental</option>
-                  <option>Supplies & Materials</option>
-                  <option>Transportation</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Description <span className="text-red-500">*</span></label>
-                <input type="text" placeholder="e.g. Venue rental for GenAss" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Estimated Amount (₱) <span className="text-red-500">*</span></label>
-                <div className="relative">
-                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">₱</span>
-                  <input type="number" placeholder="0.00" className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Remaining unbudgeted ceiling: <span className="text-green-600 font-medium">₱2,500</span></p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Funding Source</label>
-                <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-                  <option>Club Funds</option>
-                  <option>SAO Budget</option>
-                  <option>Sponsorship</option>
-                  <option>Student Registration Fees</option>
-                  <option>Donation</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Justification</label>
-                <textarea rows={2} placeholder="Why is this expense needed?" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none" />
-              </div>
-            </div>
-            <div className="px-5 py-4 border-t border-gray-200 flex justify-between">
-              <button onClick={() => setShowAddItem(false)} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
-              <button className="px-5 py-2.5 bg-[#83358E] text-white rounded-lg text-sm font-medium hover:bg-[#6D2A78] transition-colors">
-                Save Budget Item
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showAddIncome && <AddOrgIncomeModal onClose={() => setShowAddIncome(false)} onSuccess={() => setShowAddIncome(false)} />}
+      {showAddExpense && <AddOrgExpenseModal onClose={() => setShowAddExpense(false)} onSuccess={() => setShowAddExpense(false)} />}
     </div>
   );
 }
 
-// ─── Student Payables Tab ──────────────────────────────────────────────────────
+
 function StudentPayablesTab({ isPast }: { isPast: boolean }) {
   const [subTab, setSubTab] = useState<PayableSubTab>("member");
   const totalAssigned = MOCK_MEMBERS.reduce((a, m) => a + m.totalAssigned, 0);
@@ -829,13 +894,17 @@ function HistoricalSummaryCard() {
 
 // ─── Main FinanceCenter Page ───────────────────────────────────────────────────
 export default function FinanceCenter() {
-  const CURRENT_SEM = "2nd Semester · A.Y. 2025–2026";
-  const [selectedSem, setSelectedSem] = useState(CURRENT_SEM);
+  const { data: ledgerData, loading: ledgerLoading } = useOrgLedger(MOCK_ORG_ID);
+  const { data: semesters } = useSemesters();
+  const availableSemesters = semesters.filter(s => s.status === 'ACTIVE' || s.status === 'UPCOMING');
+  const [selectedSemId, setSelectedSemId] = useState<string>("all");
+
   const [activeTab, setActiveTab] = useState<FinanceTab>("budget");
   const [showTransition, setShowTransition] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
 
-  const isPast = selectedSem !== CURRENT_SEM;
+  const selectedSemesterObj = semesters.find(s => s.id === selectedSemId);
+  const isPast = selectedSemesterObj?.status === 'COMPLETED';
 
   // Demo: simulate transition screens
   if (showSetup) {
@@ -844,7 +913,7 @@ export default function FinanceCenter() {
   if (showTransition) {
     return (
       <SemesterEndedScreen
-        onViewPast={() => { setShowTransition(false); setSelectedSem("1st Semester · A.Y. 2025–2026"); }}
+        onViewPast={() => { setShowTransition(false); setSelectedSemId("all"); }}
         onStartNew={() => { setShowTransition(false); setShowSetup(true); }}
       />
     );
@@ -859,7 +928,18 @@ export default function FinanceCenter() {
           <p className="text-gray-500 text-sm">Finance &rsaquo; {activeTab === "budget" ? "Budget Tracker" : activeTab === "payables" ? "Student Payables" : "Liquidation Reports"}</p>
         </div>
         <div className="flex items-center gap-3">
-          <SemesterSelector current={selectedSem} onSelect={setSelectedSem} />
+          
+            <select
+              value={selectedSemId}
+              onChange={(e) => setSelectedSemId(e.target.value)}
+              className="px-4 py-2 border border-[#E0E0E0] rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
+            >
+              <option value="all">All Semesters</option>
+              {availableSemesters.map(s => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+
           <button className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-[#001A4D]/90 transition-colors">
             <Download className="w-4 h-4" />
             Export Financial Report
@@ -880,9 +960,9 @@ export default function FinanceCenter() {
         <div className="flex items-center justify-between px-5 py-3 bg-amber-50 border border-amber-200 rounded-xl">
           <div className="flex items-center gap-2">
             <Archive className="w-4 h-4 text-amber-600" />
-            <span className="text-amber-700 font-bold text-sm">Viewing: {selectedSem} — Read-Only Historical Data.</span>
+            <span className="text-amber-700 font-bold text-sm">Viewing: {selectedSemesterObj?.label || 'All Semesters'} — Read-Only Historical Data.</span>
           </div>
-          <button onClick={() => setSelectedSem(CURRENT_SEM)} className="text-[#001A4D] text-xs font-medium hover:underline">
+          <button onClick={() => setSelectedSemId("all")} className="text-[#001A4D] text-xs font-medium hover:underline">
             Return to Current Semester
           </button>
         </div>
@@ -892,7 +972,7 @@ export default function FinanceCenter() {
       {isPast && <HistoricalSummaryCard />}
 
       {/* Metric Cards */}
-      <MetricsRow isPast={isPast} />
+      <MetricsRow isPast={isPast} ledgerData={ledgerData} semesterId={selectedSemId} />
 
       {/* Export row for past semester */}
       {isPast && (
@@ -926,7 +1006,7 @@ export default function FinanceCenter() {
           ))}
         </div>
 
-        {activeTab === "budget" && <BudgetTrackerTab isPast={isPast} />}
+        {activeTab === "budget" && <BudgetTrackerTab isPast={isPast} ledgerData={ledgerData} semesterId={selectedSemId} />}
         {activeTab === "payables" && <StudentPayablesTab isPast={isPast} />}
         {activeTab === "liquidation" && <LiquidationTab isPast={isPast} />}
       </div>

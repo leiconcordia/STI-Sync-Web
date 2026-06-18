@@ -19,21 +19,41 @@ import {
 } from "lucide-react";
 import { useAdviserProfile, signOutAdviser } from '../../../modules/auth';
 
-const navItems = [
-  { icon: LayoutDashboard, label: "Dashboard Overview", path: "/home", badge: null },
-  { icon: Building2, label: "Organization Management", path: "/home/organizations", badge: null },
-  { icon: CalendarCheck, label: "Event Approvals", path: "/home/event-approvals", badge: 5 },
-  { icon: QrCode, label: "Attendance Monitoring", path: "/home/attendance", badge: null },
-  { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations", badge: 3 },
-  { icon: Users, label: "Student Registry", path: "/home/students", badge: 2 },
-  { icon: BarChart3, label: "Reports & Analytics", path: "/home/reports", badge: null },
-  { icon: Files, label: "Document Management", path: "/home/documents", badge: 3 },
-  { icon: Award, label: "Certificates", path: "/home/certificates", badge: null },
-  { icon: Bell, label: "Announcements", path: "/home/announcements", badge: null },
-  { icon: Shield, label: "Audit Logs", path: "/home/audit-logs", badge: null },
-  { icon: GraduationCap, label: "Academic Semester", path: "/home/academic-semester", badge: null },
-  { icon: Banknote, label: "Budget & Fund", path: "/home/budget-fund", badge: null },
-  { icon: Settings, label: "System Settings", path: "/home/settings", badge: null },
+const navGroups = [
+  {
+    title: "Main",
+    items: [
+      { icon: LayoutDashboard, label: "Dashboard Overview", path: "/home", badge: null },
+      { icon: Users, label: "Student Registry", path: "/home/students", badge: 2 },
+      { icon: GraduationCap, label: "Academic Semester", path: "/home/academic-semester", badge: null },
+    ]
+  },
+  {
+    title: "Organizations & Activities",
+    items: [
+      { icon: Building2, label: "Organization Management", path: "/home/organizations", badge: null },
+      { icon: CalendarCheck, label: "Event Approvals", path: "/home/event-approvals", badge: 5 },
+      { icon: QrCode, label: "Attendance Monitoring", path: "/home/attendance", badge: null },
+    ]
+  },
+  {
+    title: "Finance & Documents",
+    items: [
+      { icon: Banknote, label: "Budget & Fund", path: "/home/budget-fund", badge: null },
+      { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations", badge: 3 },
+      { icon: Files, label: "Document Management", path: "/home/documents", badge: 3 },
+      { icon: Award, label: "Certificates", path: "/home/certificates", badge: null },
+    ]
+  },
+  {
+    title: "System & Reports",
+    items: [
+      { icon: Bell, label: "Announcements", path: "/home/announcements", badge: null },
+      { icon: BarChart3, label: "Reports & Analytics", path: "/home/reports", badge: null },
+      { icon: Shield, label: "Audit Logs", path: "/home/audit-logs", badge: null },
+      { icon: Settings, label: "System Settings", path: "/home/settings", badge: null },
+    ]
+  }
 ];
 
 export function Sidebar() {
@@ -65,33 +85,42 @@ export function Sidebar() {
       </div>
 
       {/* Navigation Items */}
-      <nav className="flex-1 overflow-y-auto py-1 px-1">
-        {navItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = item.path === "/home" ? location.pathname === "/home" : location.pathname.startsWith(item.path);
+      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-6 no-scrollbar">
+        {navGroups.map((group, groupIdx) => (
+          <div key={groupIdx}>
+            <h3 className="px-3 mb-2 text-xs font-semibold text-white/50 uppercase tracking-wider">
+              {group.title}
+            </h3>
+            <div className="space-y-1">
+              {group.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = item.path === "/home" ? location.pathname === "/home" : location.pathname.startsWith(item.path);
 
-          return (
-            <Link
-              key={item.path}
-              to={item.path}
-              className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg mb-1 transition-all group ${isActive
-                ? "bg-[#1E70E8]/20 text-white"
-                : "text-[#E0E0E0]/70 hover:text-white hover:bg-white/5"
-                }`}
-            >
-              {isActive && (
-                <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#FFC107] rounded-r" />
-              )}
-              <Icon className="w-5 h-5 flex-shrink-0" />
-              <span className="text-sm font-medium flex-1">{item.label}</span>
-              {item.badge !== null && (
-                <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                  {item.badge}
-                </span>
-              )}
-            </Link>
-          );
-        })}
+                return (
+                  <Link
+                    key={item.path}
+                    to={item.path}
+                    className={`relative flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all group ${isActive
+                      ? "bg-[#1E70E8]/20 text-white"
+                      : "text-[#E0E0E0]/70 hover:text-white hover:bg-white/5"
+                      }`}
+                  >
+                    {isActive && (
+                      <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#FFC107] rounded-r" />
+                    )}
+                    <Icon className="w-5 h-5 flex-shrink-0" />
+                    <span className="text-sm font-medium flex-1">{item.label}</span>
+                    {item.badge !== null && (
+                      <span className="w-5 h-5 bg-red-500 rounded-full flex items-center justify-center text-white text-xs font-bold">
+                        {item.badge}
+                      </span>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
       {/* User Profile */}

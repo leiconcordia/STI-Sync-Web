@@ -1,43 +1,118 @@
-import { useState } from 'react';
-import { Clock, RefreshCw, UserCheck, UserX, Archive } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Clock, RefreshCw, UserCheck, UserX, Archive, Loader2 } from 'lucide-react';
 import RegistryDashboard from '../components/student-registry/RegistryDashboard';
 import PendingVerification from '../components/student-registry/PendingVerification';
 import ReEnrollmentManagement from '../components/student-registry/ReEnrollmentManagement';
 import ActiveStudents from '../components/student-registry/ActiveStudents';
 import InactiveSuspended from '../components/student-registry/InactiveSuspended';
 import ArchivedGraduates from '../components/student-registry/ArchivedGraduates';
+import { useStudents } from '../../modules/students/hooks/useStudentStream';
+import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
+import { StudentDocument } from '../../modules/students/types/student.types';
+import { SemesterDocument } from '../../modules/academic/types/academic.types';
 
 type RegistryView = 'dashboard' | 'pending' | 'reenrollment' | 'active' | 'inactive' | 'archived';
 
 export function StudentRegistry() {
   const [activeView, setActiveView] = useState<RegistryView>('dashboard');
 
-  const pendingCount = 12;
-  const reenrollmentCount = 158;
+  const { data: students, loading: loadingStudents, error: errorStudents } = useStudents();
+  const { data: semesters, loading: loadingSemesters, error: errorSemesters } = useSemesters();
+
+  const loading = loadingStudents || loadingSemesters;
+  const error = errorStudents || errorSemesters;
+
+  const activeSemester = useMemo(() => {
+    return semesters.find(s => s.status === 'ACTIVE');
+  }, [semesters]);
+
+  const categorizedStudents = useMemo(() => {
+    const pending: StudentDocument[] = [];
+    const active: StudentDocument[] = [];
+    const inactive: StudentDocument[] = [];
+    const suspended: StudentDocument[] = [];
+    const archived: StudentDocument[] = [];
+    const reenrollment: StudentDocument[] = [];
+
+    students.forEach(student => {
+      switch (student.status) {
+        case 'PENDING':
+          pending.push(student);
+          break;
+        case 'ACTIVE':
+          active.push(student);
+          if (activeSemester && (student.schoolYear !== activeSemester.academicYear || student.semester !== activeSemester.semester)) {
+            reenrollment.push(student);
+          }
+          break;
+        case 'INACTIVE':
+          inactive.push(student);
+          break;
+        case 'SUSPENDED':
+          suspended.push(student);
+          break;
+        case 'ARCHIVED':
+          archived.push(student);
+          break;
+      }
+    });
+
+    return { pending, active, inactive, suspended, archived, reenrollment };
+  }, [students, activeSemester]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 space-y-4">
+        <Loader2 className="w-8 h-8 animate-spin text-[#0E4EBD]" />
+        <p className="text-gray-500 font-medium">Loading registry data...</p>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
+        <h3 className="font-bold mb-2">Error loading data</h3>
+        <p>{error.message}</p>
+      </div>
+    );
+  }
+
+  const { pending, active, inactive, suspended, archived, reenrollment } = categorizedStudents;
 
   const renderView = () => {
     switch (activeView) {
       case 'dashboard':
-        return <RegistryDashboard onNavigate={setActiveView} />;
+        return <RegistryDashboard 
+          onNavigate={setActiveView} 
+          categorizedStudents={categorizedStudents} 
+          activeSemester={activeSemester} 
+          allStudents={students}
+        />;
       case 'pending':
-        return <PendingVerification />;
+        return <PendingVerification students={pending} />;
       case 'reenrollment':
-        return <ReEnrollmentManagement />;
+        return <ReEnrollmentManagement students={active} activeSemester={activeSemester} />;
       case 'active':
-        return <ActiveStudents />;
+        return <ActiveStudents students={active} />;
       case 'inactive':
-        return <InactiveSuspended />;
+        return <InactiveSuspended inactiveStudents={inactive} suspendedStudents={suspended} />;
       case 'archived':
-        return <ArchivedGraduates />;
+        return <ArchivedGraduates students={archived} />;
       default:
-        return <RegistryDashboard onNavigate={setActiveView} />;
+        return <RegistryDashboard 
+          onNavigate={setActiveView} 
+          categorizedStudents={categorizedStudents} 
+          activeSemester={activeSemester} 
+          allStudents={students}
+        />;
     }
   };
 
   return (
     <div className="space-y-6">
       {/* Sub-navigation */}
-      <div className="flex items-center gap-2 bg-white border border-[#E0E0E0] rounded-xl p-2">
+      <div className="flex flex-wrap items-center gap-2 bg-white border border-[#E0E0E0] rounded-xl p-2">
         <button
           onClick={() => setActiveView('dashboard')}
           className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -58,9 +133,9 @@ export function StudentRegistry() {
         >
           <Clock className="w-4 h-4" />
           Pending Verification
-          {pendingCount > 0 && (
+          {pending.length > 0 && (
             <span className="px-2 py-0.5 bg-red-500 text-white rounded-full text-xs">
-              {pendingCount}
+              {pending.length}
             </span>
           )}
         </button>
@@ -74,9 +149,9 @@ export function StudentRegistry() {
         >
           <RefreshCw className="w-4 h-4" />
           Re-enrollment
-          {reenrollmentCount > 0 && (
+          {reenrollment.length > 0 && (
             <span className="px-2 py-0.5 bg-amber-500 text-white rounded-full text-xs">
-              {reenrollmentCount}
+              {reenrollment.length}
             </span>
           )}
         </button>

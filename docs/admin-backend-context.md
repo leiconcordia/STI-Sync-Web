@@ -618,3 +618,47 @@ function TopNav() {
 }
 ```
 
+---
+
+<!-- AGENT-UPDATED: 2026-06-18 — Added Section 11: Finance & SAO Ledger module -->
+
+## 11. Finance & SAO Ledger — `src/app/modules/finance/`
+
+### Overview
+
+Handles the institutional SAO budget ledger, recording allocations, manual expenses, carry-over balances, and transfers from student collections into the `sao_ledger` Firestore collection.
+
+**Module path:** `src/app/modules/finance/`
+
+```
+finance/
+├── types/
+│   └── finance.types.ts     # SaoLedgerDocument, TransactionType, TransactionSource
+├── services/
+│   └── finance.service.ts   # addLedgerTransaction
+├── hooks/
+│   └── useFinanceStream.ts  # useSaoLedger
+└── index.ts                 # Barrel exports
+```
+
+### Service: `finance.service.ts`
+
+| Function | Description |
+|----------|-------------|
+| `addLedgerTransaction(data)` | Appends a new `SaoLedgerDocument` to the `/sao_ledger` collection. Automatically stamps `createdAt: serverTimestamp()`. |
+
+### Hook: `useSaoLedger()`
+
+**Purpose:** Subscribes to `/sao_ledger` ordered by `date` ascending. Consumers (like the `BudgetFundSettings` page) use this chronologically ordered stream to dynamically compute the running balance of the SAO fund, eliminating the need to store denormalized balances in Firestore which could lead to race conditions.
+
+```typescript
+const { data: rawTransactions, loading } = useSaoLedger();
+
+// Dynamic running balance computation example:
+const transactions = rawTransactions.map((tx, idx, arr) => {
+  const runningBalance = arr.slice(0, idx + 1).reduce((s, curr) => {
+    return curr.type === "income" ? s + curr.amount : s - curr.amount;
+  }, 0);
+  return { ...tx, balance: runningBalance };
+});
+```

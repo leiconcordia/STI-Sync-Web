@@ -1,12 +1,11 @@
 import { GraduationCap, Download, Eye, RotateCcw } from 'lucide-react';
+import { StudentDocument } from '../../../modules/students/types/student.types';
 
-export default function ArchivedGraduates() {
-  const archivedStudents = [
-    { id: 1, name: 'Miguel Santos', studentId: '2022-001234', course: 'BSIT', archiveDate: 'March 30, 2026', archiveReason: 'Graduated', avatar: 'MS' },
-    { id: 2, name: 'Jasmine Cruz', studentId: '2022-002345', course: 'BSCS', archiveDate: 'March 30, 2026', archiveReason: 'Graduated', avatar: 'JC' },
-    { id: 3, name: 'Ramon Garcia', studentId: '2023-003456', course: 'BSA', archiveDate: 'June 15, 2025', archiveReason: 'Transferred', avatar: 'RG' },
-  ];
+interface ArchivedGraduatesProps {
+  students: StudentDocument[];
+}
 
+export default function ArchivedGraduates({ students: archivedStudents }: ArchivedGraduatesProps) {
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -57,32 +56,31 @@ export default function ArchivedGraduates() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {archivedStudents.map((student) => (
+            {archivedStudents.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-6 py-8 text-center text-gray-500">No archived students found.</td>
+              </tr>
+            ) : archivedStudents.map((student) => (
               <tr key={student.id} className="hover:bg-gray-50">
                 <td className="px-6 py-4">
                   <div className="flex items-center gap-3">
                     <div className="w-9 h-9 bg-gray-600 rounded-full flex items-center justify-center text-white font-bold text-xs">
-                      {student.avatar}
+                      {student.firstName.charAt(0)}{student.lastName.charAt(0)}
                     </div>
                     <div>
-                      <div className="font-medium text-[#001A4D]">{student.name}</div>
+                      <div className="font-medium text-[#001A4D]">{student.firstName} {student.lastName}</div>
                       <div className="text-xs text-gray-500">{student.studentId}</div>
                     </div>
                   </div>
                 </td>
-                <td className="px-6 py-4 text-sm text-gray-700">{student.course}</td>
-                <td className="px-6 py-4 text-sm text-gray-700">{student.archiveDate}</td>
+                <td className="px-6 py-4 text-sm text-gray-700">{student.courseCode}</td>
+                <td className="px-6 py-4 text-sm text-gray-700">
+                  {student.updatedAt ? new Date(student.updatedAt.toMillis()).toLocaleDateString() : 'N/A'}
+                </td>
                 <td className="px-6 py-4">
-                  {student.archiveReason === 'Graduated' && (
-                    <span className="px-3 py-1 bg-[#FFD41C] text-[#001A4D] rounded-full text-xs font-medium">
-                      Graduated
-                    </span>
-                  )}
-                  {student.archiveReason === 'Transferred' && (
-                    <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
-                      Transferred
-                    </span>
-                  )}
+                  <span className="px-3 py-1 bg-gray-200 text-gray-700 rounded-full text-xs font-medium">
+                    {student.archiveReason || 'Graduated'}
+                  </span>
                 </td>
                 <td className="px-6 py-4">
                   <span className="px-3 py-1 bg-gray-600 text-white rounded-full text-xs font-medium">

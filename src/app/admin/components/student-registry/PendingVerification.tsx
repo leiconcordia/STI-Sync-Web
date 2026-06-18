@@ -1,11 +1,14 @@
 import { Eye, UserCheck, X, Search, User } from 'lucide-react';
 import { useState, useMemo } from 'react';
-import { useStudents } from '../../../modules/students/hooks/useStudentStream';
 import { useCourses } from '../../../modules/academic/hooks/useAcademicStream';
 import { updateStudentStatus, returnStudent } from '../../../modules/students/services/student.service';
+import { StudentDocument } from '../../../modules/students/types/student.types';
 
-export default function PendingVerification() {
-  const { data: allStudents, loading } = useStudents();
+interface PendingVerificationProps {
+  students: StudentDocument[];
+}
+
+export default function PendingVerification({ students }: PendingVerificationProps) {
   const { data: courses } = useCourses();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -19,9 +22,7 @@ export default function PendingVerification() {
 
   // Filter students
   const pendingStudents = useMemo(() => {
-    return allStudents.filter(s => {
-      if (s.status !== 'PENDING') return false;
-
+    return students.filter(s => {
       const matchesSearch = 
         s.firstName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         s.lastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -33,7 +34,7 @@ export default function PendingVerification() {
 
       return matchesSearch && matchesCourse && matchesYear;
     });
-  }, [allStudents, searchTerm, courseFilter, yearFilter]);
+  }, [students, searchTerm, courseFilter, yearFilter]);
 
   const activeCourses = courses.filter(c => !c.archived);
 
@@ -115,9 +116,7 @@ export default function PendingVerification() {
         </div>
       </div>
 
-      {loading ? (
-        <div className="text-center py-12 text-gray-500">Loading pending students...</div>
-      ) : pendingStudents.length === 0 ? (
+      {pendingStudents.length === 0 ? (
         <div className="text-center py-12 text-gray-500">No pending registrations found.</div>
       ) : (
         /* Verification Cards Grid */

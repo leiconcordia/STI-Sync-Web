@@ -790,6 +790,59 @@ Require constitution and by-laws upload
 │  → WebSocket trigger ATTENDANCE_SCANNED fired           │
 └──────────────────────────────────────────────────────────┘
 ```
+```
+
+---
+
+<!-- AGENT-UPDATED: 2026-06-18 — Added `sao_ledger` collection for tracking school budget allocations and expenses -->
+
+### 1.5 `sao_ledger`
+
+**Path:** `/sao_ledger/{transactionId}`
+
+```typescript
+interface SaoLedgerDocument {
+  id: string;                              // Auto-generated Firestore document ID
+  semesterId: string | null;               // FK → /semesters (null for carry-over or manual expense)
+  date: Timestamp;                         // The date of the transaction
+  description: string;                     // e.g. "SAO Institutional Fund - 1st Semester..."
+  eventId: string | null;                  // FK → /events (optional)
+  type: 'income' | 'expense';
+  source: 'allocation' | 'student_collection' | 'manual_expense' | 'carry_over';
+  amount: number;
+  addedBy: string;                         // Admin user name or ID
+  collectionId?: string;                   // Link to payables/collections if applicable
+  
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+}
+```
+
+<!-- AGENT-UPDATED: 2026-06-18 — Added `organization_ledger` collection for tracking club budget allocations and expenses -->
+### 4.8 `organization_ledger`
+
+**Path:** `/organization_ledger/{transactionId}`
+**Purpose:** Organization-scoped chronological ledger of all club income (memberships, sponsorships) and expenses (liquidations, manual expenses).
+
+```typescript
+interface OrgLedgerDocument {
+  organizationId: string;        // FK → /organizations
+  semesterId: string | null;     // FK → /semesters
+  date: Timestamp;
+  description: string;
+  eventId: string | null;        // Optional FK → /events
+  type: 'income' | 'expense';
+  source: 'allocation' | 'student_collection' | 'manual_expense' | 'carry_over' | 'sponsorship';
+  amount: number;
+  addedBy: string;               // Officer's Name
+  collectionId?: string;         // FK → /payables/collections
+  createdAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `organizationId` ASC, `date` ASC — computing running balances
+- `organizationId` ASC, `createdAt` DESC — displaying transaction history
 
 ---
 

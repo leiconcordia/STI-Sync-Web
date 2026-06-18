@@ -41,6 +41,44 @@ export function Organizations() {
         />
       )}
 
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <Card className="border-[#E0E0E0]">
+          <CardHeader>
+            <CardTitle className="text-sm text-gray-600">Total Organizations</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-[#001A4D]">{organizations.length}</div>
+          </CardContent>
+        </Card>
+        <Card className="border-[#E0E0E0]">
+          <CardHeader>
+            <CardTitle className="text-sm text-gray-600">Total Members</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-[#001A4D]">
+              {organizations.reduce((acc, org) => acc + (org.memberCount || 0), 0)}
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="border-[#E0E0E0]">
+          <CardHeader>
+            <CardTitle className="text-sm text-gray-600">Active Events</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-[#001A4D]">42</div>
+          </CardContent>
+        </Card>
+        <Card className="border-[#E0E0E0]">
+          <CardHeader>
+            <CardTitle className="text-sm text-gray-600">Pending Applications</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-3xl font-bold text-[#FFC107]">3</div>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Organization Cards Grid */}
       {loading ? (
         <div className="flex justify-center p-12 text-gray-400">Loading organizations...</div>
@@ -111,44 +149,6 @@ export function Organizations() {
         })}
       </div>
       )}
-
-      {/* Summary Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <Card className="border-[#E0E0E0]">
-          <CardHeader>
-            <CardTitle className="text-sm text-gray-600">Total Organizations</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#001A4D]">{organizations.length}</div>
-          </CardContent>
-        </Card>
-        <Card className="border-[#E0E0E0]">
-          <CardHeader>
-            <CardTitle className="text-sm text-gray-600">Total Members</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#001A4D]">
-              {organizations.reduce((acc, org) => acc + (org.memberCount || 0), 0)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="border-[#E0E0E0]">
-          <CardHeader>
-            <CardTitle className="text-sm text-gray-600">Active Events</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#001A4D]">42</div>
-          </CardContent>
-        </Card>
-        <Card className="border-[#E0E0E0]">
-          <CardHeader>
-            <CardTitle className="text-sm text-gray-600">Pending Applications</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-[#FFC107]">3</div>
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

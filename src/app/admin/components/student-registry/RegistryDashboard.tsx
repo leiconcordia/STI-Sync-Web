@@ -1,27 +1,80 @@
-import { RefreshCw, Download, Clock, UserCheck, UserX, Ban, CircleCheck, Activity } from 'lucide-react';
+import { RefreshCw, Download, Clock, UserCheck, UserX, Ban, CircleCheck } from 'lucide-react';
+import { StudentDocument } from '../../../modules/students/types/student.types';
+import { SemesterDocument } from '../../../modules/academic/types/academic.types';
 
 interface RegistryDashboardProps {
   onNavigate: (view: string) => void;
+  categorizedStudents: {
+    pending: StudentDocument[];
+    active: StudentDocument[];
+    inactive: StudentDocument[];
+    suspended: StudentDocument[];
+    archived: StudentDocument[];
+    reenrollment: StudentDocument[];
+  };
+  activeSemester: SemesterDocument | undefined;
+  allStudents: StudentDocument[];
 }
 
-export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps) {
-  const rolloverState = 'in-progress';
-  const reenrollmentProgress = { confirmed: 342, total: 500 };
-  const progressPercent = Math.round((reenrollmentProgress.confirmed / reenrollmentProgress.total) * 100);
+export default function RegistryDashboard({ onNavigate, categorizedStudents, activeSemester, allStudents }: RegistryDashboardProps) {
+  const { pending, active, inactive, suspended, reenrollment } = categorizedStudents;
 
-  const pendingQueue = [
-    { id: 1, name: 'Juan Dela Cruz', studentId: '2026-001234', course: 'BSIT', year: '1st Year', submitted: '2 hours ago', avatar: 'JD' },
-    { id: 2, name: 'Maria Santos', studentId: '2026-002345', course: 'BSCS', year: '2nd Year', submitted: '5 hours ago', avatar: 'MS' },
-    { id: 3, name: 'Pedro Garcia', studentId: '2026-003456', course: 'BSA', year: '3rd Year', submitted: '1 day ago', avatar: 'PG' },
-  ];
+  // Re-enrollment logic
+  const totalExpectedToReenroll = active.length;
+  const unconfirmed = reenrollment.length;
+  const confirmed = totalExpectedToReenroll - unconfirmed;
+  const progressPercent = totalExpectedToReenroll === 0 ? 0 : Math.round((confirmed / totalExpectedToReenroll) * 100);
 
-  const recentActivity = [
-    { action: 'Juan dela Cruz — Account Approved', type: 'approved', time: '5 min ago' },
-    { action: 'Maria Santos — Account Approved', type: 'approved', time: '12 min ago' },
-    { action: 'Pedro Garcia — Correction Requested', type: 'returned', time: '1 hour ago' },
-    { action: 'Ana Reyes — Account Suspended', type: 'suspended', time: '2 hours ago' },
-    { action: 'Carlos Lopez — Account Reactivated', type: 'reactivated', time: '3 hours ago' },
-  ];
+  // Top 5 pending verification
+  const pendingQueue = pending.slice(0, 5).map(student => {
+    // elapsed time
+    const diff = Date.now() - student.createdAt.toMillis();
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const days = Math.floor(hours / 24);
+    let submitted = '';
+    if (days > 0) submitted = `${days} day${days > 1 ? 's' : ''} ago`;
+    else if (hours > 0) submitted = `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    else submitted = 'Recently';
+
+    return {
+      id: student.id,
+      name: `${student.firstName} ${student.lastName}`,
+      studentId: student.studentId,
+      course: student.courseCode,
+      year: student.yearLevel,
+      submitted,
+      avatar: student.firstName.charAt(0) + student.lastName.charAt(0)
+    };
+  });
+
+  // Recent activity
+  const recentActivity = [...allStudents]
+    .sort((a, b) => b.updatedAt.toMillis() - a.updatedAt.toMillis())
+    .slice(0, 5)
+    .map(student => {
+      let action = '';
+      let type = '';
+      switch (student.status) {
+        case 'ACTIVE': action = `${student.firstName} ${student.lastName} — Account Active`; type = 'approved'; break;
+        case 'RETURNED': action = `${student.firstName} ${student.lastName} — Correction Requested`; type = 'returned'; break;
+        case 'SUSPENDED': action = `${student.firstName} ${student.lastName} — Account Suspended`; type = 'suspended'; break;
+        case 'PENDING': action = `${student.firstName} ${student.lastName} — Pending Verification`; type = 'blue'; break;
+        case 'INACTIVE': action = `${student.firstName} ${student.lastName} — Account Inactive`; type = 'blue'; break;
+        default: action = `${student.firstName} ${student.lastName} — Status Updated`; type = 'blue'; break;
+      }
+      
+      const diff = Date.now() - student.updatedAt.toMillis();
+      const minutes = Math.floor(diff / 60000);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+      let timeString = '';
+      if (days > 0) timeString = `${days} day${days > 1 ? 's' : ''} ago`;
+      else if (hours > 0) timeString = `${hours} hour${hours > 1 ? 's' : ''} ago`;
+      else if (minutes > 0) timeString = `${minutes} min ago`;
+      else timeString = 'Just now';
+
+      return { action, type, time: timeString };
+    });
 
   return (
     <div className="space-y-6">
@@ -40,10 +93,10 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
       </div>
 
       {/* Semester Rollover Status Banner */}
-      {rolloverState === 'in-progress' && (
+      {activeSemester && (
         <div className="bg-gradient-to-r from-[#0E4EBD] to-[#1E70E8] rounded-xl p-6 border-l-8 border-[#FFD41C]">
           <div className="text-white">
-            <h3 className="text-xl font-bold mb-2">Re-enrollment In Progress — A.Y. 2026–2027, 1st Semester</h3>
+            <h3 className="text-xl font-bold mb-2">Re-enrollment In Progress — {activeSemester.label}</h3>
             <div className="bg-white/20 rounded-full h-5 mb-3 overflow-hidden">
               <div
                 className="bg-[#83358E] h-full transition-all"
@@ -51,11 +104,11 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
               ></div>
             </div>
             <div className="flex items-center justify-between text-sm mb-4">
-              <span>{reenrollmentProgress.confirmed} of {reenrollmentProgress.total} students confirmed</span>
+              <span>{confirmed} of {totalExpectedToReenroll} students confirmed</span>
               <span className="font-bold">{progressPercent}%</span>
             </div>
             <p className="text-white/90 text-sm mb-4">
-              Re-enrollment deadline: June 15, 2026. Students who have not confirmed will be automatically set to Inactive.
+              Re-enrollment deadline: {new Date(activeSemester.reenrollDeadline).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}. Students who have not confirmed will be automatically set to Inactive.
             </p>
             <div className="flex items-center gap-3">
               <button className="px-6 py-2 bg-[#FFD41C] text-[#001A4D] rounded-lg font-medium hover:bg-[#FFD41C]/90">
@@ -73,63 +126,65 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <button
           onClick={() => onNavigate('pending')}
-          className="relative bg-gradient-to-br from-[#EF4444] to-[#F97316] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow"
+          className="relative bg-gradient-to-br from-[#EF4444] to-[#F97316] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow text-left"
         >
           <div className="absolute top-4 right-4 bg-white/20 p-3 rounded-lg">
             <Clock className="w-6 h-6" />
           </div>
-          <div className="text-5xl font-bold mb-2">12</div>
+          <div className="text-5xl font-bold mb-2">{pending.length}</div>
           <div className="text-sm font-medium mb-1">Pending Verification</div>
           <div className="text-xs text-white/80">Awaiting SAO Review</div>
-          <div className="absolute top-4 right-4">
-            <span className="px-3 py-1 bg-amber-500 text-white text-xs rounded-full">Review Now</span>
-          </div>
+          {pending.length > 0 && (
+            <div className="absolute top-4 right-4">
+              <span className="px-3 py-1 bg-amber-500 text-white text-xs rounded-full">Review Now</span>
+            </div>
+          )}
         </button>
 
         <button
           onClick={() => onNavigate('reenrollment')}
-          className="relative bg-gradient-to-br from-[#FFC107] to-[#F59E0B] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow"
+          className="relative bg-gradient-to-br from-[#FFC107] to-[#F59E0B] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow text-left"
         >
           <div className="absolute top-4 right-4 bg-white/20 p-3 rounded-lg">
             <RefreshCw className="w-6 h-6" />
           </div>
-          <div className="text-5xl font-bold mb-2">158</div>
+          <div className="text-5xl font-bold mb-2">{reenrollment.length}</div>
           <div className="text-sm font-medium mb-1">Pending Re-enrollment</div>
           <div className="text-xs text-white/80">Awaiting student confirmation</div>
         </button>
 
         <button
           onClick={() => onNavigate('active')}
-          className="relative bg-gradient-to-br from-[#22C55E] to-[#16A34A] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow"
+          className="relative bg-gradient-to-br from-[#22C55E] to-[#16A34A] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow text-left"
         >
           <div className="absolute top-4 right-4 bg-white/20 p-3 rounded-lg">
             <UserCheck className="w-6 h-6" />
           </div>
-          <div className="text-5xl font-bold mb-2">500</div>
+          <div className="text-5xl font-bold mb-2">{active.length}</div>
           <div className="text-sm font-medium mb-1">Active Students</div>
-          <div className="text-xs text-white/80">+45 this semester</div>
+          <div className="text-xs text-white/80">Currently enrolled</div>
         </button>
 
         <button
           onClick={() => onNavigate('inactive')}
-          className="relative bg-gradient-to-br from-[#001A4D] to-[#0C3C8A] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow"
+          className="relative bg-gradient-to-br from-[#001A4D] to-[#0C3C8A] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow text-left"
         >
           <div className="absolute top-4 right-4 bg-white/20 p-3 rounded-lg">
             <UserX className="w-6 h-6" />
           </div>
-          <div className="text-5xl font-bold mb-2">73</div>
+          <div className="text-5xl font-bold mb-2">{inactive.length}</div>
           <div className="text-sm font-medium mb-1">Inactive Students</div>
           <div className="text-xs text-white/80">Did not re-enroll</div>
         </button>
 
         <button
           onClick={() => onNavigate('inactive')}
-          className="relative bg-gradient-to-br from-[#0E4EBD] to-[#1E70E8] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow"
+          className="relative bg-gradient-to-br from-[#0E4EBD] to-[#1E70E8] rounded-xl p-6 text-white overflow-hidden group hover:shadow-lg transition-shadow text-left"
         >
           <div className="absolute top-4 right-4 bg-white/20 p-3 rounded-lg">
             <Ban className="w-6 h-6" />
           </div>
-          <div className="text-5xl font-bold mb-2">8</div>
+          <div className="text-5xl font-bold mb-2">{suspended.length}</div>
           <div className="text-sm font-medium mb-1">Suspended Accounts</div>
           <div className="text-xs text-white/80">Under SAO action</div>
         </button>
@@ -143,7 +198,7 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
             <div className="flex items-center gap-3">
               <h3 className="text-white font-bold">Needs Your Review</h3>
               <span className="px-3 py-1 bg-white/20 text-white rounded-full text-xs font-bold">
-                {pendingQueue.length}
+                {pending.length}
               </span>
             </div>
           </div>
@@ -171,12 +226,14 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
                     </button>
                   </div>
                 ))}
-                <button
-                  onClick={() => onNavigate('pending')}
-                  className="w-full text-[#FFD41C] hover:underline text-sm text-right"
-                >
-                  View All Pending →
-                </button>
+                {pending.length > 5 && (
+                  <button
+                    onClick={() => onNavigate('pending')}
+                    className="w-full text-[#FFD41C] hover:underline text-sm text-right"
+                  >
+                    View All {pending.length} Pending →
+                  </button>
+                )}
               </div>
             ) : (
               <div className="text-center py-12">
@@ -212,10 +269,15 @@ export default function RegistryDashboard({ onNavigate }: RegistryDashboardProps
                   </div>
                 </div>
               ))}
+              {recentActivity.length === 0 && (
+                <div className="text-sm text-gray-500 text-center py-4">No recent activity.</div>
+              )}
             </div>
-            <button className="mt-4 w-full text-[#0E4EBD] hover:underline text-sm text-center">
-              View Full Audit Log →
-            </button>
+            {recentActivity.length > 0 && (
+              <button className="mt-4 w-full text-[#0E4EBD] hover:underline text-sm text-center">
+                View Full Audit Log →
+              </button>
+            )}
           </div>
         </div>
       </div>

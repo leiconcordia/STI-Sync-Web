@@ -1,68 +1,131 @@
-import { useState } from "react";
+import { useState, type ElementType } from "react";
 import {
   Plus,
   Building2,
   Info,
   Eye,
   Edit,
-  Archive,
   X,
   Save,
-  Tag,
   Wallet,
-  ChevronDown,
-  AlertTriangle,
-  Check,
+  TrendingUp,
+  TrendingDown,
+  ArrowDownLeft,
+  ArrowUpRight,
+  CheckCircle,
+  Clock,
+  Users,
+  DollarSign,
+  FileText,
+  ChevronRight,
 } from "lucide-react";
+import { useSemesters } from "../../modules/academic/hooks/useAcademicStream";
+import { useSaoLedger } from "../../modules/finance/hooks/useFinanceStream";
+import { addLedgerTransaction } from "../../modules/finance/services/finance.service";
+import type { SaoLedgerDocument, TransactionSource, TransactionType } from "../../modules/finance/types/finance.types";
+import { Timestamp } from "firebase/firestore";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-interface OrgAllocation {
+interface StudentPayment {
   id: string;
   name: string;
-  type: string;
-  initials: string;
-  ceiling: number;
-  requested: number;
-  approved: number;
+  studentId: string;
+  amount: number;
+  paidDate: string;
+  status: "Paid" | "Pending";
 }
 
-interface BudgetCategory {
+interface StudentCollection {
   id: string;
-  name: string;
-  description: string;
-  limit: number | null;
-  appliesTo: string;
-  overspendAction: "Block" | "Warn" | "Allow";
-  isDefault: boolean;
-  active: boolean;
+  eventName: string;
+  eventDate: string;
+  payablePerStudent: number;
+  totalStudents: number;
+  payments: StudentPayment[];
+  transferredToBudget: boolean;
+  transferredDate?: string;
 }
 
 // ─── Mock Data ─────────────────────────────────────────────────────────────────
-const MOCK_ORGS: OrgAllocation[] = [
-  { id: "1", name: "STI IT Guild", type: "Academic", initials: "IG", ceiling: 25000, requested: 24500, approved: 22000 },
-  { id: "2", name: "Junior Philippine Institute of Accountants", type: "Professional", initials: "JP", ceiling: 20000, requested: 18000, approved: 17500 },
-  { id: "3", name: "Supreme Student Government", type: "Governing", initials: "SS", ceiling: 30000, requested: 30000, approved: 28000 },
-  { id: "4", name: "ROTC Corps", type: "Civic", initials: "RC", ceiling: 15000, requested: 12000, approved: 12000 },
-  { id: "5", name: "Dance Company", type: "Cultural", initials: "DC", ceiling: 10000, requested: 9800, approved: 9000 },
+const MOCK_COLLECTIONS: StudentCollection[] = [
+  {
+    id: "sc1",
+    eventName: "Sportsfest 2026",
+    eventDate: "Jun 8, 2026",
+    payablePerStudent: 250,
+    totalStudents: 130,
+    transferredToBudget: true,
+    transferredDate: "Jun 10, 2026",
+    payments: [
+      { id: "p1", name: "Juan Dela Cruz", studentId: "2021-00123", amount: 250, paidDate: "Jun 5, 2026", status: "Paid" },
+      { id: "p2", name: "Maria Santos", studentId: "2021-00124", amount: 250, paidDate: "Jun 5, 2026", status: "Paid" },
+      { id: "p3", name: "Jose Reyes", studentId: "2021-00125", amount: 250, paidDate: "Jun 6, 2026", status: "Paid" },
+      { id: "p4", name: "Ana Lopez", studentId: "2021-00126", amount: 250, paidDate: "Jun 7, 2026", status: "Paid" },
+      { id: "p5", name: "Carlo Mendoza", studentId: "2021-00127", amount: 250, paidDate: "Jun 7, 2026", status: "Paid" },
+    ],
+  },
+  {
+    id: "sc2",
+    eventName: "Leadership Summit 2026",
+    eventDate: "Jun 16, 2026",
+    payablePerStudent: 500,
+    totalStudents: 80,
+    transferredToBudget: false,
+    payments: [
+      { id: "p6", name: "Juan Dela Cruz", studentId: "2021-00123", amount: 500, paidDate: "Jun 12, 2026", status: "Paid" },
+      { id: "p7", name: "Maria Santos", studentId: "2021-00124", amount: 500, paidDate: "Jun 13, 2026", status: "Paid" },
+      { id: "p8", name: "Jose Reyes", studentId: "2021-00125", amount: 0, paidDate: "—", status: "Pending" },
+      { id: "p9", name: "Ana Lopez", studentId: "2021-00126", amount: 500, paidDate: "Jun 14, 2026", status: "Paid" },
+      { id: "p10", name: "Carlo Mendoza", studentId: "2021-00127", amount: 0, paidDate: "—", status: "Pending" },
+    ],
+  },
+  {
+    id: "sc3",
+    eventName: "Foundation Day Celebration",
+    eventDate: "Jun 18, 2026",
+    payablePerStudent: 150,
+    totalStudents: 200,
+    transferredToBudget: false,
+    payments: [
+      { id: "p11", name: "Juan Dela Cruz", studentId: "2021-00123", amount: 150, paidDate: "Jun 15, 2026", status: "Paid" },
+      { id: "p12", name: "Maria Santos", studentId: "2021-00124", amount: 150, paidDate: "Jun 15, 2026", status: "Paid" },
+      { id: "p13", name: "Jose Reyes", studentId: "2021-00125", amount: 0, paidDate: "—", status: "Pending" },
+    ],
+  },
 ];
 
-const MOCK_CATEGORIES: BudgetCategory[] = [
-  { id: "1", name: "Venue & Facilities", description: "Rental of venues, halls, and facilities for events.", limit: 15000, appliesTo: "All Orgs", overspendAction: "Warn", isDefault: true, active: true },
-  { id: "2", name: "Food & Catering", description: "Food and beverages for events and meetings.", limit: 10000, appliesTo: "All Orgs", overspendAction: "Warn", isDefault: true, active: true },
-  { id: "3", name: "Supplies & Materials", description: "Office supplies, printing, and materials.", limit: 5000, appliesTo: "All Orgs", overspendAction: "Block", isDefault: false, active: true },
-  { id: "4", name: "Transportation", description: "Travel and transportation costs.", limit: null, appliesTo: "All Orgs", overspendAction: "Allow", isDefault: false, active: true },
-  { id: "5", name: "Equipment Rental", description: "Audio-visual and other equipment rental.", limit: 8000, appliesTo: "Academic", overspendAction: "Block", isDefault: false, active: true },
-];
+// ─── Add School Budget Allocation Modal (original) ────────────────────────────
+function AddBudgetModal({ currentBalance, onClose, onSave }: {
+  currentBalance: number;
+  onClose: () => void;
+  onSave: (tx: Omit<Transaction, "id" | "balance">) => void;
+}) {
+  const { data: semesters } = useSemesters();
+  const availableSemesters = semesters.filter(s => s.status === 'ACTIVE' || s.status === 'UPCOMING');
 
-const TOTAL_BUDGET = 150000;
-const TOTAL_ALLOCATED = MOCK_ORGS.reduce((a, o) => a + o.ceiling, 0);
-const UNALLOCATED = TOTAL_BUDGET - TOTAL_ALLOCATED;
-const TOTAL_DISBURSED = MOCK_ORGS.reduce((a, o) => a + o.approved, 0);
-
-// ─── Add Budget Allocation Modal ───────────────────────────────────────────────
-function AddBudgetModal({ onClose }: { onClose: () => void }) {
   const [carryOver, setCarryOver] = useState(false);
-  const [form, setForm] = useState({ semester: "", amount: "", notes: "" });
+  const [form, setForm] = useState({ semesterId: "", amount: "", notes: "" });
+
+  const selectedSemester = availableSemesters.find(s => s.id === form.semesterId);
+
+  const handleSave = () => {
+    if (!selectedSemester || !form.amount) return;
+    const amt = parseFloat(form.amount);
+    
+    // If there is carry over checked and we have a balance, we add it to this allocation.
+    const finalAmount = carryOver ? amt + currentBalance : amt;
+
+    onSave({
+      semesterId: selectedSemester.id,
+      date: Timestamp.fromDate(new Date()),
+      description: `SAO Institutional Fund – ${selectedSemester.label}${form.notes ? ` (${form.notes})` : ""}`,
+      eventId: null,
+      type: "income",
+      source: "allocation",
+      amount: finalAmount,
+      addedBy: "Admin SAO",
+    });
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -85,12 +148,13 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
             </label>
             <select
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
-              value={form.semester}
-              onChange={(e) => setForm({ ...form, semester: e.target.value })}
+              value={form.semesterId}
+              onChange={(e) => setForm({ ...form, semesterId: e.target.value })}
             >
               <option value="">Select semester...</option>
-              <option>1st Semester A.Y. 2026–2027</option>
-              <option>Summer Term A.Y. 2025–2026</option>
+              {availableSemesters.map(sem => (
+                <option key={sem.id} value={sem.id}>{sem.label}</option>
+              ))}
             </select>
           </div>
 
@@ -98,7 +162,7 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
             <label className="block text-sm font-medium text-gray-700 mb-1.5">School Year</label>
             <input
               type="text"
-              value={form.semester ? form.semester.split(" ").slice(-1)[0] : ""}
+              value={selectedSemester?.academicYear || ""}
               readOnly
               className="w-full px-4 py-2.5 border border-gray-200 bg-gray-50 rounded-lg text-gray-500 cursor-not-allowed"
             />
@@ -132,21 +196,22 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
             />
           </div>
 
-          <div className="flex items-start gap-3 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+          <div className={`flex items-start gap-3 p-4 border rounded-lg ${currentBalance > 0 ? "bg-gray-50 border-gray-200" : "bg-gray-50/50 border-gray-100 opacity-60"}`}>
             <div className="flex-1">
               <p className="text-sm font-medium text-gray-900">Carry Over Unspent Balance from Previous Semester</p>
-              <p className="text-xs text-gray-500 mt-0.5">Unspent from previous semester: ₱12,450</p>
-              {carryOver && (
+              <p className="text-xs text-gray-500 mt-0.5">Unspent from previous semester: ₱{currentBalance.toLocaleString()}</p>
+              {carryOver && currentBalance > 0 && (
                 <p className="text-xs text-[#83358E] font-medium mt-1">
-                  Total Effective Budget = ₱{(parseFloat(form.amount || "0") + 12450).toLocaleString()}
+                  Total Effective Budget = ₱{(parseFloat(form.amount || "0") + currentBalance).toLocaleString()}
                 </p>
               )}
             </div>
             <button
+              disabled={currentBalance <= 0}
               onClick={() => setCarryOver(!carryOver)}
-              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${carryOver ? "bg-[#83358E]" : "bg-gray-300"}`}
+              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${currentBalance <= 0 ? "bg-gray-200 cursor-not-allowed" : carryOver ? "bg-[#83358E]" : "bg-gray-300"}`}
             >
-              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow ${carryOver ? "translate-x-6" : ""}`} />
+              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow ${carryOver && currentBalance > 0 ? "translate-x-6" : ""}`} />
             </button>
           </div>
 
@@ -154,8 +219,7 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
             <div className="flex items-start gap-2">
               <Info className="w-4 h-4 text-[#83358E] flex-shrink-0 mt-0.5" />
               <p className="text-[#83358E] text-xs">
-                After saving, you can distribute this budget to individual organizations from the Organization Budget Allocation section below.
-                <br /><span className="text-gray-500 mt-1 block">Organizations not yet allocated will have ₱0 ceiling until you assign them.</span>
+                This adds an income entry to the school budget ledger. Club and organization budgets are managed independently by their own officers — this allocation is for SAO-level expenses only.
               </p>
             </div>
           </div>
@@ -163,7 +227,10 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
 
         <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-between">
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
-          <button className="px-5 py-2.5 bg-[#001A4D] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-[#001A4D]/90 transition-colors">
+          <button
+            onClick={handleSave}
+            className="px-5 py-2.5 bg-[#001A4D] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-[#001A4D]/90 transition-colors"
+          >
             <Save className="w-4 h-4" />
             Save Budget Allocation
           </button>
@@ -173,186 +240,223 @@ function AddBudgetModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ─── Edit Org Ceiling Modal ────────────────────────────────────────────────────
-function EditCeilingModal({ org, onClose }: { org: OrgAllocation; onClose: () => void }) {
-  const [amount, setAmount] = useState(org.ceiling.toString());
-  const [notify, setNotify] = useState(true);
+// ─── Collection Detail / Transfer Modal ───────────────────────────────────────
+function CollectionDetailModal({
+  collection,
+  alreadyTransferred,
+  onClose,
+  onTransfer,
+}: {
+  collection: StudentCollection;
+  alreadyTransferred: boolean;
+  onClose: () => void;
+  onTransfer: () => void;
+}) {
+  const paid = collection.payments.filter((p) => p.status === "Paid");
+  const pending = collection.payments.filter((p) => p.status === "Pending");
+  const totalCollected = paid.reduce((s, p) => s + p.amount, 0);
+  const collectionPct = Math.round((paid.length / collection.totalStudents) * 100);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/55" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[620px] overflow-hidden">
+        <div className="bg-gradient-to-r from-[#001A4D] to-[#83358E] px-6 py-4 flex items-center justify-between">
+          <div>
+            <h3 className="text-white font-bold text-base">{collection.eventName}</h3>
+            <p className="text-[#FFD41C] text-xs mt-0.5">Student Payables Collection · {collection.eventDate}</p>
+          </div>
+          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+          {/* Summary */}
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              { label: "Total Students", value: collection.totalStudents.toString(), color: "text-[#001A4D]" },
+              { label: "Students Paid", value: `${paid.length}`, color: "text-green-600" },
+              { label: "Total Collected", value: `₱${totalCollected.toLocaleString()}`, color: "text-[#83358E]" },
+            ].map((s) => (
+              <div key={s.label} className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-center">
+                <p className={`text-xl font-bold ${s.color}`}>{s.value}</p>
+                <p className="text-gray-500 text-xs mt-0.5">{s.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Progress */}
+          <div>
+            <div className="flex justify-between text-xs text-gray-500 mb-1.5">
+              <span>{collectionPct}% collected from sample list shown</span>
+              <span>₱{collection.payablePerStudent} per student</span>
+            </div>
+            <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full bg-green-500 rounded-full transition-all" style={{ width: `${collectionPct}%` }} />
+            </div>
+          </div>
+
+          {/* Payment breakdown */}
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+              <p className="text-[#001A4D] text-xs font-bold uppercase tracking-wide">Payment Breakdown</p>
+              <div className="flex gap-2">
+                <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+                  <CheckCircle className="w-3 h-3" />{paid.length} Paid
+                </span>
+                {pending.length > 0 && (
+                  <span className="flex items-center gap-1 text-xs text-amber-600 font-medium">
+                    <Clock className="w-3 h-3" />{pending.length} Pending
+                  </span>
+                )}
+              </div>
+            </div>
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  {["Student", "Student ID", "Amount", "Date Paid", "Status"].map((col) => (
+                    <th key={col} className="px-4 py-2.5 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-gray-100">{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {collection.payments.map((p) => (
+                  <tr key={p.id} className={p.status === "Pending" ? "bg-amber-50/40" : "hover:bg-gray-50"}>
+                    <td className="px-4 py-2.5 text-[#001A4D] text-sm font-medium">{p.name}</td>
+                    <td className="px-4 py-2.5 text-gray-500 text-sm">{p.studentId}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-sm font-bold ${p.status === "Paid" ? "text-green-600" : "text-gray-400"}`}>
+                        {p.status === "Paid" ? `₱${p.amount.toLocaleString()}` : "—"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-gray-500 text-sm">{p.paidDate}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${p.status === "Paid" ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
+                        }`}>{p.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bg-gray-50 border-t border-gray-200">
+                  <td colSpan={2} className="px-4 py-2.5 text-gray-600 text-xs font-bold">Total Collected</td>
+                  <td className="px-4 py-2.5 text-green-600 font-bold text-sm">₱{totalCollected.toLocaleString()}</td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {pending.length > 0 && (
+            <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+              <Info className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+              <p className="text-amber-700 text-xs">
+                {pending.length} student{pending.length > 1 ? "s have" : " has"} not yet paid. You can still transfer the currently collected amount, or wait until all payments are complete.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-200 flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-gray-300 text-gray-600 rounded-xl text-sm font-medium hover:bg-gray-50">
+            Close
+          </button>
+          {alreadyTransferred ? (
+            <div className="flex-1 py-2.5 bg-green-50 border border-green-200 text-green-700 rounded-xl text-sm font-bold text-center flex items-center justify-center gap-2">
+              <CheckCircle className="w-4 h-4" />
+              Transferred to Budget
+            </div>
+          ) : (
+            <button
+              onClick={() => { onTransfer(); onClose(); }}
+              className="flex-1 py-2.5 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
+            >
+              <ArrowDownLeft className="w-4 h-4" />
+              Transfer ₱{totalCollected.toLocaleString()} to School Budget
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Add Manual Expense Modal ──────────────────────────────────────────────────
+function AddExpenseModal({ activeSemesterId, onClose, onSave }: {
+  activeSemesterId: string | null;
+  onClose: () => void;
+  onSave: (tx: Omit<SaoLedgerDocument, "id" | "createdAt">) => void;
+}) {
+  const [form, setForm] = useState({ description: "", event: "", amount: "", date: "" });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/55" onClick={onClose} />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[480px] overflow-hidden">
-        <div className="bg-gradient-to-r from-[#83358E] to-[#A855F7] px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Wallet className="w-5 h-5 text-white" />
-            <h3 className="text-white font-bold text-base">Edit Budget Ceiling</h3>
-            <span className="px-2.5 py-1 bg-[#FFD41C] text-[#001A4D] text-xs font-bold rounded-full">{org.name}</span>
-          </div>
-          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
-            <div className="w-9 h-9 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold">
-              {org.initials}
-            </div>
-            <div>
-              <p className="text-[#001A4D] font-medium text-sm">{org.name}</p>
-              <p className="text-gray-500 text-xs">{org.type} Organization</p>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Current Ceiling</label>
-            <input
-              type="text"
-              value={`₱${org.ceiling.toLocaleString()}`}
-              readOnly
-              className="w-full px-4 py-2.5 border border-gray-200 bg-gray-50 rounded-lg text-gray-500 cursor-not-allowed"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              New Ceiling Amount (₱) <span className="text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">₱</span>
-              <input
-                type="number"
-                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Remaining available: <span className="text-green-600 font-medium">₱{UNALLOCATED.toLocaleString()}</span></p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Disbursement Date</label>
-              <input type="date" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Disbursement Method</label>
-              <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-                <option>Cash</option>
-                <option>Check</option>
-                <option>Direct Transfer</option>
-                <option>Petty Cash</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Remarks</label>
-            <textarea
-              rows={2}
-              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none"
-              placeholder="Message sent to org officers..."
-            />
-          </div>
-
-          <div className="flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg">
-            <p className="text-sm font-medium text-gray-900">Notify Organization Officers</p>
-            <button
-              onClick={() => setNotify(!notify)}
-              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${notify ? "bg-[#83358E]" : "bg-gray-300"}`}
-            >
-              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow ${notify ? "translate-x-6" : ""}`} />
-            </button>
-          </div>
-        </div>
-
-        <div className="px-5 py-4 border-t border-gray-200 flex justify-between">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
-          <button className="px-5 py-2.5 bg-[#83358E] text-white rounded-lg text-sm font-medium hover:bg-[#6D2A78] transition-colors">
-            Update Ceiling
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Add Category Modal ────────────────────────────────────────────────────────
-function AddCategoryModal({ onClose }: { onClose: () => void }) {
-  const [noLimit, setNoLimit] = useState(false);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/55" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[520px] overflow-hidden">
         <div className="bg-gradient-to-r from-[#001A4D] to-[#83358E] px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <Tag className="w-5 h-5 text-[#FFD41C]" />
-            <h3 className="text-white font-bold text-base">Add Budget Category</h3>
+            <ArrowUpRight className="w-5 h-5 text-[#FFD41C]" />
+            <h3 className="text-white font-bold text-base">Add Budget Expense</h3>
           </div>
-          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10"><X className="w-5 h-5" /></button>
         </div>
-
         <div className="p-5 space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Category Name <span className="text-red-500">*</span>
-            </label>
-            <input type="text" placeholder="e.g. Venue & Facilities" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
-            <textarea rows={2} className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none" />
-          </div>
-
-          <div className="flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg">
-            <p className="text-sm font-medium text-gray-900">No Spending Limit</p>
-            <button
-              onClick={() => setNoLimit(!noLimit)}
-              className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${noLimit ? "bg-[#83358E]" : "bg-gray-300"}`}
-            >
-              <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow ${noLimit ? "translate-x-6" : ""}`} />
-            </button>
-          </div>
-
-          {!noLimit && (
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Default Spending Limit (₱)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Date <span className="text-red-500">*</span></label>
+              <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Amount (₱) <span className="text-red-500">*</span></label>
               <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">₱</span>
-                <input type="number" placeholder="0.00" className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-medium">₱</span>
+                <input type="number" placeholder="0.00" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                  className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
               </div>
             </div>
-          )}
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Applies To</label>
-            <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-              <option>All Orgs</option>
-              <option>Academic</option>
-              <option>Professional</option>
-              <option>Cultural</option>
-              <option>Civic</option>
-            </select>
           </div>
-
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Overspend Action</label>
-            <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-              <option>Block Submission</option>
-              <option>Show Warning</option>
-              <option>Allow Silently</option>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Description <span className="text-red-500">*</span></label>
+            <input type="text" placeholder="e.g. Expense – Tech Symposium 2026" value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">Related Event (optional)</label>
+            <select value={form.event} onChange={(e) => setForm({ ...form, event: e.target.value })}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
+              <option value="">— No specific event —</option>
+              <option>Tech Symposium 2026</option>
+              <option>Sportsfest 2026</option>
+              <option>Induction &amp; Recognition Night</option>
+              <option>Leadership Summit 2026</option>
+              <option>Foundation Day Celebration</option>
             </select>
           </div>
         </div>
-
         <div className="px-5 py-4 border-t border-gray-200 flex justify-between">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 transition-colors">Cancel</button>
-          <button className="px-5 py-2.5 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 transition-colors">
-            Save Category
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900">Cancel</button>
+            <button
+            onClick={() => {
+              if (!form.description || !form.amount || !form.date) return;
+              onSave({
+                semesterId: activeSemesterId,
+                date: Timestamp.fromDate(new Date(form.date)),
+                description: form.description,
+                eventId: form.event || null,
+                type: "expense",
+                source: "manual_expense",
+                amount: parseFloat(form.amount),
+                addedBy: "Admin SAO",
+              });
+              onClose();
+            }}
+            className="px-5 py-2.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 flex items-center gap-2"
+          >
+            <Save className="w-4 h-4" />
+            Save Expense
           </button>
         </div>
       </div>
@@ -360,373 +464,389 @@ function AddCategoryModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ─── Overspend Action Badge ────────────────────────────────────────────────────
-function OverspendBadge({ action }: { action: "Block" | "Warn" | "Allow" }) {
-  const map = {
-    Block: "bg-red-100 text-red-700",
-    Warn: "bg-amber-100 text-amber-700",
-    Allow: "bg-green-100 text-green-700",
-  };
-  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${map[action]}`}>{action}</span>;
-}
+type MainTab = "ledger" | "collections";
+
+// ─── Source badge helpers ──────────────────────────────────────────────────────
+const sourceBadgeMap: Record<TransactionSource, string> = {
+  allocation: "bg-blue-100 text-blue-700",
+  student_collection: "bg-green-100 text-green-700",
+  manual_expense: "bg-red-100 text-red-600",
+  carry_over: "bg-purple-100 text-purple-700",
+};
+const sourceLabel: Record<TransactionSource, string> = {
+  allocation: "School Allocation",
+  student_collection: "Student Collection",
+  manual_expense: "SAO Expense",
+  carry_over: "Carry-Over",
+};
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export function BudgetFundSettings() {
+  const [tab, setTab] = useState<MainTab>("ledger");
+  const { data: rawTransactions, loading } = useSaoLedger();
+  const { data: semesters } = useSemesters();
+  const activeSemester = semesters.find(s => s.status === 'ACTIVE') || null;
+  
+  const [collections, setCollections] = useState<StudentCollection[]>(MOCK_COLLECTIONS);
   const [showAddBudget, setShowAddBudget] = useState(false);
-  const [editCeilingOrg, setEditCeilingOrg] = useState<OrgAllocation | null>(null);
-  const [showAddCategory, setShowAddCategory] = useState(false);
-  const [categoryTab, setCategoryTab] = useState<"active" | "archived">("active");
-  const [orgCeilings, setOrgCeilings] = useState<Record<string, string>>(
-    Object.fromEntries(MOCK_ORGS.map((o) => [o.id, o.ceiling.toString()]))
-  );
+  const [showAddExpense, setShowAddExpense] = useState(false);
+  const [viewCollection, setViewCollection] = useState<StudentCollection | null>(null);
+  
+  const [txFilter, setTxFilter] = useState<"all" | "income" | "expense">("all");
+  const [semesterFilter, setSemesterFilter] = useState<string>("all");
 
-  const allocPct = Math.round((TOTAL_ALLOCATED / TOTAL_BUDGET) * 100);
+  // Calculate dynamic balances for the ledger
+  const transactions = rawTransactions.map((tx, idx, arr) => {
+    const runningBalance = arr.slice(0, idx + 1).reduce((s, curr) => {
+      return curr.type === "income" ? s + curr.amount : s - curr.amount;
+    }, 0);
+    return { ...tx, balance: runningBalance };
+  });
+
+  const filteredTx = transactions.filter((t) => {
+    const passType = txFilter === "all" ? true : t.type === txFilter;
+    const passSem = semesterFilter === "all" ? true : t.semesterId === semesterFilter;
+    return passType && passSem;
+  });
+
+  // Calculate totals based on the filtered transactions view
+  const currentBalance = transactions[transactions.length - 1]?.balance ?? 0;
+  const filteredIncome = filteredTx.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const filteredExpense = filteredTx.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  
+  const pendingCollections = collections.filter((c) => !c.transferredToBudget);
+  const pendingTotal = pendingCollections.reduce((s, c) => {
+    const paid = c.payments.filter((p) => p.status === "Paid").reduce((a, p) => a + p.amount, 0);
+    return s + paid;
+  }, 0);
+
+  const handleSaveTransaction = async (tx: Omit<SaoLedgerDocument, "id" | "createdAt">) => {
+    try {
+      await addLedgerTransaction(tx);
+    } catch (err) {
+      console.error("Failed to save transaction", err);
+    }
+  };
+
+  const handleTransferCollection = async (collection: StudentCollection) => {
+    const totalCollected = collection.payments.filter((p) => p.status === "Paid").reduce((s, p) => s + p.amount, 0);
+    setCollections((prev) => prev.map((c) =>
+      c.id === collection.id ? { ...c, transferredToBudget: true, transferredDate: "Today" } : c
+    ));
+    await handleSaveTransaction({
+      semesterId: activeSemester?.id || null,
+      date: Timestamp.fromDate(new Date()),
+      description: `Student Collections – ${collection.eventName}`,
+      eventId: collection.id, // we might store collection event id
+      type: "income",
+      source: "student_collection",
+      amount: totalCollected,
+      addedBy: "Admin SAO",
+      collectionId: collection.id,
+    });
+  };
+
+  if (loading) return <div className="p-8 text-center text-gray-500">Loading ledger...</div>;
 
   return (
     <div className="space-y-6">
-      {/* Page Header */}
+      {/* Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#001A4D]">Budget & Fund Management</h2>
-          <p className="text-gray-500 text-sm">Settings &rsaquo; Budget &amp; Fund Management</p>
+          <h2 className="text-2xl font-bold text-[#001A4D]">School Budget & Fund Management</h2>
+          <p className="text-gray-500 text-sm">Settings › Budget & Fund Management</p>
         </div>
-        <button
-          onClick={() => setShowAddBudget(true)}
-          className="px-4 py-2.5 bg-gradient-to-r from-[#001A4D] to-[#83358E] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:opacity-90 transition-opacity"
-        >
-          <Plus className="w-4 h-4" />
-          Add School Budget Allocation
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setShowAddExpense(true)}
+            className="px-4 py-2.5 border border-red-300 text-red-600 rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-red-50 transition-colors"
+          >
+            <ArrowUpRight className="w-4 h-4" />
+            Add Expense
+          </button>
+          <button
+            onClick={() => setShowAddBudget(true)}
+            className="px-4 py-2.5 bg-gradient-to-r from-[#001A4D] to-[#83358E] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:opacity-90 transition-opacity"
+          >
+            <Plus className="w-4 h-4" />
+            Add School Budget Allocation
+          </button>
+        </div>
       </div>
 
-      {/* Context Banner */}
+      {/* Info banner */}
       <div className="flex items-start gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
         <Info className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
         <div>
-          <p className="text-blue-700 font-bold text-sm mb-0.5">School-Level Budget</p>
-          <p className="text-gray-700 text-sm leading-relaxed">
-            This section manages the overall school fund that the SAO Adviser controls. This is the institutional budget — NOT individual club budgets. Club budgets are managed by each organization's officers in their own dashboard. The SAO sets the allocation ceiling for each club from this school budget.
+          <p className="text-blue-700 font-bold text-sm mb-0.5">SAO School Budget — Independent from Club Budgets</p>
+          <p className="text-gray-700 text-sm">This is the institutional SAO fund managed by the school. Club and organization budgets are entirely self-managed by their own officers. When events collect student payables, you can view the collection detail and transfer the amount into this school budget.</p>
+        </div>
+      </div>
+
+      {/* Overview cards */}
+      <div className="grid grid-cols-4 gap-4">
+        <div className="bg-white border border-[#E0E0E0] rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-gray-500 text-xs font-medium uppercase tracking-wide">Global Current Balance</p>
+            <Wallet className="w-4 h-4 text-[#83358E]" />
+          </div>
+          <p className="text-[#001A4D] text-2xl font-bold">₱{currentBalance.toLocaleString()}</p>
+          <p className="text-gray-400 text-xs mt-1">Overall running balance</p>
+        </div>
+        <div className="bg-white border border-[#E0E0E0] rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-gray-500 text-xs font-medium uppercase tracking-wide">Income (Filtered)</p>
+            <TrendingUp className="w-4 h-4 text-green-600" />
+          </div>
+          <p className="text-green-600 text-2xl font-bold">+₱{filteredIncome.toLocaleString()}</p>
+          <p className="text-gray-400 text-xs mt-1">{filteredTx.filter((t) => t.type === "income").length} credit entries</p>
+        </div>
+        <div className="bg-white border border-[#E0E0E0] rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-gray-500 text-xs font-medium uppercase tracking-wide">Expenses (Filtered)</p>
+            <TrendingDown className="w-4 h-4 text-red-500" />
+          </div>
+          <p className="text-red-500 text-2xl font-bold">−₱{filteredExpense.toLocaleString()}</p>
+          <p className="text-gray-400 text-xs mt-1">{filteredTx.filter((t) => t.type === "expense").length} debit entries</p>
+        </div>
+        <div
+          className={`rounded-2xl p-5 border cursor-pointer transition-colors ${pendingTotal > 0
+              ? "bg-amber-50 border-amber-200 hover:bg-amber-100"
+              : "bg-white border-[#E0E0E0]"
+            }`}
+          onClick={() => setTab("collections")}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-gray-500 text-xs font-medium uppercase tracking-wide">Pending Transfers</p>
+            <Clock className={`w-4 h-4 ${pendingTotal > 0 ? "text-amber-500" : "text-gray-400"}`} />
+          </div>
+          <p className={`text-2xl font-bold ${pendingTotal > 0 ? "text-amber-600" : "text-gray-400"}`}>
+            ₱{pendingTotal.toLocaleString()}
           </p>
+          <p className="text-gray-400 text-xs mt-1">{pendingCollections.length} events pending transfer</p>
         </div>
       </div>
 
-      {/* School Budget Overview */}
-      <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <div className="bg-gradient-to-r from-[#001A4D] to-[#83358E] px-6 py-5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Building2 className="w-10 h-10 text-[#FFD41C]" />
-            <div>
-              <p className="text-white font-bold text-lg">STI College Ormoc — Student Affairs Services Budget</p>
-              <p className="text-[#FFD41C] text-sm">A.Y. 2025–2026 · 2nd Semester</p>
-            </div>
-          </div>
-          <button className="px-4 py-2 border border-white/50 text-white rounded-lg text-sm hover:bg-white/10 transition-colors flex items-center gap-2">
-            <Edit className="w-4 h-4" />
-            Edit School Budget
+      {/* Tabs */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+        {([
+          { key: "ledger", label: "Budget Ledger", icon: FileText },
+          { key: "collections", label: "Student Collections", icon: Users, badge: pendingCollections.length },
+        ] as { key: MainTab; label: string; icon: ElementType; badge?: number }[]).map(({ key, label, icon: Icon, badge }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors relative ${tab === key ? "bg-white text-[#001A4D] shadow-sm" : "text-gray-500 hover:text-gray-700"
+              }`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+            {badge ? (
+              <span className="w-4 h-4 bg-amber-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold">
+                {badge}
+              </span>
+            ) : null}
           </button>
-        </div>
-
-        <div className="p-6">
-          <div className="grid grid-cols-4 divide-x divide-[#E0E0E0] mb-5">
-            {[
-              { label: "Total School Budget", value: `₱${TOTAL_BUDGET.toLocaleString()}`, sub: "For current semester", color: "text-[#001A4D]" },
-              { label: "Allocated to Organizations", value: `₱${TOTAL_ALLOCATED.toLocaleString()}`, sub: `distributed across ${MOCK_ORGS.length} orgs`, color: "text-[#83358E]" },
-              { label: "Remaining Unallocated", value: `₱${UNALLOCATED.toLocaleString()}`, sub: "available for new allocations", color: "text-green-600" },
-              { label: "Total Disbursed", value: `₱${TOTAL_DISBURSED.toLocaleString()}`, sub: "actually released to orgs", color: "text-blue-600" },
-            ].map((s) => (
-              <div key={s.label} className="px-6 first:pl-0 last:pr-0 text-center">
-                <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
-                <p className="text-gray-400 text-xs mt-1">{s.label}</p>
-                <p className="text-gray-400 text-xs">{s.sub}</p>
-              </div>
-            ))}
-          </div>
-          <div>
-            <div className="flex justify-between items-center mb-1">
-              <p className="text-[#001A4D] text-sm">₱{TOTAL_ALLOCATED.toLocaleString()} allocated of ₱{TOTAL_BUDGET.toLocaleString()} total school budget</p>
-              <p className="text-[#FFD41C] font-bold text-sm">{allocPct}%</p>
-            </div>
-            <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-[#83358E] rounded-full" style={{ width: `${allocPct}%` }} />
-            </div>
-          </div>
-        </div>
+        ))}
       </div>
 
-      {/* Semester Budget Records */}
-      <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-3">
+      {/* ── Budget Ledger ── */}
+      {tab === "ledger" && (
+        <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
             <div className="border-l-4 border-[#83358E] pl-3">
-              <h3 className="text-[#001A4D] font-bold text-base">Semester Budget Records</h3>
-            </div>
-            <select className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs focus:ring-2 focus:ring-[#83358E]">
-              <option>Current Semester</option>
-              <option>All Semesters</option>
-            </select>
-          </div>
-          <button onClick={() => setShowAddBudget(true)} className="px-3 py-1.5 bg-[#001A4D] text-[#FFD41C] text-xs rounded-lg flex items-center gap-1.5 font-medium hover:bg-[#001A4D]/90 transition-colors">
-            <Plus className="w-3.5 h-3.5" />
-            Add Allocation
-          </button>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                {["Semester", "School Year", "Total Budget (₱)", "Allocated (₱)", "Unallocated (₱)", "Disbursed (₱)", "Utilization", "Status", "Actions"].map((col) => (
-                  <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              <tr className="border-l-4 border-l-[#FFD41C] bg-[#F3E8FF]/20 hover:bg-[#F3E8FF]/40 transition-colors">
-                <td className="px-4 py-3 text-[#001A4D] font-medium text-sm">2nd Semester</td>
-                <td className="px-4 py-3 text-gray-600 text-sm">A.Y. 2025–2026</td>
-                <td className="px-4 py-3 text-[#001A4D] font-bold text-sm">₱150,000</td>
-                <td className="px-4 py-3 text-[#83358E] font-bold text-sm">₱{TOTAL_ALLOCATED.toLocaleString()}</td>
-                <td className="px-4 py-3 text-green-600 font-bold text-sm">₱{UNALLOCATED.toLocaleString()}</td>
-                <td className="px-4 py-3 text-blue-600 font-bold text-sm">₱{TOTAL_DISBURSED.toLocaleString()}</td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-20 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-[#83358E]" style={{ width: `${allocPct}%` }} />
-                    </div>
-                    <span className="text-xs text-gray-600">{allocPct}%</span>
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="px-2 py-1 bg-green-100 text-green-700 text-xs rounded-full font-medium">Active</span>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex gap-1">
-                    <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors">
-                      <Eye className="w-3.5 h-3.5" />
-                    </button>
-                    <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 transition-colors">
-                      <Edit className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              <tr className="hover:bg-gray-50 transition-colors">
-                <td className="px-4 py-3 text-gray-500 text-sm">1st Semester</td>
-                <td className="px-4 py-3 text-gray-500 text-sm">A.Y. 2025–2026</td>
-                <td className="px-4 py-3 text-gray-500 text-sm">₱140,000</td>
-                <td className="px-4 py-3 text-gray-500 text-sm">₱135,000</td>
-                <td className="px-4 py-3 text-gray-500 text-sm">₱5,000</td>
-                <td className="px-4 py-3 text-gray-500 text-sm">₱128,000</td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-1.5 w-20 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-gray-300" style={{ width: "96%" }} />
-                    </div>
-                    <span className="text-xs text-gray-400">96%</span>
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="px-2 py-1 bg-gray-100 text-gray-500 text-xs rounded-full font-medium">Completed</span>
-                </td>
-                <td className="px-4 py-3">
-                  <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors">
-                    <Eye className="w-3.5 h-3.5" />
-                  </button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {/* Organization Budget Allocation */}
-      <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-3">
-              <div className="border-l-4 border-[#83358E] pl-3">
-                <h3 className="text-[#001A4D] font-bold text-base">Organization Budget Ceilings</h3>
-              </div>
-              <span className="px-2.5 py-1 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full font-medium">2nd Semester · A.Y. 2025–2026</span>
+              <h3 className="text-[#001A4D] font-bold text-base">Transaction History</h3>
+              <p className="text-gray-500 text-xs mt-0.5">All school budget income and expense entries</p>
             </div>
             <div className="flex gap-2">
-              <button className="px-3 py-1.5 border border-[#0E4EBD] text-[#0E4EBD] text-xs rounded-lg hover:bg-blue-50 transition-colors">
-                Bulk Update (CSV)
-              </button>
-              <button className="px-3 py-1.5 border border-gray-300 text-gray-600 text-xs rounded-lg hover:bg-gray-50 transition-colors">
-                Auto-Distribute Equally
-              </button>
-            </div>
-          </div>
-          <p className="text-gray-500 text-sm">Set the maximum budget ceiling each organization can request from the school fund this semester.</p>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                {["Organization", "Org Type", "Semester Ceiling (₱)", "Requested (₱)", "Approved (₱)", "Utilization", "Actions"].map((col) => (
-                  <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
+              <select
+                value={semesterFilter}
+                onChange={(e) => setSemesterFilter(e.target.value)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-gray-50 border border-gray-200 text-gray-700 outline-none focus:ring-2 focus:ring-[#83358E]/20"
+              >
+                <option value="all">All Semesters</option>
+                {semesters?.map((s) => (
+                  <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {MOCK_ORGS.map((org) => {
-                const util = Math.round((org.approved / parseInt(orgCeilings[org.id] || "1")) * 100);
-                return (
-                  <tr key={org.id} className="hover:bg-gray-50 transition-colors group">
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                          {org.initials}
-                        </div>
-                        <span className="text-[#001A4D] font-medium text-sm">{org.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded font-medium">{org.type}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="relative">
-                        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">₱</span>
-                        <input
-                          type="number"
-                          value={orgCeilings[org.id]}
-                          onChange={(e) => setOrgCeilings({ ...orgCeilings, [org.id]: e.target.value })}
-                          className="pl-5 pr-2 py-1.5 border-2 border-[#001A4D] rounded text-xs font-medium w-28 focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
-                        />
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 text-sm">₱{org.requested.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-gray-600 text-sm">₱{org.approved.toLocaleString()}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-24 bg-gray-100 rounded-full overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${util > 90 ? "bg-red-500" : "bg-[#83358E]"}`}
-                            style={{ width: `${Math.min(util, 100)}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-600">{util}%</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors">
-                          <Eye className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => setEditCeilingOrg(org)}
-                          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 transition-colors"
-                        >
-                          <Edit className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-            <tfoot>
-              <tr className="bg-[#001A4D]">
-                <td colSpan={2} className="px-4 py-3 text-white font-bold text-sm">Total Allocated</td>
-                <td className="px-4 py-3 text-white font-bold text-sm">₱{TOTAL_ALLOCATED.toLocaleString()}</td>
-                <td colSpan={3} />
-                <td className="px-4 py-3 text-right">
-                  <span className="text-[#FFD41C] font-bold text-sm">Remaining: ₱{UNALLOCATED.toLocaleString()}</span>
-                </td>
-              </tr>
-            </tfoot>
-          </table>
-        </div>
-        <div className="px-6 py-4 border-t border-gray-100">
-          <button className="w-full py-3 bg-[#83358E] text-white rounded-xl text-sm font-bold hover:bg-[#6D2A78] transition-colors flex items-center justify-center gap-2">
-            <Check className="w-4 h-4" />
-            Save All Ceilings
-          </button>
-        </div>
-      </div>
-
-      {/* Budget Categories */}
-      <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <div className="flex items-center gap-3">
-            <div className="border-l-4 border-[#83358E] pl-3">
-              <h3 className="text-[#001A4D] font-bold text-sm">Budget Categories & Spending Rules</h3>
-            </div>
-            <div className="flex gap-1">
-              {(["active", "archived"] as const).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setCategoryTab(t)}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium capitalize transition-colors ${
-                    categoryTab === t ? "bg-[#001A4D] text-white" : "bg-amber-50 text-amber-700 hover:bg-amber-100"
-                  }`}
-                >
-                  {t}
+              </select>
+              <div className="w-px h-6 bg-gray-200 self-center mx-1"></div>
+              {(["all", "income", "expense"] as const).map((f) => (
+                <button key={f} onClick={() => setTxFilter(f)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${txFilter === f ? "bg-[#001A4D] text-white" : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    }`}>
+                  {f === "all" ? "All" : f === "income" ? "Income +" : "Expenses −"}
                 </button>
               ))}
             </div>
           </div>
-          <button
-            onClick={() => setShowAddCategory(true)}
-            className="px-3 py-1.5 bg-[#001A4D] text-[#FFD41C] text-xs rounded-lg flex items-center gap-1.5 font-medium hover:bg-[#001A4D]/90 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Category
-          </button>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50">
-              <tr>
-                {["Category Name", "Description", "Default Limit", "Applies To", "Overspend Action", "Default", "Status", "Actions"].map((col) => (
-                  <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {MOCK_CATEGORIES.map((cat) => (
-                <tr key={cat.id} className="hover:bg-gray-50 transition-colors group">
-                  <td className="px-4 py-3 text-[#001A4D] font-medium text-sm">{cat.name}</td>
-                  <td className="px-4 py-3 text-gray-500 text-xs max-w-[200px] truncate">{cat.description}</td>
-                  <td className="px-4 py-3 text-gray-700 text-sm">{cat.limit ? `₱${cat.limit.toLocaleString()}` : "Unlimited"}</td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded font-medium">{cat.appliesTo}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <OverspendBadge action={cat.overspendAction} />
-                  </td>
-                  <td className="px-4 py-3">
-                    {cat.isDefault && (
-                      <span className="px-2 py-0.5 bg-[#83358E]/10 text-[#83358E] text-xs rounded font-medium">System</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`w-2 h-2 inline-block rounded-full ${cat.active ? "bg-green-500" : "bg-gray-300"}`} />
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-50 text-gray-500 transition-colors">
-                        <Edit className="w-3.5 h-3.5" />
-                      </button>
-                      {!cat.isDefault && (
-                        <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-amber-50 text-amber-600 transition-colors">
-                          <Archive className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50">
+                <tr>
+                  {["Date", "Description", "Related Event", "Source", "Amount", "Running Balance", ""].map((col) => (
+                    <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {[...filteredTx].reverse().map((tx) => {
+                  const linkedCollection = tx.collectionId
+                    ? collections.find((c) => c.id === tx.collectionId) ?? null
+                    : null;
+
+                  return (
+                    <tr key={tx.id} className={`transition-colors ${tx.source === "student_collection" ? "bg-green-50/40 hover:bg-green-50" : "hover:bg-gray-50"
+                      }`}>
+                      <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap">
+                        {tx.date?.toDate ? tx.date.toDate().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "—"}
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="text-[#001A4D] text-sm font-medium">{tx.description}</p>
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 text-sm">
+                        {tx.eventId ?? <span className="text-gray-300">—</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${sourceBadgeMap[tx.source]}`}>
+                          {sourceLabel[tx.source]}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`text-sm font-bold flex items-center gap-1 ${tx.type === "income" ? "text-green-600" : "text-red-500"}`}>
+                          {tx.type === "income" ? <ArrowDownLeft className="w-3.5 h-3.5" /> : <ArrowUpRight className="w-3.5 h-3.5" />}
+                          {tx.type === "income" ? "+" : "−"}₱{tx.amount.toLocaleString()}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-[#001A4D] font-semibold text-sm">
+                        ₱{tx.balance.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-3">
+                        {linkedCollection && (
+                          <button
+                            onClick={() => setViewCollection(linkedCollection)}
+                            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            View Details
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-[#001A4D]">
+                  <td colSpan={4} className="px-4 py-3 text-white font-bold text-sm">Current Balance</td>
+                  <td colSpan={3} className="px-4 py-3 text-[#FFD41C] font-bold text-lg">₱{currentBalance.toLocaleString()}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── Student Collections ── */}
+      {tab === "collections" && (
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+            <Info className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <p className="text-amber-800 text-sm leading-relaxed">
+              Events with student payables are listed here. Click <strong>View Details</strong> to see the full payment breakdown per student, then transfer the collected amount to the school budget as an income entry.
+            </p>
+          </div>
+
+          <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100">
+              <div className="border-l-4 border-[#83358E] pl-3">
+                <h3 className="text-[#001A4D] font-bold text-base">Student Payable Collections</h3>
+                <p className="text-gray-500 text-xs mt-0.5">View collection details and transfer to school budget</p>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-gray-50">
+                  <tr>
+                    {["Event", "Date", "Fee / Student", "Total Students", "Paid", "Total Collected", "Status", "Action"].map((col) => (
+                      <th key={col} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">{col}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {collections.map((c) => {
+                    const paid = c.payments.filter((p) => p.status === "Paid");
+                    const totalCollected = paid.reduce((s, p) => s + p.amount, 0);
+                    const pct = Math.round((paid.length / c.totalStudents) * 100);
+
+                    return (
+                      <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-3">
+                          <p className="text-[#001A4D] font-medium text-sm">{c.eventName}</p>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500 text-sm whitespace-nowrap">{c.eventDate}</td>
+                        <td className="px-4 py-3 text-gray-700 text-sm font-medium">₱{c.payablePerStudent.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-gray-600 text-sm">{c.totalStudents}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <div className="h-1.5 w-16 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-green-500 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <span className="text-green-600 text-sm font-medium">{paid.length}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="text-green-700 font-bold text-sm">₱{totalCollected.toLocaleString()}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {c.transferredToBudget ? (
+                            <span className="flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-1 rounded-full font-medium w-fit whitespace-nowrap">
+                              <CheckCircle className="w-3 h-3" />
+                              Transferred {c.transferredDate}
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-1 rounded-full font-medium w-fit">
+                              <Clock className="w-3 h-3" />
+                              Pending
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => setViewCollection(c)}
+                            className="flex items-center gap-1.5 px-3 py-1.5 border border-blue-300 text-blue-600 text-xs rounded-lg font-medium hover:bg-blue-50 transition-colors whitespace-nowrap"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            View Details
+                            <ChevronRight className="w-3 h-3" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modals */}
-      {showAddBudget && <AddBudgetModal onClose={() => setShowAddBudget(false)} />}
-      {editCeilingOrg && <EditCeilingModal org={editCeilingOrg} onClose={() => setEditCeilingOrg(null)} />}
-      {showAddCategory && <AddCategoryModal onClose={() => setShowAddCategory(false)} />}
+      {showAddBudget && (
+        <AddBudgetModal
+          currentBalance={currentBalance}
+          onClose={() => setShowAddBudget(false)}
+          onSave={handleSaveTransaction}
+        />
+      )}
+      {showAddExpense && <AddExpenseModal activeSemesterId={activeSemester?.id || null} onClose={() => setShowAddExpense(false)} onSave={handleSaveTransaction} />}
+      {viewCollection && (
+        <CollectionDetailModal
+          collection={viewCollection}
+          alreadyTransferred={viewCollection.transferredToBudget}
+          onClose={() => setViewCollection(null)}
+          onTransfer={() => handleTransferCollection(viewCollection)}
+        />
+      )}
     </div>
   );
 }

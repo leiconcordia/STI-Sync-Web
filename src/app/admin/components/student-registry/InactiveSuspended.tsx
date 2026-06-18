@@ -1,18 +1,14 @@
 import { useState } from 'react';
 import { Download, Send, RotateCcw, Archive, Eye } from 'lucide-react';
+import { StudentDocument } from '../../../modules/students/types/student.types';
 
-export default function InactiveSuspended() {
+interface InactiveSuspendedProps {
+  inactiveStudents: StudentDocument[];
+  suspendedStudents: StudentDocument[];
+}
+
+export default function InactiveSuspended({ inactiveStudents, suspendedStudents }: InactiveSuspendedProps) {
   const [activeTab, setActiveTab] = useState<'inactive' | 'suspended'>('inactive');
-
-  const inactiveStudents = [
-    { id: 1, name: 'Carlos Lopez', studentId: '2025-005678', course: 'BSIT', year: '2nd Year', inactiveSince: 'Jan 15, 2026', avatar: 'CL' },
-    { id: 2, name: 'Sofia Martinez', studentId: '2025-006789', course: 'BSCS', year: '3rd Year', inactiveSince: 'Jan 18, 2026', avatar: 'SM' },
-  ];
-
-  const suspendedStudents = [
-    { id: 1, name: 'Luis Rodriguez', studentId: '2025-007890', course: 'BSA', year: '4th Year', suspendedOn: 'May 20, 2026', suspendedBy: 'R. Lucanas', reason: 'Violation of code of conduct', duration: '14 days remaining', avatar: 'LR' },
-    { id: 2, name: 'Isabella Cruz', studentId: '2025-008901', course: 'BSBA', year: '1st Year', suspendedOn: 'May 25, 2026', suspendedBy: 'R. Lucanas', reason: 'Unpaid fines', duration: 'Indefinite', avatar: 'IC' },
-  ];
 
   return (
     <div className="space-y-6">
@@ -78,24 +74,30 @@ export default function InactiveSuspended() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {inactiveStudents.map((student) => (
+                {inactiveStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-6 py-8 text-center text-gray-500">No inactive students found.</td>
+                  </tr>
+                ) : inactiveStudents.map((student) => (
                   <tr key={student.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 bg-gray-400 rounded-full flex items-center justify-center text-white font-bold text-xs">
-                          {student.avatar}
+                          {student.firstName.charAt(0)}{student.lastName.charAt(0)}
                         </div>
                         <div>
-                          <div className="font-medium text-[#001A4D]">{student.name}</div>
+                          <div className="font-medium text-[#001A4D]">{student.firstName} {student.lastName}</div>
                           <div className="text-xs text-gray-500">{student.studentId}</div>
                         </div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-sm text-gray-900">{student.course}</div>
-                      <div className="text-xs text-gray-500">{student.year}</div>
+                      <div className="text-sm text-gray-900">{student.courseCode}</div>
+                      <div className="text-xs text-gray-500">{student.yearLevel}</div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-700">{student.inactiveSince}</td>
+                    <td className="px-6 py-4 text-sm text-gray-700">
+                      {student.updatedAt ? new Date(student.updatedAt.toMillis()).toLocaleDateString() : 'N/A'}
+                    </td>
                     <td className="px-6 py-4">
                       <span className="px-3 py-1 bg-gray-500 text-white rounded-full text-xs font-medium">
                         Inactive
@@ -144,31 +146,35 @@ export default function InactiveSuspended() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {suspendedStudents.map((student) => (
+                {suspendedStudents.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-6 py-8 text-center text-gray-500">No suspended students found.</td>
+                  </tr>
+                ) : suspendedStudents.map((student) => (
                   <tr key={student.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
                         <div className="w-9 h-9 bg-gradient-to-br from-[#EF4444] to-[#F97316] rounded-full flex items-center justify-center text-white font-bold text-xs">
-                          {student.avatar}
+                          {student.firstName.charAt(0)}{student.lastName.charAt(0)}
                         </div>
                         <div>
-                          <div className="font-medium text-[#001A4D]">{student.name}</div>
+                          <div className="font-medium text-[#001A4D]">{student.firstName} {student.lastName}</div>
                           <div className="text-xs text-gray-500">{student.studentId}</div>
                         </div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="text-sm text-gray-900">{student.course}</div>
-                      <div className="text-xs text-gray-500">{student.year}</div>
+                      <div className="text-sm text-gray-900">{student.courseCode}</div>
+                      <div className="text-xs text-gray-500">{student.yearLevel}</div>
                     </td>
-                    <td className="px-6 py-4 text-sm text-gray-700">{student.suspendedOn}</td>
-                    <td className="px-6 py-4 text-sm text-gray-700">{student.suspendedBy}</td>
-                    <td className="px-6 py-4 text-sm text-gray-700 max-w-xs truncate">{student.reason}</td>
+                    <td className="px-6 py-4 text-sm text-gray-700">
+                      {student.updatedAt ? new Date(student.updatedAt.toMillis()).toLocaleDateString() : 'N/A'}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-700">SAO Admin</td>
+                    <td className="px-6 py-4 text-sm text-gray-700 max-w-xs truncate">{student.rejectionReason || 'No reason provided'}</td>
                     <td className="px-6 py-4">
-                      <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                        student.duration === 'Indefinite' ? 'bg-red-500 text-white' : 'bg-amber-100 text-amber-700'
-                      }`}>
-                        {student.duration}
+                      <span className={`px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white`}>
+                        Indefinite
                       </span>
                     </td>
                     <td className="px-6 py-4">

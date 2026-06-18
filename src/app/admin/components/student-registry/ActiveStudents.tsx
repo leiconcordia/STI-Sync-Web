@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import { Search, Plus, Download, Eye, MoreVertical } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
-import { useStudents } from '../../../modules/students/hooks/useStudentStream';
+import { StudentDocument } from '../../../modules/students/types/student.types';
 
-export default function ActiveStudents() {
+interface ActiveStudentsProps {
+  students: StudentDocument[];
+}
+
+export default function ActiveStudents({ students: activeStudents }: ActiveStudentsProps) {
   const [showAddModal, setShowAddModal] = useState(false);
-  const { data: allStudents, loading } = useStudents();
-
-  const activeStudents = allStudents.filter(s => s.status === 'ACTIVE');
 
   return (
     <div className="space-y-6">
@@ -116,11 +117,7 @@ export default function ActiveStudents() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="px-6 py-8 text-center text-gray-500">Loading students...</td>
-                </tr>
-              ) : activeStudents.length === 0 ? (
+              {activeStudents.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-6 py-8 text-center text-gray-500">No active students found.</td>
                 </tr>
