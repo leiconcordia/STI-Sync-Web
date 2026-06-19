@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { X, Shield, Rocket } from 'lucide-react';
-import Step1EventDetails from './sao-event-steps/Step1EventDetails';
-import Step2Schedule from './sao-event-steps/Step2Schedule';
-import Step3Participants from './sao-event-steps/Step3Participants';
-import Step4Staff from './sao-event-steps/Step4Staff';
-import Step5Budget from './sao-event-steps/Step5Budget';
-import Step6Documents from './sao-event-steps/Step6Documents';
-import Step7Publish from './sao-event-steps/Step7Publish';
+import Step1EventDetails from '../../modules/events/components/wizard/Step1EventDetails';
+import Step2Schedule from '../../modules/events/components/wizard/Step2Schedule';
+import Step3Participants from '../../modules/events/components/wizard/Step3Participants';
+import Step4Staff from '../../modules/events/components/wizard/Step4Staff';
+import Step5Budget from '../../modules/events/components/wizard/Step5Budget';
+import Step6Documents from '../../modules/events/components/wizard/Step6Documents';
+import Step7Publish from '../../modules/events/components/wizard/Step7Publish';
+import type { EventFormData } from '../../modules/events/types/event.types';
+import { useEventCreation } from '../../modules/events/hooks/useEventCreation';
 
 interface SaoEventCreationModalProps {
   isOpen: boolean;
@@ -25,7 +27,8 @@ const STEPS = [
 
 export default function SaoEventCreationModal({ isOpen, onClose }: SaoEventCreationModalProps) {
   const [currentStep, setCurrentStep] = useState(0);
-  const [formData, setFormData] = useState({});
+  const [formData, setFormData] = useState<EventFormData>({});
+  const { createEvent, saveDraft, loading } = useEventCreation();
 
   if (!isOpen) return null;
 
@@ -51,10 +54,18 @@ export default function SaoEventCreationModal({ isOpen, onClose }: SaoEventCreat
     }
   };
 
-  const handleSubmit = () => {
-    console.log('Creating event:', formData);
-    // Handle event creation
-    onClose();
+  const handleSubmit = async () => {
+    const id = await createEvent(formData);
+    if (id) {
+      onClose();
+    }
+  };
+
+  const handleSaveDraft = async () => {
+    const id = await saveDraft(formData);
+    if (id) {
+      onClose();
+    }
   };
 
   const renderStep = () => {
@@ -161,14 +172,16 @@ export default function SaoEventCreationModal({ isOpen, onClose }: SaoEventCreat
             {currentStep < STEPS.length - 1 ? (
               <div className="flex items-center gap-3">
                 <button
-                  onClick={() => console.log('Save as draft:', formData)}
-                  className="px-6 py-2.5 border border-[#83358E] text-[#83358E] rounded-lg font-medium hover:bg-[#83358E]/5 transition-colors"
+                  onClick={handleSaveDraft}
+                  disabled={loading}
+                  className="px-6 py-2.5 border border-[#83358E] text-[#83358E] rounded-lg font-medium hover:bg-[#83358E]/5 transition-colors disabled:opacity-50"
                 >
                   Save as Draft
                 </button>
                 <button
                   onClick={nextStep}
-                  className="px-6 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 transition-colors"
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 transition-colors disabled:opacity-50"
                 >
                   Next Step
                 </button>
@@ -176,10 +189,11 @@ export default function SaoEventCreationModal({ isOpen, onClose }: SaoEventCreat
             ) : (
               <button
                 onClick={handleSubmit}
-                className="px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-500 text-white rounded-lg font-medium hover:from-green-700 hover:to-green-600 transition-all flex items-center gap-2"
+                disabled={loading}
+                className="px-6 py-2.5 bg-gradient-to-r from-green-600 to-green-500 text-white rounded-lg font-medium hover:from-green-700 hover:to-green-600 transition-all flex items-center gap-2 disabled:opacity-50"
               >
                 <Rocket className="w-4 h-4" />
-                Create & Publish Event
+                {loading ? 'Publishing...' : 'Create & Publish Event'}
               </button>
             )}
           </div>

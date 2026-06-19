@@ -1,0 +1,118 @@
+import { Timestamp } from 'firebase/firestore';
+
+export interface EventDocument {
+  // ─── Identity ───
+  id: string;
+  referenceId: string;                     // e.g., "EVT-ADM-2026-0018"
+  title: string;
+  tagline: string | null;
+  description: string;
+  objectives: string[];
+  bannerImageUrl: string | null;
+  thumbnailUrl: string | null;
+
+  // ─── Classification ───
+  eventTypeId: string;                     // FK → /event_types
+  eventCategoryId: string;                 // FK → /event_categories
+  hostingOrgId: string;                    // FK → /organizations
+
+  // ─── Academic Context ───
+  semesterId: string;                      // FK → /semesters
+  schoolYear: string;                      // auto-derived from active semester
+
+  // ─── Schedule ───
+  sessions: EventSession[];
+  venueId: string;                         // FK → /venues
+  eventFormat: 'On-Campus' | 'Online' | 'Hybrid';
+
+  // ─── Participants ───
+  targetYearLevels: string[];
+  targetDepartmentIds: string[];           // FK[] → /departments
+  expectedParticipantCount: number;
+
+  // ─── Attendance ───
+  attendanceEnabled: boolean;              // toggle: Required / Not Required
+  minAttendancePercent: number | null;
+  lateThresholdMinutes: number | null;
+  gracePeriodMinutes: number | null;
+  latePenaltyAmount: number | null;        // ₱ — replaces "Attendance Weight"
+
+  // ─── Certificates ───
+  certificatesEnabled: boolean;            // toggle: Required / Not Required
+  autoIssueCertificates: boolean;
+  certificateSignatory: string | null;
+
+  // ─── Payables ───
+  studentPayablesEnabled: boolean;
+  suggestedFeePerStudent: number | null;
+  adminFeeOverride: number | null;
+  totalExpectedCollection: number | null;
+
+  // ─── Staff ───
+  supervisorId: string;                    // SAO Adviser UID
+  scanners: EventScanner[];
+
+  // ─── Budget ───
+  budgetItems: BudgetLineItem[];
+  totalApprovedBudget: number;
+
+  // ─── Documents ───
+  documents: EventDocumentFile[];
+
+  // ─── Settings ───
+  enableQRTickets: boolean;
+  mandatoryAttendance: boolean;
+  lockAfterApproval: boolean;
+  scannerActivationCode: string;           // auto-generated 6-digit code
+
+  // ─── Lifecycle ───
+  proposalStatus: 'draft' | 'approved';    // admin-created events are always 'approved'
+  createdBy: string;                       // SAO Adviser UID
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface EventSession {
+  id: string; // Will use timestamp strings for unique IDs
+  title: string;
+  date: string;                            // ISO YYYY-MM-DD
+  startTime: string;                       // HH:mm
+  endTime: string;                         // HH:mm
+  timeInOpen: string;
+  timeInClose: string;
+  hasTimeOut: boolean;
+  timeOutOpen: string;                     // Using empty string if disabled
+  timeOutClose: string;
+}
+
+export interface EventScanner {
+  id: string;
+  officerName: string;
+  officerUserId: string | null;
+  fullAccess: boolean;
+  canCheckIn: boolean;
+  canCheckOut: boolean;
+  canViewList: boolean;
+  canEditRecords: boolean;
+  allowManualAttendance: boolean;
+}
+
+export interface BudgetLineItem {
+  id: string;
+  item: string;
+  description: string;
+  quantity: number;
+  unitCost: number;
+  approvedAmount: number;
+  status: 'approved' | 'reduced' | 'rejected' | 'pending';
+}
+
+export interface EventDocumentFile {
+  id: string;
+  name: string;
+  fileUrl: string | null;
+  required: boolean;
+}
+
+// In-memory shape for the wizard form
+export type EventFormData = Partial<EventDocument>;

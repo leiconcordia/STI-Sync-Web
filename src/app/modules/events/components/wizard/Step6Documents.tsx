@@ -1,21 +1,17 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Upload, FileText, Shield, CheckCircle, X, AlertCircle, Plus, Trash2 } from 'lucide-react';
+import type { EventFormData, EventDocumentFile } from '../../types/event.types';
+import { uploadToCloudinary } from '../../../../../services/cloudinary';
 
 interface Step6Props {
-  data: any;
-  onUpdate: (data: any) => void;
-}
-
-interface ExtraDocument {
-  id: number;
-  name: string;
-  uploaded: boolean;
+  data: EventFormData;
+  onUpdate: (data: Partial<EventFormData>) => void;
 }
 
 const REQUIRED_DOCUMENTS = [
-  { id: 1, name: 'Official Event Approval Letter', desc: 'SAO-signed approval document for institutional records' },
-  { id: 2, name: 'Approved Budget Authorization', desc: 'Signed budget approval for disbursement' },
-  { id: 3, name: 'Campus Permit / Facilities Authorization', desc: 'Signed permit for venue use' },
+  { id: 'req_1', name: 'Official Event Approval Letter', desc: 'SAO-signed approval document for institutional records' },
+  { id: 'req_2', name: 'Approved Budget Authorization', desc: 'Signed budget approval for disbursement' },
+  { id: 'req_3', name: 'Campus Permit / Facilities Authorization', desc: 'Signed permit for venue use' },
 ];
 
 const complianceItems = [
@@ -30,22 +26,59 @@ const complianceItems = [
 const complianceScore = 83;
 
 export default function Step6Documents({ data, onUpdate }: Step6Props) {
-  const [extraDocuments, setExtraDocuments] = useState<ExtraDocument[]>([]);
+  useEffect(() => {
+    if (!data.documents) {
+      onUpdate({
+        documents: REQUIRED_DOCUMENTS.map(doc => ({
+          id: doc.id,
+          name: doc.name,
+          fileUrl: null,
+          required: true
+        }))
+      });
+    }
+  }, []);
+
+  const documents = data.documents || [];
+  const extraDocuments = documents.filter(d => !d.required);
+  
+  const [authorizationChecked, setAuthorizationChecked] = useState(false);
+  const [uploadingDocId, setUploadingDocId] = useState<string | null>(null);
+
+  const updateField = (field: keyof EventFormData, value: any) => {
+    onUpdate({ [field]: value });
+  };
 
   const addDocument = () => {
-    setExtraDocuments([...extraDocuments, { id: Date.now(), name: '', uploaded: false }]);
+    const newDoc: EventDocumentFile = { id: Date.now().toString(), name: '', fileUrl: null, required: false };
+    updateField('documents', [...documents, newDoc]);
   };
 
-  const removeDocument = (id: number) => {
-    setExtraDocuments(extraDocuments.filter(d => d.id !== id));
+  const removeDocument = (id: string) => {
+    updateField('documents', documents.filter(d => d.id !== id));
   };
 
-  const updateDocumentName = (id: number, name: string) => {
-    setExtraDocuments(extraDocuments.map(d => d.id === id ? { ...d, name } : d));
+  const updateDocumentName = (id: string, name: string) => {
+    updateField('documents', documents.map(d => d.id === id ? { ...d, name } : d));
+  };
+
+  const handleDocumentUpload = async (id: string, file: File) => {
+    setUploadingDocId(id);
+    try {
+      const result = await uploadToCloudinary(file, { folder: 'events/documents' });
+      updateField('documents', documents.map(d => 
+        d.id === id ? { ...d, fileUrl: result.secureUrl } : d
+      ));
+    } catch (error) {
+      console.error('Failed to upload document', error);
+      alert('Failed to upload document.');
+    } finally {
+      setUploadingDocId(null);
+    }
   };
 
   return (
-    <div className="grid grid-cols-[1fr_300px] gap-6">
+    <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6">
       <div className="space-y-6">
 
         {/* Section A - Official Event Documents */}
@@ -65,27 +98,56 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
 
           <div className="space-y-3">
             {/* Required document fields */}
-            {REQUIRED_DOCUMENTS.map((doc) => (
-              <div key={doc.id} className="border border-gray-200 rounded-lg p-4 hover:border-[#83358E] transition-colors">
-                <div className="flex items-start gap-3 mb-3">
-                  <FileText className="w-5 h-5 text-[#83358E] flex-shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <h4 className="font-medium text-gray-900 text-sm">{doc.name}</h4>
-                      <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded">Required</span>
+            {REQUIRED_DOCUMENTS.map((docDef) => {
+              const docItem = documents.find(d => d.id === docDef.id);
+              return (
+                <div key={docDef.id} className="border border-gray-200 rounded-lg p-4 hover:border-[#83358E] transition-colors">
+                  <div className="flex items-start gap-3 mb-3">
+                    <FileText className="w-5 h-5 text-[#83358E] flex-shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <h4 className="font-medium text-gray-900 text-sm">{docDef.name}</h4>
+                        <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded">Required</span>
+                      </div>
+                      <p className="text-xs text-gray-600">{docDef.desc}</p>
                     </div>
-                    <p className="text-xs text-gray-600">{doc.desc}</p>
+                  </div>
+                  <div className={`relative border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#83358E] cursor-pointer transition-colors overflow-hidden ${docItem?.fileUrl ? 'bg-green-50 border-green-300' : ''}`}>
+                    <input 
+                      type="file" 
+                      accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) {
+                          handleDocumentUpload(docDef.id, e.target.files[0]);
+                        }
+                      }}
+                      disabled={uploadingDocId === docDef.id}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
+                    />
+                    {uploadingDocId === docDef.id ? (
+                      <>
+                        <Upload className="w-6 h-6 text-[#83358E] animate-bounce mx-auto mb-1" />
+                        <p className="text-xs text-gray-600">Uploading...</p>
+                      </>
+                    ) : docItem?.fileUrl ? (
+                      <>
+                        <CheckCircle className="w-6 h-6 text-green-500 mx-auto mb-1" />
+                        <p className="text-xs text-green-700 font-medium">Uploaded Successfully</p>
+                        <p className="text-[10px] text-green-600">Click to replace</p>
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-6 h-6 text-gray-400 mx-auto mb-1" />
+                        <p className="text-xs text-gray-600">Click to upload</p>
+                      </>
+                    )}
                   </div>
                 </div>
-                <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-[#83358E] cursor-pointer transition-colors">
-                  <Upload className="w-6 h-6 text-gray-400 mx-auto mb-1" />
-                  <p className="text-xs text-gray-600">Click to upload</p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Dynamic additional document fields */}
-            {extraDocuments.map((doc, index) => (
+            {extraDocuments.map((doc) => (
               <div key={doc.id} className="border border-[#1E70E8]/40 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-2">
@@ -102,9 +164,35 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
-                <div className="border-2 border-dashed border-[#1E70E8]/40 rounded-lg p-4 text-center hover:border-[#1E70E8] cursor-pointer transition-colors">
-                  <Upload className="w-6 h-6 text-gray-400 mx-auto mb-1" />
-                  <p className="text-xs text-gray-600">Click to upload</p>
+                <div className={`relative border-2 border-dashed border-[#1E70E8]/40 rounded-lg p-4 text-center hover:border-[#1E70E8] cursor-pointer transition-colors overflow-hidden ${doc.fileUrl ? 'bg-green-50 border-green-300' : ''}`}>
+                  <input 
+                    type="file" 
+                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                    onChange={(e) => {
+                      if (e.target.files?.[0]) {
+                        handleDocumentUpload(doc.id, e.target.files[0]);
+                      }
+                    }}
+                    disabled={uploadingDocId === doc.id}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10"
+                  />
+                  {uploadingDocId === doc.id ? (
+                    <>
+                      <Upload className="w-6 h-6 text-[#1E70E8] animate-bounce mx-auto mb-1" />
+                      <p className="text-xs text-gray-600">Uploading...</p>
+                    </>
+                  ) : doc.fileUrl ? (
+                    <>
+                      <CheckCircle className="w-6 h-6 text-green-500 mx-auto mb-1" />
+                      <p className="text-xs text-green-700 font-medium">Uploaded Successfully</p>
+                      <p className="text-[10px] text-green-600">Click to replace</p>
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-6 h-6 text-gray-400 mx-auto mb-1" />
+                      <p className="text-xs text-gray-600">Click to upload</p>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -186,6 +274,8 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
             <label className="flex items-start gap-3 p-4 bg-white/10 border border-[#FFC107] rounded-lg cursor-pointer hover:bg-white/20 transition-colors">
               <input
                 type="checkbox"
+                checked={authorizationChecked}
+                onChange={(e) => setAuthorizationChecked(e.target.checked)}
                 className="mt-1 text-[#FFC107] bg-white/20 border-[#FFC107] rounded focus:ring-[#FFC107]"
               />
               <span className="text-white font-medium">I authorize this event creation.</span>
@@ -194,15 +284,11 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
             <div className="mt-4 pt-4 border-t border-white/20 grid grid-cols-2 gap-4">
               <div>
                 <div className="text-xs text-gray-400 mb-1">Adviser Name</div>
-                <div className="text-white font-medium">Riselle Mae B. Lucanas</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Employee ID</div>
-                <div className="text-white font-medium">EMP-2024-0156</div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-400 mb-1">Position Title</div>
                 <div className="text-white font-medium">SAO Adviser</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Role</div>
+                <div className="text-white font-medium">System Administrator</div>
               </div>
               <div>
                 <div className="text-xs text-gray-400 mb-1">Authorization Date</div>
@@ -215,8 +301,8 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
       </div>
 
       {/* Right Panel - Compliance Metrics */}
-      <div>
-        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm sticky top-0">
+      <div className="sticky top-0 h-fit">
+        <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
           <h4 className="font-bold text-gray-900 mb-3">Compliance Overview</h4>
 
           <div className="space-y-4">
@@ -261,26 +347,6 @@ export default function Step6Documents({ data, onUpdate }: Step6Props) {
                     </div>
                   </>
                 )}
-              </div>
-            </div>
-
-            <div className="border border-gray-200 rounded-lg p-3">
-              <div className="text-xs font-bold text-gray-700 mb-3">Previous Events Audit</div>
-              <div className="text-xs text-gray-600 mb-2">Hosting Organization's Recent Compliance</div>
-              <div className="space-y-2">
-                {[
-                  { name: 'Tech Summit 2026', score: 95 },
-                  { name: 'Coding Bootcamp', score: 88 },
-                  { name: 'Career Fair', score: 92 },
-                ].map((event, index) => (
-                  <div key={index} className="flex items-center justify-between py-1.5">
-                    <span className="text-xs text-gray-700">{event.name}</span>
-                    <div className={`w-3 h-3 rounded-full ${
-                      event.score >= 90 ? 'bg-green-500' :
-                      event.score >= 80 ? 'bg-amber-500' : 'bg-red-500'
-                    }`} />
-                  </div>
-                ))}
               </div>
             </div>
 

@@ -959,3 +959,202 @@ Display timestamps using `date-fns` (already installed):
 import { format } from 'date-fns';
 const display = format(doc.createdAt.toDate(), 'MMM dd, yyyy hh:mm a');
 ```
+
+---
+
+<!-- AGENT-UPDATED: 2026-06-19 — Added event_types, event_categories, venues for Event Configuration -->
+
+### 1.8 `event_types`
+
+**Path:** `/event_types/{typeId}`
+
+```typescript
+interface EventTypeDocument {
+  id: string;                              // Auto-generated Firestore document ID
+  name: string;                            // e.g., "Academic", "Social"
+  color: string;                           // hex color code
+  archived: boolean;                       // Soft delete flag
+  
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `archived` ASC, `name` ASC
+
+---
+
+### 1.9 `event_categories`
+
+**Path:** `/event_categories/{categoryId}`
+
+```typescript
+interface EventCategoryDocument {
+  id: string;                              // Auto-generated Firestore document ID
+  name: string;                            // e.g., "Seminar / Webinar"
+  typeId: string;                          // FK → /event_types
+  archived: boolean;                       // Soft delete flag
+  
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `archived` ASC, `name` ASC
+- `typeId` ASC
+
+---
+
+### 1.10 `venues`
+
+**Path:** `/venues/{venueId}`
+
+```typescript
+interface VenueDocument {
+  id: string;                              // Auto-generated Firestore document ID
+  name: string;                            // e.g., "Main Auditorium"
+  capacity: number;                        // e.g., 500
+  facilities: string[];                    // Array of dynamic facilities
+  status: 'available' | 'maintenance' | 'reserved';
+  archived: boolean;                       // Soft delete flag
+  
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `archived` ASC, `name` ASC
+
+---
+
+<!-- AGENT-UPDATED: 2026-06-19 — Added events collection for multi-step event creation -->
+
+### 1.11 `events`
+
+**Path:** `/events/{eventId}`
+
+```typescript
+interface EventDocument {
+  // ─── Identity ───
+  id: string;
+  referenceId: string;                     // e.g., "EVT-ADM-2026-0018"
+  title: string;
+  tagline: string | null;
+  description: string;
+  objectives: string[];
+  bannerImageUrl: string | null;
+  thumbnailUrl: string | null;
+
+  // ─── Classification ───
+  eventTypeId: string;                     // FK → /event_types
+  eventCategoryId: string;                 // FK → /event_categories
+  hostingOrgId: string;                    // FK → /organizations
+
+  // ─── Academic Context ───
+  semesterId: string;                      // FK → /semesters
+  schoolYear: string;                      // auto-derived from active semester
+
+  // ─── Schedule ───
+  sessions: EventSession[];
+  venueId: string;                         // FK → /venues
+  eventFormat: 'On-Campus' | 'Online' | 'Hybrid';
+
+  // ─── Participants ───
+  targetYearLevels: string[];
+  targetDepartmentIds: string[];           // FK[] → /departments
+  expectedParticipantCount: number;
+
+  // ─── Attendance ───
+  attendanceEnabled: boolean;              // toggle: Required / Not Required
+  minAttendancePercent: number | null;
+  lateThresholdMinutes: number | null;
+  gracePeriodMinutes: number | null;
+  latePenaltyAmount: number | null;        // ₱ — replaces "Attendance Weight"
+
+  // ─── Certificates ───
+  certificatesEnabled: boolean;            // toggle: Required / Not Required
+  autoIssueCertificates: boolean;
+  certificateSignatory: string | null;
+
+  // ─── Payables ───
+  studentPayablesEnabled: boolean;
+  suggestedFeePerStudent: number | null;
+  adminFeeOverride: number | null;
+  totalExpectedCollection: number | null;
+
+  // ─── Staff ───
+  supervisorId: string;                    // SAO Adviser UID
+  scanners: EventScanner[];
+
+  // ─── Budget ───
+  budgetItems: BudgetLineItem[];
+  totalApprovedBudget: number;
+
+  // ─── Documents ───
+  documents: EventDocumentFile[];
+
+  // ─── Settings ───
+  enableQRTickets: boolean;
+  mandatoryAttendance: boolean;
+  lockAfterApproval: boolean;
+  scannerActivationCode: string;           // auto-generated 6-digit code
+
+  // ─── Lifecycle ───
+  proposalStatus: 'draft' | 'approved';    // admin-created events are always 'approved'
+  createdBy: string;                       // SAO Adviser UID
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+interface EventSession {
+  id: string;
+  title: string;
+  date: string;                            // ISO YYYY-MM-DD
+  startTime: string;                       // HH:mm
+  endTime: string;                         // HH:mm
+  timeInOpen: string;
+  timeInClose: string;
+  hasTimeOut: boolean;
+  timeOutOpen: string | null;
+  timeOutClose: string | null;
+}
+
+interface EventScanner {
+  id: string;
+  officerName: string;
+  officerUserId: string | null;
+  fullAccess: boolean;
+  canCheckIn: boolean;
+  canCheckOut: boolean;
+  canViewList: boolean;
+  canEditRecords: boolean;
+  allowManualAttendance: boolean;
+}
+
+interface BudgetLineItem {
+  id: string;
+  item: string;
+  description: string;
+  quantity: number;
+  unitCost: number;
+  approvedAmount: number;
+  status: 'approved' | 'reduced' | 'rejected' | 'pending';
+}
+
+interface EventDocumentFile {
+  id: string;
+  name: string;
+  fileUrl: string | null;
+  required: boolean;
+}
+```
+
+**Indexes Required:**
+- `proposalStatus` ASC, `createdAt` DESC
+- `hostingOrgId` ASC, `proposalStatus` ASC

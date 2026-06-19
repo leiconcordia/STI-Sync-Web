@@ -40,7 +40,7 @@ Section B — Organization Assignment:
 Hosting Organization (full dropdown showing ALL registered organizations — org avatar, name, type badge, member count, adviser name. A search input at the top of the dropdown for quick filtering.)
 Co-hosting Organizations (multi-select dropdown, can add multiple orgs)
 Assigned Officer-in-Charge (student search input — auto-suggests officers from the selected hosting org. Shows avatar chip + name + role on selection.)
-Fast-Track Creation toggle (admin-only, Violet toggle): "Bypass standard review protocols and immediately publish this event." When ON: a prominent Golden Yellow #FFD41C banner appears: "⚡ Fast-Track Active — This event will be published immediately upon creation without entering the review queue."
+
 
 Section C — Event Identity:
 Same fields as Form 1 (Title, Subtitle, Description, Objectives tag input) but without the "Proposal Reference" framing. Labels are direct: "Event Title", "Event Tagline", etc.
@@ -79,7 +79,7 @@ Session Status override (dropdown per session): Active, Postponed, Cancelled. Po
 
 Section D — Venue Assignment (not a request — a direct assignment):
 
-Event Format: same segmented toggle.
+
 Venue (same dropdown but labeled "Venue Assignment" not "Venue Request"). No amber "subject to approval" note — this is a final assignment.
 Admin-only: "Override Capacity Limit" toggle — allows exceeding venue capacity with a red warning: "Overriding venue capacity. Ensure safety protocols are in place."
 Admin-only: "Reserve Venue Exclusively" toggle — blocks the venue on all other event proposals for the selected dates.
@@ -122,8 +122,7 @@ Left Panel — Form:
 Section A — Event Core Team:
 Same role assignment rows. Admin-only differences:
 
-The student search input searches across ALL students in the system (not just org members).
-An "Override Eligibility" toggle per role: "Assign student regardless of organization membership." Shows an amber note when active.
+
 Admin can assign themselves (SAO Adviser) as Event Supervisor — a unique role that appears at the top of the org chart above Event Head.
 
 Section B — Scanner Assignment:

@@ -1,33 +1,9 @@
 import { useState } from 'react';
 import { Plus, Archive, RotateCcw, Trash2, Edit2, X, AlertTriangle } from 'lucide-react';
+import { useEventTypesStream, useEventCategoriesStream, useVenuesStream, useEventConfigMutations, EventTypeDocument, EventCategoryDocument, VenueDocument } from '@/app/modules/events';
 
 interface EventConfigurationProps {
   onUnsavedChange: () => void;
-}
-
-interface EventType {
-  id: string;
-  name: string;
-  color: string;
-  requiresSpecialApproval: boolean;
-  defaultAttendanceRule: string;
-  archived: boolean;
-}
-
-interface EventCategory {
-  id: string;
-  name: string;
-  typeId: string;
-  archived: boolean;
-}
-
-interface Venue {
-  id: string;
-  name: string;
-  capacity: number;
-  facilities: string[];
-  status: 'available' | 'maintenance' | 'reserved';
-  archived: boolean;
 }
 
 type SubTab = 'types' | 'categories' | 'venues';
@@ -35,44 +11,23 @@ type SubTab = 'types' | 'categories' | 'venues';
 type ModalState =
   | { type: 'none' }
   | { type: 'add-type' }
-  | { type: 'edit-type'; item: EventType }
-  | { type: 'archive-type'; item: EventType }
-  | { type: 'restore-type'; item: EventType }
-  | { type: 'delete-type'; item: EventType }
+  | { type: 'edit-type'; item: EventTypeDocument }
+  | { type: 'archive-type'; item: EventTypeDocument }
+  | { type: 'restore-type'; item: EventTypeDocument }
+  | { type: 'delete-type'; item: EventTypeDocument }
   | { type: 'add-cat' }
-  | { type: 'edit-cat'; item: EventCategory }
-  | { type: 'archive-cat'; item: EventCategory }
-  | { type: 'restore-cat'; item: EventCategory }
-  | { type: 'delete-cat'; item: EventCategory }
+  | { type: 'edit-cat'; item: EventCategoryDocument }
+  | { type: 'archive-cat'; item: EventCategoryDocument }
+  | { type: 'restore-cat'; item: EventCategoryDocument }
+  | { type: 'delete-cat'; item: EventCategoryDocument }
   | { type: 'add-venue' }
-  | { type: 'edit-venue'; item: Venue }
-  | { type: 'archive-venue'; item: Venue }
-  | { type: 'restore-venue'; item: Venue }
-  | { type: 'delete-venue'; item: Venue };
+  | { type: 'edit-venue'; item: VenueDocument }
+  | { type: 'archive-venue'; item: VenueDocument }
+  | { type: 'restore-venue'; item: VenueDocument }
+  | { type: 'delete-venue'; item: VenueDocument };
 
 const COLORS = ['#001A4D', '#1E70E8', '#83358E', '#22C55E', '#FFC107', '#EF4444', '#F97316', '#0EA5E9'];
-const ATTENDANCE_RULES = ['QR Scan In Only', 'QR Scan In + Out', 'Manual Entry', 'Auto-mark All'];
 const FACILITY_OPTIONS = ['Projector', 'Sound System', 'Air Conditioning', 'Stage', 'Whiteboard', 'Podium', 'Lighting', 'Tables & Chairs'];
-
-const INIT_TYPES: EventType[] = [
-  { id: 't1', name: 'Academic', color: '#1E70E8', requiresSpecialApproval: false, defaultAttendanceRule: 'QR Scan In Only', archived: false },
-  { id: 't2', name: 'Social', color: '#22C55E', requiresSpecialApproval: false, defaultAttendanceRule: 'QR Scan In + Out', archived: false },
-  { id: 't3', name: 'Cultural', color: '#FFC107', requiresSpecialApproval: true, defaultAttendanceRule: 'QR Scan In + Out', archived: false },
-  { id: 't4', name: 'Fundraising', color: '#83358E', requiresSpecialApproval: true, defaultAttendanceRule: 'Manual Entry', archived: false },
-];
-
-const INIT_CATS: EventCategory[] = [
-  { id: 'c1', name: 'Seminar / Webinar', typeId: 't1', archived: false },
-  { id: 'c2', name: 'Competition', typeId: 't1', archived: false },
-  { id: 'c3', name: 'Party / Celebration', typeId: 't2', archived: false },
-  { id: 'c4', name: 'Cultural Night', typeId: 't3', archived: false },
-];
-
-const INIT_VENUES: Venue[] = [
-  { id: 'v1', name: 'Main Auditorium', capacity: 500, facilities: ['Projector', 'Sound System', 'Air Conditioning', 'Stage', 'Lighting'], status: 'available', archived: false },
-  { id: 'v2', name: 'Conference Room A', capacity: 40, facilities: ['Projector', 'Air Conditioning', 'Whiteboard'], status: 'available', archived: false },
-  { id: 'v3', name: 'Gymnasium', capacity: 800, facilities: ['Sound System', 'Stage', 'Lighting'], status: 'maintenance', archived: false },
-];
 
 function ActiveArchivedTabs({ active, onChange }: { active: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -91,9 +46,11 @@ function ActiveArchivedTabs({ active, onChange }: { active: boolean; onChange: (
 
 export default function EventConfiguration({ onUnsavedChange }: EventConfigurationProps) {
   const [subTab, setSubTab] = useState<SubTab>('types');
-  const [eventTypes, setEventTypes] = useState<EventType[]>(INIT_TYPES);
-  const [categories, setCategories] = useState<EventCategory[]>(INIT_CATS);
-  const [venues, setVenues] = useState<Venue[]>(INIT_VENUES);
+  
+  const { eventTypes, loading: loadingTypes } = useEventTypesStream();
+  const { categories, loading: loadingCats } = useEventCategoriesStream();
+  const { venues, loading: loadingVenues } = useVenuesStream();
+  const mutations = useEventConfigMutations();
 
   const [typeArchivedView, setTypeArchivedView] = useState(false);
   const [catArchivedView, setCatArchivedView] = useState(false);
@@ -103,12 +60,12 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
   const [modal, setModal] = useState<ModalState>({ type: 'none' });
   const [deleteText, setDeleteText] = useState('');
 
-  const [typeForm, setTypeForm] = useState({ name: '', color: '#1E70E8', requiresSpecialApproval: false, defaultAttendanceRule: 'QR Scan In Only' });
+  const [typeForm, setTypeForm] = useState({ name: '', color: '#1E70E8' });
   const [catForm, setCatForm] = useState({ name: '', typeId: '' });
-  const [venueForm, setVenueForm] = useState({ name: '', capacity: 50, facilities: [] as string[], status: 'available' as Venue['status'] });
+  const [venueForm, setVenueForm] = useState({ name: '', capacity: 50, facilities: [] as string[], status: 'available' as VenueDocument['status'] });
+  const [customFacility, setCustomFacility] = useState('');
 
-  const close = () => { setModal({ type: 'none' }); setDeleteText(''); };
-  const change = () => onUnsavedChange();
+  const close = () => { setModal({ type: 'none' }); setDeleteText(''); setCustomFacility(''); };
 
   const activeTypes = eventTypes.filter(t => !t.archived);
   const archivedTypes = eventTypes.filter(t => t.archived);
@@ -120,28 +77,41 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
   const getTypeName = (id: string) => eventTypes.find(t => t.id === id)?.name ?? '—';
   const getTypeColor = (id: string) => eventTypes.find(t => t.id === id)?.color ?? '#ccc';
 
-  const statusPill = (s: Venue['status']) =>
+  const statusPill = (s: VenueDocument['status']) =>
     s === 'available' ? 'bg-green-100 text-green-700' :
     s === 'maintenance' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700';
 
   const toggleFacility = (f: string) =>
     setVenueForm(p => ({ ...p, facilities: p.facilities.includes(f) ? p.facilities.filter(x => x !== f) : [...p.facilities, f] }));
 
-  const saveType = () => {
-    if (modal.type === 'add-type') setEventTypes([...eventTypes, { id: `t${Date.now()}`, ...typeForm, archived: false }]);
-    else if (modal.type === 'edit-type') setEventTypes(eventTypes.map(t => t.id === modal.item.id ? { ...t, ...typeForm } : t));
-    change(); close();
+  const handleAddCustomFacility = () => {
+    if (customFacility.trim() && !venueForm.facilities.includes(customFacility.trim())) {
+      setVenueForm(p => ({ ...p, facilities: [...p.facilities, customFacility.trim()] }));
+      setCustomFacility('');
+    }
   };
-  const saveCat = () => {
-    if (modal.type === 'add-cat') setCategories([...categories, { id: `c${Date.now()}`, ...catForm, archived: false }]);
-    else if (modal.type === 'edit-cat') setCategories(categories.map(c => c.id === modal.item.id ? { ...c, ...catForm } : c));
-    change(); close();
+
+  const saveType = async () => {
+    if (modal.type === 'add-type') await mutations.createEventType({ ...typeForm, archived: false });
+    else if (modal.type === 'edit-type') await mutations.updateEventType(modal.item.id, typeForm);
+    close();
   };
-  const saveVenue = () => {
-    if (modal.type === 'add-venue') setVenues([...venues, { id: `v${Date.now()}`, ...venueForm, archived: false }]);
-    else if (modal.type === 'edit-venue') setVenues(venues.map(v => v.id === modal.item.id ? { ...v, ...venueForm } : v));
-    change(); close();
+  const saveCat = async () => {
+    if (modal.type === 'add-cat') await mutations.createEventCategory({ ...catForm, archived: false });
+    else if (modal.type === 'edit-cat') await mutations.updateEventCategory(modal.item.id, catForm);
+    close();
   };
+  const saveVenue = async () => {
+    if (modal.type === 'add-venue') await mutations.createVenue({ ...venueForm, archived: false });
+    else if (modal.type === 'edit-venue') await mutations.updateVenue(modal.item.id, venueForm);
+    close();
+  };
+
+  const isLoading = loadingTypes || loadingCats || loadingVenues;
+
+  if (isLoading) {
+    return <div className="p-8 text-center text-gray-500">Loading configuration...</div>;
+  }
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -167,7 +137,7 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
               <h3 className="font-bold text-[#001A4D]">Event Types</h3>
               <ActiveArchivedTabs active={typeArchivedView} onChange={setTypeArchivedView} />
             </div>
-            <button onClick={() => { setTypeForm({ name: '', color: '#1E70E8', requiresSpecialApproval: false, defaultAttendanceRule: 'QR Scan In Only' }); setModal({ type: 'add-type' }); }}
+            <button onClick={() => { setTypeForm({ name: '', color: '#1E70E8' }); setModal({ type: 'add-type' }); }}
               className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2">
               <Plus className="w-4 h-4" /> Add Type
             </button>
@@ -177,8 +147,6 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Type</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Color</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Special Approval</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Attendance Rule</th>
                 <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
               </tr>
             </thead>
@@ -194,16 +162,10 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${et.requiresSpecialApproval ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
-                      {et.requiresSpecialApproval ? 'Required' : 'Standard'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{et.defaultAttendanceRule}</td>
-                  <td className="px-4 py-3">
                     <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === et.id ? 'opacity-100' : 'opacity-0'}`}>
                       {!et.archived ? (
                         <>
-                          <button onClick={() => { setTypeForm({ name: et.name, color: et.color, requiresSpecialApproval: et.requiresSpecialApproval, defaultAttendanceRule: et.defaultAttendanceRule }); setModal({ type: 'edit-type', item: et }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8]"><Edit2 className="w-4 h-4" /></button>
+                          <button onClick={() => { setTypeForm({ name: et.name, color: et.color }); setModal({ type: 'edit-type', item: et }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8]"><Edit2 className="w-4 h-4" /></button>
                           <button onClick={() => setModal({ type: 'archive-type', item: et })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500"><Archive className="w-4 h-4" /></button>
                         </>
                       ) : (
@@ -217,7 +179,7 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 </tr>
               ))}
               {(typeArchivedView ? archivedTypes : activeTypes).length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400">No {typeArchivedView ? 'archived' : 'active'} event types.</td></tr>
+                <tr><td colSpan={3} className="px-4 py-8 text-center text-sm text-gray-400">No {typeArchivedView ? 'archived' : 'active'} event types.</td></tr>
               )}
             </tbody>
           </table>
@@ -375,25 +337,11 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                     ))}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Default Attendance Rule</label>
-                  <select value={typeForm.defaultAttendanceRule} onChange={e => setTypeForm({ ...typeForm, defaultAttendanceRule: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent">
-                    {ATTENDANCE_RULES.map(r => <option key={r}>{r}</option>)}
-                  </select>
-                </div>
-                <label className="flex items-center justify-between p-3 border border-gray-200 rounded-lg cursor-pointer">
-                  <span className="text-sm text-gray-700">Requires Special Approval</span>
-                  <button onClick={() => setTypeForm({ ...typeForm, requiresSpecialApproval: !typeForm.requiresSpecialApproval })}
-                    className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${typeForm.requiresSpecialApproval ? 'bg-[#001A4D]' : 'bg-gray-300'}`}>
-                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${typeForm.requiresSpecialApproval ? 'translate-x-5' : ''}`} />
-                  </button>
-                </label>
                 <div className="flex gap-3 pt-2">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={saveType} disabled={!typeForm.name}
+                  <button onClick={saveType} disabled={!typeForm.name || mutations.loading}
                     className={`flex-1 py-2.5 text-white rounded-xl text-sm font-bold disabled:opacity-40 ${modal.type === 'edit-type' ? 'bg-[#83358E] hover:bg-[#6D2A78]' : 'bg-[#001A4D] hover:bg-[#001A4D]/90'}`}>
-                    {modal.type === 'add-type' ? 'Save' : 'Save Changes'}
+                    {mutations.loading ? 'Saving...' : (modal.type === 'add-type' ? 'Save' : 'Save Changes')}
                   </button>
                 </div>
               </div>
@@ -433,9 +381,9 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 </div>
                 <div className="flex gap-3 pt-2">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={saveCat} disabled={!catForm.name || (!catForm.typeId && modal.type === 'add-cat')}
+                  <button onClick={saveCat} disabled={!catForm.name || (!catForm.typeId && modal.type === 'add-cat') || mutations.loading}
                     className={`flex-1 py-2.5 text-white rounded-xl text-sm font-bold disabled:opacity-40 ${modal.type === 'edit-cat' ? 'bg-[#83358E] hover:bg-[#6D2A78]' : 'bg-[#001A4D] hover:bg-[#001A4D]/90'}`}>
-                    {modal.type === 'add-cat' ? 'Save' : 'Save Changes'}
+                    {mutations.loading ? 'Saving...' : (modal.type === 'add-cat' ? 'Save' : 'Save Changes')}
                   </button>
                 </div>
               </div>
@@ -466,7 +414,7 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Status</label>
-                    <select value={venueForm.status} onChange={e => setVenueForm({ ...venueForm, status: e.target.value as Venue['status'] })}
+                    <select value={venueForm.status} onChange={e => setVenueForm({ ...venueForm, status: e.target.value as VenueDocument['status'] })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent">
                       <option value="available">Available</option>
                       <option value="maintenance">Maintenance</option>
@@ -476,20 +424,30 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Facilities</label>
-                  <div className="flex flex-wrap gap-2">
-                    {FACILITY_OPTIONS.map(f => (
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {/* Unique active facilities combining predefined and custom already added */}
+                    {Array.from(new Set([...FACILITY_OPTIONS, ...venueForm.facilities])).map(f => (
                       <button key={f} onClick={() => toggleFacility(f)}
                         className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${venueForm.facilities.includes(f) ? 'bg-[#001A4D] text-white border-[#001A4D]' : 'bg-white text-gray-600 border-gray-300 hover:border-[#001A4D]'}`}>
                         {f}
                       </button>
                     ))}
                   </div>
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={customFacility} onChange={e => setCustomFacility(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && handleAddCustomFacility()}
+                      className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent" placeholder="Other facility..." />
+                    <button onClick={handleAddCustomFacility} disabled={!customFacility.trim()}
+                      className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 disabled:opacity-50">
+                      Add
+                    </button>
+                  </div>
                 </div>
                 <div className="flex gap-3 pt-2">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={saveVenue} disabled={!venueForm.name}
+                  <button onClick={saveVenue} disabled={!venueForm.name || mutations.loading}
                     className={`flex-1 py-2.5 text-white rounded-xl text-sm font-bold disabled:opacity-40 ${modal.type === 'edit-venue' ? 'bg-[#83358E] hover:bg-[#6D2A78]' : 'bg-[#001A4D] hover:bg-[#001A4D]/90'}`}>
-                    {modal.type === 'add-venue' ? 'Save' : 'Save Changes'}
+                    {mutations.loading ? 'Saving...' : (modal.type === 'add-venue' ? 'Save' : 'Save Changes')}
                   </button>
                 </div>
               </div>
@@ -507,12 +465,14 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 <p className="text-sm text-gray-700 mb-4">Archive <span className="font-bold">{modal.item.name}</span>? It can be restored later.</p>
                 <div className="flex gap-3">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={() => {
-                    if (modal.type === 'archive-type') setEventTypes(eventTypes.map(t => t.id === modal.item.id ? { ...t, archived: true } : t));
-                    else if (modal.type === 'archive-cat') setCategories(categories.map(c => c.id === modal.item.id ? { ...c, archived: true } : c));
-                    else if (modal.type === 'archive-venue') setVenues(venues.map(v => v.id === modal.item.id ? { ...v, archived: true } : v));
-                    change(); close();
-                  }} className="flex-1 py-2.5 bg-amber-500 text-white rounded-xl text-sm font-bold hover:bg-amber-600">Archive</button>
+                  <button onClick={async () => {
+                    if (modal.type === 'archive-type') await mutations.archiveEventType(modal.item.id);
+                    else if (modal.type === 'archive-cat') await mutations.archiveEventCategory(modal.item.id);
+                    else if (modal.type === 'archive-venue') await mutations.archiveVenue(modal.item.id);
+                    close();
+                  }} disabled={mutations.loading} className="flex-1 py-2.5 bg-amber-500 text-white rounded-xl text-sm font-bold hover:bg-amber-600 disabled:opacity-40">
+                    {mutations.loading ? 'Archiving...' : 'Archive'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -529,12 +489,14 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 <p className="text-sm text-gray-700 mb-4">Restore <span className="font-bold">{modal.item.name}</span> to active?</p>
                 <div className="flex gap-3">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={() => {
-                    if (modal.type === 'restore-type') setEventTypes(eventTypes.map(t => t.id === modal.item.id ? { ...t, archived: false } : t));
-                    else if (modal.type === 'restore-cat') setCategories(categories.map(c => c.id === modal.item.id ? { ...c, archived: false } : c));
-                    else if (modal.type === 'restore-venue') setVenues(venues.map(v => v.id === modal.item.id ? { ...v, archived: false } : v));
-                    change(); close();
-                  }} className="flex-1 py-2.5 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700">Restore</button>
+                  <button onClick={async () => {
+                    if (modal.type === 'restore-type') await mutations.restoreEventType(modal.item.id);
+                    else if (modal.type === 'restore-cat') await mutations.restoreEventCategory(modal.item.id);
+                    else if (modal.type === 'restore-venue') await mutations.restoreVenue(modal.item.id);
+                    close();
+                  }} disabled={mutations.loading} className="flex-1 py-2.5 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700 disabled:opacity-40">
+                    {mutations.loading ? 'Restoring...' : 'Restore'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -559,13 +521,15 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 </div>
                 <div className="flex gap-3">
                   <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                  <button onClick={() => {
-                    if (modal.type === 'delete-type') setEventTypes(eventTypes.filter(t => t.id !== modal.item.id));
-                    else if (modal.type === 'delete-cat') setCategories(categories.filter(c => c.id !== modal.item.id));
-                    else if (modal.type === 'delete-venue') setVenues(venues.filter(v => v.id !== modal.item.id));
-                    change(); close();
-                  }} disabled={deleteText !== 'DELETE'}
-                    className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-40">Delete Forever</button>
+                  <button onClick={async () => {
+                    if (modal.type === 'delete-type') await mutations.deleteEventTypeForever(modal.item.id);
+                    else if (modal.type === 'delete-cat') await mutations.deleteEventCategoryForever(modal.item.id);
+                    else if (modal.type === 'delete-venue') await mutations.deleteVenueForever(modal.item.id);
+                    close();
+                  }} disabled={deleteText !== 'DELETE' || mutations.loading}
+                    className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-40">
+                    {mutations.loading ? 'Deleting...' : 'Delete Forever'}
+                  </button>
                 </div>
               </div>
             </div>
@@ -575,3 +539,4 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
     </div>
   );
 }
+
