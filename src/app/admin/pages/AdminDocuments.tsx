@@ -1,67 +1,23 @@
-import { useState } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useNavigate } from "react-router";
 import {
   Radio, Clock, CheckCircle, XCircle, Send, Building2,
   Eye, Download, Check, X, Search, Save, FileText,
-  Upload, AlertCircle, ChevronDown, Users,
+  Upload, AlertCircle, ChevronDown, Users, Loader2,
 } from "lucide-react";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-type DocStatus = "Pending" | "Approved" | "Rejected" | "Resubmitted" | "Draft" | "Info Requested";
-type AdminTab = "incoming" | "sent";
-
-interface IncomingDoc {
-  id: string;
-  ref: string;
-  title: string;
-  org: string;
-  orgType: string;
-  orgInitials: string;
-  category: string;
-  submittedBy: string;
-  fileType: "PDF" | "DOCX";
-  fileSize: string;
-  dateSubmitted: string;
-  relativeTime: string;
-  daysInQueue: number;
-  status: DocStatus;
-}
-
-interface SentDoc {
-  id: string;
-  ref: string;
-  title: string;
-  category: string;
-  dateSent: string;
-  sentTo: string;
-  orgCount: number;
-  orgsOpened: number;
-  fileType: "PDF" | "DOCX";
-}
-
-// ─── Mock Data ─────────────────────────────────────────────────────────────────
-const MOCK_INCOMING: IncomingDoc[] = [
-  { id: "1", ref: "DOC-2026-0092", title: "Activity Letter for Cultural Night 2026", org: "STI Dance Company", orgType: "Cultural", orgInitials: "DC", category: "Activity Letter", submittedBy: "Ana Reyes", fileType: "PDF", fileSize: "1.1 MB", dateSubmitted: "Mar 18, 2026", relativeTime: "1 day ago", daysInQueue: 1, status: "Pending" },
-  { id: "2", ref: "DOC-2026-0091", title: "Event Proposal — Foundation Day 2026", org: "Supreme Student Government", orgType: "Governing", orgInitials: "SS", category: "Event Proposal", submittedBy: "Carlo Mendoza", fileType: "DOCX", fileSize: "980 KB", dateSubmitted: "Mar 18, 2026", relativeTime: "1 day ago", daysInQueue: 1, status: "Resubmitted" },
-  { id: "3", ref: "DOC-2026-0089", title: "Activity Letter for IT Guild GenAss 2026", org: "STI IT Guild", orgType: "Academic", orgInitials: "IG", category: "Activity Letter", submittedBy: "Juan Dela Cruz", fileType: "PDF", fileSize: "1.2 MB", dateSubmitted: "Mar 15, 2026", relativeTime: "4 days ago", daysInQueue: 4, status: "Approved" },
-  { id: "4", ref: "DOC-2026-0088", title: "Waiver Form for Sports Fest Participants", org: "STI IT Guild", orgType: "Academic", orgInitials: "IG", category: "Waiver", submittedBy: "Maria Santos", fileType: "PDF", fileSize: "845 KB", dateSubmitted: "Mar 10, 2026", relativeTime: "9 days ago", daysInQueue: 9, status: "Rejected" },
-  { id: "5", ref: "DOC-2026-0086", title: "JPIA Accreditation Paper 2025–2026", org: "Junior Philippine Institute of Accountants", orgType: "Professional", orgInitials: "JP", category: "Accreditation Paper", submittedBy: "Lisa Gomez", fileType: "PDF", fileSize: "3.4 MB", dateSubmitted: "Mar 5, 2026", relativeTime: "2 weeks ago", daysInQueue: 14, status: "Pending" },
-  { id: "6", ref: "DOC-2026-0083", title: "Q1 Financial Report — ROTC Corps 2026", org: "ROTC Corps", orgType: "Civic", orgInitials: "RC", category: "Financial Report", submittedBy: "Rey Castillo", fileType: "DOCX", fileSize: "2.2 MB", dateSubmitted: "Feb 28, 2026", relativeTime: "3 weeks ago", daysInQueue: 19, status: "Pending" },
-];
-
-const MOCK_SENT: SentDoc[] = [
-  { id: "s1", ref: "SAS-2026-0015", title: "Updated Activity Letter Template 2026", category: "Approved Template", dateSent: "Mar 16, 2026", sentTo: "All Organizations", orgCount: 12, orgsOpened: 8, fileType: "PDF" },
-  { id: "s2", ref: "SAS-2026-0014", title: "Campus Policy Memo No. 12-2026", category: "Memo", dateSent: "Mar 10, 2026", sentTo: "All Organizations", orgCount: 12, orgsOpened: 12, fileType: "PDF" },
-  { id: "s3", ref: "SAS-2026-0012", title: "SAS Guidelines on Event Documentation", category: "Guidelines", dateSent: "Feb 28, 2026", sentTo: "STI IT Guild", orgCount: 1, orgsOpened: 1, fileType: "DOCX" },
-];
-
-const ORGS = [
-  { name: "STI IT Guild", type: "Academic", initials: "IG" },
-  { name: "Supreme Student Government", type: "Governing", initials: "SS" },
-  { name: "JPIA", type: "Professional", initials: "JP" },
-  { name: "ROTC Corps", type: "Civic", initials: "RC" },
-  { name: "STI Dance Company", type: "Cultural", initials: "DC" },
-];
+import { useDocumentCategories } from '../../modules/documents/hooks/useDocumentCategories';
+import { useIncomingDocuments, useSentDocuments } from '../../modules/documents/hooks/useDocumentStream';
+import { createDocument, reviewDocument, getNextReferenceNumber } from '../../modules/documents/services/document.service';
+import { DocumentPreviewModal } from '../../modules/documents/components/DocumentPreviewModal';
+import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
+import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
+import { uploadToCloudinary } from '../../../services/cloudinary';
+import { inferFileType, DOCUMENT_ACCEPTED_TYPES, DOCUMENT_MAX_BYTES } from '../../modules/documents/types/document.types';
+import type { DocumentDocument, DocStatus } from '../../modules/documents/types/document.types';
+import { formatDistanceToNow, format } from 'date-fns';
+import { Timestamp } from 'firebase/firestore';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const CATEGORY_COLORS: Record<string, string> = {
@@ -82,8 +38,9 @@ function CategoryPill({ category }: { category: string }) {
   return <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${cls}`}>{category}</span>;
 }
 
-function FileChip({ type }: { type: "PDF" | "DOCX" }) {
-  return <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${type === "PDF" ? "bg-red-500 text-white" : "bg-blue-600 text-white"}`}>{type}</span>;
+function FileChip({ type }: { type: string }) {
+  const isPdf = type === "PDF";
+  return <span className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${isPdf ? "bg-red-500 text-white" : "bg-blue-600 text-white"}`}>{type}</span>;
 }
 
 function StatusPill({ status }: { status: DocStatus }) {
@@ -93,15 +50,25 @@ function StatusPill({ status }: { status: DocStatus }) {
     Rejected: { cls: "bg-red-100 text-red-700", label: "Rejected" },
     Resubmitted: { cls: "bg-blue-100 text-blue-700", label: "Resubmitted" },
     Draft: { cls: "bg-gray-100 text-gray-600", label: "Draft" },
-    "Info Requested": { cls: "bg-blue-100 text-blue-700", label: "Info Requested" },
   };
-  const { cls, label } = map[status];
+  const { cls, label } = map[status] ?? { cls: "bg-gray-100 text-gray-600", label: status };
   return <span className={`px-2.5 py-1 text-xs rounded-full font-medium ${cls}`}>{label}</span>;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.round(bytes / 1024)} KB`;
+}
+
+function toDate(ts: Timestamp | undefined | null): Date | null {
+  if (!ts) return null;
+  return ts.toDate();
+}
+
 // ─── Quick Action Popovers ─────────────────────────────────────────────────────
-function QuickApprovePopover({ doc, onClose, onApprove }: { doc: IncomingDoc; onClose: () => void; onApprove: () => void }) {
+function QuickApprovePopover({ doc, onClose, onApprove }: { doc: DocumentDocument; onClose: () => void; onApprove: (remarks: string) => void }) {
   const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
   return (
     <div className="absolute right-0 top-full mt-1 w-72 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-30 overflow-hidden">
       <div className="h-8 bg-gradient-to-r from-green-500 to-green-400 flex items-center gap-2 px-3">
@@ -109,25 +76,22 @@ function QuickApprovePopover({ doc, onClose, onApprove }: { doc: IncomingDoc; on
         <p className="text-white font-bold text-xs">Quick Approve?</p>
       </div>
       <div className="p-3 space-y-3">
-        <p className="text-[#001A4D] text-xs">Approve <strong>{doc.title.slice(0, 30)}...</strong> from <strong>{doc.org}</strong>?</p>
-        <textarea
-          rows={3}
-          placeholder="Optional approval remarks..."
-          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none"
-          value={remarks}
-          onChange={(e) => setRemarks(e.target.value)}
-        />
+        <p className="text-[#001A4D] text-xs">Approve <strong>{doc.title.slice(0, 30)}...</strong> from <strong>{doc.submittedByOrgName}</strong>?</p>
+        <textarea rows={3} placeholder="Optional approval remarks..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
         <div className="flex items-center justify-between">
           <button onClick={onClose} className="text-gray-500 text-xs hover:text-gray-700">Cancel</button>
-          <button onClick={onApprove} className="px-3 py-1.5 bg-gradient-to-r from-green-500 to-green-400 text-white text-xs font-bold rounded-lg">Approve</button>
+          <button disabled={saving} onClick={async () => { setSaving(true); await onApprove(remarks); setSaving(false); }} className="px-3 py-1.5 bg-gradient-to-r from-green-500 to-green-400 text-white text-xs font-bold rounded-lg disabled:opacity-50">
+            {saving ? "Approving..." : "Approve"}
+          </button>
         </div>
       </div>
     </div>
   );
 }
 
-function QuickRejectPopover({ doc, onClose, onReject }: { doc: IncomingDoc; onClose: () => void; onReject: () => void }) {
+function QuickRejectPopover({ doc, onClose, onReject }: { doc: DocumentDocument; onClose: () => void; onReject: (remarks: string) => void }) {
   const [remarks, setRemarks] = useState("");
+  const [saving, setSaving] = useState(false);
   const canReject = remarks.trim().length >= 10;
   return (
     <div className="absolute right-0 top-full mt-1 w-80 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-30 overflow-hidden">
@@ -136,23 +100,17 @@ function QuickRejectPopover({ doc, onClose, onReject }: { doc: IncomingDoc; onCl
         <p className="text-white font-bold text-xs">Quick Reject</p>
       </div>
       <div className="p-3 space-y-3">
-        <p className="text-[#001A4D] text-xs"><strong>{doc.title.slice(0, 30)}...</strong> · {doc.org}</p>
-        <textarea
-          rows={3}
-          placeholder="Rejection reason — required..."
-          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none ${!canReject && remarks.length > 0 ? "border-red-400" : "border-gray-300"}`}
-          value={remarks}
-          onChange={(e) => setRemarks(e.target.value)}
-        />
+        <p className="text-[#001A4D] text-xs"><strong>{doc.title.slice(0, 30)}...</strong> · {doc.submittedByOrgName}</p>
+        <textarea rows={3} placeholder="Rejection reason — required..." className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none ${!canReject && remarks.length > 0 ? "border-red-400" : "border-gray-300"}`} value={remarks} onChange={(e) => setRemarks(e.target.value)} />
         {remarks.length > 0 && !canReject && <p className="text-red-500 text-xs">Remarks must be at least 10 characters.</p>}
         <div className="flex items-center justify-between">
           <button onClick={onClose} className="text-gray-500 text-xs hover:text-gray-700">Cancel</button>
           <button
-            onClick={() => canReject && onReject()}
-            disabled={!canReject}
+            disabled={!canReject || saving}
+            onClick={async () => { setSaving(true); await onReject(remarks); setSaving(false); }}
             className={`px-3 py-1.5 text-white text-xs font-bold rounded-lg transition-colors ${canReject ? "bg-gradient-to-r from-red-500 to-orange-500" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
           >
-            Reject
+            {saving ? "Rejecting..." : "Reject"}
           </button>
         </div>
       </div>
@@ -162,20 +120,128 @@ function QuickRejectPopover({ doc, onClose, onReject }: { doc: IncomingDoc; onCl
 
 // ─── Broadcast Modal ───────────────────────────────────────────────────────────
 function BroadcastModal({ onClose }: { onClose: () => void }) {
+  const { data: docCategories } = useDocumentCategories();
+  const activeCategories = docCategories.filter(c => c.active);
+  const { data: orgs } = useOrganizationStream();
+  const { data: orgTypes } = useOrganizationTypes();
+  const { profile: adminProfile } = useAdviserProfile();
+  const { data: semesters } = useSemesters();
+  const activeSemester = semesters.find(s => s.status === 'ACTIVE');
+
   const [distribution, setDistribution] = useState<"all" | "specific" | "type">("all");
   const [selectedOrgs, setSelectedOrgs] = useState<string[]>([]);
-  const [fileUploaded, setFileUploaded] = useState(false);
+  const [selectedTypeId, setSelectedTypeId] = useState<string>("");
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [description, setDescription] = useState("");
   const [pushNotif, setPushNotif] = useState(true);
-  const [inAppNotif, setInAppNotif] = useState(true);
-  const [emailNotif, setEmailNotif] = useState(false);
   const [broadcast, setBroadcast] = useState(false);
+  const [broadcastRef, setBroadcastRef] = useState("");
+  const [broadcasting, setBroadcasting] = useState(false);
+  const [orgSearch, setOrgSearch] = useState("");
 
-  const orgCount = distribution === "all" ? 12 : distribution === "specific" ? selectedOrgs.length : 5;
-  const canBroadcast = title && fileUploaded && orgCount > 0;
+  // File upload state
+  const [uploadedFile, setUploadedFile] = useState<{ url: string; name: string; size: number } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const toggleOrg = (name: string) => setSelectedOrgs((p) => p.includes(name) ? p.filter((o) => o !== name) : [...p, name]);
+  const activeOrgs = orgs.filter(o => o.status === 'active');
+
+  const filteredOrgs = useMemo(() => {
+    let list = activeOrgs;
+    if (distribution === "type" && selectedTypeId) {
+      list = list.filter(o => o.typeId === selectedTypeId);
+    }
+    if (orgSearch.trim()) {
+      const s = orgSearch.toLowerCase();
+      list = list.filter(o => o.name.toLowerCase().includes(s) || o.acronym.toLowerCase().includes(s));
+    }
+    return list;
+  }, [activeOrgs, distribution, selectedTypeId, orgSearch]);
+
+  const targetOrgCount = distribution === "all"
+    ? activeOrgs.length
+    : distribution === "specific"
+      ? selectedOrgs.length
+      : selectedOrgs.length || filteredOrgs.length;
+
+  const canBroadcast = title && uploadedFile && targetOrgCount > 0 && !broadcasting;
+
+  const toggleOrg = (id: string) => setSelectedOrgs(p => p.includes(id) ? p.filter(o => o !== id) : [...p, id]);
+
+  const handleFileSelect = async (file: File) => {
+    setUploadError(null);
+    setUploading(true);
+    try {
+      const result = await uploadToCloudinary(file, {
+        folder: 'documents/broadcast',
+        acceptedTypes: DOCUMENT_ACCEPTED_TYPES,
+        maxBytes: DOCUMENT_MAX_BYTES,
+      });
+      setUploadedFile({ url: result.secureUrl, name: file.name, size: file.size });
+    } catch (err: any) {
+      setUploadError(err.message || 'Upload failed');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleBroadcast = async () => {
+    if (!canBroadcast || !uploadedFile || !adminProfile) return;
+    setBroadcasting(true);
+    try {
+      const refNum = await getNextReferenceNumber('SAS');
+      const resolvedTargetOrgIds = distribution === "all"
+        ? activeOrgs.map(o => o.id)
+        : distribution === "type"
+          ? (selectedOrgs.length > 0 ? selectedOrgs : filteredOrgs.map(o => o.id))
+          : selectedOrgs;
+
+      await createDocument({
+        type: 'broadcast',
+        title,
+        description,
+        category: category || '',
+        categoryId: categoryId || '',
+        fileUrl: uploadedFile.url,
+        fileName: uploadedFile.name,
+        fileType: inferFileType(uploadedFile.name),
+        fileSize: uploadedFile.size,
+        semesterId: activeSemester?.id ?? '',
+        academicYear: activeSemester?.academicYear ?? '',
+        semester: activeSemester?.semester ?? '',
+        referenceNumber: refNum,
+        // submission fields (unused for broadcast)
+        submittedBy: '',
+        submittedByEmail: '',
+        submittedByOrgId: '',
+        submittedByOrgName: '',
+        submittedByOrgAcronym: '',
+        submittedByOrgTypeId: '',
+        status: 'Approved',
+        remarks: null,
+        reviewedBy: null,
+        reviewedAt: null,
+        resubmissionOf: null,
+        resubmissionNote: null,
+        // broadcast fields
+        broadcastBy: adminProfile.displayName,
+        broadcastByUid: adminProfile.uid,
+        distribution,
+        targetOrgIds: resolvedTargetOrgIds,
+        targetOrgTypeId: distribution === 'type' ? selectedTypeId : null,
+        readBy: {},
+      });
+      setBroadcastRef(refNum);
+      setBroadcast(true);
+    } catch (err) {
+      console.error('Broadcast failed:', err);
+    } finally {
+      setBroadcasting(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -197,8 +263,8 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
             <div className="flex-1 bg-gradient-to-b from-[#001A4D] to-[#0E4EBD] flex flex-col items-center justify-center p-8 text-center">
               <Radio className="w-14 h-14 text-[#FFD41C] mb-4" />
               <p className="text-white font-bold text-xl mb-1">Document Broadcast Successful!</p>
-              <p className="text-white/90 text-sm mb-2">{orgCount} organizations notified.</p>
-              <p className="text-[#FFD41C] font-bold font-mono text-base">SAS-2026-0016</p>
+              <p className="text-white/90 text-sm mb-2">{targetOrgCount} organizations notified.</p>
+              <p className="text-[#FFD41C] font-bold font-mono text-base">{broadcastRef}</p>
             </div>
             <div className="px-6 py-4 border-t border-gray-200 flex gap-3">
               <button onClick={onClose} className="flex-1 py-2.5 border border-white/50 text-white bg-[#001A4D] rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 transition-colors">Broadcast Another</button>
@@ -220,16 +286,20 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Category</label>
-                    <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" value={category} onChange={(e) => setCategory(e.target.value)}>
+                    <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" value={category} onChange={(e) => {
+                      setCategory(e.target.value);
+                      const cat = activeCategories.find(c => c.name === e.target.value);
+                      setCategoryId(cat?.id ?? '');
+                    }}>
                       <option value="">Select category...</option>
-                      <option>Memo</option><option>Policy</option><option>Guidelines</option>
-                      <option>Approved Template</option><option>Signed Approval Form</option>
-                      <option>Announcement</option><option>Reminder</option><option>Report</option><option>Other</option>
+                      {activeCategories.map((cat) => (
+                        <option key={cat.id} value={cat.name}>{cat.name}</option>
+                      ))}
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Description / Message to Clubs</label>
-                    <textarea rows={3} placeholder="Add a message to accompany this document — clubs will see this in their inbox alongside the file." className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none" />
+                    <textarea rows={3} placeholder="Add a message to accompany this document — clubs will see this in their inbox alongside the file." className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent resize-none" value={description} onChange={(e) => setDescription(e.target.value)} />
                   </div>
                 </div>
               </div>
@@ -239,24 +309,34 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                 <div className="border-l-4 border-[#83358E] pl-3 mb-3">
                   <p className="text-[#001A4D] font-bold text-sm">File Attachment</p>
                 </div>
-                {fileUploaded ? (
+                <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xlsx,.xls,.jpg,.jpeg,.png" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ''; }} />
+                {uploadedFile ? (
                   <div className="flex items-center gap-4 p-4 bg-white border-2 border-[#83358E] rounded-xl">
                     <div className="w-12 h-12 bg-red-500 rounded-xl flex items-center justify-center flex-shrink-0">
                       <FileText className="w-6 h-6 text-white" />
                     </div>
                     <div className="flex-1">
-                      <p className="text-[#001A4D] font-bold text-sm">SAS_Activity_Letter_Template_2026.pdf</p>
-                      <div className="flex items-center gap-1 mt-1"><CheckCircle className="w-3.5 h-3.5 text-green-500" /><span className="text-green-600 text-xs">Uploaded</span></div>
+                      <p className="text-[#001A4D] font-bold text-sm">{uploadedFile.name}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <CheckCircle className="w-3.5 h-3.5 text-green-500" />
+                        <span className="text-green-600 text-xs">Uploaded · {formatBytes(uploadedFile.size)}</span>
+                      </div>
                     </div>
-                    <button onClick={() => setFileUploaded(false)} className="text-red-500 p-1"><X className="w-4 h-4" /></button>
+                    <button onClick={() => setUploadedFile(null)} className="text-red-500 p-1"><X className="w-4 h-4" /></button>
+                  </div>
+                ) : uploading ? (
+                  <div className="w-full h-28 flex flex-col items-center justify-center border-2 border-dashed border-[#83358E]/40 bg-[#F3E8FF]/40 rounded-xl">
+                    <Loader2 className="w-8 h-8 text-[#83358E] mb-1 animate-spin" />
+                    <p className="text-sm text-gray-600">Uploading...</p>
                   </div>
                 ) : (
-                  <div onClick={() => setFileUploaded(true)} className="w-full h-28 flex flex-col items-center justify-center border-2 border-dashed border-[#83358E]/40 bg-[#F3E8FF]/40 rounded-xl cursor-pointer hover:border-[#83358E] hover:bg-[#F3E8FF] transition-colors">
+                  <div onClick={() => fileInputRef.current?.click()} className="w-full h-28 flex flex-col items-center justify-center border-2 border-dashed border-[#83358E]/40 bg-[#F3E8FF]/40 rounded-xl cursor-pointer hover:border-[#83358E] hover:bg-[#F3E8FF] transition-colors">
                     <Upload className="w-8 h-8 text-[#83358E] mb-1" />
                     <p className="text-sm text-gray-600">Click to upload or drag and drop</p>
-                    <p className="text-gray-400 text-xs italic">PDF, DOCX, XLSX, JPG, PNG · Max 50MB</p>
+                    <p className="text-gray-400 text-xs italic">PDF, DOCX, XLSX, JPG, PNG · Max 25MB</p>
                   </div>
                 )}
+                {uploadError && <p className="text-red-500 text-xs mt-2"><AlertCircle className="w-3 h-3 inline mr-1" />{uploadError}</p>}
               </div>
 
               {/* Section C — Distribution */}
@@ -266,13 +346,13 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="space-y-2">
                   {([
-                    { key: "all", icon: Building2, label: "All Organizations", desc: "Broadcast to all 12 active student organizations", borderColor: "border-[#83358E]", bg: "bg-[#F3E8FF]" },
-                    { key: "specific", icon: Building2, label: "Specific Organizations", desc: "Choose which clubs receive this document", borderColor: "border-blue-500", bg: "bg-blue-50" },
-                    { key: "type", icon: Users, label: "By Organization Type", desc: "Send to all clubs of a specific type", borderColor: "border-amber-500", bg: "bg-amber-50" },
-                  ] as const).map((opt) => (
+                    { key: "all" as const, icon: Building2, label: "All Organizations", desc: `Broadcast to all ${activeOrgs.length} active student organizations`, borderColor: "border-[#83358E]", bg: "bg-[#F3E8FF]" },
+                    { key: "specific" as const, icon: Building2, label: "Specific Organizations", desc: "Choose which clubs receive this document", borderColor: "border-blue-500", bg: "bg-blue-50" },
+                    { key: "type" as const, icon: Users, label: "By Organization Type", desc: "Filter by type, then pick clubs", borderColor: "border-amber-500", bg: "bg-amber-50" },
+                  ]).map((opt) => (
                     <div key={opt.key}>
                       <button
-                        onClick={() => setDistribution(opt.key)}
+                        onClick={() => { setDistribution(opt.key); setSelectedOrgs([]); setSelectedTypeId(""); }}
                         className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 text-left transition-colors ${distribution === opt.key ? `${opt.borderColor} ${opt.bg}` : "border-gray-200 hover:border-gray-300"}`}
                       >
                         <opt.icon className={`w-5 h-5 flex-shrink-0 ${distribution === opt.key ? "text-[#83358E]" : "text-gray-400"}`} />
@@ -281,53 +361,35 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                           <p className="text-gray-500 text-xs">{opt.desc}</p>
                         </div>
                       </button>
-                      {opt.key === "specific" && distribution === "specific" && (
-                        <div className="mt-2 border border-gray-200 rounded-xl overflow-hidden">
-                          <div className="px-3 py-2 border-b border-gray-100">
-                            <input type="text" placeholder="Search organization name..." className="w-full text-sm border-none outline-none" />
-                          </div>
-                          <div className="max-h-40 overflow-y-auto">
-                            {ORGS.map((org) => (
-                              <label key={org.name} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer">
-                                <input type="checkbox" checked={selectedOrgs.includes(org.name)} onChange={() => toggleOrg(org.name)} className="accent-[#83358E]" />
-                                <div className="w-7 h-7 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{org.initials}</div>
-                                <div>
-                                  <p className="text-sm text-[#001A4D] font-medium">{org.name}</p>
-                                  <p className="text-xs text-gray-400">{org.type}</p>
-                                </div>
-                              </label>
+
+                      {/* Type selector */}
+                      {opt.key === "type" && distribution === "type" && (
+                        <div className="mt-2 space-y-2">
+                          <select
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
+                            value={selectedTypeId}
+                            onChange={(e) => { setSelectedTypeId(e.target.value); setSelectedOrgs([]); }}
+                          >
+                            <option value="">Select organization type...</option>
+                            {orgTypes.filter(t => !t.archived).map(t => (
+                              <option key={t.id} value={t.id}>{t.name}</option>
                             ))}
-                          </div>
-                          {selectedOrgs.length > 0 && (
-                            <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-t border-gray-100">
-                              <span className="text-[#83358E] text-xs font-medium">{selectedOrgs.length} organizations selected</span>
-                              <button onClick={() => setSelectedOrgs([])} className="text-gray-400 text-xs hover:text-gray-600">Clear All</button>
-                            </div>
+                          </select>
+                          {selectedTypeId && (
+                            <OrgChecklist orgs={filteredOrgs} selectedOrgs={selectedOrgs} toggleOrg={toggleOrg} setSelectedOrgs={setSelectedOrgs} search={orgSearch} setSearch={setOrgSearch} />
                           )}
+                        </div>
+                      )}
+
+                      {/* Specific org list */}
+                      {opt.key === "specific" && distribution === "specific" && (
+                        <div className="mt-2">
+                          <OrgChecklist orgs={filteredOrgs} selectedOrgs={selectedOrgs} toggleOrg={toggleOrg} setSelectedOrgs={setSelectedOrgs} search={orgSearch} setSearch={setOrgSearch} />
                         </div>
                       )}
                     </div>
                   ))}
                 </div>
-              </div>
-
-              {/* Notification Settings */}
-              <div className="space-y-2">
-                {[
-                  { label: "Send Push Notification to Officers", desc: "Officers receive an immediate push notification.", state: pushNotif, toggle: () => setPushNotif(!pushNotif) },
-                  { label: "Send In-App Notification", desc: "Appears in officers' notification bell.", state: inAppNotif, toggle: () => setInAppNotif(!inAppNotif) },
-                  { label: "Send Email Notification", desc: "Email sent to registered officer email addresses.", state: emailNotif, toggle: () => setEmailNotif(!emailNotif) },
-                ].map((item) => (
-                  <div key={item.label} className="flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-lg">
-                    <div>
-                      <p className="text-sm font-medium text-gray-900">{item.label}</p>
-                      <p className="text-xs text-gray-500">{item.desc}</p>
-                    </div>
-                    <button onClick={item.toggle} className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ${item.state ? "bg-[#83358E]" : "bg-gray-300"}`}>
-                      <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform shadow ${item.state ? "translate-x-6" : ""}`} />
-                    </button>
-                  </div>
-                ))}
               </div>
 
               {/* Preview */}
@@ -337,10 +399,12 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                   <p className="text-[#83358E] font-bold text-xs">Broadcast Preview</p>
                 </div>
                 <div className="flex items-center gap-3 bg-white rounded-lg p-3 border border-gray-100">
-                  <div className="w-6 h-6 bg-gradient-to-br from-[#0E4EBD] to-[#1E70E8] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">RL</div>
+                  <div className="w-6 h-6 bg-gradient-to-br from-[#0E4EBD] to-[#1E70E8] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                    {adminProfile ? adminProfile.firstName.charAt(0) + adminProfile.lastName.charAt(0) : 'SA'}
+                  </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-[#001A4D] font-bold text-xs truncate">{title || "Document Title"}</p>
-                    <p className="text-gray-400 text-[10px]">SAS Admin · Ms. R. Lucanas · Just now</p>
+                    <p className="text-gray-400 text-[10px]">SAS Admin · {adminProfile?.displayName ?? 'Admin'} · Just now</p>
                   </div>
                   {category && <CategoryPill category={category} />}
                   <span className="w-2 h-2 bg-blue-500 rounded-full flex-shrink-0" />
@@ -354,12 +418,12 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                 Save as Draft
               </button>
               <button
-                onClick={() => canBroadcast && setBroadcast(true)}
+                onClick={handleBroadcast}
                 disabled={!canBroadcast}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold transition-colors ${canBroadcast ? "bg-[#001A4D] text-[#FFD41C] hover:bg-[#001A4D]/90" : "bg-gray-100 text-gray-400 cursor-not-allowed"}`}
               >
-                <Radio className="w-4 h-4" />
-                Broadcast to {orgCount} Organization{orgCount !== 1 ? "s" : ""}
+                {broadcasting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
+                Broadcast to {targetOrgCount} Organization{targetOrgCount !== 1 ? "s" : ""}
               </button>
             </div>
           </>
@@ -369,22 +433,90 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ─── Org Checklist (reused by specific + type distribution) ──────────────────
+function OrgChecklist({ orgs, selectedOrgs, toggleOrg, setSelectedOrgs, search, setSearch }: {
+  orgs: { id: string; name: string; acronym: string; typeId: string }[];
+  selectedOrgs: string[];
+  toggleOrg: (id: string) => void;
+  setSelectedOrgs: (ids: string[]) => void;
+  search: string;
+  setSearch: (s: string) => void;
+}) {
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden">
+      <div className="px-3 py-2 border-b border-gray-100">
+        <input type="text" placeholder="Search organization name..." className="w-full text-sm border-none outline-none" value={search} onChange={(e) => setSearch(e.target.value)} />
+      </div>
+      <div className="max-h-40 overflow-y-auto">
+        {orgs.length === 0 ? (
+          <p className="px-4 py-3 text-gray-400 text-sm text-center">No organizations found</p>
+        ) : orgs.map((org) => (
+          <label key={org.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 cursor-pointer">
+            <input type="checkbox" checked={selectedOrgs.includes(org.id)} onChange={() => toggleOrg(org.id)} className="accent-[#83358E]" />
+            <div className="w-7 h-7 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{org.acronym.slice(0, 2)}</div>
+            <div>
+              <p className="text-sm text-[#001A4D] font-medium">{org.name}</p>
+              <p className="text-xs text-gray-400">{org.acronym}</p>
+            </div>
+          </label>
+        ))}
+      </div>
+      {selectedOrgs.length > 0 && (
+        <div className="flex items-center justify-between px-3 py-2 bg-gray-50 border-t border-gray-100">
+          <span className="text-[#83358E] text-xs font-medium">{selectedOrgs.length} organizations selected</span>
+          <button onClick={() => setSelectedOrgs([])} className="text-gray-400 text-xs hover:text-gray-600">Clear All</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Incoming Queue Tab ────────────────────────────────────────────────────────
 function IncomingQueueTab() {
   const navigate = useNavigate();
-  const [statuses, setStatuses] = useState<Record<string, DocStatus>>({});
+  const { data: incoming, loading } = useIncomingDocuments();
+  const { data: orgs } = useOrganizationStream();
+  const { profile: adminProfile } = useAdviserProfile();
   const [approvePopover, setApprovePopover] = useState<string | null>(null);
   const [rejectPopover, setRejectPopover] = useState<string | null>(null);
+  const [previewDoc, setPreviewDoc] = useState<DocumentDocument | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [orgFilter, setOrgFilter] = useState("All");
 
-  const getStatus = (doc: IncomingDoc) => statuses[doc.id] || doc.status;
-  const pending = MOCK_INCOMING.filter((d) => getStatus(d) === "Pending" || getStatus(d) === "Resubmitted");
-  const filtered = statusFilter === "All" ? MOCK_INCOMING : MOCK_INCOMING.filter((d) => getStatus(d) === statusFilter);
+  const filtered = useMemo(() => {
+    let list = incoming;
+    if (statusFilter !== "All") list = list.filter(d => d.status === statusFilter);
+    if (orgFilter !== "All") list = list.filter(d => d.submittedByOrgId === orgFilter);
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(d => d.title.toLowerCase().includes(q) || d.referenceNumber.toLowerCase().includes(q) || d.submittedByOrgName.toLowerCase().includes(q));
+    }
+    return list;
+  }, [incoming, statusFilter, orgFilter, searchQuery]);
 
-  const handleApprove = (id: string) => { setStatuses((p) => ({ ...p, [id]: "Approved" })); setApprovePopover(null); };
-  const handleReject = (id: string) => { setStatuses((p) => ({ ...p, [id]: "Rejected" })); setRejectPopover(null); };
-  const toggleSelect = (id: string) => setSelected((p) => p.includes(id) ? p.filter((s) => s !== id) : [...p, id]);
+  const handleApprove = async (docId: string, remarks: string) => {
+    if (!adminProfile) return;
+    await reviewDocument(docId, 'Approved', adminProfile.uid, remarks || null);
+    setApprovePopover(null);
+  };
+
+  const handleReject = async (docId: string, remarks: string) => {
+    if (!adminProfile) return;
+    await reviewDocument(docId, 'Rejected', adminProfile.uid, remarks);
+    setRejectPopover(null);
+  };
+
+  const toggleSelect = (id: string) => setSelected(p => p.includes(id) ? p.filter(s => s !== id) : [...p, id]);
+
+  const uniqueOrgs = useMemo(() => {
+    const map = new Map<string, string>();
+    incoming.forEach(d => { if (d.submittedByOrgId) map.set(d.submittedByOrgId, d.submittedByOrgName); });
+    return Array.from(map.entries());
+  }, [incoming]);
+
+  if (loading) return <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 text-[#83358E] animate-spin" /></div>;
 
   return (
     <div className="space-y-4">
@@ -392,11 +524,11 @@ function IncomingQueueTab() {
       <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input type="text" placeholder="Search document title, org name, or reference..." className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" />
+          <input type="text" placeholder="Search document title, org name, or reference..." className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
         </div>
-        <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent">
-          <option>All Organizations</option>
-          {ORGS.map((o) => <option key={o.name}>{o.name}</option>)}
+        <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent" value={orgFilter} onChange={(e) => setOrgFilter(e.target.value)}>
+          <option value="All">All Organizations</option>
+          {uniqueOrgs.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
         </select>
         <div className="flex gap-1">
           {["All", "Pending", "Approved", "Rejected", "Resubmitted"].map((s) => (
@@ -408,113 +540,103 @@ function IncomingQueueTab() {
 
       {/* Table */}
       <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-[#E0E0E0]">
-              <tr>
-                <th className="px-4 py-3 w-10">
-                  <input type="checkbox" className="accent-[#83358E]" onChange={(e) => setSelected(e.target.checked ? MOCK_INCOMING.map((d) => d.id) : [])} />
-                </th>
-                {["Reference #", "Document Title", "Organization", "Category", "Submitted By", "Date Submitted", "Status", "Actions"].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((doc) => {
-                const status = getStatus(doc);
-                const isPending = status === "Pending" || status === "Resubmitted";
-                return (
-                  <tr
-                    key={doc.id}
-                    className={`border-b border-[#E0E0E0] hover:bg-[#F3E8FF]/20 transition-colors group ${isPending ? "border-l-4 border-l-[#FFD41C]" : ""}`}
-                  >
-                    <td className="px-4 py-3">
-                      <input type="checkbox" checked={selected.includes(doc.id)} onChange={() => toggleSelect(doc.id)} className="accent-[#83358E]" />
-                    </td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-500 whitespace-nowrap">
-                      <div className="flex items-center gap-2">
-                        {isPending && <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse flex-shrink-0" />}
-                        {doc.ref}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 min-w-[180px]">
-                      <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <FileChip type={doc.fileType} />
-                        <span className="text-gray-400 text-xs">{doc.fileSize}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{doc.orgInitials}</div>
-                        <div>
-                          <p className="text-[#001A4D] text-xs font-medium leading-tight">{doc.org}</p>
-                          <p className="text-gray-400 text-[10px]">{doc.orgType}</p>
+        {filtered.length === 0 ? (
+          <div className="text-center py-16">
+            <FileText className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+            <p className="text-[#001A4D] font-bold text-lg mb-1">No documents found</p>
+            <p className="text-gray-500 text-sm">
+              {incoming.length === 0 ? "No submissions yet. Officer documents will appear here." : "Try adjusting your filters."}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-gray-50 border-b border-[#E0E0E0]">
+                <tr>
+                  <th className="px-4 py-3 w-10">
+                    <input type="checkbox" className="accent-[#83358E]" onChange={(e) => setSelected(e.target.checked ? filtered.map(d => d.id) : [])} />
+                  </th>
+                  {["Reference #", "Document Title", "Organization", "Category", "Submitted By", "Date Submitted", "Status", "Actions"].map((h) => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((doc) => {
+                  const isPending = doc.status === "Pending" || doc.status === "Resubmitted";
+                  const createdDate = toDate(doc.createdAt);
+                  const daysInQueue = createdDate ? Math.floor((Date.now() - createdDate.getTime()) / (1000 * 60 * 60 * 24)) : 0;
+                  return (
+                    <tr key={doc.id} className={`border-b border-[#E0E0E0] hover:bg-[#F3E8FF]/20 transition-colors group ${isPending ? "border-l-4 border-l-[#FFD41C]" : ""}`}>
+                      <td className="px-4 py-3">
+                        <input type="checkbox" checked={selected.includes(doc.id)} onChange={() => toggleSelect(doc.id)} className="accent-[#83358E]" />
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          {isPending && <span className="w-2 h-2 bg-amber-500 rounded-full animate-pulse flex-shrink-0" />}
+                          {doc.referenceNumber}
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-6 h-6 bg-[#F3E8FF] rounded-full flex items-center justify-center text-[#83358E] text-[10px] font-bold flex-shrink-0">{doc.submittedBy.split(" ").map((n) => n[0]).join("")}</div>
-                        <div>
-                          <p className="text-gray-600 text-xs">{doc.submittedBy}</p>
-                          <span className="px-1 py-0.5 bg-[#F3E8FF] text-[#83358E] text-[9px] rounded font-medium">Officer</span>
+                      </td>
+                      <td className="px-4 py-3 min-w-[180px]">
+                        <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
+                        <div className="flex items-center gap-1.5 mt-1">
+                          <FileChip type={doc.fileType} />
+                          <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      <p className="text-gray-600 text-xs">{doc.dateSubmitted}</p>
-                      <p className="text-gray-400 text-[10px] italic">{doc.relativeTime}</p>
-                      {isPending && doc.daysInQueue > 2 && (
-                        <p className="text-amber-600 text-[10px] italic">{doc.daysInQueue} days in queue</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3"><StatusPill status={status} /></td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1 relative">
-                        <button
-                          onClick={() => navigate(`/home/documents/${doc.id}/review`)}
-                          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors"
-                          title="Review Document"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                        <button className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors"><Download className="w-4 h-4" /></button>
-                        {status === "Pending" && (
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <div className="w-7 h-7 bg-gradient-to-br from-[#83358E] to-[#A855F7] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{doc.submittedByOrgAcronym?.slice(0, 2) || '??'}</div>
+                          <div>
+                            <p className="text-[#001A4D] text-xs font-medium leading-tight">{doc.submittedByOrgName}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-6 h-6 bg-[#F3E8FF] rounded-full flex items-center justify-center text-[#83358E] text-[10px] font-bold flex-shrink-0">
+                            {doc.submittedBy.split(" ").map(n => n[0]).join("").slice(0, 2)}
+                          </div>
+                          <div>
+                            <p className="text-gray-600 text-xs">{doc.submittedBy}</p>
+                            <span className="px-1 py-0.5 bg-[#F3E8FF] text-[#83358E] text-[9px] rounded font-medium">Officer</span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {createdDate && (
                           <>
-                            <button
-                              onClick={() => { setApprovePopover(approvePopover === doc.id ? null : doc.id); setRejectPopover(null); }}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors"
-                            >
-                              <Check className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => { setRejectPopover(rejectPopover === doc.id ? null : doc.id); setApprovePopover(null); }}
-                              className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-600 transition-colors"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
+                            <p className="text-gray-600 text-xs">{format(createdDate, 'MMM dd, yyyy')}</p>
+                            <p className="text-gray-400 text-[10px] italic">{formatDistanceToNow(createdDate, { addSuffix: true })}</p>
+                            {isPending && daysInQueue > 2 && <p className="text-amber-600 text-[10px] italic">{daysInQueue} days in queue</p>}
                           </>
                         )}
-                        {approvePopover === doc.id && (
-                          <QuickApprovePopover doc={doc} onClose={() => setApprovePopover(null)} onApprove={() => handleApprove(doc.id)} />
-                        )}
-                        {rejectPopover === doc.id && (
-                          <QuickRejectPopover doc={doc} onClose={() => setRejectPopover(null)} onReject={() => handleReject(doc.id)} />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                      <td className="px-4 py-3"><StatusPill status={doc.status} /></td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-1 relative">
+                          <button onClick={() => setPreviewDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="View Document"><Eye className="w-4 h-4" /></button>
+                          <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors"><Download className="w-4 h-4" /></a>
+                          {(doc.status === "Pending" || doc.status === "Resubmitted") && (
+                            <>
+                              <button onClick={() => { setApprovePopover(approvePopover === doc.id ? null : doc.id); setRejectPopover(null); }} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors"><Check className="w-4 h-4" /></button>
+                              <button onClick={() => { setRejectPopover(rejectPopover === doc.id ? null : doc.id); setApprovePopover(null); }} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-red-50 text-red-600 transition-colors"><X className="w-4 h-4" /></button>
+                            </>
+                          )}
+                          {approvePopover === doc.id && <QuickApprovePopover doc={doc} onClose={() => setApprovePopover(null)} onApprove={(r) => handleApprove(doc.id, r)} />}
+                          {rejectPopover === doc.id && <QuickRejectPopover doc={doc} onClose={() => setRejectPopover(null)} onReject={(r) => handleReject(doc.id, r)} />}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Bulk action bar */}
       {selected.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-5 py-3 bg-[#001A4D] rounded-2xl shadow-2xl z-20">
           <p className="text-white text-sm font-medium">{selected.length} documents selected</p>
@@ -523,12 +645,20 @@ function IncomingQueueTab() {
           <button onClick={() => setSelected([])} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
       )}
+
+      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
     </div>
   );
 }
 
 // ─── Sent Tab ──────────────────────────────────────────────────────────────────
 function SentTab() {
+  const { data: sent, loading } = useSentDocuments();
+  const { data: orgs } = useOrganizationStream();
+  const [previewDoc, setPreviewDoc] = useState<DocumentDocument | null>(null);
+
+  if (loading) return <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 text-[#83358E] animate-spin" /></div>;
+
   return (
     <div className="space-y-4">
       <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 flex items-center gap-3">
@@ -538,66 +668,78 @@ function SentTab() {
         </div>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm"><option>All Categories</option></select>
       </div>
-      <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-        <table className="w-full">
-          <thead className="bg-gray-50 border-b border-[#E0E0E0]">
-            <tr>
-              {["Reference #", "Document Title", "Category", "Date Sent", "Sent To", "Read By", "Actions"].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {MOCK_SENT.map((doc) => (
-              <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
-                <td className="px-4 py-3 font-mono text-xs text-gray-500">{doc.ref}</td>
-                <td className="px-4 py-3">
-                  <p className="text-[#001A4D] font-bold text-sm">{doc.title}</p>
-                  <div className="flex items-center gap-1.5 mt-1"><FileChip type={doc.fileType} /></div>
-                </td>
-                <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
-                <td className="px-4 py-3 text-gray-600 text-sm">{doc.dateSent}</td>
-                <td className="px-4 py-3">
-                  {doc.sentTo === "All Organizations" ? (
-                    <span className="px-2 py-0.5 bg-[#001A4D]/10 text-[#001A4D] text-xs rounded-full font-medium">All Organizations ({doc.orgCount})</span>
-                  ) : (
-                    <span className="px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full font-medium">{doc.sentTo}</span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    {Array.from({ length: Math.min(doc.orgsOpened, 4) }).map((_, i) => (
-                      <div key={i} className="w-6 h-6 bg-gradient-to-br from-green-400 to-green-500 rounded-full flex items-center justify-center text-white text-[9px] font-bold -ml-1 first:ml-0 border border-white">
-                        {String.fromCharCode(65 + i)}
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-gray-400 text-xs mt-0.5">{doc.orgsOpened} of {doc.orgCount} orgs opened</p>
-                </td>
-                <td className="px-4 py-3">
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors"><Eye className="w-3.5 h-3.5" /></button>
-                    <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors"><Download className="w-3.5 h-3.5" /></button>
-                    <button className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[#001A4D]/5 text-[#001A4D] transition-colors"><Send className="w-3.5 h-3.5" /></button>
-                  </div>
-                </td>
+
+      {sent.length === 0 ? (
+        <div className="text-center py-16 bg-white border border-[#E0E0E0] rounded-2xl">
+          <Radio className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <p className="text-[#001A4D] font-bold text-lg mb-1">No broadcasts yet</p>
+          <p className="text-gray-500 text-sm">Documents you broadcast to clubs will appear here.</p>
+        </div>
+      ) : (
+        <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-[#E0E0E0]">
+              <tr>
+                {["Reference #", "Document Title", "Category", "Date Sent", "Sent To", "Read By", "Actions"].map((h) => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {sent.map((doc) => {
+                const readCount = doc.readBy ? Object.keys(doc.readBy).length : 0;
+                const totalTargets = doc.distribution === 'all' ? orgs.filter(o => o.status === 'active').length : doc.targetOrgIds.length;
+                const createdDate = toDate(doc.createdAt);
+                return (
+                  <tr key={doc.id} className="hover:bg-gray-50 transition-colors group">
+                    <td className="px-4 py-3 font-mono text-xs text-gray-500">{doc.referenceNumber}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-[#001A4D] font-bold text-sm">{doc.title}</p>
+                      <div className="flex items-center gap-1.5 mt-1"><FileChip type={doc.fileType} /></div>
+                    </td>
+                    <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                    <td className="px-4 py-3 text-gray-600 text-sm">{createdDate ? format(createdDate, 'MMM dd, yyyy') : '—'}</td>
+                    <td className="px-4 py-3">
+                      {doc.distribution === "all" ? (
+                        <span className="px-2 py-0.5 bg-[#001A4D]/10 text-[#001A4D] text-xs rounded-full font-medium">All Organizations ({totalTargets})</span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full font-medium">{doc.targetOrgIds.length} Organizations</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-gray-400 text-xs">{readCount} of {totalTargets} orgs opened</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => setPreviewDoc(doc)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="View Document"><Eye className="w-3.5 h-3.5" /></button>
+                        <a href={doc.fileUrl} download className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors"><Download className="w-3.5 h-3.5" /></a>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
     </div>
   );
 }
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export function AdminDocuments() {
-  const [tab, setTab] = useState<AdminTab>("incoming");
+  const [tab, setTab] = useState<"incoming" | "sent">("incoming");
   const [showBroadcast, setShowBroadcast] = useState(false);
 
-  const pendingCount = MOCK_INCOMING.filter((d) => d.status === "Pending" || d.status === "Resubmitted").length;
-  const approvedCount = MOCK_INCOMING.filter((d) => d.status === "Approved").length;
-  const rejectedCount = MOCK_INCOMING.filter((d) => d.status === "Rejected").length;
+  const { data: incoming } = useIncomingDocuments();
+  const { data: sent } = useSentDocuments();
+
+  const pendingCount = incoming.filter(d => d.status === "Pending" || d.status === "Resubmitted").length;
+  const approvedCount = incoming.filter(d => d.status === "Approved").length;
+  const rejectedCount = incoming.filter(d => d.status === "Rejected").length;
+  const uniqueOrgs = new Set(incoming.map(d => d.submittedByOrgId)).size;
 
   return (
     <div className="space-y-5">
@@ -632,7 +774,7 @@ export function AdminDocuments() {
           </div>
           <div className="flex items-center gap-2 px-3 py-2 bg-white/15 rounded-xl">
             <Send className="w-4 h-4 text-blue-300" />
-            <span className="text-white text-xs font-medium">{MOCK_SENT.length} Sent This Semester</span>
+            <span className="text-white text-xs font-medium">{sent.length} Sent This Semester</span>
           </div>
         </div>
       </div>
@@ -641,10 +783,10 @@ export function AdminDocuments() {
       <div className="grid grid-cols-5 gap-4">
         {[
           { label: "Pending Documents", value: pendingCount, note: "requires your review", gradient: "from-amber-500 to-amber-400", Icon: Clock, pulse: pendingCount > 0 },
-          { label: "Approved This Semester", value: approvedCount, note: "+2 this week", gradient: "from-green-500 to-green-400", Icon: CheckCircle },
+          { label: "Approved This Semester", value: approvedCount, note: "approved submissions", gradient: "from-green-500 to-green-400", Icon: CheckCircle },
           { label: "Rejected", value: rejectedCount, note: "awaiting resubmission", gradient: "from-red-500 to-orange-400", Icon: XCircle },
-          { label: "Broadcast to Clubs", value: MOCK_SENT.length, note: "sent by SAS this semester", gradient: "from-blue-600 to-blue-400", Icon: Radio },
-          { label: "Organizations Submitting", value: 4, note: "active submitters", gradient: "from-[#001A4D] to-[#0E4EBD]", Icon: Building2 },
+          { label: "Broadcast to Clubs", value: sent.length, note: "sent by SAS this semester", gradient: "from-blue-600 to-blue-400", Icon: Radio },
+          { label: "Organizations Submitting", value: uniqueOrgs, note: "active submitters", gradient: "from-[#001A4D] to-[#0E4EBD]", Icon: Building2 },
         ].map((card) => (
           <div key={card.label} className={`bg-gradient-to-br ${card.gradient} rounded-xl p-4 text-white relative`}>
             {card.pulse && <span className="absolute top-3 right-3 w-2 h-2 bg-white rounded-full animate-ping" />}

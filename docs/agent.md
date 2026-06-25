@@ -214,6 +214,21 @@ src/
 │   │   │   │   └── academic.types.ts
 │   │   │   └── index.ts
 │   │   │
+│   │   │
+<!-- AGENT-UPDATED: 2026-06-25 — Added `documents` module directory to Section 2.1 -->
+│   │   ├── documents/
+│   │   │   ├── hooks/
+│   │   │   │   ├── useDocumentCategories.ts  # onSnapshot() for /document_categories
+│   │   │   │   ├── useDocumentSettings.ts    # onSnapshot() for /system_settings/document_settings
+│   │   │   │   └── useDocumentStream.ts      # onSnapshot() hooks: useIncomingDocuments, useSentDocuments, useOfficerSubmissions, useOfficerInbox
+│   │   │   ├── services/
+│   │   │   │   ├── document_category.service.ts # CRUD for /document_categories
+│   │   │   │   ├── document_settings.service.ts # Read/write /system_settings/document_settings
+│   │   │   │   └── document.service.ts       # CRUD for /documents (EDMS core: createDocument, reviewDocument, markDocumentRead, getNextReferenceNumber)
+│   │   │   ├── types/
+│   │   │   │   └── document.types.ts         # DocumentCategoryDocument, DocumentSettingsDocument, DocumentDocument, DocStatus, DocFileType, DocDistribution
+│   │   │   └── index.ts                       # Barrel exports
+│   │   │
 <!-- AGENT-UPDATED: 2026-06-12 — Added `auth` and `academic` module directories to Section 2.1 -->
 │   │   └── members/
 │   │       ├── components/

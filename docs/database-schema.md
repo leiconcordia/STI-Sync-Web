@@ -350,6 +350,146 @@ interface OrganizationRulesDocument {
 }
 ```
 
+<!-- AGENT-UPDATED: 2026-06-25 — Added `document_settings` to system_settings collection for EDMS configuration -->
+
+**Document ID: `document_settings`**
+```typescript
+interface DocumentSettingsDocument {
+  // Reference Number Format
+  refPrefix: string;                       // e.g., "DOC"
+  refSeparator: string;                    // e.g., "-"
+  refIncludeYear: boolean;
+  refPadding: number;                      // e.g., 4
+
+  // Retention & Archival
+  retentionYears: number;
+  autoArchiveCompleted: boolean;
+  archiveAfterSemesters: number;
+  allowOfficerDelete: boolean;
+  draftExpiryDays: number;
+
+  updatedAt: Timestamp;
+}
+```
+
+---
+
+<!-- AGENT-UPDATED: 2026-06-25 — Added `document_categories` collection for EDMS category management -->
+
+### 1.6b `document_categories`
+
+**Path:** `/document_categories/{categoryId}`
+
+> Categories used in the Electronic Document Management System. Officers select from these when submitting documents. Managed by SAO Admin in Settings → Document Management.
+
+```typescript
+interface DocumentCategoryDocument {
+  id: string;                              // Auto-generated Firestore document ID
+  name: string;                            // e.g., "Activity Letter"
+  color: string;                           // Tailwind classes e.g., "bg-[#F3E8FF] text-[#83358E]"
+  colorDot: string;                        // Dot color e.g., "bg-[#83358E]"
+  requiresRemarks: boolean;                // SAS must provide remarks when rejecting
+  officerCanSubmit: boolean;               // Category visible in officer submission form
+  active: boolean;                         // Whether category is enabled
+  sortOrder: number;                       // For drag-to-reorder
+  archived: boolean;                       // Soft delete flag
+
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `sortOrder` ASC — for ordered listing
+- `active` ASC, `name` ASC — for dropdown filtering
+
+---
+
+<!-- AGENT-UPDATED: 2026-06-25 — Added `documents` collection for Electronic Document Management System (EDMS) -->
+
+### 1.6c `documents`
+
+**Path:** `/documents/{documentId}`
+
+> Core EDMS collection. A single collection with a `type` discriminator handles both officer→SAS submissions and SAS→club broadcasts. Both admin and officer pages read/write to this collection using real-time `onSnapshot` streams.
+
+```typescript
+type DocFileType = 'PDF' | 'DOCX' | 'XLSX' | 'JPG' | 'PNG' | 'OTHER';
+type DocStatus = 'Pending' | 'Approved' | 'Rejected' | 'Resubmitted' | 'Draft';
+type DocDistribution = 'all' | 'specific' | 'type';
+
+interface DocumentDocument {
+  id: string;
+
+  // ─── Classification ───
+  type: 'submission' | 'broadcast';        // submission = officer→SAS, broadcast = SAS→orgs
+  title: string;
+  description: string;                     // message/notes
+  category: string;                        // category name from document_categories
+  categoryId: string;                      // FK → /document_categories
+
+  // ─── File (Cloudinary) ───
+  fileUrl: string;                         // Cloudinary secure_url
+  fileName: string;                        // original file name
+  fileType: DocFileType;
+  fileSize: number;                        // bytes (max 25 MB enforced client-side)
+
+  // ─── Academic Context ───
+  semesterId: string;                      // FK → /semesters
+  academicYear: string;                    // e.g., "2025-2026"
+  semester: string;                        // e.g., "2nd Semester"
+
+  // ─── Reference ───
+  referenceNumber: string;                 // auto-generated e.g., "DOC-2026-0001" (officer) or "SAS-2026-0001" (admin)
+
+  // ─── Submission-specific (type === 'submission') ───
+  submittedBy: string;                     // officer name
+  submittedByEmail: string;
+  submittedByOrgId: string;                // FK → /organizations
+  submittedByOrgName: string;              // denormalized
+  submittedByOrgAcronym: string;           // denormalized
+  submittedByOrgTypeId: string;            // FK → /organization_types
+  status: DocStatus;
+  remarks: string | null;                  // SAS admin remarks on approve/reject
+  reviewedBy: string | null;               // admin name
+  reviewedAt: Timestamp | null;
+  resubmissionOf: string | null;           // FK → /documents (original doc ID if resubmitted)
+  resubmissionNote: string | null;         // "What changed" text
+
+  // ─── Broadcast-specific (type === 'broadcast') ───
+  broadcastBy: string;                     // admin name
+  broadcastByUid: string;                  // admin uid
+  distribution: DocDistribution;
+  targetOrgIds: string[];                  // specific org IDs (empty for 'all')
+  targetOrgTypeId: string | null;          // for 'type' distribution
+  readBy: Record<string, Timestamp>;       // orgId → timestamp when opened
+
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**File Storage Model (Cloudinary):**
+- All document files (PDF, DOCX, DOC, XLSX, JPG, PNG) are uploaded to **Cloudinary** via `uploadToCloudinary()`.
+- Submissions go to folder `documents/submissions`, broadcasts to `documents/broadcast`.
+- Firestore stores only the Cloudinary `secure_url` in `fileUrl`.
+
+**Access Pattern:**
+- Admin reads all submissions: `where('type', '==', 'submission')`, `orderBy('createdAt', 'desc')`
+- Admin reads all broadcasts: `where('type', '==', 'broadcast')`, `orderBy('createdAt', 'desc')`
+- Officer reads own submissions: `where('type', '==', 'submission')` + `where('submittedByOrgId', '==', orgId)`
+- Officer inbox (broadcasts): `where('type', '==', 'broadcast')` + client-side filter by `distribution === 'all'` OR `targetOrgIds.includes(orgId)`
+
+**Reference Number Generation:**
+- `getNextReferenceNumber(prefix)` queries latest doc matching `{prefix}-{year}-*`, increments counter, pads to 4 digits
+- Officers use prefix `DOC`, admin broadcasts use prefix `SAS`
+
+**Indexes Required:**
+- `type` ASC, `createdAt` DESC — admin incoming/sent views
+- `type` ASC, `submittedByOrgId` ASC, `createdAt` DESC — officer submissions
+- `referenceNumber` ASC — reference number generation query
+
 ---
 
 <!-- AGENT-UPDATED: 2026-06-15 — Updated organizations schema: typeId (FK → /organization_types), departmentId (FK → /departments or 'cross-departmental'), academicYear/semester from active semester -->

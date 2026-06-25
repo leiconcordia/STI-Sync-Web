@@ -66,7 +66,7 @@ export function SystemSettings() {
       case 'fine-penalty':
         return <FinePenaltyRules onUnsavedChange={handleUnsavedChange} />;
       case 'document-management':
-        return <DocumentManagementSettings onUnsavedChange={handleUnsavedChange} />;
+        return <DocumentManagementSettings />;
       case 'data-management':
         return <DataManagement onUnsavedChange={handleUnsavedChange} />;
       case 'audit-visibility':
