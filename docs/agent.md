@@ -2,6 +2,7 @@
 
 > **Purpose:** Execution protocol for AI coding agents working on the STI Sync codebase. Follow this document before writing a single line of code. It eliminates wasted context tokens by routing you to the exact files, schemas, and domain rules relevant to the request.
 
+testtest
 ---
 
 ## 1. Context Routing — Mandatory Pre-Execution Phase

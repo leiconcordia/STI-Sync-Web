@@ -8,7 +8,52 @@
 
 <!-- AGENT-UPDATED: 2026-06-12 — Added `sas_admins` collection for SAO Adviser user profiles -->
 
-### 1.0 `sas_admins`
+<!-- AGENT-UPDATED: 2026-07-09 — Added `announcements` collection for admin announcements -->
+
+### 1.0a `announcements`
+
+**Path:** `/announcements/{announcementId}`
+
+```typescript
+type AnnouncementPriority = 'Normal' | 'Important' | 'Urgent';
+type AnnouncementAudience = 'campus-wide' | 'all-organizations' | 'specific';
+
+interface AnnouncementDocument {
+  id: string;                              // Auto-generated Firestore document ID
+
+  // ─── Content ───
+  title: string;                           // e.g., "Reminder: Event Proposal Deadline"
+  content: string;                         // Plain text for now
+  priority: AnnouncementPriority;
+
+  // ─── Targeting ───
+  audience: AnnouncementAudience;
+  targetOrgIds: string[];                  // Populated only when audience === 'specific'
+  targetOrgNames: string[];                // Denormalized names for display
+
+  // ─── Pinning ───
+  pinned: boolean;                         // Pinned announcements float to top
+
+  // ─── Academic Context ───
+  semesterId: string;                      // FK → /semesters
+  schoolYear: string;                      // e.g., "2025-2026"
+
+  // ─── Author ───
+  authorName: string;                      // e.g., "Riselle Mae B. Lucanas"
+  authorUid: string;                       // FK → /sas_admins
+
+  // ─── Timestamps ───
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+```
+
+**Indexes Required:**
+- `createdAt` DESC — ordered feed (pinned sorting handled locally)
+
+---
+
+### 1.0b `sas_admins`
 
 **Path:** `/sas_admins/{uid}`
 
