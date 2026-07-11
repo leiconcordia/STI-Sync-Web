@@ -18,10 +18,15 @@ export const createEvent = async (data: EventFormData, uid: string): Promise<str
   const refId = generateReferenceId();
   const scannerCode = generateScannerCode();
   
+  const scannerUserIds = data.scanners
+    ? data.scanners.map(s => s.officerUserId).filter((id): id is string => id !== null && id !== undefined)
+    : [];
+  
   const eventPayload: Partial<EventDocument> = {
     ...data,
     referenceId: refId,
     scannerActivationCode: scannerCode,
+    scannerUserIds,
     proposalStatus: 'approved', // SAO Admin creations are auto-approved
     createdBy: uid,
     createdAt: serverTimestamp() as any,
@@ -39,6 +44,12 @@ export const saveEventDraft = async (data: EventFormData, uid: string, existingI
     createdBy: uid,
     updatedAt: serverTimestamp() as any,
   };
+
+  if (data.scanners) {
+    eventPayload.scannerUserIds = data.scanners
+      .map(s => s.officerUserId)
+      .filter((id): id is string => id !== null && id !== undefined);
+  }
 
   if (!eventPayload.referenceId) {
     eventPayload.referenceId = generateReferenceId();

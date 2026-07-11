@@ -51,6 +51,7 @@ export interface EventDocument {
   // ─── Staff ───
   supervisorId: string;                    // SAO Adviser UID
   scanners: EventScanner[];
+  scannerUserIds: string[];                // denormalized officerUserIds for mobile query
 
   // ─── Budget ───
   budgetItems: BudgetLineItem[];
