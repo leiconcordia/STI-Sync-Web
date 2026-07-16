@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { DocumentDocument } from '../types/document.types';
 
@@ -133,6 +133,42 @@ export function useOfficerInbox(orgId: string | null) {
     );
     return () => unsubscribe();
   }, [orgId]);
+
+  return { data, loading, error };
+}
+
+// ─── Shared: Single Document ─────────────────────────────────────────────────
+
+export function useDocument(docId: string | undefined) {
+  const [data, setData] = useState<DocumentDocument | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  useEffect(() => {
+    if (!docId) {
+      setLoading(false);
+      return;
+    }
+
+    const ref = doc(db, COL, docId);
+    const unsubscribe = onSnapshot(
+      ref,
+      (snap) => {
+        if (snap.exists()) {
+          setData({ id: snap.id, ...snap.data() } as DocumentDocument);
+        } else {
+          setData(null);
+        }
+        setLoading(false);
+      },
+      (err) => {
+        console.error('[useDocument]', err);
+        setError(err);
+        setLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, [docId]);
 
   return { data, loading, error };
 }

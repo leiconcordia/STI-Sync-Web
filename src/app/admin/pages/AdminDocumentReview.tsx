@@ -1,40 +1,20 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import {
   ArrowLeft, ChevronLeft, ChevronRight, Download, Gavel,
   CheckCircle, X, HelpCircle, Clock, FileText, Hash,
   Tag, Calendar, Building2, File, StickyNote, Send,
   ZoomIn, ZoomOut, Maximize2, RefreshCw, MessageSquare,
-  ExternalLink,
+  ExternalLink, Eye, Loader2
 } from "lucide-react";
-
-// ─── Mock Document ─────────────────────────────────────────────────────────────
-const MOCK_DOC = {
-  id: "1",
-  ref: "DOC-2026-0092",
-  title: "Activity Letter for Cultural Night 2026",
-  category: "Activity Letter",
-  fileType: "PDF" as const,
-  fileSize: "1.1 MB",
-  org: "STI Dance Company",
-  orgType: "Cultural",
-  orgInitials: "DC",
-  submittedBy: "Ana Reyes",
-  studentId: "2021-00145",
-  email: "areyes@sti.edu.ph",
-  submittedAt: "March 18, 2026 · 9:42 AM",
-  semester: "2nd Semester · A.Y. 2025–2026",
-  timeInQueue: "1 day",
-  notes: "This is for the Cultural Night event on April 5. Please expedite review as we need to book the venue.",
-  history: [
-    { label: "Submitted to SAS", color: "bg-blue-600", icon: Send, timestamp: "Mar 18, 2026 · 9:42 AM", actor: "Ana Reyes" },
-    { label: "Received by SAS", color: "bg-[#FFD41C]", icon: Clock, timestamp: "Mar 18, 2026 · 9:43 AM", actor: "Opened by SAS Admin" },
-    { label: "Decision Pending", color: "bg-gray-200", icon: HelpCircle, timestamp: "", actor: "Awaiting" },
-  ],
-};
+import { useDocument } from "../../modules/documents/hooks/useDocumentStream";
+import { reviewDocument } from "../../modules/documents/services/document.service";
+import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
+import { formatDistanceToNow, format } from "date-fns";
+import type { DocumentDocument } from "../../modules/documents/types/document.types";
 
 // ─── Approve Confirmation Modal ────────────────────────────────────────────────
-function ApproveModal({ doc, remarks, onClose, onConfirm }: { doc: typeof MOCK_DOC; remarks: string; onClose: () => void; onConfirm: () => void }) {
+function ApproveModal({ doc, remarks, onClose, onConfirm, submitting }: { doc: DocumentDocument; remarks: string; onClose: () => void; onConfirm: (r: string) => void; submitting: boolean }) {
   const [editedRemarks, setEditedRemarks] = useState(remarks);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -82,10 +62,10 @@ function ApproveModal({ doc, remarks, onClose, onConfirm }: { doc: typeof MOCK_D
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-200 flex justify-between">
-          <button onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">Cancel</button>
-          <button onClick={onConfirm} className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-lg text-sm font-bold hover:opacity-90 transition-opacity">
-            <Send className="w-4 h-4" />
-            Confirm Approval
+          <button onClick={onClose} disabled={submitting} className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50">Cancel</button>
+          <button onClick={() => onConfirm(editedRemarks)} disabled={submitting} className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-lg text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50">
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {submitting ? "Approving..." : "Confirm Approval"}
           </button>
         </div>
       </div>
@@ -94,7 +74,7 @@ function ApproveModal({ doc, remarks, onClose, onConfirm }: { doc: typeof MOCK_D
 }
 
 // ─── Reject Confirmation Modal ─────────────────────────────────────────────────
-function RejectModal({ doc, remarks, onClose, onConfirm }: { doc: typeof MOCK_DOC; remarks: string; onClose: () => void; onConfirm: () => void }) {
+function RejectModal({ doc, remarks, onClose, onConfirm, submitting }: { doc: DocumentDocument; remarks: string; onClose: () => void; onConfirm: () => void; submitting: boolean }) {
   const [allowResubmit, setAllowResubmit] = useState(true);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -149,10 +129,10 @@ function RejectModal({ doc, remarks, onClose, onConfirm }: { doc: typeof MOCK_DO
           </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-200 flex justify-between">
-          <button onClick={onClose} className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors">Cancel</button>
-          <button onClick={onConfirm} className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-500 to-orange-500 text-white rounded-lg text-sm font-bold hover:opacity-90 transition-opacity">
-            <X className="w-4 h-4" />
-            Confirm Rejection
+          <button onClick={onClose} disabled={submitting} className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50">Cancel</button>
+          <button onClick={onConfirm} disabled={submitting} className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-red-500 to-orange-500 text-white rounded-lg text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50">
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+            {submitting ? "Rejecting..." : "Confirm Rejection"}
           </button>
         </div>
       </div>
@@ -172,21 +152,72 @@ function AlertIcon({ className }: { className?: string }) {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export function AdminDocumentReview() {
   const navigate = useNavigate();
-  const doc = MOCK_DOC;
+  const { docId } = useParams();
+  const { data: doc, loading, error } = useDocument(docId);
+  const { profile: adminProfile } = useAdviserProfile();
 
   const [decision, setDecision] = useState<"approved" | "rejected" | "info" | null>(null);
   const [remarks, setRemarks] = useState("");
-  const [annotation, setAnnotation] = useState("");
-  const [savedAnnotation, setSavedAnnotation] = useState("");
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
-  const [zoom, setZoom] = useState(100);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const canReject = remarks.trim().length >= 10;
 
-  const handleApprove = () => { setDecision("approved"); setShowApproveModal(false); };
-  const handleReject = () => { setDecision("rejected"); setShowRejectModal(false); };
+  if (loading) {
+    return <div className="flex justify-center items-center h-[calc(100vh-80px)]"><Loader2 className="w-8 h-8 text-[#83358E] animate-spin" /></div>;
+  }
+  if (error || !doc) {
+    return <div className="flex justify-center items-center h-[calc(100vh-80px)]"><p className="text-gray-500">Document not found.</p></div>;
+  }
+
+  const isProcessed = doc.status === 'Approved' || doc.status === 'Rejected';
+
+  const handleApprove = async (finalRemarks: string) => {
+    if (!adminProfile) return;
+    setIsSubmitting(true);
+    await reviewDocument(doc.id, 'Approved', adminProfile.uid, finalRemarks || null);
+    setIsSubmitting(false);
+    setDecision("approved");
+    setShowApproveModal(false);
+    setTimeout(() => navigate("/home/documents"), 2000);
+  };
+
+  const handleReject = async () => {
+    if (!adminProfile) return;
+    setIsSubmitting(true);
+    await reviewDocument(doc.id, 'Rejected', adminProfile.uid, remarks);
+    setIsSubmitting(false);
+    setDecision("rejected");
+    setShowRejectModal(false);
+    setTimeout(() => navigate("/home/documents"), 2000);
+  };
+
   const handleRequestInfo = () => { setDecision("info"); };
+
+  const submittedAtStr = doc.createdAt ? format(doc.createdAt.toDate(), 'MMM dd, yyyy · h:mm a') : 'Unknown';
+  const timeInQueueStr = doc.createdAt ? formatDistanceToNow(doc.createdAt.toDate()) : '';
+  const fileSizeStr = doc.fileSize >= 1024 * 1024 ? `${(doc.fileSize / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(doc.fileSize / 1024)} KB`;
+
+  const type = doc.fileType?.toUpperCase() || 'UNKNOWN';
+  const isImage = ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'SVG'].includes(type);
+  const isPdf = type === 'PDF';
+  const isOffice = ['DOCX', 'DOC', 'XLSX', 'XLS', 'PPTX', 'PPT'].includes(type);
+
+  const history = [
+    { label: "Submitted to SAS", color: "bg-blue-600", icon: Send, timestamp: submittedAtStr, actor: doc.submittedBy },
+  ];
+  if (doc.status === 'Approved' || doc.status === 'Rejected') {
+    history.push({
+      label: doc.status === 'Approved' ? "Document Approved" : "Document Rejected",
+      color: doc.status === 'Approved' ? "bg-green-500" : "bg-red-500",
+      icon: doc.status === 'Approved' ? CheckCircle : X,
+      timestamp: doc.reviewedAt ? format(doc.reviewedAt.toDate(), 'MMM dd, yyyy · h:mm a') : '',
+      actor: "SAS Admin"
+    });
+  } else {
+    history.push({ label: "Received by SAS", color: "bg-[#FFD41C]", icon: Clock, timestamp: "", actor: "Pending Review" });
+  }
 
   return (
     <div className="space-y-0 -m-6">
@@ -201,16 +232,9 @@ export function AdminDocumentReview() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 transition-colors">
-            <ChevronLeft className="w-3.5 h-3.5" /> Previous
-          </button>
-          <p className="text-gray-500 text-xs">1 of {3} pending</p>
-          <button className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-300 rounded-lg text-xs text-gray-600 hover:bg-gray-50 transition-colors">
-            Next <ChevronRight className="w-3.5 h-3.5" />
-          </button>
-          <button className="flex items-center gap-2 px-4 py-2 border border-[#E0E0E0] text-[#001A4D] rounded-lg text-sm hover:bg-gray-50 transition-colors">
+          <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-4 py-2 border border-[#E0E0E0] text-[#001A4D] rounded-lg text-sm hover:bg-gray-50 transition-colors">
             <Download className="w-4 h-4" /> Download
-          </button>
+          </a>
         </div>
       </div>
 
@@ -225,24 +249,23 @@ export function AdminDocumentReview() {
             </div>
             <div className="text-center mb-3">
               <div className="w-14 h-14 bg-[#F3E8FF] border-2 border-white shadow rounded-full flex items-center justify-center mx-auto mb-2">
-                <span className="text-[#83358E] font-bold text-base">AR</span>
+                <span className="text-[#83358E] font-bold text-base">{doc.submittedBy.substring(0, 2).toUpperCase()}</span>
               </div>
               <p className="text-[#001A4D] font-bold text-sm">{doc.submittedBy}</p>
-              <p className="text-gray-400 text-xs">{doc.studentId}</p>
               <span className="inline-block mt-1 px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full font-medium">Organization Officer</span>
             </div>
             <div className="space-y-2 pt-2 border-t border-gray-100">
               <div className="flex items-center gap-2 text-xs">
                 <Building2 className="w-3.5 h-3.5 text-blue-500" />
-                <span className="text-gray-600">{doc.org}</span>
+                <span className="text-gray-600 truncate">{doc.submittedByOrgName}</span>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <MessageSquare className="w-3.5 h-3.5 text-blue-500" />
-                <span className="text-gray-600">{doc.email}</span>
+                <span className="text-gray-600 truncate">{doc.submittedByEmail}</span>
               </div>
               <div className="flex items-center gap-2 text-xs">
                 <Calendar className="w-3.5 h-3.5 text-blue-500" />
-                <span className="text-gray-600">{doc.submittedAt}</span>
+                <span className="text-gray-600">{submittedAtStr}</span>
               </div>
             </div>
           </div>
@@ -254,11 +277,11 @@ export function AdminDocumentReview() {
             </div>
             <div className="space-y-2.5">
               {[
-                { Icon: Hash, label: "Reference", value: doc.ref, valueClass: "text-amber-600 font-bold font-mono" },
+                { Icon: Hash, label: "Reference", value: doc.referenceNumber, valueClass: "text-amber-600 font-bold font-mono" },
                 { Icon: Tag, label: "Category", value: doc.category, valueClass: "px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full font-medium" },
-                { Icon: Calendar, label: "Semester", value: doc.semester, valueClass: "" },
-                { Icon: File, label: "File", value: `${doc.fileType} · ${doc.fileSize}`, valueClass: "" },
-                { Icon: Clock, label: "In Queue", value: doc.timeInQueue, valueClass: "text-amber-600 font-bold" },
+                { Icon: Calendar, label: "Semester", value: `${doc.semester} · ${doc.academicYear}`, valueClass: "" },
+                { Icon: File, label: "File", value: `${doc.fileType} · ${fileSizeStr}`, valueClass: "" },
+                { Icon: Clock, label: "In Queue", value: timeInQueueStr, valueClass: "text-amber-600 font-bold" },
               ].map((row) => (
                 <div key={row.label} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
                   <div className="flex items-center gap-2">
@@ -276,13 +299,13 @@ export function AdminDocumentReview() {
           </div>
 
           {/* Submission Notes */}
-          {doc.notes && (
+          {doc.description && (
             <div className="border border-[#E0E0E0] rounded-xl p-4">
               <div className="flex items-center gap-2 mb-2">
                 <StickyNote className="w-3.5 h-3.5 text-blue-600" />
                 <p className="text-blue-700 font-bold text-xs">Officer's Submission Notes</p>
               </div>
-              <p className="text-[#001A4D] text-xs italic leading-relaxed">{doc.notes}</p>
+              <p className="text-[#001A4D] text-xs italic leading-relaxed">{doc.description}</p>
             </div>
           )}
 
@@ -290,9 +313,9 @@ export function AdminDocumentReview() {
           <div className="border border-[#E0E0E0] rounded-xl p-4">
             <p className="text-[#001A4D] font-bold text-xs mb-3">Document History</p>
             <div className="space-y-3">
-              {doc.history.map((step, i) => {
+              {history.map((step, i) => {
                 const Icon = step.icon;
-                const isLast = i === doc.history.length - 1;
+                const isLast = i === history.length - 1;
                 return (
                   <div key={i} className="flex gap-3">
                     <div className="flex flex-col items-center">
@@ -314,119 +337,47 @@ export function AdminDocumentReview() {
         </div>
 
         {/* CENTER — Preview */}
-        <div className="p-6 space-y-4 bg-gray-50">
+        <div className="p-6 space-y-4 bg-gray-50 flex flex-col min-h-0 h-[calc(100vh-57px)] sticky top-[57px]">
           {/* Preview Card */}
-          <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+          <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden flex-1 flex flex-col">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100 flex-shrink-0">
               <p className="text-[#001A4D] font-bold text-sm">Document Preview</p>
               <div className="flex items-center gap-3">
-                <button className="flex items-center gap-1.5 text-blue-600 text-xs hover:underline">
+                <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 text-blue-600 text-xs hover:underline">
                   <ExternalLink className="w-3.5 h-3.5" /> Open Full Screen
-                </button>
-                <button className="flex items-center gap-1.5 text-[#001A4D] text-xs hover:underline">
-                  <Download className="w-3.5 h-3.5" /> Download
-                </button>
+                </a>
               </div>
             </div>
 
-            {/* PDF Preview Area */}
-            <div className="relative bg-gray-100 m-4 rounded-xl overflow-hidden" style={{ height: "600px" }}>
-              {/* Simulated PDF pages */}
-              <div className="absolute inset-0 flex flex-col items-center py-6 gap-4 overflow-y-auto">
-                {[1, 2].map((page) => (
-                  <div key={page} className="bg-white shadow-md w-[80%] rounded" style={{ minHeight: "380px", padding: "32px", transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}>
-                    {page === 1 && (
-                      <div className="space-y-4 text-[#001A4D]">
-                        <div className="text-center border-b border-gray-200 pb-4 mb-4">
-                          <p className="font-bold text-sm">STUDENT TECHNOLOGY INSTITUTE</p>
-                          <p className="text-xs text-gray-500">STI College Ormoc · Student Affairs Services</p>
-                        </div>
-                        <p className="font-bold text-sm text-center">ACTIVITY LETTER</p>
-                        <p className="text-xs text-gray-600 leading-relaxed">March 18, 2026</p>
-                        <p className="text-xs text-gray-600 leading-relaxed">
-                          Dear Ma'am/Sir,
-                        </p>
-                        <p className="text-xs text-gray-600 leading-relaxed">
-                          We, the STI Dance Company, humbly request your approval for our upcoming event, <strong>Cultural Night 2026</strong>, scheduled on April 5, 2026 at the STI Ormoc Auditorium from 5:00 PM to 9:00 PM.
-                        </p>
-                        <p className="text-xs text-gray-600 leading-relaxed">
-                          This annual event showcases the cultural heritage and artistic talents of our student members through various dance performances, traditional music, and cultural exhibits. We expect approximately 200 attendees.
-                        </p>
-                        <p className="text-xs text-gray-600 leading-relaxed">
-                          Attached are the event timeline, budget proposal, and list of participants for your reference.
-                        </p>
-                        <p className="text-xs text-gray-600 mt-6">Respectfully yours,</p>
-                        <div className="mt-4">
-                          <div className="border-b border-gray-400 w-32 mb-1" />
-                          <p className="text-xs font-bold">Ana Reyes</p>
-                          <p className="text-[10px] text-gray-500">President, STI Dance Company</p>
-                        </div>
-                      </div>
-                    )}
-                    {page === 2 && (
-                      <div className="space-y-3 text-[#001A4D]">
-                        <p className="font-bold text-sm">EVENT DETAILS</p>
-                        <div className="grid grid-cols-2 gap-3 text-xs text-gray-600">
-                          <div><p className="font-medium text-[#001A4D]">Event Name</p><p>Cultural Night 2026</p></div>
-                          <div><p className="font-medium text-[#001A4D]">Date</p><p>April 5, 2026</p></div>
-                          <div><p className="font-medium text-[#001A4D]">Venue</p><p>STI Ormoc Auditorium</p></div>
-                          <div><p className="font-medium text-[#001A4D]">Time</p><p>5:00 PM – 9:00 PM</p></div>
-                        </div>
-                        <p className="font-bold text-xs mt-4">BUDGET BREAKDOWN</p>
-                        <table className="w-full text-xs border-collapse">
-                          <thead><tr className="bg-gray-100"><th className="p-2 text-left border border-gray-200">Item</th><th className="p-2 text-right border border-gray-200">Amount</th></tr></thead>
-                          <tbody>
-                            {[["Venue rental", "₱3,000"], ["Sound system", "₱2,500"], ["Props & costumes", "₱2,000"], ["Food for performers", "₱1,500"], ["Miscellaneous", "₱1,000"]].map(([item, amt]) => (
-                              <tr key={item}><td className="p-2 border border-gray-100">{item}</td><td className="p-2 border border-gray-100 text-right">{amt}</td></tr>
-                            ))}
-                            <tr className="font-bold bg-gray-50"><td className="p-2 border border-gray-200">TOTAL</td><td className="p-2 border border-gray-200 text-right">₱10,000</td></tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Zoom controls */}
-              <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-1.5 shadow-sm">
-                <button onClick={() => setZoom(Math.max(50, zoom - 10))} className="text-gray-500 hover:text-[#001A4D] transition-colors"><ZoomOut className="w-4 h-4" /></button>
-                <span className="text-xs text-gray-600 w-12 text-center">{zoom}%</span>
-                <button onClick={() => setZoom(Math.min(150, zoom + 10))} className="text-gray-500 hover:text-[#001A4D] transition-colors"><ZoomIn className="w-4 h-4" /></button>
-                <div className="w-px h-4 bg-gray-200" />
-                <button onClick={() => setZoom(100)} className="text-gray-500 hover:text-[#001A4D] transition-colors"><Maximize2 className="w-3.5 h-3.5" /></button>
-                <span className="text-gray-400 text-xs">Page 1 of 2</span>
-              </div>
+            {/* Document Render Area */}
+            <div className="relative bg-gray-100 flex-1 overflow-hidden p-4">
+              {isImage ? (
+                <div className="w-full h-full flex items-center justify-center">
+                  <img src={doc.fileUrl} alt={doc.fileName} className="max-w-full max-h-full object-contain bg-white shadow-md rounded-xl" />
+                </div>
+              ) : isOffice ? (
+                <iframe 
+                  src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(doc.fileUrl)}`}
+                  className="w-full h-full border-none rounded-xl shadow-inner bg-white" 
+                  title="Document Preview"
+                />
+              ) : isPdf ? (
+                <iframe 
+                  src={doc.fileUrl} 
+                  className="w-full h-full border-none rounded-xl shadow-inner bg-white" 
+                  title="Document Preview"
+                />
+              ) : (
+                <div className="w-full h-full flex flex-col items-center justify-center text-center bg-white rounded-xl shadow-inner">
+                  <FileText className="w-12 h-12 text-gray-400 mb-4" />
+                  <p className="text-[#001A4D] font-medium">Preview not available for {doc.fileType}</p>
+                  <p className="text-gray-500 text-sm mb-6">Please download the file to view it.</p>
+                  <a href={doc.fileUrl} download className="flex items-center gap-2 px-6 py-2.5 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 transition-colors">
+                    <Download className="w-4 h-4" /> Download File
+                  </a>
+                </div>
+              )}
             </div>
-          </div>
-
-          {/* Annotation Bar */}
-          <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
-            <div className="flex items-center gap-3">
-              <StickyNote className="w-4 h-4 text-gray-400" />
-              <span className="text-gray-500 text-xs italic">Private Annotation</span>
-              <input
-                type="text"
-                placeholder="Add a private note about this document (visible to SAS staff only)..."
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
-                value={annotation}
-                onChange={(e) => setAnnotation(e.target.value)}
-              />
-              <button
-                onClick={() => { setSavedAnnotation(annotation); setAnnotation(""); }}
-                className="px-3 py-2 bg-blue-600 text-white text-xs rounded-lg hover:bg-blue-700 transition-colors whitespace-nowrap"
-              >
-                Save Note
-              </button>
-            </div>
-            {savedAnnotation && (
-              <div className="mt-3 flex items-start gap-2 p-3 bg-[#F3E8FF] rounded-lg">
-                <StickyNote className="w-3.5 h-3.5 text-[#83358E] flex-shrink-0 mt-0.5" />
-                <p className="text-[#001A4D] text-xs flex-1">{savedAnnotation}</p>
-                <span className="text-gray-400 text-[10px]">Saved just now</span>
-                <button onClick={() => setSavedAnnotation("")} className="text-gray-400 hover:text-gray-600 ml-1"><X className="w-3 h-3" /></button>
-              </div>
-            )}
           </div>
         </div>
 
@@ -454,6 +405,44 @@ export function AdminDocumentReview() {
                 Next Pending Document
               </button>
             </div>
+          ) : isProcessed ? (
+            /* Read-Only Decision Summary */
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <Gavel className="w-5 h-5 text-[#001A4D]" />
+                <p className="text-[#001A4D] font-bold text-base">Review Decision</p>
+              </div>
+              
+              <div className={`p-4 rounded-xl border ${doc.status === 'Approved' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  {doc.status === 'Approved' ? <CheckCircle className="w-5 h-5 text-green-600" /> : <X className="w-5 h-5 text-red-600" />}
+                  <p className={`font-bold text-sm ${doc.status === 'Approved' ? 'text-green-700' : 'text-red-700'}`}>
+                    Document {doc.status}
+                  </p>
+                </div>
+                <p className="text-xs text-gray-500">
+                  Reviewed on {doc.reviewedAt ? format(doc.reviewedAt.toDate(), 'MMM dd, yyyy · h:mm a') : 'Unknown Date'}
+                </p>
+              </div>
+              
+              {doc.remarks && (
+                <div>
+                  <div className="border-l-4 border-[#83358E] pl-3 mb-3 mt-4">
+                    <p className="text-[#001A4D] font-bold text-sm">Adviser Remarks</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl">
+                    <p className="text-sm text-[#001A4D] leading-relaxed whitespace-pre-wrap">{doc.remarks}</p>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={() => navigate("/home/documents")}
+                className="w-full py-2.5 mt-6 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+              >
+                Back to Documents
+              </button>
+            </div>
           ) : (
             <>
               {/* Header */}
@@ -466,9 +455,9 @@ export function AdminDocumentReview() {
               {/* Summary chips */}
               <div className="space-y-2">
                 {[
-                  { Icon: Building2, value: doc.org },
+                  { Icon: Building2, value: doc.submittedByOrgName },
                   { Icon: Tag, value: doc.category },
-                  { Icon: Calendar, value: doc.submittedAt.split(" · ")[0] },
+                  { Icon: Calendar, value: submittedAtStr.split(" · ")[0] },
                 ].map((chip) => (
                   <div key={chip.value} className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg">
                     <chip.Icon className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
@@ -544,10 +533,10 @@ export function AdminDocumentReview() {
       </div>
 
       {showApproveModal && (
-        <ApproveModal doc={doc} remarks={remarks} onClose={() => setShowApproveModal(false)} onConfirm={handleApprove} />
+        <ApproveModal doc={doc} remarks={remarks} onClose={() => setShowApproveModal(false)} onConfirm={handleApprove} submitting={isSubmitting} />
       )}
       {showRejectModal && (
-        <RejectModal doc={doc} remarks={remarks} onClose={() => setShowRejectModal(false)} onConfirm={handleReject} />
+        <RejectModal doc={doc} remarks={remarks} onClose={() => setShowRejectModal(false)} onConfirm={handleReject} submitting={isSubmitting} />
       )}
     </div>
   );

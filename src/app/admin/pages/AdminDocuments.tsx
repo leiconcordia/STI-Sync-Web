@@ -616,8 +616,9 @@ function IncomingQueueTab() {
                       <td className="px-4 py-3"><StatusPill status={doc.status} /></td>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1 relative">
-                          <button onClick={() => setPreviewDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="View Document"><Eye className="w-4 h-4" /></button>
-                          <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors"><Download className="w-4 h-4" /></a>
+                          <button onClick={() => setPreviewDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors" title="Quick Preview"><Eye className="w-4 h-4" /></button>
+                          <button onClick={() => navigate(`/home/documents/${doc.id}/review`)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[#F3E8FF] text-[#83358E] transition-colors" title="Full Review"><FileText className="w-4 h-4" /></button>
+                          <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer" className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-50 text-[#001A4D] transition-colors" title="Download"><Download className="w-4 h-4" /></a>
                           {(doc.status === "Pending" || doc.status === "Resubmitted") && (
                             <>
                               <button onClick={() => { setApprovePopover(approvePopover === doc.id ? null : doc.id); setRejectPopover(null); }} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-green-50 text-green-600 transition-colors"><Check className="w-4 h-4" /></button>
