@@ -5,11 +5,13 @@ import { useAdviserProfile, signOutAdviser } from '../../../modules/auth';
 
 interface TopNavProps {
   title: string;
+  globalSearch?: string;
+  onSearchChange?: (val: string) => void;
   onLogout?: () => void;
   onNavigateSettings?: () => void;
 }
 
-export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
+export function TopNav({ title, globalSearch, onSearchChange, onLogout, onNavigateSettings }: TopNavProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const { profile } = useAdviserProfile();
 
@@ -43,6 +45,8 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
           <Input
             type="search"
             placeholder="Search..."
+            value={globalSearch || ""}
+            onChange={(e) => onSearchChange?.(e.target.value)}
             className="pl-9 w-64 h-9 border-[#E0E0E0] focus-visible:ring-[#1E70E8]"
           />
         </div>

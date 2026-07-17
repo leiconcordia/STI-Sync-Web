@@ -356,15 +356,15 @@ export function AdminDocumentReview() {
                   <img src={doc.fileUrl} alt={doc.fileName} className="max-w-full max-h-full object-contain bg-white shadow-md rounded-xl" />
                 </div>
               ) : isOffice ? (
-                <iframe 
+                <iframe
                   src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(doc.fileUrl)}`}
-                  className="w-full h-full border-none rounded-xl shadow-inner bg-white" 
+                  className="w-full h-full border-none rounded-xl shadow-inner bg-white"
                   title="Document Preview"
                 />
               ) : isPdf ? (
-                <iframe 
-                  src={doc.fileUrl} 
-                  className="w-full h-full border-none rounded-xl shadow-inner bg-white" 
+                <iframe
+                  src={doc.fileUrl}
+                  className="w-full h-full border-none rounded-xl shadow-inner bg-white"
                   title="Document Preview"
                 />
               ) : (
@@ -412,7 +412,7 @@ export function AdminDocumentReview() {
                 <Gavel className="w-5 h-5 text-[#001A4D]" />
                 <p className="text-[#001A4D] font-bold text-base">Review Decision</p>
               </div>
-              
+
               <div className={`p-4 rounded-xl border ${doc.status === 'Approved' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                 <div className="flex items-center gap-2 mb-2">
                   {doc.status === 'Approved' ? <CheckCircle className="w-5 h-5 text-green-600" /> : <X className="w-5 h-5 text-red-600" />}
@@ -424,7 +424,7 @@ export function AdminDocumentReview() {
                   Reviewed on {doc.reviewedAt ? format(doc.reviewedAt.toDate(), 'MMM dd, yyyy · h:mm a') : 'Unknown Date'}
                 </p>
               </div>
-              
+
               {doc.remarks && (
                 <div>
                   <div className="border-l-4 border-[#83358E] pl-3 mb-3 mt-4">

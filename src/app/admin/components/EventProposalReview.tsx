@@ -6,30 +6,27 @@ import {
   Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Plus, Minus
 } from 'lucide-react';
+import type { EventDocument } from '../../modules/events/types/event.types';
+import { approveEvent, rejectEvent, returnEvent } from '../../modules/events/services/event.service';
+import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useEventTypesStream, useVenuesStream } from '../../modules/events/hooks/useEventConfigStream';
 
 interface EventProposalReviewProps {
-  event: any;
+  event: EventDocument;
   onClose: () => void;
 }
 
 type Decision = 'none' | 'approved' | 'returned' | 'rejected';
 type ActiveModal = 'none' | 'approve' | 'return' | 'reject';
 
-const MOCK_BUDGET_ITEMS = [
-  { id: 1, category: 'Venue', description: 'STI Auditorium rental (full day)', qty: 1, unitCost: 25000, fundingSource: 'SAO Budget' },
-  { id: 2, category: 'Food & Beverage', description: 'Catering service – 200 pax snacks', qty: 200, unitCost: 150, fundingSource: 'Org Funds' },
-  { id: 3, category: 'Equipment', description: 'Sound system rental', qty: 1, unitCost: 8000, fundingSource: 'SAO Budget' },
-  { id: 4, category: 'Materials', description: 'Event kits and printed materials', qty: 200, unitCost: 50, fundingSource: 'Sponsorship' },
-  { id: 5, category: 'Honorarium', description: 'Resource speaker fee', qty: 2, unitCost: 5000, fundingSource: 'SAO Budget' },
-];
-
 const NAV_SECTIONS = [
   { id: 'overview', icon: Info, label: 'Event Overview', status: 'complete' },
   { id: 'schedule', icon: Calendar, label: 'Schedule & Venue', status: 'complete' },
   { id: 'participants', icon: Users, label: 'Participants & Audience', status: 'complete' },
-  { id: 'team', icon: Shield, label: 'Event Team & Scanners', status: 'warning' },
+  { id: 'team', icon: Shield, label: 'Event Team & Scanners', status: 'complete' },
   { id: 'budget', icon: Receipt, label: 'Budget Request', status: 'complete' },
-  { id: 'documents', icon: FileText, label: 'Submitted Documents', status: 'warning' },
+  { id: 'documents', icon: FileText, label: 'Submitted Documents', status: 'complete' },
   { id: 'history', icon: History, label: 'Submission History', status: 'complete' },
 ];
 
@@ -79,31 +76,45 @@ function SectionHeader({ title, status, subtitle }: { title: string; status: str
 export default function EventProposalReview({ event, onClose }: EventProposalReviewProps) {
   const [activeSection, setActiveSection] = useState('overview');
   const [visitedSections, setVisitedSections] = useState<Set<string>>(new Set(['overview']));
-  const [remarks, setRemarks] = useState('');
-  const [decision, setDecision] = useState<Decision>('none');
-  const [activeModal, setActiveModal] = useState<ActiveModal>('none');
+  const [remarks, setRemarks] = useState(event.adviserRemarks || '');
   const [remarksError, setRemarksError] = useState(false);
+  const [activeModal, setActiveModal] = useState<ActiveModal>('none');
   const [undoVisible, setUndoVisible] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   // Return modal state
-  const [returnFlags, setReturnFlags] = useState<string[]>([]);
-  const [returnDeadline, setReturnDeadline] = useState('');
+  const [returnFlags, setReturnFlags] = useState<string[]>(event.returnFlags || []);
+  const [returnDeadline, setReturnDeadline] = useState(event.returnDeadline || '');
 
   // Reject modal state
-  const [rejectionReason, setRejectionReason] = useState('');
+  const [rejectionReason, setRejectionReason] = useState(event.rejectionReason || '');
   const [allowResubmit, setAllowResubmit] = useState(true);
   const [resubmitDays, setResubmitDays] = useState(7);
 
+  const { data: orgs } = useOrganizationStream();
+  const { eventTypes } = useEventTypesStream();
+  const { venues } = useVenuesStream();
+  const { profile } = useAdviserProfile();
+
+  const isDecided = event.proposalStatus !== 'pending_review' && event.proposalStatus !== 'draft';
+  
+  const initialDecision: Decision = 
+    event.proposalStatus === 'approved' ? 'approved' :
+    event.proposalStatus === 'rejected' ? 'rejected' :
+    event.proposalStatus === 'returned' ? 'returned' : 'none';
+
+  const [decision, setDecision] = useState<Decision>(initialDecision);
+
   // Budget adjustment
   const [approvedAmounts, setApprovedAmounts] = useState<Record<number, number>>(
-    Object.fromEntries(MOCK_BUDGET_ITEMS.map(i => [i.id, i.qty * i.unitCost]))
+    Object.fromEntries((event.budgetItems || []).map((i, idx) => [idx, i.amount || 0]))
   );
 
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const centerRef = useRef<HTMLDivElement>(null);
 
-  const budgetItems = MOCK_BUDGET_ITEMS;
-  const totalRequested = budgetItems.reduce((s, i) => s + i.qty * i.unitCost, 0);
+  const budgetItems = event.budgetItems || [];
+  const totalRequested = budgetItems.reduce((s, i) => s + ((i.unitCost || 0) * (i.quantity || 0)), 0);
   const totalApproved = Object.values(approvedAmounts).reduce((a, b) => a + b, 0);
 
   const scrollTo = (id: string) => {
@@ -119,6 +130,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const remarksWritten = remarks.trim().length > 0;
 
   const handleDecision = (type: 'approve' | 'return' | 'reject') => {
+    if (isDecided) return;
     if (type !== 'approve' && !remarksWritten) {
       setRemarksError(true);
       return;
@@ -127,18 +139,64 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     setActiveModal(type);
   };
 
-  const confirmDecision = (type: Decision) => {
-    setDecision(type);
-    setActiveModal('none');
-    setUndoVisible(true);
-    setTimeout(() => setUndoVisible(false), 300000); // 5 min
+  const confirmApprove = async () => {
+    if (!profile?.uid) return;
+    setSubmitting(true);
+    try {
+      await approveEvent(event.id, profile.uid, remarks);
+      setDecision('approved');
+      setActiveModal('none');
+      setUndoVisible(true);
+      setTimeout(() => setUndoVisible(false), 300000); // 5 min
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const propRef = event?.name ? `PROP-2026-00${event.id?.toString().padStart(2, '0') || '42'}` : 'PROP-2026-0042';
+  const confirmReject = async () => {
+    if (!profile?.uid) return;
+    setSubmitting(true);
+    try {
+      await rejectEvent(event.id, profile.uid, rejectionReason, remarks);
+      setDecision('rejected');
+      setActiveModal('none');
+      setUndoVisible(true);
+      setTimeout(() => setUndoVisible(false), 300000); // 5 min
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const confirmReturn = async () => {
+    if (!profile?.uid) return;
+    setSubmitting(true);
+    try {
+      await returnEvent(event.id, profile.uid, returnFlags, returnDeadline, remarks);
+      setDecision('returned');
+      setActiveModal('none');
+      setUndoVisible(true);
+      setTimeout(() => setUndoVisible(false), 300000); // 5 min
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const orgName = orgs.find(o => o.id === event.hostingOrgId)?.name || event.hostingOrgId;
+  const orgAcronym = orgs.find(o => o.id === event.hostingOrgId)?.acronym || 'ORG';
+  const eventTypeName = eventTypes.find(t => t.id === event.eventTypeId)?.name || 'Unknown Type';
+  const venueName = venues.find(v => v.id === event.venueId)?.name || 'Unknown Venue';
+  
+  const createdDate = event.createdAt && typeof event.createdAt.toDate === 'function' ? event.createdAt.toDate().toLocaleDateString() : 'N/A';
+  const firstSession = event.sessions && event.sessions.length > 0 ? event.sessions[0].date : 'TBD';
 
   return (
     <div className="fixed inset-0 z-50 bg-white flex flex-col">
-
       {/* PAGE HEADER */}
       <div className="flex-shrink-0 h-16 bg-white border-b border-[#E0E0E0] flex items-center justify-between px-6">
         <div className="flex items-center gap-4">
@@ -148,10 +206,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             Back to Event Approvals
           </button>
           <div className="h-5 w-px bg-[#E0E0E0]" />
-          <span className="text-xs text-gray-400">Dashboard &gt; Event Approvals &gt; <span className="text-gray-600">{event?.name?.slice(0, 40) || 'Review'}</span></span>
+          <span className="text-xs text-gray-400">Dashboard &gt; Event Approvals &gt; <span className="text-gray-600">{event.title?.slice(0, 40) || 'Review'}</span></span>
         </div>
         <div className="flex items-center gap-4">
-          <span className="px-3 py-1.5 bg-[#FFD41C] text-[#001A4D] font-mono font-bold text-xs rounded-full">{propRef}</span>
+          <span className="px-3 py-1.5 bg-[#FFD41C] text-[#001A4D] font-mono font-bold text-xs rounded-full">{event.referenceId || 'N/A'}</span>
           {decision === 'none' ? (
             <span className="flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-400 to-amber-500 text-white font-bold text-sm rounded-full">
               <Clock className="w-4 h-4" /> Pending Review
@@ -177,11 +235,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
       {/* THREE-COLUMN BODY */}
       <div className="flex flex-1 min-h-0">
-
         {/* LEFT COLUMN — Navigator (380px) */}
         <div className="w-[320px] flex-shrink-0 border-r border-[#E0E0E0] flex flex-col overflow-y-auto">
           <div className="p-5 space-y-5">
-
             {/* Nav list */}
             <div>
               <div className="flex items-center justify-between mb-3">
@@ -229,31 +285,18 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </div>
                 ))}
               </div>
-              <p className="text-gray-400 text-xs italic mt-3">Review checklist helps ensure thorough evaluation.</p>
             </div>
 
             {/* Officer Contact */}
             <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
               <p className="text-[#001A4D] font-bold text-sm mb-3">Submitting Officer</p>
               <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-bold text-sm">JD</div>
+                <div className="w-10 h-10 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-bold text-sm">{(event.createdBy || "O").charAt(0).toUpperCase()}</div>
                 <div>
-                  <p className="font-bold text-[#001A4D] text-sm">Juan Dela Cruz</p>
-                  <p className="text-gray-400 text-xs">2021-00123 • STI IT Guild</p>
-                  <span className="px-2 py-0.5 bg-[#F3E8FF] text-[#83358E] text-xs rounded-full">President</span>
+                  <p className="font-bold text-[#001A4D] text-sm">UID: {event.createdBy || 'Unknown'}</p>
+                  <p className="text-gray-400 text-xs">{orgAcronym}</p>
                 </div>
               </div>
-              <div className="space-y-1.5 mb-3">
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <Mail className="w-3.5 h-3.5" /> jdelacruz@sti.edu.ph
-                </div>
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <MessageSquare className="w-3.5 h-3.5" /> +63 912 345 6789
-                </div>
-              </div>
-              <button className="w-full flex items-center justify-center gap-2 py-2 border border-[#1E70E8] text-[#1E70E8] rounded-lg text-sm hover:bg-blue-50 transition-colors">
-                <Send className="w-4 h-4" /> Send Message
-              </button>
             </div>
           </div>
         </div>
@@ -262,12 +305,21 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         <div ref={centerRef} className="flex-1 overflow-y-auto">
           <div className="p-6 space-y-10 max-w-3xl">
 
+            {isDecided && (
+              <div className={`p-4 rounded-xl border-l-4 ${decision === 'approved' ? 'bg-green-50 border-green-500' : decision === 'rejected' ? 'bg-red-50 border-red-500' : 'bg-amber-50 border-amber-500'}`}>
+                <p className="text-sm font-bold text-gray-800">
+                  {decision === 'approved' ? `This proposal was Approved on ${event.approvedAt && typeof event.approvedAt.toDate === 'function' ? event.approvedAt.toDate().toLocaleDateString() : 'N/A'}.` :
+                   decision === 'rejected' ? `This proposal was Rejected on ${event.rejectedAt && typeof event.rejectedAt.toDate === 'function' ? event.rejectedAt.toDate().toLocaleDateString() : 'N/A'}. Reason: ${event.rejectionReason}` :
+                   `This proposal was Returned on ${event.returnedAt && typeof event.returnedAt.toDate === 'function' ? event.returnedAt.toDate().toLocaleDateString() : 'N/A'}.`}
+                </p>
+              </div>
+            )}
+
             {/* SECTION 1 — EVENT OVERVIEW */}
             <div ref={el => { sectionRefs.current['overview'] = el; }}
               onMouseEnter={() => { setActiveSection('overview'); setVisitedSections(p => new Set([...p, 'overview'])); }}>
               <SectionHeader title="Event Overview" status="complete" subtitle="Event identity, classification, and media assets submitted by the officer" />
-
-              {/* Banner */}
+              
               <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden mb-4">
                 <div className="h-44 bg-gradient-to-br from-[#7F77DD] to-[#83358E] flex items-center justify-center">
                   <div className="text-center">
@@ -280,23 +332,19 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     <div className="space-y-4">
                       <div>
                         <p className="text-xs uppercase text-gray-400 font-semibold mb-1">Event Title</p>
-                        <p className="text-[#001A4D] font-bold text-xl">{event?.name || 'Annual Leadership Summit 2026'}</p>
+                        <p className="text-[#001A4D] font-bold text-xl">{event.title}</p>
                       </div>
                       <div>
                         <p className="text-xs uppercase text-gray-400 font-semibold mb-1">Description</p>
-                        <p className="text-[#001A4D] text-sm leading-relaxed">
-                          The Annual Leadership Summit brings together student organization leaders for a full-day development program. Sessions cover governance, event management, financial accountability, and inter-org collaboration. Resource speakers include alumni leaders and faculty advisers.
-                        </p>
+                        <p className="text-[#001A4D] text-sm leading-relaxed">{event.description}</p>
                       </div>
                     </div>
                     <div className="space-y-3">
                       {[
-                        { label: 'Event Type', value: event?.type || 'Conference', pill: true, color: '#83358E' },
-                        { label: 'Category', value: 'Seminar', pill: true, color: '#9E9E9E' },
-                        { label: 'Organization', value: event?.org || 'JPIA', pill: false },
-                        { label: 'Visibility', value: 'Public', pill: true, color: '#22C55E' },
-                        { label: 'QR Attendance', value: 'Required', pill: true, color: '#1E70E8' },
-                        { label: 'Certificate', value: 'Enabled', pill: true, color: '#22C55E' },
+                        { label: 'Event Type', value: eventTypeName, pill: true, color: '#83358E' },
+                        { label: 'Organization', value: orgName, pill: false },
+                        { label: 'Event Format', value: event.eventFormat || 'N/A', pill: true, color: '#22C55E' },
+                        { label: 'QR Tickets', value: event.enableQRTickets ? 'Enabled' : 'Disabled', pill: true, color: '#1E70E8' },
                       ].map(row => (
                         <div key={row.label} className="flex items-center justify-between py-2.5 border-b border-[#F0F0F0] last:border-0">
                           <span className="text-gray-400 text-xs">{row.label}</span>
@@ -316,32 +364,31 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
 
               {/* Objectives */}
-              <div className="bg-[#F3E8FF] border-l-4 border-[#83358E] rounded-xl p-4">
-                <p className="text-[#83358E] font-bold text-sm mb-3">Event Objectives</p>
-                <div className="space-y-2">
-                  {['Develop leadership competencies among student officers', 'Foster inter-organizational networking and collaboration', 'Enhance organizational governance and accountability practices'].map((obj, i) => (
-                    <div key={i} className="flex items-start gap-3">
-                      <div className="w-6 h-6 bg-[#83358E] text-white rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">{i + 1}</div>
-                      <p className="text-[#001A4D] text-sm">{obj}</p>
-                    </div>
-                  ))}
+              {event.objectives && event.objectives.length > 0 && (
+                <div className="bg-[#F3E8FF] border-l-4 border-[#83358E] rounded-xl p-4">
+                  <p className="text-[#83358E] font-bold text-sm mb-3">Event Objectives</p>
+                  <div className="space-y-2">
+                    {event.objectives.map((obj, i) => (
+                      <div key={i} className="flex items-start gap-3">
+                        <div className="w-6 h-6 bg-[#83358E] text-white rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">{i + 1}</div>
+                        <p className="text-[#001A4D] text-sm">{obj}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
             {/* SECTION 2 — SCHEDULE & VENUE */}
             <div ref={el => { sectionRefs.current['schedule'] = el; }}
               onMouseEnter={() => { setActiveSection('schedule'); setVisitedSections(p => new Set([...p, 'schedule'])); }}>
               <SectionHeader title="Schedule & Venue" status="complete" subtitle="Academic context, session schedule, and venue logistics" />
-
               <div className="space-y-4">
-                {/* Academic context */}
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
-                  <div className="grid grid-cols-3 divide-x divide-[#E0E0E0]">
+                  <div className="grid grid-cols-2 divide-x divide-[#E0E0E0]">
                     {[
-                      { label: 'School Year', value: 'SY 2025-2026' },
-                      { label: 'Semester', value: '1st Semester' },
-                      { label: 'Submitted', value: event?.submittedDate || 'May 28, 2026' },
+                      { label: 'School Year', value: event.schoolYear || 'N/A' },
+                      { label: 'Submitted', value: createdDate },
                     ].map(c => (
                       <div key={c.label} className="px-5 first:pl-0 last:pr-0 text-center">
                         <p className="text-xs uppercase text-gray-400 font-semibold mb-1">{c.label}</p>
@@ -355,22 +402,18 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <div>
                   <div className="flex items-center gap-2 mb-3">
                     <p className="text-[#001A4D] font-bold text-sm">Event Sessions</p>
-                    <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded-full font-medium">2 Sessions</span>
+                    <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded-full font-medium">{event.sessions?.length || 0} Sessions</span>
                   </div>
                   <div className="space-y-3">
-                    {[
-                      { n: 1, title: 'Morning Session — Plenary', date: 'June 15, 2026', time: '8:00 AM – 12:00 PM', duration: '4 hours' },
-                      { n: 2, title: 'Afternoon Session — Workshops', date: 'June 15, 2026', time: '1:00 PM – 5:00 PM', duration: '4 hours' },
-                    ].map(s => (
-                      <div key={s.n} className="border-l-[3px] border-[#83358E] bg-white border border-[#E0E0E0] rounded-xl p-4">
+                    {(event.sessions || []).map((s, i) => (
+                      <div key={s.id || i} className="border-l-[3px] border-[#83358E] bg-white border border-[#E0E0E0] rounded-xl p-4">
                         <div className="flex items-center justify-between mb-3">
-                          <span className="text-[#83358E] font-bold text-xs">Session {s.n}</span>
+                          <span className="text-[#83358E] font-bold text-xs">Session {i + 1}</span>
                           <span className="text-[#001A4D] font-bold text-sm">{s.title}</span>
                         </div>
                         <div className="flex items-center gap-6 text-sm text-gray-600">
                           <div className="flex items-center gap-1.5"><Calendar className="w-4 h-4 text-gray-400" />{s.date}</div>
-                          <div className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-gray-400" />{s.time}</div>
-                          <div className="flex items-center gap-1.5"><span className="text-gray-400 text-xs">Duration:</span><span className="font-medium">{s.duration}</span></div>
+                          <div className="flex items-center gap-1.5"><Clock className="w-4 h-4 text-gray-400" />{s.startTime} - {s.endTime}</div>
                         </div>
                       </div>
                     ))}
@@ -382,17 +425,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <div className="grid grid-cols-2 gap-6">
                     <div>
                       <p className="text-xs uppercase text-gray-400 font-semibold mb-2">Requested Venue</p>
-                      <p className="text-[#001A4D] font-bold text-base">{event?.venue || 'STI Auditorium'}</p>
-                      <p className="text-gray-500 text-xs mt-0.5">Main Building • Ground Floor</p>
-                      <p className="text-gray-400 text-xs mt-0.5">Capacity: 500 pax</p>
-                      <div className="mt-2 flex items-center gap-1.5">
-                        <div className="w-2 h-2 bg-green-500 rounded-full" />
-                        <span className="text-green-600 text-xs font-medium">No Conflicts Detected</span>
-                      </div>
+                      <p className="text-[#001A4D] font-bold text-base">{venueName}</p>
                     </div>
                     <div>
                       <p className="text-xs uppercase text-gray-400 font-semibold mb-2">Event Format</p>
-                      <span className="px-3 py-1 bg-[#83358E]/10 text-[#83358E] rounded-full text-sm font-medium">In-Person</span>
+                      <span className="px-3 py-1 bg-[#83358E]/10 text-[#83358E] rounded-full text-sm font-medium">{event.eventFormat}</span>
                     </div>
                   </div>
                 </div>
@@ -403,170 +440,63 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <div ref={el => { sectionRefs.current['participants'] = el; }}
               onMouseEnter={() => { setActiveSection('participants'); setVisitedSections(p => new Set([...p, 'participants'])); }}>
               <SectionHeader title="Participants & Audience" status="complete" subtitle="Target audience, reach estimate, and attendance configuration" />
-
               <div className="space-y-4">
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
-                  <div className="grid grid-cols-3 divide-x divide-[#E0E0E0]">
+                  <div className="grid grid-cols-2 divide-x divide-[#E0E0E0]">
                     {[
-                      { label: 'Max Participants', value: '200' },
-                      { label: 'Minimum Required', value: '50' },
-                      { label: 'Expected Attendance', value: '200' },
+                      { label: 'Expected Attendance', value: event.expectedParticipantCount || 0 },
+                      { label: 'Student Payables', value: event.studentPayablesEnabled ? `₱${event.suggestedFeePerStudent || 0} / student` : 'Disabled' },
                     ].map(c => (
                       <div key={c.label} className="px-5 first:pl-0 last:pr-0 text-center">
                         <p className="text-xs uppercase text-gray-400 font-semibold mb-1">{c.label}</p>
-                        <p className="text-[#001A4D] font-bold text-2xl">{c.value}</p>
+                        <p className="text-[#001A4D] font-bold text-xl">{c.value}</p>
                       </div>
                     ))}
                   </div>
                 </div>
-
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 space-y-4">
-                  <div>
-                    <p className="text-xs uppercase text-gray-400 font-semibold mb-2">Target Departments</p>
-                    <div className="flex flex-wrap gap-2">
-                      {['CCS', 'CBA', 'CTE'].map(d => (
-                        <span key={d} className="px-3 py-1 bg-[#83358E] text-white text-xs rounded-full font-medium">{d}</span>
-                      ))}
-                    </div>
-                  </div>
                   <div>
                     <p className="text-xs uppercase text-gray-400 font-semibold mb-2">Target Year Levels</p>
                     <div className="flex flex-wrap gap-2">
-                      {['1st Year', '2nd Year', '3rd Year', '4th Year'].map(y => (
+                      {(event.targetYearLevels || []).map(y => (
                         <span key={y} className="px-3 py-1 bg-[#001A4D] text-[#FFD41C] text-xs rounded-full font-medium">{y}</span>
                       ))}
                     </div>
                   </div>
                 </div>
-
-                <div className="bg-[#F3E8FF] border border-[#83358E]/20 rounded-xl p-4">
-                  <p className="text-[#83358E] font-bold text-sm mb-3">Estimated Reach</p>
-                  <div className="space-y-2">
-                    {[{ dept: 'CCS', count: 145, total: 387 }, { dept: 'CBA', count: 98, total: 387 }, { dept: 'CTE', count: 67, total: 387 }, { dept: 'CAS', count: 77, total: 387 }].map(d => (
-                      <div key={d.dept}>
-                        <div className="flex justify-between text-sm mb-1">
-                          <span className="text-[#001A4D]">{d.dept}</span>
-                          <span className="font-bold text-[#001A4D]">{d.count}</span>
-                        </div>
-                        <div className="h-1.5 bg-[#83358E]/10 rounded-full overflow-hidden">
-                          <div className="h-full bg-[#83358E]" style={{ width: `${(d.count / d.total) * 100}%` }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-[#83358E]/10 flex justify-between">
-                    <span className="text-sm text-gray-500">Total Estimated Reach</span>
-                    <span className="font-bold text-[#83358E] text-lg">387</span>
-                  </div>
-                </div>
-
-                <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
-                  <p className="text-[#001A4D] font-bold text-sm mb-3">Attendance Rules</p>
-                  <div className="grid grid-cols-3 gap-4 mb-4">
-                    {[
-                      { label: 'Late Threshold', value: '15', unit: 'minutes', color: 'text-amber-600' },
-                      { label: 'Grace Period', value: '5', unit: 'minutes', color: 'text-[#1E70E8]' },
-                      { label: 'Min. Attendance', value: '80', unit: '%', color: 'text-[#001A4D]' },
-                    ].map(r => (
-                      <div key={r.label} className="text-center">
-                        <p className="text-xs text-gray-400 mb-1">{r.label}</p>
-                        <span className={`font-bold text-xl ${r.color}`}>{r.value}</span>
-                        <span className="text-gray-400 text-xs ml-1">{r.unit}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-6 text-sm">
-                    <div className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" /><span className="text-gray-700">Scan-In Required</span></div>
-                    <div className="flex items-center gap-2"><Check className="w-4 h-4 text-green-500" /><span className="text-gray-700">Scan-Out Required</span></div>
-                  </div>
-                </div>
               </div>
             </div>
 
-            {/* SECTION 4 — TEAM & SCANNERS */}
+            {/* SECTION 4 — TEAM */}
             <div ref={el => { sectionRefs.current['team'] = el; }}
               onMouseEnter={() => { setActiveSection('team'); setVisitedSections(p => new Set([...p, 'team'])); }}>
-              <SectionHeader title="Event Team & Scanners" status="warning" subtitle="Proposed core team members and scanner officer assignments" />
-
+              <SectionHeader title="Event Team & Scanners" status="complete" subtitle="Proposed core team members and scanner officer assignments" />
               <div className="space-y-4">
-                {/* Warning: no event head */}
-                <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl">
-                  <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                  <p className="text-red-700 text-sm font-medium">Event Head is required — proposal cannot be approved without an Event Head.</p>
-                </div>
-
                 <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden">
-                  <div className="px-5 py-3 border-b border-[#E0E0E0]">
-                    <p className="text-[#001A4D] font-bold text-sm">Proposed Core Team</p>
+                  <div className="px-5 py-3 border-b border-[#E0E0E0] flex items-center justify-between">
+                    <p className="text-[#001A4D] font-bold text-sm">Scanner Officers</p>
+                    <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded-full font-medium">{(event.scanners || []).length} Assigned</span>
                   </div>
-                  <div className="divide-y divide-[#F0F0F0]">
-                    {[
-                      { role: 'Event Head', name: null, id: null },
-                      { role: 'Co-Head', name: 'Maria Santos', id: '2022-00345' },
-                      { role: 'Secretary', name: 'Ana Reyes', id: '2022-00456' },
-                      { role: 'Treasurer', name: 'Carlo Mendoza', id: '2023-00789' },
-                      { role: 'Logistics Officer', name: 'Lea Torres', id: '2023-00901' },
-                    ].map(m => (
-                      <div key={m.role} className="flex items-center gap-4 px-5 py-3">
-                        <span className="text-[#83358E] font-bold text-xs w-40 flex-shrink-0">{m.role}</span>
-                        {m.name ? (
-                          <>
-                            <div className="w-8 h-8 bg-[#7F77DD] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                              {m.name.split(' ').map(n => n[0]).join('')}
-                            </div>
-                            <div className="flex-1">
-                              <p className="text-[#001A4D] font-bold text-sm">{m.name}</p>
-                              <p className="text-gray-400 text-xs">{m.id}</p>
-                            </div>
-                            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full">Assigned</span>
-                          </>
-                        ) : (
-                          <>
-                            <div className="flex-1 flex items-center gap-2">
-                              <div className="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                                <Users className="w-4 h-4 text-gray-300" />
-                              </div>
-                              <span className="text-gray-400 text-sm italic">Not assigned</span>
-                            </div>
-                            <span className="px-2 py-0.5 bg-gray-100 text-gray-400 text-xs rounded-full">Not Assigned</span>
-                          </>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Scanner */}
-                <div>
-                  <div className="flex items-center gap-2 mb-3">
-                    <p className="text-[#001A4D] font-bold text-sm">Proposed Scanner Officers</p>
-                    <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded-full">1 Scanner</span>
-                  </div>
-                  <div className="border-l-[3px] border-[#83358E] bg-white border border-[#E0E0E0] rounded-xl p-4">
-                    <div className="flex items-center gap-3 mb-3">
-                      <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded-full">Primary</span>
-                      <span className="text-[#001A4D] font-bold text-sm">Carlo Mendoza</span>
-                    </div>
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="w-10 h-10 bg-[#7F77DD] rounded-full flex items-center justify-center text-white font-bold">CM</div>
-                      <div>
-                        <p className="text-[#001A4D] font-bold text-sm">Carlo Mendoza</p>
-                        <p className="text-gray-400 text-xs">2023-00789 • BSIT 2nd Year</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2 pt-3 border-t border-[#F0F0F0]">
-                      {[
-                        { label: 'Scan In', enabled: true },
-                        { label: 'Scan Out', enabled: true },
-                        { label: 'View Logs', enabled: true },
-                        { label: 'Export Data', enabled: false },
-                      ].map(p => (
-                        <span key={p.label} className={`px-2.5 py-1 rounded-full text-xs font-medium ${p.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-400'}`}>
-                          {p.label}
-                        </span>
+                  {(event.scanners || []).length > 0 ? (
+                    <div className="divide-y divide-[#F0F0F0]">
+                      {(event.scanners || []).map((scanner, i) => (
+                        <div key={scanner.id || i} className="px-5 py-3 flex items-center justify-between">
+                          <div>
+                            <p className="text-[#001A4D] font-semibold text-sm">{scanner.officerName || 'Unnamed Officer'}</p>
+                            <p className="text-gray-400 text-xs mt-0.5">UID: {scanner.officerUserId || 'Not linked'}</p>
+                          </div>
+                          <div className="flex flex-wrap gap-1 justify-end">
+                            {scanner.fullAccess && <span className="px-2 py-0.5 bg-[#83358E]/10 text-[#83358E] text-xs rounded-full">Full Access</span>}
+                            {!scanner.fullAccess && scanner.canCheckIn && <span className="px-2 py-0.5 bg-blue-50 text-blue-600 text-xs rounded-full">Check-In</span>}
+                            {!scanner.fullAccess && scanner.canCheckOut && <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-xs rounded-full">Check-Out</span>}
+                            {!scanner.fullAccess && scanner.canViewList && <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full">View List</span>}
+                          </div>
+                        </div>
                       ))}
                     </div>
-                  </div>
+                  ) : (
+                    <div className="p-4 text-sm text-gray-500">No scanner officers assigned.</div>
+                  )}
                 </div>
               </div>
             </div>
@@ -575,110 +505,36 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <div ref={el => { sectionRefs.current['budget'] = el; }}
               onMouseEnter={() => { setActiveSection('budget'); setVisitedSections(p => new Set([...p, 'budget'])); }}>
               <SectionHeader title="Budget Request" status="complete" subtitle="Itemized budget breakdown and funding source allocation" />
-
               <div className="space-y-4">
-                {/* Ceiling reference */}
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Info className="w-4 h-4 text-amber-600" />
-                    <span className="text-amber-700 font-bold text-sm">Budget Reference</span>
-                  </div>
-                  <p className="text-[#001A4D] text-sm mb-3">This organization's SAO-approved semester budget ceiling is <strong>₱100,000</strong>.</p>
-                  <div className="flex items-center justify-between text-sm mb-1">
-                    <span className="text-gray-600">₱{totalRequested.toLocaleString()} requested vs ₱100,000 ceiling</span>
-                    <span className="text-green-600 font-medium">Within limit</span>
-                  </div>
-                  <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div className="h-full bg-[#83358E] rounded-full" style={{ width: `${Math.min((totalRequested / 100000) * 100, 100)}%` }} />
-                  </div>
-                </div>
-
-                {/* Mini stats */}
-                <div className="grid grid-cols-4 gap-3">
-                  {[
-                    { label: 'Total Requested', value: `₱${totalRequested.toLocaleString()}`, color: 'text-[#83358E]' },
-                    { label: 'SAO Budget', value: '₱38,000', color: 'text-[#1E70E8]' },
-                    { label: 'Org Funds', value: '₱35,000', color: 'text-green-600' },
-                    { label: 'Sponsorship', value: '₱10,000', color: 'text-amber-600' },
-                  ].map(s => (
-                    <div key={s.label} className="bg-white border border-[#E0E0E0] rounded-xl p-3 text-center">
-                      <p className="text-xs text-gray-400 mb-1">{s.label}</p>
-                      <p className={`font-bold text-base ${s.color}`}>{s.value}</p>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Budget table */}
                 <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden">
-                  <div className="px-5 py-3 border-b border-[#E0E0E0]">
-                    <p className="text-[#001A4D] font-bold text-sm">Itemized Budget Breakdown</p>
-                  </div>
                   <table className="w-full text-sm">
                     <thead className="bg-gray-50 border-b border-[#E0E0E0]">
                       <tr>
-                        {['#', 'Category', 'Description', 'Qty', 'Unit Cost', 'Total', 'Source'].map(h => (
+                        {['#', 'Item / Description', 'Qty × Unit Cost', 'Total'].map(h => (
                           <th key={h} className="px-3 py-2.5 text-left text-xs font-bold text-gray-500 uppercase">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#F0F0F0]">
                       {budgetItems.map((item, i) => (
-                        <tr key={item.id} className="hover:bg-[#F3E8FF]/30 transition-colors">
+                        <tr key={i} className="hover:bg-[#F3E8FF]/30 transition-colors">
                           <td className="px-3 py-3 text-gray-400 text-xs">{i + 1}</td>
                           <td className="px-3 py-3">
-                            <span className="px-2 py-0.5 bg-[#83358E]/10 text-[#83358E] text-xs rounded-full">{item.category}</span>
+                            <p className="text-[#001A4D] font-medium">{item.item}</p>
+                            {item.description && <p className="text-gray-400 text-xs mt-0.5">{item.description}</p>}
                           </td>
-                          <td className="px-3 py-3 text-[#001A4D]">{item.description}</td>
-                          <td className="px-3 py-3 text-center text-[#001A4D]">{item.qty}</td>
-                          <td className="px-3 py-3 text-right text-[#001A4D]">₱{item.unitCost.toLocaleString()}</td>
-                          <td className="px-3 py-3 text-right font-bold text-[#001A4D]">₱{(item.qty * item.unitCost).toLocaleString()}</td>
-                          <td className="px-3 py-3 text-gray-400 text-xs">{item.fundingSource}</td>
+                          <td className="px-3 py-3 text-gray-600 text-sm">{item.quantity} × ₱{(item.unitCost || 0).toLocaleString()}</td>
+                          <td className="px-3 py-3 font-bold text-[#001A4D]">₱{((item.unitCost || 0) * (item.quantity || 0)).toLocaleString()}</td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot>
                       <tr className="bg-[#001A4D]">
-                        <td colSpan={5} className="px-3 py-3 text-white font-bold">Total Requested</td>
-                        <td className="px-3 py-3 text-right text-[#FFD41C] font-bold">₱{totalRequested.toLocaleString()}</td>
-                        <td />
+                        <td colSpan={3} className="px-3 py-3 text-white font-bold">Total Requested</td>
+                        <td className="px-3 py-3 text-[#FFD41C] font-bold">₱{totalRequested.toLocaleString()}</td>
                       </tr>
                     </tfoot>
                   </table>
-                </div>
-
-                {/* Admin budget adjustment */}
-                <div className="bg-[#F3E8FF] border-2 border-[#83358E] rounded-xl p-5">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[#83358E] font-bold text-sm">Budget Review (SAO Adviser)</span>
-                  </div>
-                  <p className="text-gray-500 text-xs italic mb-4">You may adjust individual line item approval amounts. Officers will see your adjustments.</p>
-                  <div className="space-y-2 mb-4">
-                    {budgetItems.map(item => (
-                      <div key={item.id} className="flex items-center gap-3 bg-white rounded-lg p-3">
-                        <span className="text-[#001A4D] text-sm flex-1 truncate">{item.description}</span>
-                        <span className="text-gray-400 text-xs">Req: ₱{(item.qty * item.unitCost).toLocaleString()}</span>
-                        <div className="flex items-center gap-1">
-                          <span className="text-gray-400 text-xs">Approved: ₱</span>
-                          <input
-                            type="number"
-                            value={approvedAmounts[item.id] || 0}
-                            onChange={e => setApprovedAmounts({ ...approvedAmounts, [item.id]: Number(e.target.value) })}
-                            className="w-24 px-2 py-1 border border-[#83358E]/40 rounded text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent text-right"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between pt-3 border-t border-[#83358E]/20">
-                    <span className="text-sm text-gray-600">Total Approved Amount</span>
-                    <span className="text-[#83358E] font-bold text-lg">₱{totalApproved.toLocaleString()}</span>
-                  </div>
-                  {totalApproved !== totalRequested && (
-                    <button onClick={() => setApprovedAmounts(Object.fromEntries(budgetItems.map(i => [i.id, i.qty * i.unitCost])))}
-                      className="text-gray-400 text-xs hover:text-[#83358E] underline mt-2 float-right">
-                      Reset All to Requested Amounts
-                    </button>
-                  )}
                 </div>
               </div>
             </div>
@@ -686,54 +542,31 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             {/* SECTION 6 — DOCUMENTS */}
             <div ref={el => { sectionRefs.current['documents'] = el; }}
               onMouseEnter={() => { setActiveSection('documents'); setVisitedSections(p => new Set([...p, 'documents'])); }}>
-              <SectionHeader title="Submitted Documents" status="warning" subtitle="Official documents and supporting files submitted with the proposal" />
-
-              {/* Missing warning */}
-              <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl mb-4">
-                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-red-700 font-bold text-sm mb-1">Missing Required Documents</p>
-                  <p className="text-red-600 text-sm">• Campus Permit / Facilities Authorization</p>
-                  <p className="text-red-500 text-xs mt-2 italic">Approval cannot proceed without all required documents. Return this proposal for correction.</p>
-                </div>
-              </div>
-
+              <SectionHeader title="Submitted Documents" status="complete" subtitle="Official documents and supporting files submitted with the proposal" />
               <div className="grid grid-cols-2 gap-3">
-                {[
-                  { name: 'Event Proposal Document', type: 'Required', label: 'PDF', uploaded: true, size: '2.4 MB', date: 'May 28, 2026' },
-                  { name: 'Approved Budget Authorization', type: 'Required', label: 'PDF', uploaded: true, size: '1.1 MB', date: 'May 28, 2026' },
-                  { name: 'Campus Permit / Facilities Authorization', type: 'Required', label: 'PDF', uploaded: false, size: null, date: null },
-                  { name: 'Program of Activities', type: 'Optional', label: 'DOCX', uploaded: true, size: '0.8 MB', date: 'May 28, 2026' },
-                  { name: 'Risk Assessment Form', type: 'Optional', label: 'PDF', uploaded: false, size: null, date: null },
-                ].map(doc => (
-                  <div key={doc.name} className="bg-white border border-[#E0E0E0] rounded-xl p-4 relative">
-                    <div className={`absolute top-3 right-3 px-2 py-0.5 rounded-full text-xs font-medium ${
-                      doc.type === 'Required' && doc.uploaded ? 'bg-green-100 text-green-700' :
-                      doc.type === 'Required' && !doc.uploaded ? 'bg-red-100 text-red-700' :
-                      doc.uploaded ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {doc.type === 'Required' && doc.uploaded ? 'Required ✓' :
-                       doc.type === 'Required' ? 'Required — Missing' :
-                       doc.uploaded ? 'Uploaded' : 'Optional'}
-                    </div>
+                {(event.documents || []).map((doc, i) => (
+                  <div key={doc.id || i} className="bg-white border border-[#E0E0E0] rounded-xl p-4">
                     <div className="flex items-start gap-3">
-                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${doc.uploaded ? 'bg-red-50' : 'bg-gray-50'}`}>
-                        <FileText className={`w-6 h-6 ${doc.uploaded ? 'text-red-500' : 'text-gray-300'}`} />
+                      <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${doc.fileUrl ? 'bg-red-50' : 'bg-gray-100'}`}>
+                        <FileText className={`w-6 h-6 ${doc.fileUrl ? 'text-red-500' : 'text-gray-400'}`} />
                       </div>
-                      <div className="flex-1 min-w-0 pr-16">
+                      <div className="flex-1 min-w-0">
                         <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.name}</p>
-                        <p className="text-gray-400 text-xs mt-0.5">{doc.type} document</p>
-                        {doc.uploaded && <p className="text-gray-300 text-xs">{doc.size} • {doc.date}</p>}
+                        {doc.fileUrl ? (
+                          <a href={doc.fileUrl} target="_blank" rel="noopener noreferrer"
+                            className="text-[#83358E] text-xs mt-0.5 hover:underline block truncate">View file ↗</a>
+                        ) : (
+                          <span className={`text-xs mt-0.5 block ${doc.required ? 'text-red-400' : 'text-gray-400'}`}>
+                            {doc.required ? 'Required — not yet uploaded' : 'Not uploaded'}
+                          </span>
+                        )}
                       </div>
                     </div>
-                    {doc.uploaded && (
-                      <div className="flex items-center gap-3 mt-3 pt-3 border-t border-[#F0F0F0]">
-                        <button className="text-[#1E70E8] text-xs flex items-center gap-1 hover:underline"><Eye className="w-3 h-3" />Preview</button>
-                        <button className="text-[#001A4D] text-xs flex items-center gap-1 hover:underline"><Download className="w-3 h-3" />Download</button>
-                      </div>
-                    )}
                   </div>
                 ))}
+                {(!event.documents || event.documents.length === 0) && (
+                  <p className="text-sm text-gray-500 col-span-2">No documents attached.</p>
+                )}
               </div>
             </div>
 
@@ -741,29 +574,19 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <div ref={el => { sectionRefs.current['history'] = el; }}
               onMouseEnter={() => { setActiveSection('history'); setVisitedSections(p => new Set([...p, 'history'])); }}>
               <SectionHeader title="Submission History" status="complete" subtitle="Complete proposal lifecycle and audit trail" />
-
               <div className="bg-white border border-[#E0E0E0] rounded-xl p-5">
                 <div className="relative">
                   <div className="absolute left-[11px] top-0 bottom-0 w-0.5 bg-[#E0E0E0]" />
                   <div className="space-y-6">
-                    {[
-                      { color: 'bg-gray-400', label: 'Draft Created', actor: 'Juan Dela Cruz', time: 'May 25, 2026 · 10:23 AM', note: null },
-                      { color: 'bg-[#1E70E8]', label: 'Submitted for Review', actor: 'Juan Dela Cruz', time: 'May 28, 2026 · 2:30 PM', note: null },
-                      { color: 'bg-[#FFD41C]', label: 'Currently Under Review', actor: 'SAO Adviser', time: 'Now', note: 'Awaiting adviser decision', pulse: true },
-                    ].map((ev, i) => (
-                      <div key={i} className="flex gap-4 relative">
-                        <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center z-10 ${ev.color} ${ev.pulse ? 'ring-4 ring-[#FFD41C]/30' : ''}`}>
-                          {i === 0 ? <span className="w-2 h-2 bg-white rounded-full" /> :
-                           i === 1 ? <Send className="w-3 h-3 text-white" /> :
-                           <Eye className="w-3 h-3 text-[#001A4D]" />}
-                        </div>
-                        <div>
-                          <p className="text-[#001A4D] font-bold text-sm">{ev.label}</p>
-                          <p className="text-gray-400 text-xs mt-0.5">by {ev.actor} · {ev.time}</p>
-                          {ev.note && <p className="text-gray-400 text-xs italic mt-1">{ev.note}</p>}
-                        </div>
+                    <div className="flex gap-4 relative">
+                      <div className="w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center z-10 bg-[#1E70E8]">
+                        <Send className="w-3 h-3 text-white" />
                       </div>
-                    ))}
+                      <div>
+                        <p className="text-[#001A4D] font-bold text-sm">Created</p>
+                        <p className="text-gray-400 text-xs mt-0.5">{createdDate}</p>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -775,9 +598,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         {/* RIGHT COLUMN — Decision Panel (300px) */}
         <div className="w-[300px] flex-shrink-0 border-l border-[#E0E0E0] flex flex-col overflow-y-auto">
           <div className="p-5 space-y-4">
-            {decision === 'none' ? (
+            {decision === 'none' && !isDecided ? (
               <>
-                {/* Panel header */}
                 <div className="flex items-center gap-2">
                   <Gavel className="w-5 h-5 text-[#001A4D]" />
                   <div>
@@ -786,7 +608,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </div>
                 </div>
 
-                {/* Remarks */}
                 <div className={`bg-white border rounded-xl p-4 ${remarksError ? 'border-red-400' : 'border-[#E0E0E0]'}`}>
                   <div className="flex items-center gap-2 mb-3">
                     <div className="w-1 h-4 bg-[#83358E] rounded-full" />
@@ -796,7 +617,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     value={remarks}
                     onChange={e => { setRemarks(e.target.value); if (e.target.value) setRemarksError(false); }}
                     rows={6}
-                    placeholder="Write your remarks, feedback, or instructions for the officer here. These will be sent directly to the submitting officer with your decision."
+                    disabled={isDecided}
+                    placeholder="Write your remarks, feedback, or instructions for the officer here."
                     className="w-full text-sm resize-none border border-[#E0E0E0] rounded-lg p-3 focus:ring-2 focus:ring-[#83358E] focus:border-transparent outline-none leading-relaxed text-[#001A4D]"
                   />
                   <div className="flex justify-between items-center mt-2">
@@ -813,41 +635,31 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   )}
                 </div>
 
-                {/* Decision buttons */}
                 <div className="space-y-3">
-                  {/* APPROVE */}
                   <div>
-                    <button onClick={() => handleDecision('approve')}
-                      className="w-full h-14 flex items-center justify-center gap-2 bg-gradient-to-r from-[#22C55E] to-[#16A34A] text-white font-bold text-base rounded-xl hover:from-[#16A34A] hover:to-[#22C55E] transition-all shadow-sm">
+                    <button onClick={() => handleDecision('approve')} disabled={isDecided}
+                      className="w-full h-14 flex items-center justify-center gap-2 bg-gradient-to-r from-[#22C55E] to-[#16A34A] text-white font-bold text-base rounded-xl hover:from-[#16A34A] hover:to-[#22C55E] transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
                       <CheckCircle className="w-5 h-5" />
                       Approve Proposal
                     </button>
-                    <p className="text-gray-400 text-xs italic text-center mt-1.5">Officer notified immediately. Event published.</p>
                   </div>
-
-                  {/* RETURN */}
                   <div>
-                    <button onClick={() => handleDecision('return')}
-                      className="w-full h-14 flex items-center justify-center gap-2 bg-[#FFC107] text-[#001A4D] font-bold text-base rounded-xl hover:bg-[#F59E0B] transition-colors shadow-sm">
+                    <button onClick={() => handleDecision('return')} disabled={isDecided}
+                      className="w-full h-14 flex items-center justify-center gap-2 bg-[#FFC107] text-[#001A4D] font-bold text-base rounded-xl hover:bg-[#F59E0B] transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
                       <RotateCcw className="w-5 h-5" />
                       Return for Revision
                     </button>
-                    <p className="text-gray-400 text-xs italic text-center mt-1.5">Officer receives remarks and can revise.</p>
                   </div>
-
-                  {/* REJECT */}
                   <div>
-                    <button onClick={() => handleDecision('reject')}
-                      className="w-full h-[52px] flex items-center justify-center gap-2 bg-white border-[1.5px] border-[#EF4444] text-[#EF4444] font-bold text-sm rounded-xl hover:bg-red-50 transition-colors">
+                    <button onClick={() => handleDecision('reject')} disabled={isDecided}
+                      className="w-full h-[52px] flex items-center justify-center gap-2 bg-white border-[1.5px] border-[#EF4444] text-[#EF4444] font-bold text-sm rounded-xl hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
                       <X className="w-4 h-4" />
                       Reject Proposal
                     </button>
-                    <p className="text-gray-400 text-xs italic text-center mt-1.5">Closes this proposal permanently.</p>
                   </div>
                 </div>
               </>
             ) : (
-              /* DECISION MADE STATE */
               <>
                 <div className={`rounded-xl p-5 text-center ${
                   decision === 'approved' ? 'bg-gradient-to-br from-[#22C55E] to-[#16A34A]' :
@@ -860,23 +672,22 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <p className={`font-bold text-lg ${decision === 'returned' ? 'text-[#001A4D]' : 'text-white'}`}>
                     {decision === 'approved' ? 'Proposal Approved' : decision === 'returned' ? 'Returned for Revision' : 'Proposal Rejected'}
                   </p>
-                  <p className={`text-sm mt-1 ${decision === 'returned' ? 'text-[#001A4D]/70' : 'text-white/80'}`}>
-                    {new Date().toLocaleString()}
-                  </p>
                 </div>
 
-                {undoVisible && (
-                  <button onClick={() => { setDecision('none'); setUndoVisible(false); }}
-                    className="w-full text-center text-gray-400 text-sm hover:text-[#83358E] flex items-center justify-center gap-1">
-                    <RotateCcw className="w-3 h-3" /> Undo Decision (5 min window)
-                  </button>
-                )}
+                <div className="bg-white border border-[#E0E0E0] rounded-xl p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="w-1 h-4 bg-[#83358E] rounded-full" />
+                    <p className="text-[#001A4D] font-bold text-sm">Adviser Remarks</p>
+                  </div>
+                  <textarea
+                    value={remarks}
+                    readOnly
+                    rows={6}
+                    className="w-full text-sm resize-none border border-[#E0E0E0] rounded-lg p-3 bg-gray-50 outline-none leading-relaxed text-gray-700"
+                  />
+                </div>
 
-                <button className="w-full flex items-center justify-center gap-2 py-3 border border-[#1E70E8] text-[#1E70E8] rounded-xl text-sm font-semibold hover:bg-blue-50 transition-colors">
-                  View Next Pending Proposal
-                </button>
-
-                <button onClick={onClose} className="w-full text-center text-[#001A4D] text-sm hover:underline">
+                <button onClick={onClose} className="w-full text-center text-[#001A4D] text-sm hover:underline mt-4">
                   Back to Event Approvals
                 </button>
               </>
@@ -898,47 +709,20 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
               <div>
                 <h3 className="text-white font-bold text-lg">Confirm Approval</h3>
-                <p className="text-[#FFD41C] text-sm">{event?.name}</p>
+                <p className="text-[#FFD41C] text-sm">{event.title}</p>
               </div>
             </div>
             <div className="p-6">
-              <div className="flex items-start gap-3 p-4 bg-green-50 border border-green-200 rounded-xl mb-5">
-                <Check className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                <p className="text-[#001A4D] font-bold text-sm">You are about to approve this event proposal. The following will happen immediately:</p>
-              </div>
-              <div className="space-y-2 mb-5">
-                {[
-                  'Event status set to "Approved"',
-                  'Event published to the student discovery feed',
-                  'Submitting officer notified via in-app + push notification',
-                  'All assigned event team members notified of their roles',
-                  'Scanner activation codes generated for assigned scanners',
-                  `Budget authorization recorded: ₱${totalApproved.toLocaleString()}`,
-                  'Event added to SAO master calendar',
-                ].map(item => (
-                  <div key={item} className="flex items-center gap-3 text-sm text-[#001A4D]">
-                    <Check className="w-4 h-4 text-green-500 flex-shrink-0" />
-                    {item}
-                  </div>
-                ))}
-              </div>
-              <div className="p-4 bg-white border border-[#E0E0E0] rounded-xl mb-5">
-                <p className="text-[#001A4D] font-bold text-sm mb-2">Budget to be Authorized</p>
-                <div className="flex justify-between text-sm">
-                  <span className="text-gray-500">Total Authorized</span>
-                  <span className="font-bold text-[#FFD41C] text-base">₱{totalApproved.toLocaleString()}</span>
-                </div>
-              </div>
               <div className="mb-5">
                 <p className="text-gray-500 text-xs mb-1.5">Optional remarks for the officer (included with approval notification)</p>
                 <textarea value={remarks} onChange={e => setRemarks(e.target.value)} rows={3}
                   className="w-full text-sm border border-[#E0E0E0] rounded-lg p-3 focus:ring-2 focus:ring-green-400 outline-none resize-none" />
               </div>
               <div className="flex gap-3">
-                <button onClick={() => setActiveModal('none')} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                <button onClick={() => confirmDecision('approved')}
-                  className="flex-1 py-3 bg-gradient-to-r from-[#22C55E] to-[#16A34A] text-white rounded-xl text-sm font-bold hover:from-[#16A34A] hover:to-[#22C55E] flex items-center justify-center gap-2">
-                  <Rocket className="w-4 h-4" /> Approve & Publish Event
+                <button onClick={() => setActiveModal('none')} disabled={submitting} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
+                <button onClick={confirmApprove} disabled={submitting}
+                  className="flex-1 py-3 bg-gradient-to-r from-[#22C55E] to-[#16A34A] text-white rounded-xl text-sm font-bold hover:from-[#16A34A] hover:to-[#22C55E] flex items-center justify-center gap-2 disabled:opacity-50">
+                  <Rocket className="w-4 h-4" /> {submitting ? 'Approving...' : 'Approve & Publish'}
                 </button>
               </div>
             </div>
@@ -957,15 +741,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
               <div>
                 <h3 className="text-[#001A4D] font-bold text-lg">Return for Revision</h3>
-                <p className="text-[#001A4D]/70 text-sm">{event?.name}</p>
+                <p className="text-[#001A4D]/70 text-sm">{event.title}</p>
               </div>
             </div>
             <div className="p-6">
-              <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl mb-5">
-                <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                <p className="text-[#001A4D] text-sm">The proposal will be returned to the officer with your remarks. They can revise and resubmit.</p>
-              </div>
-
               <div className="mb-5">
                 <div className="flex items-center gap-2 mb-3">
                   <div className="w-1 h-4 bg-[#83358E] rounded-full" />
@@ -982,25 +761,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   ))}
                 </div>
               </div>
-
-              <div className="mb-5">
-                <p className="text-[#001A4D] font-bold text-sm mb-1.5">Resubmission Deadline <span className="text-gray-400 font-normal text-xs">(optional)</span></p>
-                <input type="date" value={returnDeadline} onChange={e => setReturnDeadline(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-amber-400 focus:border-transparent" />
-              </div>
-
-              <div className="p-3 bg-gray-50 rounded-xl mb-5">
-                <p className="text-gray-400 text-xs mb-2">Your remarks (preview):</p>
-                <p className="text-[#001A4D] text-sm italic">"{remarks}"</p>
-              </div>
-
-              <p className="text-amber-600 text-xs mb-4">This will be return #1. Officer has 2 resubmission(s) remaining.</p>
-
               <div className="flex gap-3">
-                <button onClick={() => setActiveModal('none')} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
-                <button onClick={() => confirmDecision('returned')}
-                  className="flex-1 py-3 bg-gradient-to-r from-[#FFC107] to-[#F59E0B] text-[#001A4D] rounded-xl text-sm font-bold flex items-center justify-center gap-2">
-                  <Send className="w-4 h-4" /> Return for Revision
+                <button onClick={() => setActiveModal('none')} disabled={submitting} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
+                <button onClick={confirmReturn} disabled={submitting}
+                  className="flex-1 py-3 bg-gradient-to-r from-[#FFC107] to-[#F59E0B] text-[#001A4D] rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50">
+                  <Send className="w-4 h-4" /> {submitting ? 'Returning...' : 'Return for Revision'}
                 </button>
               </div>
             </div>
@@ -1019,15 +784,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
               <div>
                 <h3 className="text-white font-bold text-lg">Confirm Rejection</h3>
-                <p className="text-[#FFD41C] text-sm">{event?.name}</p>
+                <p className="text-[#FFD41C] text-sm">{event.title}</p>
               </div>
             </div>
             <div className="p-6">
-              <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl mb-5">
-                <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                <p className="text-[#001A4D] font-bold text-sm">This action will permanently reject this event proposal. The officer will be notified and the proposal will be closed.</p>
-              </div>
-
               <div className="mb-5">
                 <p className="text-[#001A4D] font-bold text-sm mb-1.5">Rejection Reason <span className="text-red-500">*</span></p>
                 <select value={rejectionReason} onChange={e => setRejectionReason(e.target.value)}
@@ -1036,37 +796,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   {REJECTION_REASONS.map(r => <option key={r}>{r}</option>)}
                 </select>
               </div>
-
-              <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg mb-4">
-                <div>
-                  <p className="text-sm font-medium text-[#001A4D]">Allow Resubmission</p>
-                  <p className="text-xs text-gray-400">Officer can submit a new proposal after waiting period</p>
-                </div>
-                <button onClick={() => setAllowResubmit(!allowResubmit)}
-                  className={`relative w-10 h-5 rounded-full transition-colors flex-shrink-0 ${allowResubmit ? 'bg-[#83358E]' : 'bg-gray-300'}`}>
-                  <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${allowResubmit ? 'translate-x-5' : ''}`} />
-                </button>
-              </div>
-
-              {allowResubmit && (
-                <div className="flex items-center gap-3 mb-4">
-                  <span className="text-sm text-[#001A4D]">Officer can resubmit after</span>
-                  <input type="number" value={resubmitDays} onChange={e => setResubmitDays(Number(e.target.value))}
-                    className="w-16 px-2 py-1.5 border border-gray-300 rounded text-sm text-center focus:ring-2 focus:ring-red-400" />
-                  <span className="text-sm text-[#001A4D]">days</span>
-                </div>
-              )}
-
-              <div className="p-3 bg-gray-50 rounded-xl mb-5">
-                <p className="text-gray-400 text-xs mb-2">Your remarks (will be sent with rejection notice):</p>
-                <p className="text-[#001A4D] text-sm italic">"{remarks}"</p>
-              </div>
-
               <div className="flex gap-3">
-                <button onClick={() => setActiveModal('none')} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel — Go Back</button>
-                <button onClick={() => confirmDecision('rejected')} disabled={!rejectionReason}
+                <button onClick={() => setActiveModal('none')} disabled={submitting} className="flex-1 py-3 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
+                <button onClick={confirmReject} disabled={!rejectionReason || submitting}
                   className="flex-1 py-3 bg-gradient-to-r from-[#EF4444] to-[#F97316] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center justify-center gap-2">
-                  <X className="w-4 h-4" /> Confirm Rejection
+                  <X className="w-4 h-4" /> {submitting ? 'Rejecting...' : 'Confirm Rejection'}
                 </button>
               </div>
             </div>

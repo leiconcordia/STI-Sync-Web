@@ -69,3 +69,54 @@ export const saveEventDraft = async (data: EventFormData, uid: string, existingI
     return docRef.id;
   }
 };
+
+export const approveEvent = async (
+  eventId: string,
+  adminUserId: string,
+  remarks: string
+): Promise<void> => {
+  const ref = doc(db, EVENTS_COLLECTION, eventId);
+  await updateDoc(ref, {
+    proposalStatus: 'approved',
+    approvedBy: adminUserId,
+    approvedAt: serverTimestamp(),
+    adviserRemarks: remarks || null,
+    updatedAt: serverTimestamp(),
+  });
+};
+
+export const rejectEvent = async (
+  eventId: string,
+  adminUserId: string,
+  reason: string,
+  remarks: string
+): Promise<void> => {
+  const ref = doc(db, EVENTS_COLLECTION, eventId);
+  await updateDoc(ref, {
+    proposalStatus: 'rejected',
+    rejectedBy: adminUserId,
+    rejectedAt: serverTimestamp(),
+    rejectionReason: reason,
+    adviserRemarks: remarks || null,
+    updatedAt: serverTimestamp(),
+  });
+};
+
+export const returnEvent = async (
+  eventId: string,
+  adminUserId: string,
+  flags: string[],
+  deadline: string,
+  remarks: string
+): Promise<void> => {
+  const ref = doc(db, EVENTS_COLLECTION, eventId);
+  await updateDoc(ref, {
+    proposalStatus: 'returned',
+    returnedBy: adminUserId,
+    returnedAt: serverTimestamp(),
+    returnFlags: flags,
+    returnDeadline: deadline || null,
+    adviserRemarks: remarks || null,
+    updatedAt: serverTimestamp(),
+  });
+};

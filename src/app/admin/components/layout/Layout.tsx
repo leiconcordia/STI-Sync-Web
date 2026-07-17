@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { TopNav } from "./TopNav";
@@ -22,6 +23,7 @@ export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const title = pageTitles[location.pathname] || "SAO Admin Panel";
+  const [globalSearch, setGlobalSearch] = useState("");
 
   const handleLogout = () => {
     navigate('/');
@@ -37,11 +39,13 @@ export function Layout() {
       <div className="ml-[260px]">
         <TopNav
           title={title}
+          globalSearch={globalSearch}
+          onSearchChange={setGlobalSearch}
           onLogout={handleLogout}
           onNavigateSettings={handleNavigateSettings}
         />
         <main className="p-6">
-          <Outlet />
+          <Outlet context={{ globalSearch, setGlobalSearch }} />
         </main>
       </div>
     </div>

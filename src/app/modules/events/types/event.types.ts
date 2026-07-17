@@ -67,10 +67,22 @@ export interface EventDocument {
   scannerActivationCode: string;           // auto-generated 6-digit code
 
   // ─── Lifecycle ───
-  proposalStatus: 'draft' | 'approved';    // admin-created events are always 'approved'
+  proposalStatus: 'draft' | 'pending_review' | 'approved' | 'rejected' | 'returned';
   createdBy: string;                       // SAO Adviser UID
   createdAt: Timestamp;
   updatedAt: Timestamp;
+
+  // ─── Review Metadata ───
+  approvedBy?: string | null;
+  approvedAt?: Timestamp | null;
+  rejectedBy?: string | null;
+  rejectedAt?: Timestamp | null;
+  rejectionReason?: string | null;
+  adviserRemarks?: string | null;
+  returnedAt?: Timestamp | null;
+  returnedBy?: string | null;
+  returnFlags?: string[];
+  returnDeadline?: string | null;
 }
 
 export interface EventSession {
