@@ -49,16 +49,11 @@ export default function Step5Budget({ data, onUpdate }: Step5Props) {
     }
   }, [totalApproved]);
 
-  const orgFund = 35000;
-  const saoFund = 50000;
-  const sponsorship = 15000;
-  const eventBudgetTotal = 700000;
-
   const participantCount = data.expectedParticipantCount || 1000;
-  const calculatedPerStudent = participantCount > 0 ? Math.ceil(eventBudgetTotal / participantCount) : 0;
+  const calculatedPerStudent = participantCount > 0 ? Math.ceil(totalApproved / participantCount) : 0;
   const amountPerStudent = data.adminFeeOverride || calculatedPerStudent;
   const totalCollected = amountPerStudent * participantCount;
-  const surplus = totalCollected - eventBudgetTotal;
+  const surplus = totalCollected - totalApproved;
 
   useEffect(() => {
     if (data.studentPayablesEnabled && data.adminFeeOverride === undefined) {
@@ -97,17 +92,9 @@ export default function Step5Budget({ data, onUpdate }: Step5Props) {
               <div className="text-sm opacity-90 mb-1">Approved Total</div>
               <div className="text-2xl font-bold">₱{totalApproved.toLocaleString()}</div>
             </div>
-            <div className="p-4 bg-gradient-to-br from-green-600 to-green-500 rounded-lg text-white">
-              <div className="text-sm opacity-90 mb-1">Organization Fund</div>
-              <div className="text-2xl font-bold">₱{orgFund.toLocaleString()}</div>
-            </div>
             <div className="p-4 bg-gradient-to-br from-[#0E4EBD] to-[#1E70E8] rounded-lg text-white">
-              <div className="text-sm opacity-90 mb-1">SAO Fund Disbursement</div>
-              <div className="text-2xl font-bold">₱{saoFund.toLocaleString()}</div>
-            </div>
-            <div className="p-4 bg-gradient-to-br from-[#FFC107] to-[#FFD41C] rounded-lg">
-              <div className="text-sm text-[#001A4D]/80 mb-1">Sponsorship Confirmed</div>
-              <div className="text-2xl font-bold text-[#001A4D]">₱{sponsorship.toLocaleString()}</div>
+              <div className="text-sm opacity-90 mb-1">Requested Total</div>
+              <div className="text-2xl font-bold">₱{totalRequested.toLocaleString()}</div>
             </div>
           </div>
         </div>
@@ -281,38 +268,26 @@ export default function Step5Budget({ data, onUpdate }: Step5Props) {
             <div className="relative aspect-square max-w-[180px] mx-auto">
               <svg viewBox="0 0 100 100" className="transform -rotate-90">
                 <circle cx="50" cy="50" r="40" fill="none" stroke="#E5E7EB" strokeWidth="20" />
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#10B981" strokeWidth="20"
-                  strokeDasharray={`${(orgFund / (orgFund + saoFund + sponsorship)) * 251.2} 251.2`} />
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#1E70E8" strokeWidth="20"
-                  strokeDasharray={`${(saoFund / (orgFund + saoFund + sponsorship)) * 251.2} 251.2`}
-                  strokeDashoffset={`-${(orgFund / (orgFund + saoFund + sponsorship)) * 251.2}`} />
-                <circle cx="50" cy="50" r="40" fill="none" stroke="#FFC107" strokeWidth="20"
-                  strokeDasharray={`${(sponsorship / (orgFund + saoFund + sponsorship)) * 251.2} 251.2`}
-                  strokeDashoffset={`-${((orgFund + saoFund) / (orgFund + saoFund + sponsorship)) * 251.2}`} />
+                <circle cx="50" cy="50" r="40" fill="none" stroke="#83358E" strokeWidth="20"
+                  strokeDasharray={`${totalApproved > 0 ? 251.2 : 0} 251.2`} />
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <div className="text-lg font-bold text-gray-900">₱100K</div>
+                <div className="text-lg font-bold text-gray-900">₱{totalApproved.toLocaleString()}</div>
                 <div className="text-xs text-gray-500">Total</div>
               </div>
             </div>
 
             <div className="space-y-2">
-              {[
-                { label: 'Org Fund', amount: orgFund, color: 'bg-green-500', pct: 35 },
-                { label: 'SAO Fund', amount: saoFund, color: 'bg-[#1E70E8]', pct: 50 },
-                { label: 'Sponsorship', amount: sponsorship, color: 'bg-[#FFC107]', pct: 15 },
-              ].map((item) => (
-                <div key={item.label} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-3 h-3 rounded-full ${item.color}`} />
-                    <span className="text-sm text-gray-700">{item.label}</span>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-sm font-bold text-gray-900">₱{item.amount.toLocaleString()}</div>
-                    <div className="text-xs text-gray-500">{item.pct}%</div>
-                  </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full bg-[#83358E]" />
+                  <span className="text-sm text-gray-700">Approved Budget</span>
                 </div>
-              ))}
+                <div className="text-right">
+                  <div className="text-sm font-bold text-gray-900">₱{totalApproved.toLocaleString()}</div>
+                  <div className="text-xs text-gray-500">100%</div>
+                </div>
+              </div>
             </div>
 
             <div className="p-3 bg-gradient-to-br from-[#001A4D] to-[#83358E] rounded-lg text-center">
@@ -353,7 +328,7 @@ export default function Step5Budget({ data, onUpdate }: Step5Props) {
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-4 bg-[#001A4D]/5 border border-[#001A4D]/20 rounded-xl">
                   <div className="text-xs text-gray-500 mb-1">Total Event Budget</div>
-                  <div className="text-2xl font-bold text-[#001A4D]">₱{eventBudgetTotal.toLocaleString()}</div>
+                  <div className="text-2xl font-bold text-[#001A4D]">₱{totalApproved.toLocaleString()}</div>
                   <div className="text-xs text-gray-500 mt-1">All funding sources combined</div>
                 </div>
                 <div className="p-4 bg-[#83358E]/5 border border-[#83358E]/20 rounded-xl">
@@ -380,7 +355,7 @@ export default function Step5Budget({ data, onUpdate }: Step5Props) {
                 <div className="flex items-center justify-center gap-4 py-3">
                   <div className="text-center">
                     <div className="text-xs text-gray-500 mb-1">Total Budget</div>
-                    <div className="text-xl font-bold text-[#001A4D]">₱{eventBudgetTotal.toLocaleString()}</div>
+                    <div className="text-xl font-bold text-[#001A4D]">₱{totalApproved.toLocaleString()}</div>
                   </div>
                   <div className="text-2xl text-gray-400 font-light">÷</div>
                   <div className="text-center">

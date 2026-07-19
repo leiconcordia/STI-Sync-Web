@@ -1,6 +1,7 @@
-import { collection, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, updateDoc, doc, serverTimestamp, writeBatch, getDocs, query } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { EventDocument, EventFormData } from '../types/event.types';
+import { STUDENTS_COLLECTION } from '../../students/services/student.service';
 
 export const EVENTS_COLLECTION = 'events';
 
@@ -34,6 +35,59 @@ export const createEvent = async (data: EventFormData, uid: string): Promise<str
   };
 
   const docRef = await addDoc(collection(db, EVENTS_COLLECTION), eventPayload);
+
+  // Handle payables creation
+  if (data.studentPayablesEnabled && data.adminFeeOverride && data.adminFeeOverride > 0) {
+    try {
+      const q = query(collection(db, STUDENTS_COLLECTION));
+      const snapshot = await getDocs(q);
+      
+      const targetYearLevels = data.targetYearLevels || [];
+      const targetDeptIds = data.targetDepartmentIds || [];
+      const isAllStudents = data.targetAudience === 'all';
+      
+      const studentsToCharge = snapshot.docs.map(d => d.data()).filter((student: any) => {
+        if (student.status !== 'ACTIVE') return false;
+        if (isAllStudents) return true;
+        
+        const matchesDept = targetDeptIds.length === 0 || targetDeptIds.includes(student.departmentId);
+        const matchesYear = targetYearLevels.length === 0 || targetYearLevels.includes(student.yearLevel);
+        
+        return matchesDept && matchesYear;
+      });
+
+      if (studentsToCharge.length > 0) {
+        // Firestore batch has 500 operation limit
+        const chunks = [];
+        for (let i = 0; i < studentsToCharge.length; i += 500) {
+          chunks.push(studentsToCharge.slice(i, i + 500));
+        }
+
+        for (const chunk of chunks) {
+          const batch = writeBatch(db);
+          for (const student of chunk) {
+            const payableRef = doc(collection(db, 'payables'));
+            batch.set(payableRef, {
+              id: payableRef.id,
+              memberId: student.id,
+              typeId: docRef.id, // using event id as type id for event fee
+              eventId: docRef.id,
+              assignedAmount: data.adminFeeOverride,
+              paidAmount: 0,
+              status: 'pending',
+              dueDate: data.startDate || null,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp()
+            });
+          }
+          await batch.commit();
+        }
+      }
+    } catch (err) {
+      console.error('[createEvent] Error generating payables:', err);
+    }
+  }
+
   return docRef.id;
 };
 

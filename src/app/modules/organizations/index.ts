@@ -6,4 +6,5 @@ export * from './hooks/useOrganizationTypes';
 export * from './hooks/useOrganizationRules';
 export * from './hooks/useOrganizationStream';
 export * from './hooks/useOrganizationMutations';
+export * from './hooks/useOrgOfficers';
 export { default as CreateClubModal } from './components/CreateClubModal';

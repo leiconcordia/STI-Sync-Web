@@ -9,7 +9,8 @@ export interface EventDocument {
   description: string;
   objectives: string[];
   bannerImageUrl: string | null;
-  thumbnailUrl: string | null;
+  isVisible: boolean;
+  visibilityStart: string | null; // ISO string for form, converted to Timestamp in service
 
   // ─── Classification ───
   eventTypeId: string;                     // FK → /event_types

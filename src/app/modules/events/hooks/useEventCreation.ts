@@ -1,15 +1,14 @@
 import { useState } from 'react';
 import { createEvent, saveEventDraft } from '../services/event.service';
 import type { EventFormData } from '../types/event.types';
-import { useAuth } from '../../auth/hooks/useAuth'; // Note: Adjust import based on actual auth hook location
+import { useAdviserProfile } from '../../auth/hooks/useAdviserProfile';
 
 export function useEventCreation() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   
-  // Using a mock UID if useAuth is not fully implemented yet, or assuming the environment gives us one.
-  // Replace this with actual auth hook if available. For now we use "ADMIN-MOCK-UID".
-  const uid = 'ADMIN-MOCK-UID';
+  const { user } = useAdviserProfile();
+  const uid = user?.uid || 'UNKNOWN-UID';
 
   const handleCreateEvent = async (data: EventFormData): Promise<string | null> => {
     setLoading(true);

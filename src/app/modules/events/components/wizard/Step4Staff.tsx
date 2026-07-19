@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Plus, Trash2, Shield } from 'lucide-react';
-import { useStudents } from '../../../students/hooks/useStudentStream';
+import { useOrgOfficers } from '../../../organizations';
 import type { EventFormData, EventScanner } from '../../types/event.types';
 
 interface Step4Props {
@@ -9,7 +9,7 @@ interface Step4Props {
 }
 
 export default function Step4Staff({ data, onUpdate }: Step4Props) {
-  const { data: students, loading: studentsLoading } = useStudents();
+  const { officers, loading: officersLoading } = useOrgOfficers(data.hostingOrgId);
   
   // Set default scanners if none exist
   useEffect(() => {
@@ -115,6 +115,12 @@ export default function Step4Staff({ data, onUpdate }: Step4Props) {
             </button>
           </div>
 
+          {!data.hostingOrgId && (
+            <div className="p-3 mb-4 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-sm">
+              Please select a Hosting Organization in Step 1 first to assign scanners.
+            </div>
+          )}
+
           <div className="space-y-3">
             {scanners.map((scanner, index) => (
               <div key={scanner.id} className="p-4 border border-gray-200 rounded-lg">
@@ -135,18 +141,18 @@ export default function Step4Staff({ data, onUpdate }: Step4Props) {
                     value={scanner.officerUserId || ''}
                     onChange={(e) => {
                       const selStr = e.target.value;
-                      const student = students.find(s => s.id === selStr);
+                      const officer = officers.find(o => o.studentId === selStr);
                       updateScanner(scanner.id, { 
                         officerUserId: selStr, 
-                        officerName: student ? `${student.firstName} ${student.lastName}` : '' 
+                        officerName: officer ? officer.studentName : '' 
                       });
                     }}
-                    disabled={studentsLoading}
+                    disabled={officersLoading || !data.hostingOrgId}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#83358E] focus:border-transparent disabled:opacity-50"
                   >
-                    <option value="">{studentsLoading ? 'Loading students...' : 'Select student...'}</option>
-                    {students.map(s => (
-                      <option key={s.id} value={s.id}>{s.firstName} {s.lastName} ({s.idNumber})</option>
+                    <option value="">{officersLoading ? 'Loading officers...' : 'Select officer...'}</option>
+                    {officers.map(o => (
+                      <option key={o.studentId} value={o.studentId}>{o.studentName}</option>
                     ))}
                   </select>
                 </div>

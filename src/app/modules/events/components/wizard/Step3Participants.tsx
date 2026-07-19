@@ -303,18 +303,7 @@ export default function Step3Participants({ data, onUpdate }: Step3Props) {
                 </button>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Certificate Signatory <span className="px-2 py-0.5 bg-[#83358E] text-white text-xs rounded ml-1">Admin</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ms. Riselle Mae B. Lucanas, SAO Adviser"
-                  value={data.certificateSignatory || ''}
-                  onChange={(e) => updateField('certificateSignatory', e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
-                />
-              </div>
+
             </div>
           )}
         </div>

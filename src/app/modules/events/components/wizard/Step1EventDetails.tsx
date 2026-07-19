@@ -26,7 +26,6 @@ export default function Step1EventDetails({ data, onUpdate }: Step1Props) {
 
   const [objectiveInput, setObjectiveInput] = useState('');
   const [isUploadingBanner, setIsUploadingBanner] = useState(false);
-  const [isUploadingThumbnail, setIsUploadingThumbnail] = useState(false);
 
   const updateField = (field: keyof EventFormData, value: any) => {
     onUpdate({ [field]: value });
@@ -59,21 +58,6 @@ export default function Step1EventDetails({ data, onUpdate }: Step1Props) {
       alert('Failed to upload banner image.');
     } finally {
       setIsUploadingBanner(false);
-    }
-  };
-
-  const handleThumbnailUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setIsUploadingThumbnail(true);
-    try {
-      const result = await uploadToCloudinary(file, { folder: 'events/thumbnails' });
-      updateField('thumbnailUrl', result.secureUrl);
-    } catch (error) {
-      console.error('Failed to upload thumbnail', error);
-      alert('Failed to upload thumbnail image.');
-    } finally {
-      setIsUploadingThumbnail(false);
     }
   };
 
@@ -316,32 +300,44 @@ export default function Step1EventDetails({ data, onUpdate }: Step1Props) {
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Event Thumbnail</label>
-              <div className="relative border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-[#83358E] transition-colors cursor-pointer overflow-hidden group">
-                <input 
-                  type="file" 
-                  accept="image/png, image/jpeg" 
-                  onChange={handleThumbnailUpload} 
-                  disabled={isUploadingThumbnail}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed z-10" 
-                />
-                {data.thumbnailUrl ? (
-                  <div className="absolute inset-0">
-                    <img src={data.thumbnailUrl} alt="Thumbnail Preview" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                      <span className="text-white font-medium">Click to change</span>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <Upload className={`w-8 h-8 ${isUploadingThumbnail ? 'text-[#83358E] animate-bounce' : 'text-gray-400'} mx-auto mb-2`} />
-                    <p className="text-sm text-gray-600">{isUploadingThumbnail ? 'Uploading...' : 'Click to upload or drag and drop'}</p>
-                    <p className="text-xs text-gray-500 mt-1">Square format • 400x400px recommended</p>
-                  </>
-                )}
+          </div>
+        </div>
+
+        {/* Section G — Event Visibility */}
+        <div>
+          <div className="border-l-4 border-[#83358E] pl-3 mb-4">
+            <h3 className="text-[#001A4D] font-bold text-base">Event Visibility</h3>
+          </div>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
+              <div className="flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-gray-900">Show Event in Student Feed</span>
+                </div>
+                <p className="text-sm text-gray-600">Controls if this event appears in the STI Sync mobile app.</p>
               </div>
+              <button
+                onClick={() => updateField('isVisible', data.isVisible === undefined ? false : !data.isVisible)}
+                className={`relative w-12 h-6 rounded-full transition-colors flex-shrink-0 ml-4 ${(data.isVisible !== false) ? 'bg-[#83358E]' : 'bg-gray-300'}`}
+              >
+                <div className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full transition-transform ${(data.isVisible !== false) ? 'translate-x-6' : ''}`} />
+              </button>
             </div>
+
+            {data.isVisible !== false && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  Visible From
+                </label>
+                <input
+                  type="datetime-local"
+                  value={data.visibilityStart || ''}
+                  onChange={(e) => updateField('visibilityStart', e.target.value)}
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#83358E] focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">If blank, it becomes visible immediately upon publishing.</p>
+              </div>
+            )}
           </div>
         </div>
       </div>

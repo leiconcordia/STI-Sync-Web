@@ -736,8 +736,11 @@ interface EventDocument {
   documents: DocumentChecklist;            // Nested object — defined below
 
   // ─── Media ───
-  coverImageUrl: string | null;
-  galleryUrls: string[];
+  bannerImageUrl: string | null;
+
+  // ─── Visibility ───
+  isVisible: boolean;                      // Whether event is shown in feed
+  visibilityStart: Timestamp | null;       // Datetime event becomes visible
 
   // ─── Staff ───
   coreTeam: StaffAssignment[];             // Event committee members
@@ -868,8 +871,8 @@ interface AttendanceDocument {
 
   // ─── Scan Data ───
   scanMethod: 'qr' | 'manual';            // How the attendance was recorded
-  scannedBy: string;                       // Officer user ID who operated the scanner
-  scannedByName: string;                   // Denormalized scanner officer name
+  scannedBy: string;                       // UID of officer who scanned (OR student's own UID for self-check-in)
+  scannedByName: string;                   // Denormalized scanner name (OR student's own name for self-check-in)
   gateType: 'entry' | 'exit';
 
   // ─── Timestamps ───
@@ -883,10 +886,12 @@ interface AttendanceDocument {
 - `eventId` ASC, `sessionId` ASC, `scannedAt` DESC — per-session attendance log
 - `organizationId` ASC, `eventId` ASC — officer-scoped attendance queries
 - `studentId` ASC, `eventId` ASC — per-student attendance across sessions
+- `studentId` ASC, `scannedAt` DESC — student's own attendance history (Mobile App)
 - `scannedAt` DESC — global timeline view (admin)
 
 **Write Rules:**
-- A document in `/attendance` must **never** be written if the corresponding `/payables` record has `qrTicketUnlocked: false`. This is enforced client-side in the `useValidateGateAccess` hook (see `officer-backend-context.md`).
+- A document in `/attendance` must **never** be written if the corresponding `/payables` record has `qrTicketUnlocked: false`. This is enforced client-side in the `useValidateGateAccess` hook (see `officer-backend-context.md`) and in the mobile app's QR self-check-in logic.
+- **Mobile QR Self-Check-in:** The mobile app allows students to perform self-check-ins where `scannedBy` and `scannedByName` are set to their own student ID and name.
 
 ---
 
