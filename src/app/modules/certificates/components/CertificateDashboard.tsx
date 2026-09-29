@@ -1,8 +1,9 @@
-import { Award, Clock, CheckCircle, UserPlus, Calendar, Eye, ChevronRight } from "lucide-react";
+import { Award, Clock, CheckCircle, UserPlus, Calendar, Eye, ChevronRight, CheckCircle2 } from "lucide-react";
 import { useAllEvents } from "../../events/hooks/useEventStream";
 import { useAttendanceStream } from "../../attendance/hooks/useAttendanceStream";
 import { useCertificateTemplatesStream, useIssuedCertificatesStream } from "../hooks/useCertificateStream";
 import { useOrganizationStream } from "../../organizations/hooks/useOrganizationStream";
+import { isEventReadyForCertificates } from "../../events/utils/event-lifecycle.utils";
 
 interface Props {
   isAdmin: boolean;
@@ -21,32 +22,36 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
 
   const getOrgName = (orgId: string) => orgs.find(o => o.id === orgId)?.acronym || orgs.find(o => o.id === orgId)?.name || orgId || 'General';
 
-  // Filter events based on role and organization
-  const scopedEvents = events.filter(e => {
-    if (e.proposalStatus !== 'approved' || e.enableQRTickets === false) return false;
+  // All events owned by this scope (for total attendance and issued metrics)
+  const allScopedEvents = events.filter(e => {
     if (!isAdmin && organizationId && e.hostingOrgId !== organizationId) return false;
     return true;
   });
 
-  // Events with attendance data (attendedCount > 0)
-  const readyEvents = scopedEvents
-    .map(e => {
-      const eventAttendance = attendance.filter(a => a.eventId === e.id || a.event === e.title);
-      const attendedCount = eventAttendance.filter(a => a.status === 'Checked In' || a.status === 'Complete' || a.status === 'Late' || a.status === 'Flagged').length;
-      const firstDate = e.sessions && e.sessions.length > 0 ? e.sessions[0].date : 'TBA';
+  // Concluded events that have attendance tracking enabled
+  const readyToGenerateEvents = allScopedEvents.filter(e => isEventReadyForCertificates(e));
 
-      return {
-        id: e.id,
-        name: e.title,
-        org: getOrgName(e.hostingOrgId),
-        date: firstDate,
-        attended: attendedCount,
-      };
-    })
-    .filter(e => e.attended > 0); // Only show events that have attendance data
+  // Concluded events ready to generate certificates
+  const readyEvents = readyToGenerateEvents.map(e => {
+    const eventAttendance = attendance.filter(a => a.eventId === e.id || a.event === e.title);
+    const attendedCount = eventAttendance.filter(a => 
+      a.status === 'Checked In' || a.status === 'Complete' || a.status === 'Late' || a.status === 'Flagged'
+    ).length;
+    const firstDate = e.sessions && e.sessions.length > 0 ? e.sessions[0].date : (e.date || 'TBA');
+    const issuedCount = issuedRecords.filter(r => r.eventId === e.id).length;
+
+    return {
+      id: e.id,
+      name: e.title,
+      org: getOrgName(e.hostingOrgId),
+      date: firstDate,
+      attended: attendedCount,
+      issued: issuedCount,
+    };
+  });
 
   // Scoped issued certificates and attendance
-  const scopedEventIds = new Set(scopedEvents.map(e => e.id));
+  const scopedEventIds = new Set(allScopedEvents.map(e => e.id));
   const scopedIssuedRecords = isAdmin ? issuedRecords : issuedRecords.filter(r => scopedEventIds.has(r.eventId));
   const scopedAttendance = isAdmin ? attendance : attendance.filter(a => scopedEventIds.has(a.eventId || ''));
 
@@ -54,7 +59,7 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
 
   const metrics = [
     { label: "Total Templates", value: templates.length, note: isAdmin ? "admin templates saved" : "organization templates saved", icon: Award, gradient: "from-[#0E4EBD] to-[#1E70E8]", pill: null },
-    { label: "Ready Events", value: readyEvents.length, note: "events with attendance", icon: Clock, gradient: "from-[#FFC107] to-[#FFD54F]", textDark: true, pill: "Generate Now" },
+    { label: "Ready Events", value: readyEvents.length, note: "concluded events ready for certificates", icon: Clock, gradient: "from-[#FFC107] to-[#FFD54F]", textDark: true, pill: "Generate Now" },
     { label: "Certificates Issued", value: totalIssuedCount, note: isAdmin ? "total issued across system" : "issued for your org", icon: CheckCircle, gradient: "from-[#22C55E] to-[#16A34A]", pill: null },
     { label: "Total Attendees", value: scopedAttendance.length, note: "checked-in attendance records", icon: UserPlus, gradient: "from-[#83358E] to-[#5B1F6B]", pill: null },
   ];
@@ -116,27 +121,48 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
             {eventsLoading || attendanceLoading ? (
               <div className="p-8 text-center text-gray-500 text-sm">Loading events & attendance...</div>
             ) : readyEvents.length === 0 ? (
-              <div className="p-8 text-center text-gray-500 text-sm">No approved events with attendance records found yet.</div>
+              <div className="p-8 text-center text-gray-500 text-sm space-y-1">
+                <p className="font-semibold text-gray-700">No concluded events with attendance enabled found yet.</p>
+                <p className="text-xs text-gray-400">When an event with attendance tracking is officially concluded, it will appear here ready to generate certificates.</p>
+              </div>
             ) : (
               readyEvents.map((ev) => (
-                <div key={ev.id} className="flex items-center gap-4 px-5 h-14 hover:bg-[#F3E8FF]/30 transition-colors">
+                <div key={ev.id} className="flex items-center gap-4 px-5 py-3 hover:bg-[#F3E8FF]/30 transition-colors">
                   <div className="flex-1 min-w-0">
-                    <p className="text-[#001A4D] font-bold text-sm truncate">{ev.name}</p>
-                    {isAdmin && <p className="text-[#9E9E9E] text-xs">{ev.org}</p>}
+                    <div className="flex items-center gap-2">
+                      <p className="text-[#001A4D] font-bold text-sm truncate">{ev.name}</p>
+                      <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 flex-shrink-0">
+                        <CheckCircle2 className="w-2.5 h-2.5" /> Concluded
+                      </span>
+                    </div>
+                    {isAdmin && <p className="text-[#9E9E9E] text-xs mt-0.5">{ev.org}</p>}
                   </div>
-                  <div className="flex items-center gap-1.5 text-[#888780] text-xs">
+                  <div className="flex items-center gap-1.5 text-[#888780] text-xs whitespace-nowrap">
                     <Calendar className="w-3.5 h-3.5 text-[#83358E]" />
                     {ev.date}
                   </div>
-                  <span className="bg-[#22C55E]/10 text-[#22C55E] text-xs font-semibold px-2.5 py-1 rounded-full">{ev.attended} Attendees</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-semibold px-2.5 py-1 rounded-full whitespace-nowrap ${
+                      ev.attended > 0
+                        ? "bg-[#22C55E]/10 text-[#22C55E]"
+                        : "bg-amber-100/70 text-amber-800"
+                    }`}>
+                      {ev.attended > 0 ? `${ev.attended} Attendees` : "0 Scanned (Manual)"}
+                    </span>
+                    {ev.issued > 0 && (
+                      <span className="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-0.5 rounded-full whitespace-nowrap">
+                        {ev.issued} Issued
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={() => onGenerate(ev.id)}
-                    className={`text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-colors ${isAdmin
+                    className={`text-xs font-semibold px-3.5 py-1.5 rounded-lg transition-colors whitespace-nowrap cursor-pointer shadow-xs ${isAdmin
                         ? "bg-[#FFD41C] text-[#001A4D] hover:bg-[#FFC107]"
                         : "bg-[#83358E] text-white hover:bg-[#6D2A78]"
                       }`}
                   >
-                    Generate Certificates
+                    {ev.issued > 0 ? "Generate / Re-issue" : "Generate Certificates"}
                   </button>
                 </div>
               ))

@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import Step1EventDetails from '../../modules/events/components/wizard/Step1EventDetails';
 import Step2Schedule from '../../modules/events/components/wizard/Step2Schedule';
 import Step3Participants from '../../modules/events/components/wizard/Step3Participants';
+import Step4Staff from '../../modules/events/components/wizard/Step4Staff';
 import Step5Budget from '../../modules/events/components/wizard/Step5Budget';
 import Step6Documents from '../../modules/events/components/wizard/Step6Documents';
 import Step7Publish from '../../modules/events/components/wizard/Step7Publish';
@@ -22,29 +23,22 @@ interface SaoEventCreationModalProps {
   draftId?: string;
 }
 
-const STEPS = [
-  'Event Details',
-  'Schedule',
-  'Participants',
-  'Budget',
-  'Documents',
-  'Publish'
-];
+const getSteps = (isQREnabled: boolean) =>
+  isQREnabled
+    ? ['Event Details', 'Schedule', 'Participants', 'Officer Assignment', 'Budget', 'Documents', 'Publish']
+    : ['Event Details', 'Schedule', 'Participants', 'Budget', 'Documents', 'Publish'];
 
 /**
  * Infer the last wizard step the admin was working on based on which
  * fields are populated in the draft. Returns the 0-based step index.
  */
-function inferLastStep(draft: EventDocument): number {
-  if (draft.documents && draft.documents.length > 0) return 4; // Documents (Step 5)
-  if (
-    draft.budgetItems && draft.budgetItems.length > 0
-  ) return 3; // Budget (Step 4)
-  if (
-    draft.targetYearLevels && draft.targetYearLevels.length > 0
-  ) return 2; // Participants (Step 3)
-  if (draft.sessions && draft.sessions.length > 0) return 1; // Schedule (Step 2)
-  return 0; // Event Details (Step 1)
+function inferLastStep(draft: EventDocument, isQREnabled: boolean): number {
+  if (draft.documents && draft.documents.length > 0) return isQREnabled ? 5 : 4; // Documents
+  if (draft.budgetItems && draft.budgetItems.length > 0) return isQREnabled ? 4 : 3; // Budget
+  if (isQREnabled && draft.scanners && draft.scanners.length > 0) return 3; // Officer Assignment
+  if (draft.targetYearLevels && draft.targetYearLevels.length > 0) return 2; // Participants
+  if (draft.sessions && draft.sessions.length > 0) return 1; // Schedule
+  return 0; // Event Details
 }
 
 export default function SaoEventCreationModal({
@@ -53,8 +47,11 @@ export default function SaoEventCreationModal({
   initialDraft,
   draftId,
 }: SaoEventCreationModalProps) {
+  const initialDraftQR = Boolean(
+    initialDraft?.enableQRTickets === true || (initialDraft as any)?.enableQR === true
+  );
   const [currentStep, setCurrentStep] = useState(
-    initialDraft ? inferLastStep(initialDraft) : 0
+    initialDraft ? inferLastStep(initialDraft, initialDraftQR) : 0
   );
   const [formData, setFormData] = useState<EventFormData>(
     initialDraft
@@ -65,9 +62,24 @@ export default function SaoEventCreationModal({
   const [saving, setSaving] = useState(false);
   const [stepErrors, setStepErrors] = useState<Record<string, string>>({});
 
+  const isQREnabled = Boolean(
+    formData.enableQRTickets === true || (formData as any).enableQR === true
+  );
+  const steps = getSteps(isQREnabled);
+  const currentStepName = steps[currentStep] || steps[0];
+
+  useEffect(() => {
+    if (currentStep >= steps.length) {
+      setCurrentStep(Math.max(0, steps.length - 1));
+    }
+  }, [steps.length, currentStep]);
+
   useEffect(() => {
     if (isOpen) {
-      setCurrentStep(initialDraft ? inferLastStep(initialDraft) : 0);
+      const isDraftQR = Boolean(
+        initialDraft?.enableQRTickets === true || (initialDraft as any)?.enableQR === true
+      );
+      setCurrentStep(initialDraft ? inferLastStep(initialDraft, isDraftQR) : 0);
       setStepErrors({});
       setActiveDraftId(draftId || initialDraft?.id);
       if (initialDraft) {
@@ -118,10 +130,6 @@ export default function SaoEventCreationModal({
     setFormData(prev => ({ ...prev, ...stepData }));
   };
 
-  const steps = ['Event Details', 'Schedule', 'Participants', 'Budget', 'Documents', 'Publish'];
-
-  const currentStepName = steps[currentStep] || steps[0];
-
   const nextStep = () => {
     const valResult = validateWizardStep(
       currentStep,
@@ -159,22 +167,26 @@ export default function SaoEventCreationModal({
       setCurrentStep(stepIndex);
       return;
     }
-    const valResult = validateWizardStep(
-      currentStep,
-      currentStepName,
-      formData,
-      false,
-      allEvents,
-      activeDraftId
-    );
+    for (let i = 0; i < stepIndex; i++) {
+      const sName = steps[i];
+      const valResult = validateWizardStep(
+        i,
+        sName,
+        formData,
+        false,
+        allEvents,
+        activeDraftId
+      );
 
-    if (!valResult.isValid) {
-      setStepErrors(valResult.fieldErrors || {});
-      toast.error(`Please complete ${currentStepName} first`, {
-        description: valResult.errors[0],
-        duration: 4000,
-      });
-      return;
+      if (!valResult.isValid) {
+        setStepErrors(valResult.fieldErrors || {});
+        toast.error(`Please complete ${sName} first`, {
+          description: valResult.errors[0] || `Please resolve errors in ${sName} before advancing.`,
+          duration: 4000,
+        });
+        setCurrentStep(i);
+        return;
+      }
     }
     setStepErrors({});
     setCurrentStep(stepIndex);
@@ -186,6 +198,20 @@ export default function SaoEventCreationModal({
         description: editCheck.reason || 'This event cannot be published or updated.',
       });
       return;
+    }
+
+    for (let sIdx = 0; sIdx < steps.length - 1; sIdx++) {
+      const sName = steps[sIdx];
+      const res = validateWizardStep(sIdx, sName, formData, false, allEvents, activeDraftId);
+      if (!res.isValid) {
+        setStepErrors(res.fieldErrors || {});
+        toast.error(`Cannot Publish: Incomplete ${sName}`, {
+          description: res.errors[0] || `Please review and complete ${sName}.`,
+          duration: 5000,
+        });
+        setCurrentStep(sIdx);
+        return;
+      }
     }
 
     setSaving(true);
@@ -265,6 +291,9 @@ export default function SaoEventCreationModal({
         return <Step2Schedule {...stepProps} />;
       case 'Participants':
         return <Step3Participants {...stepProps} />;
+      case 'Officer Assignment':
+      case 'Staff':
+        return <Step4Staff {...stepProps} />;
       case 'Budget':
         return <Step5Budget {...stepProps} />;
       case 'Documents':
@@ -384,7 +413,7 @@ export default function SaoEventCreationModal({
               Previous
             </button>
 
-            {currentStep < STEPS.length - 1 ? (
+            {currentStep < steps.length - 1 ? (
               <div className="flex items-center gap-3">
                 <button
                   onClick={handleSaveDraft}

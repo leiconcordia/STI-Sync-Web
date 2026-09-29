@@ -471,7 +471,7 @@ export function validateStep4(data: EventFormData): StepValidationResult {
   const fieldErrors: Record<string, string> = {};
 
   const isQREnabled = Boolean(
-    data.enableQRTickets !== false && (data as any).enableQR !== false && data.attendanceEnabled !== false
+    data.enableQRTickets === true || (data as any).enableQR === true
   );
 
   if (!isQREnabled) {
@@ -479,12 +479,37 @@ export function validateStep4(data: EventFormData): StepValidationResult {
     return { isValid: true, errors: [] };
   }
 
-  const scanners = data.scanners || [];
-  // Only validate individual scanner rows if the user added scanner rows
+  const scanners = data.scanners && data.scanners.length > 0 ? data.scanners : [];
+
+  if (scanners.length === 0) {
+    errors.push('Scanner #1: Please select an officer for Scanner #1 before proceeding.');
+    fieldErrors.scanner_0 = 'Please assign an officer to Scanner #1.';
+    return {
+      isValid: false,
+      errors,
+      fieldErrors,
+    };
+  }
+
+  const seenOfficers = new Set<string>();
+
   scanners.forEach((s, idx) => {
-    if (!s.officerUserId && !s.officerName?.trim()) {
-      errors.push(`Scanner #${idx + 1}: Please select an officer or remove the unassigned scanner row.`);
+    const officerId = (s.officerUserId || (s as any).studentId || (s as any).id || '').trim();
+    const officerName = (s.officerName || '').trim();
+    const hasOfficer = Boolean(officerId || officerName);
+
+    if (!hasOfficer) {
+      errors.push(`Scanner #${idx + 1} (${s.name || `Scanner ${idx + 1}`}): Please select an officer before proceeding.`);
       fieldErrors[`scanner_${idx}`] = 'Please assign an officer.';
+      return;
+    }
+
+    const officerKey = (officerId || officerName).toLowerCase();
+    if (seenOfficers.has(officerKey)) {
+      errors.push(`Scanner #${idx + 1}: Officer "${officerName || 'Officer'}" is already assigned to another scanner. Each scanner must be assigned to a unique officer.`);
+      fieldErrors[`scanner_${idx}`] = 'Officer already assigned to another scanner.';
+    } else {
+      seenOfficers.add(officerKey);
     }
   });
 
@@ -585,6 +610,15 @@ export function validateStep7(data: EventFormData, isOfficer = false): StepValid
   if (!s1.isValid) errors.push(...s1.errors);
   if (!s2.isValid) errors.push(...s2.errors);
   if (!s3.isValid) errors.push(...s3.errors);
+
+  const isQREnabled = Boolean(
+    data.enableQRTickets === true || (data as any).enableQR === true
+  );
+  if (isQREnabled) {
+    const s4 = validateStep4(data);
+    if (!s4.isValid) errors.push(...s4.errors);
+  }
+
   if (!s5.isValid) errors.push(...s5.errors);
   if (!s6.isValid) errors.push(...s6.errors);
 
@@ -618,6 +652,7 @@ export function validateWizardStep(
       return validateStep2(data, allEvents, currentEventId);
     case 'Participants':
       return validateStep3(data);
+    case 'Officer Assignment':
     case 'Staff':
       return validateStep4(data);
     case 'Budget':

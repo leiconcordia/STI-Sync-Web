@@ -25,27 +25,25 @@ export async function changeOfficerOrAdviserPassword(
 
   // ── 1. Re-authenticate / Ensure Firebase Auth User is signed in ──
   let user = auth.currentUser;
-  try {
-    if (!user || user.email?.toLowerCase() !== email) {
+  if (!user || user.email?.toLowerCase() !== email) {
+    const cred = await signInWithEmailAndPassword(auth, email, currentPassword);
+    user = cred.user;
+  } else {
+    try {
+      const cred = EmailAuthProvider.credential(email, currentPassword);
+      await reauthenticateWithCredential(user, cred);
+    } catch (reauthErr: any) {
+      console.warn('[passwordService] Reauth failed, trying fresh signIn:', reauthErr);
       const cred = await signInWithEmailAndPassword(auth, email, currentPassword);
       user = cred.user;
-    } else {
-      try {
-        const cred = EmailAuthProvider.credential(email, currentPassword);
-        await reauthenticateWithCredential(user, cred);
-      } catch (reauthErr: any) {
-        console.warn('[passwordService] Reauth failed, trying fresh signIn:', reauthErr);
-        const cred = await signInWithEmailAndPassword(auth, email, currentPassword);
-        user = cred.user;
-      }
     }
+  }
 
-    // ── 2. Update Password in Firebase Auth ──
-    if (user) {
-      await updatePassword(user, newPassword);
-    }
-  } catch (authErr) {
-    console.warn('[passwordService] Firebase Auth update note (proceeding to sync Firestore):', authErr);
+  // ── 2. Update Password in Firebase Auth ──
+  if (user) {
+    await updatePassword(user, newPassword);
+  } else {
+    throw new Error('Could not authenticate user session to update password.');
   }
 
   // ── 3. Update Firestore Records ──
@@ -75,7 +73,7 @@ export async function changeOfficerOrAdviserPassword(
         });
       }
     } else {
-      // Officer / Student
+      // Officer / Student - clear temporaryPassword so old/temp passwords can no longer log in
       const qStudent = query(
         collection(db, 'students'),
         where('email', '==', email)
@@ -84,6 +82,7 @@ export async function changeOfficerOrAdviserPassword(
       for (const d of studentSnap.docs) {
         await updateDoc(doc(db, 'students', d.id), {
           requiresPasswordChange: false,
+          temporaryPassword: null,
           updatedAt: serverTimestamp(),
         });
       }
@@ -97,9 +96,24 @@ export async function changeOfficerOrAdviserPassword(
         for (const d of officerSnap.docs) {
           await updateDoc(doc(db, 'organization_officers', d.id), {
             requiresPasswordChange: false,
+            temporaryPassword: null,
             updatedAt: serverTimestamp(),
           });
         }
+      }
+
+      // Also ensure all officer docs with matching email are cleared
+      const qOfficerEmail = query(
+        collection(db, 'organization_officers'),
+        where('email', '==', email)
+      );
+      const officerEmailSnap = await getDocs(qOfficerEmail);
+      for (const d of officerEmailSnap.docs) {
+        await updateDoc(doc(db, 'organization_officers', d.id), {
+          requiresPasswordChange: false,
+          temporaryPassword: null,
+          updatedAt: serverTimestamp(),
+        });
       }
     }
   } catch (dbErr) {

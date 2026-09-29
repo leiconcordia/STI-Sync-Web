@@ -155,21 +155,18 @@ export default function Step6Documents({ data, onUpdate, isOfficer, errors = {} 
     const isQrEnabled = Boolean(
       data.enableQRTickets !== false && (data as any).enableQR !== false && data.attendanceEnabled !== false
     );
-    const hasOfficerAssigned = Boolean(data.eventHeadUid || data.officerInChargeUid);
-    const hasStaff = Boolean(hasOfficerAssigned || (data.scanners && data.scanners.length > 0));
+    const hasStaff = Boolean(data.scanners && data.scanners.length > 0);
 
     let officerCheckStatus: 'passed' | 'warning' = 'passed';
     let officerCheckReason = '';
 
     if (!isQrEnabled) {
       officerCheckStatus = 'passed';
-      officerCheckReason = hasOfficerAssigned
-        ? (data.eventHeadName ? `Event Head (${data.eventHeadName}) assigned` : 'Lead officer assigned')
-        : 'QR ticketing disabled (Attendance scanners not required)';
+      officerCheckReason = 'QR ticketing disabled (Attendance scanners not required)';
     } else {
       officerCheckStatus = hasStaff ? 'passed' : 'warning';
       officerCheckReason = hasStaff
-        ? (data.eventHeadName ? `Event Head (${data.eventHeadName}) / Scanners assigned` : 'Event Head / Attendance scanners assigned')
+        ? 'Attendance scanners assigned'
         : 'No attendance scanners assigned yet (Optional)';
     }
 

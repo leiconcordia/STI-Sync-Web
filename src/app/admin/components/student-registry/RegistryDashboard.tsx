@@ -105,7 +105,7 @@ export default function RegistryDashboard({
         case 'ARCHIVED': action = `${student.firstName} ${student.lastName} — Account Archived`; type = 'blue'; break;
         default: action = `${student.firstName} ${student.lastName} — Status Updated`; type = 'blue'; break;
       }
-      
+
       const updatedAtMs = getMillis(student.updatedAt);
       const diff = updatedAtMs ? Math.max(0, Date.now() - updatedAtMs) : 0;
       const minutes = Math.floor(diff / 60000);
@@ -128,12 +128,7 @@ export default function RegistryDashboard({
         <div>
           <h2 className="text-2xl font-bold text-[#001A4D]">Student Registry</h2>
         </div>
-        <div className="flex items-center gap-3">
-          <button className="px-6 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 flex items-center gap-2">
-            <Download className="w-4 h-4" />
-            Export Registry
-          </button>
-        </div>
+
       </div>
 
       {/* Semester Re-enrollment Status Banner (Hidden if all deadlines passed) */}
@@ -333,10 +328,10 @@ export default function RegistryDashboard({
                 <div key={index} className="flex items-start gap-3">
                   <div
                     className={`w-2 h-2 rounded-full mt-1.5 ${activity.type === 'approved' ? 'bg-green-500' :
-                        activity.type === 'rejected' ? 'bg-red-500' :
-                          activity.type === 'returned' ? 'bg-amber-500' :
-                            activity.type === 'suspended' ? 'bg-red-600' :
-                              'bg-blue-500'
+                      activity.type === 'rejected' ? 'bg-red-500' :
+                        activity.type === 'returned' ? 'bg-amber-500' :
+                          activity.type === 'suspended' ? 'bg-red-600' :
+                            'bg-blue-500'
                       }`}
                   ></div>
                   <div className="flex-1">

@@ -77,13 +77,12 @@ function validateStep1(form: {
 
 function validateStep2(adviser: {
   name: string;
-  employeeId: string;
+  employeeId?: string;
   email: string;
   departmentId: string;
 }) {
   const errors: Step2Errors = {};
   if (!adviser.name.trim()) errors.name = 'Adviser full name is required.';
-  if (!adviser.employeeId.trim()) errors.employeeId = 'Employee / Faculty ID is required.';
   if (!adviser.email.trim()) {
     errors.email = 'Adviser email address is required.';
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adviser.email.trim())) {
@@ -282,7 +281,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     }
 
     const emailTrimmed = adviserData.email.trim().toLowerCase();
-    const employeeIdTrimmed = adviserData.employeeId.trim();
+    const employeeIdTrimmed = adviserData.employeeId?.trim() || '';
 
     // 1. Check if email is already in use by an adviser in existing organizations stream
     const existingOrgWithAdviserEmail = (allOrganizations || []).find(
@@ -296,26 +295,28 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     }
 
     // 2. Check if employee ID is already in use in existing organizations stream
-    const existingOrgWithEmployeeId = (allOrganizations || []).find(
-      org => org.adviser?.employeeId?.trim() === employeeIdTrimmed
-    );
-    if (existingOrgWithEmployeeId) {
-      setStep2Errors({
-        employeeId: `This Employee ID is already assigned to the adviser for "${existingOrgWithEmployeeId.name}".`,
-      });
-      return;
+    if (employeeIdTrimmed) {
+      const existingOrgWithEmployeeId = (allOrganizations || []).find(
+        org => org.adviser?.employeeId?.trim() === employeeIdTrimmed
+      );
+      if (existingOrgWithEmployeeId) {
+        setStep2Errors({
+          employeeId: `This Employee ID is already assigned to the adviser for "${existingOrgWithEmployeeId.name}".`,
+        });
+        return;
+      }
     }
 
     // 3. Check if email or employee ID belongs to an existing student
     const studentMatch = (allStudents || []).find(
-      s => s.email?.toLowerCase().trim() === emailTrimmed || s.studentId?.trim() === employeeIdTrimmed
+      s => s.email?.toLowerCase().trim() === emailTrimmed || (employeeIdTrimmed && s.studentId?.trim() === employeeIdTrimmed)
     );
     if (studentMatch) {
       if (studentMatch.email?.toLowerCase().trim() === emailTrimmed) {
         setStep2Errors({
           email: `This email is registered to student "${studentMatch.firstName} ${studentMatch.lastName}". Club Advisers must use a faculty/employee account.`,
         });
-      } else {
+      } else if (employeeIdTrimmed) {
         setStep2Errors({
           employeeId: `This ID is registered to student "${studentMatch.firstName} ${studentMatch.lastName}". Please enter a valid Faculty/Employee ID.`,
         });
@@ -341,19 +342,21 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
         return;
       }
 
-      const empIdQuery = query(
-        collection(db, 'organization_advisers'),
-        where('employeeId', '==', employeeIdTrimmed),
-        where('isActive', '==', true)
-      );
-      const empIdSnap = await getDocs(empIdQuery);
-      if (!empIdSnap.empty) {
-        const adv = empIdSnap.docs[0].data();
-        setStep2Errors({
-          employeeId: `This Employee ID is already registered to active adviser "${adv.name}" (${adv.organizationName || 'Existing Club'}).`,
-        });
-        setIsCheckingAdviser(false);
-        return;
+      if (employeeIdTrimmed) {
+        const empIdQuery = query(
+          collection(db, 'organization_advisers'),
+          where('employeeId', '==', employeeIdTrimmed),
+          where('isActive', '==', true)
+        );
+        const empIdSnap = await getDocs(empIdQuery);
+        if (!empIdSnap.empty) {
+          const adv = empIdSnap.docs[0].data();
+          setStep2Errors({
+            employeeId: `This Employee ID is already registered to active adviser "${adv.name}" (${adv.organizationName || 'Existing Club'}).`,
+          });
+          setIsCheckingAdviser(false);
+          return;
+        }
       }
     } catch (queryErr) {
       console.warn('[handleNextFromStep2] Firestore adviser uniqueness check warning:', queryErr);
@@ -622,25 +625,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <FieldError msg={step2Errors.name} />
         </div>
 
-        {/* Employee ID + Department */}
+        {/* Department + Email */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-              Employee / Faculty ID <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              value={adviserData.employeeId}
-              onChange={(e) => {
-                setAdviserData({ ...adviserData, employeeId: e.target.value });
-                setStep2Errors(prev => { const n = { ...prev }; delete n.employeeId; return n; });
-              }}
-              placeholder="e.g. FAC-2024-0042"
-              className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.employeeId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
-            />
-            <FieldError msg={step2Errors.employeeId} />
-          </div>
-
           <div>
             <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
               Department <span className="text-red-500">*</span>
@@ -660,27 +646,26 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             </select>
             <FieldError msg={step2Errors.departmentId} />
           </div>
-        </div>
 
-        {/* Email Address */}
-        <div>
-          <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-            Official / Institutional Email <span className="text-red-500">*</span>
-          </label>
-          <div className="relative">
-            <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="email"
-              value={adviserData.email}
-              onChange={(e) => {
-                setAdviserData({ ...adviserData, email: e.target.value });
-                setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
-              }}
-              placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
-              className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
-            />
+          <div>
+            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+              Email <span className="text-red-500">*</span>
+            </label>
+            <div className="relative">
+              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input
+                type="email"
+                value={adviserData.email}
+                onChange={(e) => {
+                  setAdviserData({ ...adviserData, email: e.target.value });
+                  setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
+                }}
+                placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
+                className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+              />
+            </div>
+            <FieldError msg={step2Errors.email} />
           </div>
-          <FieldError msg={step2Errors.email} />
         </div>
 
         {/* Designation / Title (Fixed) + Generated Temporary Password Preview */}
@@ -958,17 +943,13 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <span className="px-2 py-0.5 bg-[#001A4D] text-white text-[10px] font-bold rounded">MANDATORY</span>
         </div>
 
-        <div className="grid grid-cols-2 gap-3 text-xs pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
           <div>
             <div className="text-gray-500">Name</div>
             <div className="text-[#001A4D] font-bold">{adviserData.name}</div>
           </div>
           <div>
-            <div className="text-gray-500">Employee ID</div>
-            <div className="text-[#001A4D] font-semibold">{adviserData.employeeId || '—'}</div>
-          </div>
-          <div>
-            <div className="text-gray-500">Email Address</div>
+            <div className="text-gray-500">Email</div>
             <div className="text-[#0E4EBD] font-semibold">{adviserData.email}</div>
           </div>
           <div>

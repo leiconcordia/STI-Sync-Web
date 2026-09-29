@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { X, Search, Loader2, Building2 } from 'lucide-react';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useDepartments, useCourses, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
@@ -38,6 +38,23 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     contactNumber: '',
     paymentStatus: 'outstanding' as 'paid' | 'outstanding',
   });
+
+  useEffect(() => {
+    if (isOpen) {
+      setSearchQuery('');
+      setShowDropdown(false);
+      setFormData({
+        studentId: '',
+        studentName: '',
+        email: '',
+        course: '',
+        year: '',
+        department: '',
+        contactNumber: '',
+        paymentStatus: 'outstanding',
+      });
+    }
+  }, [isOpen]);
 
   // Evaluate if organization is cross-departmental or department-specific
   const isCrossDepartmental = useMemo(() => {
@@ -338,9 +355,10 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                 <input
                   type="text"
                   required
+                  readOnly
+                  placeholder="Select student above"
                   value={formData.studentId}
-                  onChange={(e) => setFormData({ ...formData, studentId: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
               <div>
@@ -348,9 +366,10 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                 <input
                   type="text"
                   required
+                  readOnly
+                  placeholder="Select student above"
                   value={formData.studentName}
-                  onChange={(e) => setFormData({ ...formData, studentName: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
             </div>
@@ -359,9 +378,10 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
               <input
                 type="email"
+                readOnly
+                placeholder="Auto-filled from official record"
                 value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
               />
             </div>
 
@@ -370,18 +390,20 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                 <label className="block text-sm font-medium text-gray-700 mb-1">Program</label>
                 <input
                   type="text"
+                  readOnly
+                  placeholder="Auto-filled"
                   value={formData.course}
-                  onChange={(e) => setFormData({ ...formData, course: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Year Level</label>
                 <input
                   type="text"
+                  readOnly
+                  placeholder="Auto-filled"
                   value={formData.year}
-                  onChange={(e) => setFormData({ ...formData, year: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
             </div>
@@ -391,18 +413,20 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                 <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
                 <input
                   type="text"
+                  readOnly
+                  placeholder="Auto-filled"
                   value={formData.department}
-                  onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Contact Number</label>
                 <input
                   type="text"
+                  readOnly
+                  placeholder="Auto-filled"
                   value={formData.contactNumber}
-                  onChange={(e) => setFormData({ ...formData, contactNumber: e.target.value })}
-                  className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                  className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
             </div>
@@ -412,7 +436,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <select
                 value={formData.paymentStatus}
                 onChange={(e) => setFormData({ ...formData, paymentStatus: e.target.value as 'paid' | 'outstanding' })}
-                className="w-full px-3 py-2 border border-[#E0E0E0] rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8]"
+                className="w-full px-3 py-2 border border-[#E0E0E0] bg-white rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8] outline-none cursor-pointer"
               >
                 <option value="outstanding">Outstanding (Pending Payment)</option>
                 <option value="paid">Paid</option>
@@ -426,15 +450,15 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50"
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="submit"
             form="add-member-form"
-            disabled={isSubmitting}
-            className="px-4 py-2 text-sm font-bold text-white bg-[#0E4EBD] rounded-lg hover:bg-[#0E4EBD]/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isSubmitting || !formData.studentId || !formData.studentName}
+            className="px-4 py-2 text-sm font-bold text-white bg-[#0E4EBD] rounded-lg hover:bg-[#0E4EBD]/90 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
             {isSubmitting ? 'Adding...' : 'Add Member'}

@@ -546,3 +546,65 @@ export function canRestoreEvent(
   if (event.isArchived) return false;
   return Boolean(event.isDeleted || event.proposalStatus === 'cancelled');
 }
+
+/**
+ * Checks whether an event has concluded (completed or archived).
+ */
+export function isEventConcluded(event?: Partial<EventDocument> | null): boolean {
+  if (!event) return false;
+  if (event.isDeleted) return false;
+  if (event.isArchived) return true;
+
+  const status = (event.status || '').toLowerCase();
+  const proposalStatus = (event.proposalStatus || '').toLowerCase();
+  const lifecycleStatus = ((event as any).lifecycleStatus || '').toLowerCase();
+
+  // Exclude cancelled and rejected proposals
+  if (
+    status === 'cancelled' ||
+    proposalStatus === 'cancelled' ||
+    proposalStatus === 'rejected' ||
+    event.isCancelled
+  ) {
+    return false;
+  }
+
+  // Explicit conclusion flags
+  if (
+    status === 'completed' ||
+    proposalStatus === 'completed' ||
+    lifecycleStatus === 'completed' ||
+    lifecycleStatus === 'concluded' ||
+    (event as any).isConcluded === true ||
+    Boolean(event.completedAt)
+  ) {
+    return true;
+  }
+
+  // If approved and scheduled sessions are finished
+  if (proposalStatus === 'approved' || status === 'approved') {
+    return getEventTimingStatus(event as EventDocument) === 'completed';
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether an event has attendance tracking enabled (Option A QR / Attendance scanner).
+ */
+export function isEventAttendanceEnabled(event?: Partial<EventDocument> | null): boolean {
+  if (!event) return false;
+  return (
+    event.enableQRTickets !== false &&
+    (event as any).enableQR !== false &&
+    (event as any).attendanceEnabled !== false
+  );
+}
+
+/**
+ * Checks whether an event is officially concluded and ready for certificate generation.
+ */
+export function isEventReadyForCertificates(event?: Partial<EventDocument> | null): boolean {
+  return isEventConcluded(event) && isEventAttendanceEnabled(event);
+}
+

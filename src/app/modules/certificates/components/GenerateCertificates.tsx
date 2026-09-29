@@ -52,15 +52,31 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
       a.eventId === eventId || (event && a.event === event.title)
     );
 
-    const mapped: CertificateRecipient[] = eventAttendance.map(a => ({
-      id: a.id || a.studentId,
-      name: a.name || 'Unknown Attendee',
-      studentId: a.studentId || '—',
-      course: a.org || 'STI Student',
-      source: 'attendance',
-      status: (a.status as any) || 'Checked In',
-      include: true,
-    }));
+    const mapped: CertificateRecipient[] = eventAttendance.map(a => {
+      const statusStr = (a.status || '').toString().trim().toLowerCase();
+      // Attended student is included by default; absent or rest is not included
+      const isAttended =
+        statusStr === 'checked in' ||
+        statusStr === 'complete' ||
+        statusStr === 'late' ||
+        statusStr === 'present';
+
+      const normalizedStatus = isAttended
+        ? (a.status as any) || 'Checked In'
+        : statusStr === 'flagged'
+        ? 'Flagged'
+        : 'Absent';
+
+      return {
+        id: a.id || a.studentId,
+        name: a.name || 'Unknown Attendee',
+        studentId: a.studentId || '—',
+        course: a.org || 'STI Student',
+        source: 'attendance',
+        status: normalizedStatus,
+        include: isAttended, // Attended person is default true; absent or rest is default false
+      };
+    });
 
     setRecipients(mapped);
   }, [eventId, event, attendance]);
@@ -69,6 +85,14 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
 
   const filteredRecipients = recipients.filter(r => filter === "all" || r.source === filter);
   const includedCount = recipients.filter(r => r.include).length;
+  const attendedCount = recipients.filter(r => {
+    const s = (r.status || '').toString().trim().toLowerCase();
+    return s === 'checked in' || s === 'complete' || s === 'late' || s === 'present';
+  }).length;
+  const absentCount = recipients.filter(r => {
+    const s = (r.status || '').toString().trim().toLowerCase();
+    return s === 'absent' || s === 'flagged';
+  }).length;
   const attendanceCount = recipients.filter(r => r.source === "attendance").length;
   const manualCount = recipients.filter(r => r.source === "manual").length;
   const totalCount = recipients.length;
@@ -120,16 +144,16 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
           <div className="ml-auto flex items-center gap-3">
             <span className="text-white text-xs font-medium">{firstSessionDate}</span>
             <span className="bg-[#22C55E] text-white text-xs font-bold px-3 py-1 rounded-full">
-              {attendanceCount} Checked In
+              {includedCount} of {totalCount} Included
             </span>
           </div>
         </div>
         <div className="bg-white/5 px-6 py-3 grid grid-cols-4 divide-x divide-white/10">
           {[
             ["Target Participants", event?.expectedParticipantCount || 0, "text-white"],
-            ["Checked In", attendanceCount, "text-[#22C55E]"],
-            ["Manual Additions", manualCount, "text-[#FFC107]"],
-            ["Total Recipients", totalCount, "text-[#FFD41C]"]
+            ["Attended", attendedCount, "text-[#22C55E]"],
+            ["Absent / Flagged", absentCount, "text-rose-300"],
+            ["Ready to Issue", includedCount, "text-[#FFD41C]"]
           ].map(([label, val, color]) => (
             <div key={label as string} className="px-4 first:pl-0 text-center">
               <p className={`font-bold text-xl ${color as string}`}>{val as number}</p>
@@ -168,7 +192,19 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
               <button onClick={() => setShowAddRow(true)} className={`flex items-center gap-1.5 px-3 py-1.5 border rounded-lg text-xs font-semibold transition-colors ${isAdmin ? "border-[#001A4D] text-[#001A4D] hover:bg-gray-50" : "border-[#83358E] text-[#83358E] hover:bg-[#F3E8FF]"}`}>
                 <UserPlus className="w-3.5 h-3.5" /> Add Manual Recipient
               </button>
-              <button onClick={selected.size === filteredRecipients.length ? deselectAll : selectAll} className="text-xs text-[#888780] hover:text-[#001A4D] transition-colors">
+              <button
+                type="button"
+                onClick={() => setRecipients(rs => rs.map(r => {
+                  const s = (r.status || '').toString().trim().toLowerCase();
+                  const isAttended = s === 'checked in' || s === 'complete' || s === 'late' || s === 'present' || r.source === 'manual';
+                  return { ...r, include: isAttended };
+                }))}
+                className="text-xs text-blue-700 hover:text-blue-900 font-semibold px-2 py-1 rounded-lg hover:bg-blue-50 border border-blue-200 transition-colors cursor-pointer"
+                title="Reset selection: Include only attended attendees"
+              >
+                Include Attended Only
+              </button>
+              <button onClick={selected.size === filteredRecipients.length ? deselectAll : selectAll} className="text-xs text-[#888780] hover:text-[#001A4D] transition-colors cursor-pointer">
                 {selected.size === filteredRecipients.length ? "Deselect All" : "Select All"}
               </button>
             </div>
@@ -227,11 +263,17 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
                       <td className="px-3 py-2.5 text-[#888780] text-sm">{r.course}</td>
                       <td className="px-3 py-2.5">
                         {r.source === "attendance" ? (
-                          <span className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-full w-fit ${r.status === 'Flagged' ? 'bg-amber-100 text-amber-700' : 'bg-[#22C55E]/10 text-[#22C55E]'}`}>
+                          <span className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-0.5 rounded-full w-fit ${
+                            r.status === 'Absent'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : r.status === 'Flagged'
+                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                              : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                          }`}>
                             <QrCode className="w-3 h-3" /> {r.status}
                           </span>
                         ) : (
-                          <span className="flex items-center gap-1.5 bg-[#FFC107]/10 text-[#FFC107] text-xs font-semibold px-2 py-0.5 rounded-full w-fit">
+                          <span className="flex items-center gap-1.5 bg-[#FFC107]/10 text-[#FFC107] text-xs font-semibold px-2.5 py-0.5 rounded-full w-fit border border-[#FFC107]/30">
                             <UserPlus className="w-3 h-3" /> Manual
                           </span>
                         )}

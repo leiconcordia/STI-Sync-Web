@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Search, Lock, Unlock, Loader2, Coins, CheckCircle2, AlertCircle, RefreshCw, XCircle, RotateCcw, Clock } from 'lucide-react';
 import { doc, getDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
@@ -145,7 +145,7 @@ export function EventPayablesQRControl({
     }
   };
 
-  const handleSyncPayablesData = async () => {
+  const handleSyncPayablesData = async (isManual = true) => {
     setIsSyncing(true);
     try {
       // If no payables exist, generate them for this event
@@ -169,7 +169,15 @@ export function EventPayablesQRControl({
           const updates: Record<string, any> = {};
           if (!p.studentName || p.studentName === 'Student') updates.studentName = name;
           if (!p.studentSchoolId || p.studentSchoolId !== schoolId) updates.studentSchoolId = schoolId;
-          if (p.qrTicketUnlocked === undefined) updates.qrTicketUnlocked = false;
+
+          const requiresPayment = (p.assignedAmount || 0) > 0;
+          if (!requiresPayment && isQREnabled && !isCancelled) {
+            // Free event with QR tickets enabled: unlock by default!
+            if (!p.qrTicketUnlocked) updates.qrTicketUnlocked = true;
+            if (p.status !== 'paid' && p.status !== 'waived') updates.status = 'paid';
+          } else if (p.qrTicketUnlocked === undefined) {
+            updates.qrTicketUnlocked = false;
+          }
 
           if (Object.keys(updates).length > 0) {
             batch.update(ref, updates);
@@ -180,14 +188,25 @@ export function EventPayablesQRControl({
           await batch.commit();
         }
       }
-      alert('Database payables synced successfully!');
+      if (isManual) {
+        alert('Database payables synced successfully!');
+      }
     } catch (err) {
       console.error('Error syncing payables:', err);
-      alert('Failed to sync payables database records.');
+      if (isManual) {
+        alert('Failed to sync payables database records.');
+      }
     } finally {
       setIsSyncing(false);
     }
   };
+
+  useEffect(() => {
+    if (!loading && payables.length === 0 && isQREnabled && eventId) {
+      handleSyncPayablesData(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, payables.length, isQREnabled, eventId]);
 
   if (loading) {
     return (
@@ -237,7 +256,7 @@ export function EventPayablesQRControl({
             </p>
           </div>
           <button
-            onClick={handleSyncPayablesData}
+            onClick={() => handleSyncPayablesData(true)}
             disabled={isSyncing}
             className="bg-[#FFC107] hover:bg-[#F59E0B] text-[#001A4D] px-3.5 py-2 rounded-lg font-bold flex items-center gap-1.5 transition-colors disabled:opacity-50"
             title="Sync missing student names, 11-digit STI IDs, or generate payables"
@@ -271,6 +290,16 @@ export function EventPayablesQRControl({
             <p className="font-bold text-[#001A4D]">Event Payables Active — QR Tickets Not Required</p>
             <p className="text-blue-800 text-[11px] mt-0.5">
               Payment collections and student fee tracking are fully functional for this event. Since QR tickets are not required, QR ticket unlocking buttons are disabled.
+            </p>
+          </div>
+        </div>
+      ) : isQREnabled && (!adminFeeAmount || adminFeeAmount <= 0) && (payables.length === 0 || payables.every(p => (p.assignedAmount || 0) <= 0)) ? (
+        <div className="p-3.5 bg-emerald-50 border-b border-emerald-200 flex items-start gap-2.5 text-xs text-emerald-900">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-bold text-emerald-950">Free Event — QR Tickets Unlocked by Default</p>
+            <p className="text-emerald-800 text-[11px] mt-0.5">
+              This event does not require students to pay any fees. All eligible student QR tickets are unlocked by default for gate access and attendance scanning.
             </p>
           </div>
         </div>
@@ -361,7 +390,7 @@ export function EventPayablesQRControl({
                     {getStudentDisplayId(payable)}
                   </td>
                   <td className="px-5 py-3.5 font-semibold text-[#001A4D]">
-                    {formatCurrency(payable.assignedAmount)}
+                    {(!payable.assignedAmount || payable.assignedAmount <= 0) ? 'Free (₱0.00)' : formatCurrency(payable.assignedAmount)}
                   </td>
                   <td className="px-5 py-3.5 font-semibold text-emerald-700">
                     {formatCurrency(payable.paidAmount || 0)}
@@ -369,7 +398,9 @@ export function EventPayablesQRControl({
                   <td className="px-5 py-3.5">
                     <span
                       className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                        isPaid
+                        (!payable.assignedAmount || payable.assignedAmount <= 0)
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : isPaid
                           ? 'bg-emerald-100 text-emerald-800'
                           : isPartial
                           ? 'bg-amber-100 text-amber-800'
@@ -382,7 +413,7 @@ export function EventPayablesQRControl({
                           : 'bg-red-100 text-red-700'
                       }`}
                     >
-                      {payable.status}
+                      {(!payable.assignedAmount || payable.assignedAmount <= 0) ? 'Free Entry' : payable.status}
                     </span>
                   </td>
                   <td className="px-5 py-3.5">

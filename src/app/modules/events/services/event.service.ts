@@ -57,15 +57,25 @@ export async function generatePayablesForEvent(
     Number(eventData.fee) ||
     0;
 
-  if (!eventData.studentPayablesEnabled && feeAmount <= 0) {
-    console.log('[generatePayablesForEvent] Skipping: payables not enabled or fee is 0', {
+  const isQREnabled = Boolean(
+    eventData.enableQRTickets === true || (eventData as any).enableQR === true
+  );
+
+  const requiresPayment = Boolean(
+    eventData.studentPayablesEnabled && feeAmount > 0
+  );
+
+  if (!requiresPayment && !isQREnabled) {
+    console.log('[generatePayablesForEvent] Skipping: neither payables nor QR tickets enabled', {
       studentPayablesEnabled: eventData.studentPayablesEnabled,
       feeAmount,
+      isQREnabled,
     });
     return;
   }
 
-  const assignedFee = feeAmount > 0 ? feeAmount : (Number(eventData.adminFeeOverride) || 0);
+  const assignedFee = requiresPayment ? feeAmount : 0;
+  const isDefaultUnlocked = !requiresPayment && isQREnabled;
 
   try {
     // Query existing payables for this event to deduplicate per student
@@ -228,24 +238,24 @@ export async function generatePayablesForEvent(
             studentId: student.id || student.authUid || student.studentId,
             studentName: studentFullName,
             studentSchoolId: officialSchoolId,
-            type: 'event_fee',
-            label: `Event Fee — ${eventData.title}`,
-            description: `Fee for event: ${eventData.title}`,
+            type: requiresPayment ? 'event_fee' : 'event_pass',
+            label: requiresPayment ? `Event Fee — ${eventData.title}` : `Event Pass (Free) — ${eventData.title}`,
+            description: requiresPayment ? `Fee for event: ${eventData.title}` : `Free entry pass with QR ticket access for: ${eventData.title}`,
             organizationId: eventData.hostingOrgId || null,
             organizationName: null,
             semesterId: eventData.semesterId || '',
             eventId: eventId,
             assignedAmount: assignedFee,
             paidAmount: 0,
-            status: 'pending',
-            qrTicketUnlocked: false,
+            status: requiresPayment ? 'pending' : 'paid',
+            qrTicketUnlocked: isDefaultUnlocked,
             dueDate:
               eventData.sessions && eventData.sessions[0]?.date
                 ? Timestamp.fromDate(new Date(eventData.sessions[0].date))
                 : null,
-            paidAt: null,
+            paidAt: requiresPayment ? null : serverTimestamp(),
             recordedBy: null,
-            paymentMethod: null,
+            paymentMethod: requiresPayment ? null : 'free_entry',
             createdBy: createdByUid,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Download, Clock, CheckCircle, CheckCircle2, XCircle, RotateCcw,
@@ -79,6 +80,7 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
 }
 
 export default function EventProposalReview({ event, onClose }: EventProposalReviewProps) {
+  const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState('overview');
   const [visitedSections, setVisitedSections] = useState<Set<string>>(new Set(['overview']));
   const [remarks, setRemarks] = useState(event.adviserRemarks || '');
@@ -170,14 +172,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     }
   };
 
-  const { data: eventPayables = [] } = useEventPayablesStream(event.id);
-  const hasPayables = Boolean(
-    eventPayables.length > 0 ||
-    event.studentPayablesEnabled === true ||
-    (event.studentPayablesEnabled !== false && ((event.adminFeeOverride || 0) > 0 || (event.suggestedFeePerStudent || 0) > 0))
-  );
   const isQREnabled = Boolean(
     event.enableQRTickets !== false && (event as any).enableQR !== false && event.attendanceEnabled !== false
+  );
+  const hasPayables = Boolean(
+    event.studentPayablesEnabled === true ||
+    (event.studentPayablesEnabled !== false && ((event.adminFeeOverride || 0) > 0 || (event.suggestedFeePerStudent || 0) > 0)) ||
+    isQREnabled
   );
 
   const navItems = NAV_SECTIONS.filter(s => {
@@ -627,7 +628,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             className="space-y-4"
           >
             <SectionHeader title="1. Event Overview" subtitle="Event identity, classification, and media assets submitted by the officer" />
-            
+
             <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-xs">
               {event.bannerImageUrl ? (
                 <div className="h-56 sm:h-72 w-full overflow-hidden bg-slate-900 relative">
@@ -1174,6 +1175,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     ? "Event cancelled — Collections closed, fees auto-waived, and gate passes revoked"
                     : isCompleted
                     ? "Event completed — Full attendee records, payment collection, and ticket status"
+                    : isQREnabled && (!event.studentPayablesEnabled || ((event.adminFeeOverride || 0) === 0 && (event.suggestedFeePerStudent || 0) === 0))
+                    ? "Free event participant roster — QR tickets unlocked by default for gate attendance scanning"
                     : isQREnabled
                     ? "Participant fees, collection status, and gate pass lock controls"
                     : "Participant fees and collection status (QR tickets disabled)"

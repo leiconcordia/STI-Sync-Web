@@ -1,17 +1,38 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router";
 import { Award, Plus, ChevronRight } from "lucide-react";
 import { CertificateDashboard, CertificateLibrary, TemplateEditor, GenerateCertificates } from "../../modules/certificates";
 
 type Screen = "dashboard" | "certificate-library" | "template-library" | "template-editor" | "generate";
 
 export function Certificates() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [activeEventId, setActiveEventId] = useState<string>("");
   const [editTemplateId, setEditTemplateId] = useState<string>("");
 
+  const eventIdParam = searchParams.get('eventId');
+
+  useEffect(() => {
+    if (eventIdParam) {
+      setActiveEventId(eventIdParam);
+      setScreen("generate");
+    }
+  }, [eventIdParam]);
+
   const handleGenerate = (eventId: string) => {
     setActiveEventId(eventId);
     setScreen("generate");
+  };
+
+  const handleBackToDashboard = () => {
+    setActiveEventId("");
+    if (searchParams.has('eventId')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('eventId');
+      setSearchParams(next, { replace: true });
+    }
+    setScreen("dashboard");
   };
 
   const handleEditTemplate = (id: string) => {
@@ -107,7 +128,7 @@ export function Certificates() {
         <GenerateCertificates
           isAdmin={true}
           eventId={activeEventId}
-          onBack={() => setScreen("dashboard")}
+          onBack={handleBackToDashboard}
         />
       )}
     </div>

@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { Shield, Plus, Trash2, Building2, Search, UserCheck } from 'lucide-react';
+import { useState, useMemo, useEffect } from 'react';
+import { Shield, Plus, Trash2, Building2, Search } from 'lucide-react';
 import { useOrganizationStream } from '../../../organizations';
 import { useAdviserProfile } from '../../../auth/hooks/useAdviserProfile';
 import { useOfficerProfile } from '../../../../auth/hooks/useOfficerProfile';
@@ -21,7 +21,7 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
   const [officerSearchQuery, setOfficerSearchQuery] = useState<string>('');
 
   const isQrEnabled = Boolean(
-    data.enableQRTickets !== false && (data as any).enableQR !== false && data.attendanceEnabled !== false
+    data.enableQRTickets === true || (data as any).enableQR === true
   );
 
   const activeOrgs = useMemo(() => orgs.filter(o => !o.archived && o.status === 'active'), [orgs]);
@@ -54,6 +54,13 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
   };
 
   const scanners = (data.scanners && data.scanners.length > 0) ? data.scanners : [defaultScanner];
+
+  useEffect(() => {
+    if (isQrEnabled && (!data.scanners || data.scanners.length === 0)) {
+      onUpdate({ scanners: [defaultScanner] });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isQrEnabled]);
 
   const updateField = (field: keyof EventFormData, value: any) => {
     onUpdate({ [field]: value });
@@ -98,33 +105,6 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
     });
   }, [officers, officerSearchQuery, activeOrgs]);
 
-  const assignedEventHead = useMemo(() => {
-    if (!data.eventHeadUid && !data.officerInChargeUid) return null;
-    const uid = data.eventHeadUid || data.officerInChargeUid;
-    return officers.find(o => o.studentId === uid || (o as any).authUid === uid || o.id === uid) || {
-      studentName: data.eventHeadName || 'Assigned Officer',
-      studentId: uid,
-    };
-  }, [data.eventHeadUid, data.officerInChargeUid, data.eventHeadName, officers]);
-
-  const handleSelectEventHead = (selUid: string) => {
-    if (!selUid) {
-      onUpdate({
-        eventHeadUid: '',
-        officerInChargeUid: '',
-        eventHeadName: '',
-      });
-      return;
-    }
-    const matched = officers.find(o => o.studentId === selUid || (o as any).authUid === selUid || o.id === selUid);
-    const officerName = matched?.studentName || '';
-    onUpdate({
-      eventHeadUid: selUid,
-      officerInChargeUid: selUid,
-      eventHeadName: officerName,
-    });
-  };
-
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
       <div className="space-y-6">
@@ -160,80 +140,6 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
           </div>
         </div>
 
-        {/* Section B — Event Head / Officer-in-Charge */}
-        <div className="p-4 border border-gray-200 rounded-xl bg-white shadow-xs space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <UserCheck className={`w-4 h-4 ${accentText}`} />
-              <h4 className="font-bold text-gray-900 text-sm">Event Head / Officer-in-Charge</h4>
-            </div>
-            <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 text-xs font-semibold rounded-md border border-blue-200">
-              Lead Officer (Optional)
-            </span>
-          </div>
-
-          <p className="text-xs text-gray-600">
-            Assign the primary student officer responsible for organizing and coordinating this event.
-          </p>
-
-          <div className="space-y-3 pt-1">
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <select
-                  value={data.eventHeadUid || data.officerInChargeUid || ''}
-                  onChange={(e) => handleSelectEventHead(e.target.value)}
-                  disabled={officersLoading}
-                  className={`w-full px-3 py-2 border rounded-lg text-xs font-medium focus:ring-2 focus:border-transparent border-gray-300 ${accentFocusRing}`}
-                >
-                  <option value="">
-                    {officersLoading
-                      ? 'Loading officers...'
-                      : officers.length === 0
-                      ? 'No active officers found'
-                      : 'Select Event Head / Officer-in-Charge...'}
-                  </option>
-                  {officers.map((officer) => (
-                    <option key={officer.id || officer.studentId} value={officer.studentId || officer.id}>
-                      {officer.studentName} {officer.studentId ? `(${officer.studentId})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {showOfficerMode && officerProfile?.studentId && (
-                <button
-                  type="button"
-                  onClick={() => handleSelectEventHead(officerProfile.studentId)}
-                  className={`px-3 py-2 bg-blue-50 hover:bg-blue-100 text-[#0E4EBD] border border-blue-200 rounded-lg text-xs font-bold whitespace-nowrap cursor-pointer transition-colors`}
-                  title="Assign yourself as the Event Head"
-                >
-                  Assign Myself
-                </button>
-              )}
-            </div>
-
-            {assignedEventHead && (
-              <div className="flex items-center gap-3 p-3 bg-blue-50/60 border border-blue-200 rounded-lg">
-                <div className={`w-8 h-8 rounded-full bg-gradient-to-br ${accentGradient} flex items-center justify-center text-white font-bold text-xs`}>
-                  {(assignedEventHead as any).studentName?.charAt(0) || 'O'}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-bold text-gray-900 text-xs">{(assignedEventHead as any).studentName}</div>
-                  <div className="text-[11px] text-gray-500">
-                    {(assignedEventHead as any).studentId ? `ID: ${(assignedEventHead as any).studentId}` : 'Assigned Lead'}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleSelectEventHead('')}
-                  className="text-xs text-red-600 hover:underline font-semibold cursor-pointer"
-                >
-                  Remove
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
 
         {/* Section B — Scanner Assignment */}
         {isQrEnabled ? (
@@ -322,7 +228,31 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
             <div className="space-y-4">
               {scanners.map((scanner, index) => {
                 const assignedOrg = activeOrgs.find(o => o.id === scanner.organizationId);
-                const isCurrentInFiltered = filteredOfficers.some(
+
+                // Helper: check if an officer is assigned to ANOTHER scanner in this event
+                const isAssignedToOtherScanner = (officer: any) => {
+                  return scanners.some(s => {
+                    if (s.id === scanner.id) return false;
+                    if (!s.officerUserId) return false;
+                    const matchId =
+                      s.officerUserId === officer.studentId ||
+                      s.officerUserId === officer.id ||
+                      s.officerUserId === (officer as any).authUid;
+                    const matchName = Boolean(
+                      s.officerName &&
+                      officer.studentName &&
+                      s.officerName.trim().toLowerCase() === officer.studentName.trim().toLowerCase()
+                    );
+                    return Boolean(matchId || matchName);
+                  });
+                };
+
+                // Officers available for this specific scanner (excludes officers assigned to other scanners)
+                const availableOfficersForScanner = filteredOfficers.filter(
+                  o => !isAssignedToOtherScanner(o)
+                );
+
+                const isCurrentInAvailable = availableOfficersForScanner.some(
                   o => (o.studentId || (o as any).authUid || o.id) === scanner.officerUserId
                 );
                 const currentAssignedOfficer = officers.find(
@@ -382,20 +312,22 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
                         <option value="">
                           {officersLoading
                             ? 'Loading officers...'
+                            : availableOfficersForScanner.length === 0 && filteredOfficers.length > 0
+                            ? 'All matching officers are already assigned to other scanners'
                             : filteredOfficers.length === 0
                             ? 'No matching active officers found'
                             : 'Select officer from list...'}
                         </option>
 
-                        {/* Always include currently selected officer if not in filtered search list to prevent losing selection */}
-                        {!isCurrentInFiltered && scanner.officerUserId && (
+                        {/* Always include currently selected officer if not in available search list to prevent losing selection */}
+                        {!isCurrentInAvailable && scanner.officerUserId && (
                           <option value={scanner.officerUserId}>
                             {scanner.organizationName ? `[${scanner.organizationName}] ` : ''}
-                            {scanner.officerName || currentAssignedOfficer?.studentName || scanner.officerUserId} (Assigned)
+                            {scanner.officerName || currentAssignedOfficer?.studentName || scanner.officerUserId} (Assigned to this scanner)
                           </option>
                         )}
 
-                        {filteredOfficers.map(o => {
+                        {availableOfficersForScanner.map(o => {
                           const val = o.studentId || (o as any).authUid || o.id;
                           const studentIdPart = o.studentId ? ` (${o.studentId})` : '';
                           const org = activeOrgs.find(orgItem => orgItem.id === o.organizationId);
@@ -463,16 +395,16 @@ export default function Step4Staff({ data, onUpdate, isOfficer = false, errors =
       {/* Right Panel — Team Hierarchy */}
       <div className="sticky top-0 h-fit">
         <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm space-y-4">
-          <h4 className="font-bold text-gray-900 text-sm">Staff & Scanner Hierarchy</h4>
+          <h4 className="font-bold text-gray-900 text-sm">Event Oversight & Scanners</h4>
           
           <div className="space-y-3">
             <div className={`p-3 bg-gradient-to-br ${accentGradient} rounded-lg text-white text-center shadow-xs`}>
               <Shield className="w-5 h-5 mx-auto mb-1 text-[#FFC107]" />
               <div className="font-bold text-xs">
-                {showOfficerMode ? 'Club Event Head' : 'SAS Event Adviser'}
+                SAS Event Supervisor
               </div>
               <div className="text-[11px] opacity-80">
-                {showOfficerMode ? 'Officer Supervisor' : 'Student Affairs and Services'}
+                Student Affairs and Services
               </div>
             </div>
 

@@ -6,6 +6,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useCertificatesStream } from "../hooks/useCertificateStream";
+import { useAllEvents } from "../../events/hooks/useEventStream";
+import { isEventReadyForCertificates } from "../../events/utils/event-lifecycle.utils";
 import { updateCertificateStatus, deleteCertificate } from "../services/certificate.service";
 import type { CertificateItem, CertificateStatus, CertificateCategory } from "../types/certificate.types";
 
@@ -60,7 +62,34 @@ export default function CertificateLibrary({
   const [rejectingItem, setRejectingItem] = useState<CertificateItem | null>(null);
   const [rejectionReason, setRejectionReason] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [selectEventModalCert, setSelectEventModalCert] = useState<CertificateItem | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+
+  // Events Stream to find concluded events ready for certificate generation
+  const { events = [] } = useAllEvents();
+  const readyEvents = useMemo(() => {
+    return events.filter(e => {
+      if (!isEventReadyForCertificates(e)) return false;
+      if (!isAdmin && organizationId && e.hostingOrgId !== organizationId) return false;
+      return true;
+    });
+  }, [events, isAdmin, organizationId]);
+
+  const handleTriggerGenerate = (cert: CertificateItem) => {
+    if (cert.eventId) {
+      onGenerateCertificates?.(cert.eventId);
+      return;
+    }
+    if (readyEvents.length === 0) {
+      toast.info("No concluded events with attendance enabled found yet. Conclude an event first to generate certificates.");
+      return;
+    }
+    if (readyEvents.length === 1) {
+      onGenerateCertificates?.(readyEvents[0].id);
+      return;
+    }
+    setSelectEventModalCert(cert);
+  };
 
   // Filtered & Sorted certificates
   const filtered = useMemo(() => {
@@ -476,6 +505,16 @@ export default function CertificateLibrary({
                     </button>
                   )}
 
+                  {/* Generate for Event button if Approved or Published */}
+                  {(cert.status === "Approved" || cert.status === "Published") && onGenerateCertificates && (
+                    <button
+                      onClick={() => handleTriggerGenerate(cert)}
+                      className="w-full py-1.5 bg-[#FFD41C] hover:bg-[#FFC107] text-[#001A4D] text-xs font-bold rounded-lg transition-colors flex items-center justify-center gap-1.5 shadow-xs cursor-pointer"
+                    >
+                      <Award className="w-3.5 h-3.5 text-[#001A4D]" /> Generate for Event
+                    </button>
+                  )}
+
                   {/* Standard Action Row */}
                   <div className="flex items-center gap-1.5">
                     <button
@@ -626,6 +665,16 @@ export default function CertificateLibrary({
                             title="Publish"
                           >
                             <Send className="w-3.5 h-3.5 text-[#FFD41C]" />
+                          </button>
+                        )}
+
+                        {(cert.status === "Approved" || cert.status === "Published") && onGenerateCertificates && (
+                          <button
+                            onClick={() => handleTriggerGenerate(cert)}
+                            className="p-1.5 bg-[#FFD41C] text-[#001A4D] hover:bg-[#FFC107] rounded-lg transition-colors cursor-pointer"
+                            title="Generate for Concluded Event"
+                          >
+                            <Award className="w-3.5 h-3.5" />
                           </button>
                         )}
 
@@ -825,6 +874,69 @@ export default function CertificateLibrary({
               </button>
               <button onClick={() => handleDelete(deletingId)} className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-xl cursor-pointer">
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- SELECT CONCLUDED EVENT MODAL --- */}
+      {selectEventModalCert && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl border border-[#E0E0E0] w-full max-w-md p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#E0E0E0] pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-[#FFD41C]/20 border border-[#FFD41C]/40 flex items-center justify-center">
+                  <Award className="w-4 h-4 text-amber-700" />
+                </div>
+                <div>
+                  <h3 className="text-[#001A4D] font-bold text-sm">Select Concluded Event</h3>
+                  <p className="text-[11px] text-[#888780]">Generate certificates with template: <strong>{selectEventModalCert.title}</strong></p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectEventModalCert(null)}
+                className="p-1 hover:bg-gray-100 rounded-lg text-gray-500 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-600">
+              Select one of the concluded events below that has attendance records ready:
+            </p>
+
+            <div className="max-h-64 overflow-y-auto space-y-2 pr-1 divide-y divide-gray-100">
+              {readyEvents.map(evt => (
+                <div
+                  key={evt.id}
+                  onClick={() => {
+                    const targetId = evt.id;
+                    setSelectEventModalCert(null);
+                    onGenerateCertificates?.(targetId);
+                  }}
+                  className="p-3 rounded-xl border border-gray-200 hover:border-[#001A4D] hover:bg-blue-50/40 cursor-pointer transition-all flex items-center justify-between group"
+                >
+                  <div className="min-w-0 flex-1 mr-3">
+                    <p className="font-bold text-xs text-[#001A4D] group-hover:text-[#0E4EBD] truncate">{evt.title}</p>
+                    <p className="text-[11px] text-gray-500 flex items-center gap-1.5 mt-0.5">
+                      <Calendar className="w-3 h-3 text-[#83358E]" />
+                      {evt.sessions?.[0]?.date || 'Date TBA'}
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold text-[#0E4EBD] group-hover:underline whitespace-nowrap">
+                    Generate &rarr;
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-gray-100">
+              <button
+                onClick={() => setSelectEventModalCert(null)}
+                className="px-4 py-2 text-xs font-semibold border border-[#E0E0E0] rounded-xl hover:bg-gray-50 cursor-pointer"
+              >
+                Cancel
               </button>
             </div>
           </div>

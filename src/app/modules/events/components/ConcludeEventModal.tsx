@@ -53,7 +53,11 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
     try {
       setIsSubmitting(true);
       await concludeEvent(event.id, adminUid, adminName, note);
-      toast.success(`Event "${event.title}" is now marked as Completed!`);
+      if (event.enableQRTickets !== false) {
+        toast.success(`Event "${event.title}" is concluded and ready to generate certificates!`);
+      } else {
+        toast.success(`Event "${event.title}" is now marked as Completed!`);
+      }
       if (onSuccess) onSuccess();
       onClose();
     } catch (err: any) {

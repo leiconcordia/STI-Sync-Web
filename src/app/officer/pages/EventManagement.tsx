@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useNavigate } from 'react-router';
 import {
   Calendar,
   MapPin,
@@ -144,6 +145,7 @@ function getEventTimestamp(event: EventDocument): number {
 }
 
 export default function EventManagement() {
+  const navigate = useNavigate();
   const [activeStatus, setActiveStatus] = useState<EventStatusTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState('All');

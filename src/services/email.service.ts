@@ -492,11 +492,7 @@ export async function sendOfficerPasswordResetCredentialsEmail(params: {
           </p>
         </div>
 
-        <div style="text-align: center; margin: 28px 0 16px 0;">
-          <a href="${loginUrl}" style="background-color: #001A4D; color: #ffffff; padding: 12px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
-            Sign In to Officer Portal &rarr;
-          </a>
-        </div>
+      
 
         <p style="color: #666666; font-size: 13px; line-height: 1.5; margin-top: 24px;">
           If you did not request or expect this password reset, please contact the Student Affairs Office immediately.

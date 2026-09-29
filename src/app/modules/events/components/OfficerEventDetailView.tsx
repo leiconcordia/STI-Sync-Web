@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router';
 import {
   ArrowLeft, X, Edit, Calendar, MapPin, Users, DollarSign, Shield,
   Receipt, FileText, History, Coins, Clock, CheckCircle2, AlertCircle,
@@ -59,6 +60,7 @@ export default function OfficerEventDetailView({
   onClose,
   onEdit,
 }: OfficerEventDetailViewProps) {
+  const navigate = useNavigate();
   const [activeSection, setActiveSection] = useState('overview');
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const centerRef = useRef<HTMLDivElement | null>(null);
@@ -71,14 +73,13 @@ export default function OfficerEventDetailView({
   const { data: courses = [] } = useCourses();
   const { data: sections = [] } = useSections();
 
-  const { data: eventPayables = [] } = useEventPayablesStream(event.id);
-  const hasPayables = Boolean(
-    eventPayables.length > 0 ||
-    event.studentPayablesEnabled === true ||
-    (event.studentPayablesEnabled !== false && ((event.adminFeeOverride || 0) > 0 || (event.suggestedFeePerStudent || 0) > 0))
-  );
   const isQREnabled = Boolean(
     event.enableQRTickets !== false && (event as any).enableQR !== false && event.attendanceEnabled !== false
+  );
+  const hasPayables = Boolean(
+    event.studentPayablesEnabled === true ||
+    (event.studentPayablesEnabled !== false && ((event.adminFeeOverride || 0) > 0 || (event.suggestedFeePerStudent || 0) > 0)) ||
+    isQREnabled
   );
 
   const navSections = useMemo(() => {
@@ -1194,6 +1195,8 @@ export default function OfficerEventDetailView({
                 subtitle={
                   isCancelled
                     ? "Event cancelled — Payment collection closed, unpaid fees auto-waived, and gate passes revoked"
+                    : isQREnabled && (!event.studentPayablesEnabled || ((event.adminFeeOverride || 0) === 0 && (event.suggestedFeePerStudent || 0) === 0))
+                    ? "Free event participant roster — QR tickets unlocked by default for gate attendance scanning"
                     : isQREnabled
                     ? "Target participant collection roster, payment settlement, and QR ticket unlocking"
                     : "Target participant collection roster and payment settlement (QR tickets disabled)"

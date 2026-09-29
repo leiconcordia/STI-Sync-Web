@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
-import { useOutletContext, useSearchParams } from "react-router";
+import { useOutletContext, useSearchParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
@@ -136,6 +136,7 @@ function formatSubmittedDate(dateStr?: any): string {
 }
 
 export function EventApprovals() {
+  const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [resumeDraft, setResumeDraft] = useState<EventDocument | null>(null);
   const [modalKey, setModalKey] = useState(0);

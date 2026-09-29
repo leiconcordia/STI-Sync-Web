@@ -100,7 +100,7 @@ export interface CertificateRecipient {
   studentId: string; // e.g. "2022-00456"
   course: string; // e.g. "BSIT-3A"
   source: 'attendance' | 'manual';
-  status: 'Checked In' | 'Complete' | 'Late' | 'Flagged' | 'Manual';
+  status: 'Checked In' | 'Complete' | 'Late' | 'Flagged' | 'Absent' | 'Manual' | string;
   include: boolean;
 }
 

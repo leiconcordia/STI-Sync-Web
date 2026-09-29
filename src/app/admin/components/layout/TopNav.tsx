@@ -40,7 +40,7 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
 
       {/* Right Side */}
       <div className="flex items-center gap-3">
-        {/* Quick Dev Data Seeder Trigger (Development Only) */}
+        {/* Quick Dev Data Seeder Trigger (Development Only) - Commented out
         {import.meta.env.DEV && (
           <button
             onClick={() => setShowSeederModal(true)}
@@ -50,7 +50,7 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
             <Zap className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
             <span className="hidden sm:inline">Dev Seeder</span>
           </button>
-        )}
+        )} */}
 
         {/* Notifications */}
         <button className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors">
@@ -121,10 +121,10 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
         </div>
       </div>
 
-      {/* Dev Test Data Seeder Modal (Development Only) */}
+      {/* Dev Test Data Seeder Modal (Development Only) - Commented out
       {import.meta.env.DEV && (
         <DevDataSeederModal isOpen={showSeederModal} onClose={() => setShowSeederModal(false)} />
-      )}
+      )} */}
     </header>
   );
 }

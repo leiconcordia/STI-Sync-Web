@@ -50,7 +50,7 @@ export default function OfficerLogin() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#FFD41C] opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#FFD41C]"></span>
             </span>
-            Student Affairs Services · Officer Portal
+            Student Affairs Services · Organization Portal
           </div>
           <h1 className="text-white text-[32px] lg:text-[40px] font-black tracking-tight leading-tight mt-3">
             Connect, Participate, <br />
@@ -82,7 +82,7 @@ export default function OfficerLogin() {
             </div>
 
             <h2 className="text-[#001A4D] text-[28px] md:text-[30px] font-black tracking-tight">
-              Officer Login
+              Organization Login
             </h2>
           </div>
 
@@ -155,7 +155,7 @@ export default function OfficerLogin() {
             ) : (
               <>
                 <LogIn className="w-4 h-4" />
-                Sign In to Officer Portal
+                Sign In to Organization Portal
               </>
             )}
           </button>

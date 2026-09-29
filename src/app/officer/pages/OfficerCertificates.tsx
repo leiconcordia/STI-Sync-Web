@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router";
 import { Award, Plus, ChevronRight } from "lucide-react";
 import { CertificateDashboard, CertificateLibrary, TemplateEditor, GenerateCertificates } from "../../modules/certificates";
 import { useOfficerProfile } from "../../auth/hooks/useOfficerProfile";
@@ -6,6 +7,7 @@ import { useOfficerProfile } from "../../auth/hooks/useOfficerProfile";
 type Screen = "dashboard" | "certificate-library" | "template-library" | "template-editor" | "generate";
 
 export default function OfficerCertificates() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [activeEventId, setActiveEventId] = useState<string>("");
   const [editTemplateId, setEditTemplateId] = useState<string>("");
@@ -13,9 +15,28 @@ export default function OfficerCertificates() {
   const { profile } = useOfficerProfile();
   const activeOrgId = profile?.activeOrganizationId || profile?.organizationId || "";
 
+  const eventIdParam = searchParams.get('eventId');
+
+  useEffect(() => {
+    if (eventIdParam) {
+      setActiveEventId(eventIdParam);
+      setScreen("generate");
+    }
+  }, [eventIdParam]);
+
   const handleGenerate = (eventId: string) => {
     setActiveEventId(eventId);
     setScreen("generate");
+  };
+
+  const handleBackToDashboard = () => {
+    setActiveEventId("");
+    if (searchParams.has('eventId')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('eventId');
+      setSearchParams(next, { replace: true });
+    }
+    setScreen("dashboard");
   };
 
   const handleEditTemplate = (id: string) => {
@@ -115,7 +136,7 @@ export default function OfficerCertificates() {
           isAdmin={false}
           organizationId={activeOrgId}
           eventId={activeEventId}
-          onBack={() => setScreen("dashboard")}
+          onBack={handleBackToDashboard}
         />
       )}
     </div>

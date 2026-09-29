@@ -185,7 +185,11 @@ export function useOfficerAuth() {
           const errCode = authErr?.code;
           console.warn('[useOfficerAuth] Firebase Auth attempt error:', errCode, authErr?.message);
 
-          if (matchedDoc.temporaryPassword && matchedDoc.temporaryPassword === trimmedPass) {
+          if (
+            matchedDoc.requiresPasswordChange === true &&
+            matchedDoc.temporaryPassword &&
+            matchedDoc.temporaryPassword === trimmedPass
+          ) {
             authenticated = true;
           } else if (errCode === 'auth/wrong-password' || errCode === 'auth/invalid-credential') {
             setError('Incorrect password. Please enter your valid STI Sync account password.');
