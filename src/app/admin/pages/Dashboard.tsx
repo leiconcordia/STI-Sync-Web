@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   CalendarCheck,
@@ -11,11 +11,14 @@ import {
   Sparkles,
   CheckCircle2,
   FileCheck,
+  FileText,
 } from "lucide-react";
 import { MetricCard } from "../components/dashboard/MetricCard";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Progress } from "../../components/ui/progress";
+import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
+
 
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
@@ -29,6 +32,7 @@ import { getMillis, formatTimestampDate } from "../../modules/students/utils/dat
 
 export function Dashboard() {
   const navigate = useNavigate();
+  const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
 
   // ─── Real-Time Data Streams ────────────────────────────────────────────────
   const { profile } = useAdviserProfile();
@@ -242,6 +246,16 @@ export function Dashboard() {
             <p className="text-white/80 text-sm mt-1 max-w-2xl">
               STI College Ormoc — Real-time overview of student verifications, event proposals, organization activities, and financial reviews.
             </p>
+          </div>
+
+          <div className="flex items-center gap-3 z-10 flex-shrink-0">
+            <Button
+              onClick={() => setIsProposalModalOpen(true)}
+              className="bg-[#FFD41C] hover:bg-[#FFE052] text-[#001A4D] font-bold text-sm px-4 py-2.5 rounded-xl shadow-md transition-all flex items-center gap-2 cursor-pointer border border-[#FFD41C]/40"
+            >
+              <FileText className="w-4 h-4 text-[#001A4D]" />
+              New Activity Proposal
+            </Button>
           </div>
         </div>
         <Shield className="absolute right-6 top-1/2 -translate-y-1/2 w-44 h-44 opacity-10 pointer-events-none" />
@@ -523,6 +537,19 @@ export function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 7-Step Activity Proposal (AP) Wizard Modal */}
+      <CreateProposalModal
+        isOpen={isProposalModalOpen}
+        onClose={() => setIsProposalModalOpen(false)}
+        currentUser={{
+          uid: profile?.uid || 'sao-admin',
+          name: adviserDisplayName || 'Student Affairs & Services',
+          email: profile?.email || 'sao@ormoc.sti.edu.ph',
+          role: 'sas_admin',
+        }}
+      />
     </div>
   );
 }
+

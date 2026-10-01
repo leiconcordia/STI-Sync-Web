@@ -82,9 +82,9 @@ export default function LandingPage() {
 
           {/* Portal Cards */}
           <div className="space-y-4 mb-6">
-            {/* Officer Portal */}
+            {/* Universal Portal */}
             <button
-              onClick={() => navigate("/officer/login")}
+              onClick={() => navigate("/portal/login")}
               className="w-full h-[88px] bg-white border border-[#E0E0E0] rounded-2xl px-6 flex items-center gap-4 hover:border-[#0E4EBD] hover:border-2 hover:bg-[#0E4EBD]/5 transition-all group"
             >
               <div className="w-14 h-14 bg-[#0E4EBD]/10 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -92,11 +92,10 @@ export default function LandingPage() {
               </div>
               <div className="flex-1 text-left">
                 <h3 className="text-[#001A4D] text-[16px] font-bold mb-1">
-                  Officer Login
+                  Staff & Organization Portal
                 </h3>
                 <p className="text-[#9E9E9E] text-[13px]">
-                  Manage events, attendance, and financial
-                  liquidations
+                  For Student Officers, Advisers, Department Heads, and Institutional Signatories
                 </p>
               </div>
               <ChevronRight className="w-5 h-5 text-[#0E4EBD] group-hover:translate-x-1 transition-transform" />

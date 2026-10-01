@@ -48,6 +48,7 @@ export function CancelEventModal({
   role,
   userId = 'system-user',
   userName = 'System User',
+  currentOrgId,
   onCancelled,
   onSuccess,
 }: CancelEventModalProps) {
@@ -168,6 +169,7 @@ export function CancelEventModal({
         cancelledBy: userId,
         cancelledByName: userName,
         cancelledByRole: userRole,
+        userOrgId: currentOrgId,
         cancellationReason: reason.trim(),
         refundPolicy,
         notifyAttendees: true,

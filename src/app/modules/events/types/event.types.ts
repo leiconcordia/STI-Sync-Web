@@ -133,6 +133,7 @@ export interface EventCancellationPayload {
   cancelledBy: string;
   cancelledByName?: string;
   cancelledByRole: 'admin' | 'officer';
+  userOrgId?: string;
   cancellationReason: string;
   refundPolicy: 'refund_cash' | 'credit_next_event' | 'no_fees_collected';
   notifyAttendees?: boolean;

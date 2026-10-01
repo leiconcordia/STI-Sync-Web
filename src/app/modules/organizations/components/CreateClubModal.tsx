@@ -234,6 +234,10 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     return map;
   }, [existingOfficers, allOrganizations]);
 
+  // Search and dropdown state for Step 3 officer assignment
+  const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
+
   if (!isOpen) return null;
 
   const assignedOfficers = officers.filter(o => o.studentName);

@@ -429,9 +429,11 @@ export function canConcludeEvent(
 /**
  * Checks whether a user can initiate cancellation of an event.
  * Rules:
- * 1. Cancel button only shows if the event is NOT approved yet (applies to both Admin and Officer web).
- * 2. Approved, Completed, Cancelled, and Rejected events cannot be cancelled.
- * 3. Only unapproved proposals / drafts (draft, pending_review, pending, returned) can be cancelled.
+ * 1. ONLY approved and upcoming events can be cancelled (for both Admin and Officer).
+ * 2. Unapproved proposals (pending, pending_review, returned, draft, rejected) cannot be cancelled.
+ * 3. Completed, ongoing, cancelled, archived, and deleted events cannot be cancelled.
+ * 4. SAO Admin can cancel ANY approved upcoming event (institutional or student organization).
+ * 5. Student Officers can cancel their own organization's approved upcoming events (cannot cancel SAS institutional events).
  */
 export function canCancelEvent(
   event?: Partial<EventDocument> | null,
@@ -446,41 +448,104 @@ export function canCancelEvent(
     return { canCancel: false, reason: 'Archived events cannot be cancelled.' };
   }
 
-  if (event.isDeleted || event.proposalStatus === 'cancelled' || event.status === 'cancelled') {
+  if (
+    event.isDeleted ||
+    event.proposalStatus === 'cancelled' ||
+    event.status === 'cancelled' ||
+    (event as any).isCancelled
+  ) {
     return { canCancel: false, reason: 'Event is already cancelled.' };
   }
 
-  if (event.proposalStatus === 'rejected') {
-    return { canCancel: false, reason: 'Rejected events cannot be cancelled.' };
-  }
-
-  // Check if event is approved (Approved events CANNOT be cancelled for both Admin & Officer)
   const pStatus = (event.proposalStatus || '').toLowerCase();
   const eStatus = (event.status || '').toLowerCase();
   const lStatus = ((event as any).lifecycleStatus || '').toLowerCase();
 
+  if (pStatus === 'rejected' || eStatus === 'rejected') {
+    return { canCancel: false, reason: 'Rejected events cannot be cancelled.' };
+  }
+
+  // 1. Unapproved proposals (draft, pending, pending_review, returned) CANNOT be cancelled
+  if (
+    pStatus === 'pending' ||
+    pStatus === 'pending_review' ||
+    pStatus === 'returned' ||
+    pStatus === 'draft' ||
+    eStatus === 'pending' ||
+    eStatus === 'draft' ||
+    eStatus === 'returned'
+  ) {
+    return {
+      canCancel: false,
+      reason: 'Only approved events can be cancelled. Unapproved proposals cannot be cancelled.',
+    };
+  }
+
+  // 2. Must be approved
   const isApproved =
     pStatus === 'approved' ||
-    pStatus === 'completed' ||
     eStatus === 'approved' ||
-    eStatus === 'completed' ||
-    eStatus === 'ongoing' ||
     lStatus === 'approved' ||
-    lStatus === 'completed' ||
     lStatus === 'published' ||
     Boolean((event as any).isApproved) ||
     Boolean((event as any).isDirectPublished);
 
-  if (isApproved) {
+  if (!isApproved) {
     return {
       canCancel: false,
-      reason: 'Approved events cannot be cancelled. Cancellation is only permitted for unapproved proposals.',
+      reason: 'Only approved events can be cancelled.',
     };
   }
 
-  // Officer Role Ownership Check:
+  // 3. Must be upcoming (not completed, not ongoing)
+  if (
+    pStatus === 'completed' ||
+    eStatus === 'completed' ||
+    lStatus === 'completed' ||
+    lStatus === 'concluded' ||
+    Boolean((event as any).isConcluded)
+  ) {
+    return {
+      canCancel: false,
+      reason: 'Completed events cannot be cancelled.',
+    };
+  }
+
+  if (eStatus === 'ongoing' || lStatus === 'ongoing') {
+    return {
+      canCancel: false,
+      reason: 'Ongoing events cannot be cancelled while in progress.',
+    };
+  }
+
+  const timing = getEventTimingStatus(event);
+  if (timing !== 'upcoming') {
+    return {
+      canCancel: false,
+      reason:
+        timing === 'completed'
+          ? 'Completed events cannot be cancelled.'
+          : 'Ongoing events cannot be cancelled while in progress.',
+    };
+  }
+
+  // 4. Role authority checks
+  if (userRole === 'admin') {
+    // Admin can cancel any approved upcoming event, even if not their own event
+    return { canCancel: true };
+  }
+
   if (userRole === 'officer') {
-    if (event.hostingOrgId === 'sas') {
+    // Institutional SAO events cannot be cancelled by officers
+    const isInstitutional =
+      !event.hostingOrgId ||
+      event.hostingOrgId.toLowerCase() === 'sas' ||
+      event.hostingOrgId.toLowerCase() === 'sas_admin' ||
+      event.hostingOrgId.toLowerCase() === 'sao' ||
+      event.hostingOrgId.toLowerCase() === 'sao_admin' ||
+      event.isOfficerProposal === false;
+
+    if (isInstitutional) {
       return {
         canCancel: false,
         reason: 'Institutional SAO events can only be cancelled by SAO administration.',
@@ -490,15 +555,10 @@ export function canCancelEvent(
     if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
       return {
         canCancel: false,
-        reason: "Officers can only cancel their own organization's event proposals.",
+        reason: "Officers can only cancel their own organization's events.",
       };
     }
 
-    return { canCancel: true };
-  }
-
-  // Admin Role Authority Check:
-  if (userRole === 'admin') {
     return { canCancel: true };
   }
 

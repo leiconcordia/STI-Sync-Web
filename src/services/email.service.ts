@@ -297,6 +297,80 @@ export async function sendAdviserWelcomeCredentialsEmail(params: {
 }
 
 /**
+ * Helper: Send Institutional Signatory Welcome Credentials Email
+ */
+export async function sendSignatoryWelcomeCredentialsEmail(params: {
+  to: string;
+  signatoryName: string;
+  roleName: string;
+  positionTitle: string;
+  department?: string;
+  temporaryPassword?: string;
+  loginUrl?: string;
+}): Promise<ResendResponse> {
+  const loginUrl = params.loginUrl || `${window.location.origin}/portal/login`;
+  const tempPass = params.temporaryPassword || 'STI-Sign-2026!#';
+
+  const html = `
+    <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+      <div style="background-color: #001A4D; padding: 24px; text-align: center;">
+        <h1 style="color: #FFD41C; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">STI SYNC</h1>
+        <p style="color: #ffffff; margin: 4px 0 0 0; font-size: 13px;">Student Affairs & Services — Institutional Governance</p>
+      </div>
+      <div style="padding: 32px;">
+        <h2 style="color: #001A4D; margin-top: 0; font-size: 20px;">Welcome, Institutional Signatory!</h2>
+        <p style="color: #333333; font-size: 15px; line-height: 1.6;">Dear <strong>${params.signatoryName}</strong>,</p>
+        <p style="color: #333333; font-size: 15px; line-height: 1.6;">
+          You have been officially registered as a designated institutional signatory on the <strong>STI Sync Platform</strong> with the role of <strong>${params.positionTitle || params.roleName}</strong>${params.department ? ` (${params.department})` : ''}.
+        </p>
+
+        <div style="background-color: #f4f6fb; border: 1.5px solid #d0d7e8; padding: 20px; margin: 24px 0; border-radius: 8px;">
+          <h3 style="margin: 0 0 12px 0; color: #001A4D; font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;">Your Access Credentials</h3>
+          <p style="margin: 4px 0; font-size: 14px; color: #333333;"><strong>Portal:</strong> STI Sync Portal</p>
+          <p style="margin: 4px 0; font-size: 14px; color: #333333;"><strong>Official Email:</strong> <code style="background-color: #e8ecf4; padding: 2px 6px; border-radius: 4px; color: #0E4EBD;">${params.to}</code></p>
+          <p style="margin: 4px 0; font-size: 14px; color: #333333;"><strong>Designated Role:</strong> <span style="font-weight: 600; color: #001A4D;">${params.positionTitle || params.roleName}</span></p>
+          <p style="margin: 4px 0; font-size: 14px; color: #333333;"><strong>Temporary Password:</strong> <code style="background-color: #fff3cd; color: #856404; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 15px;">${tempPass}</code></p>
+        </div>
+
+        <div style="background-color: #fff8e1; border-left: 4px solid #FFC107; padding: 12px 16px; margin-bottom: 24px; border-radius: 4px;">
+          <p style="margin: 0; color: #856404; font-size: 13px; line-height: 1.5;">
+            <strong>Next Steps:</strong> Upon logging in, you will be prompted to set your personal password and register your official digital e-signature in your Signatory Profile to begin endorsing Activity Proposals and campus documents.
+          </p>
+        </div>
+
+        <p style="color: #666666; font-size: 13px; line-height: 1.5; margin-top: 24px;">
+          As an institutional signatory, you will receive notifications whenever student organizations or SAS departments submit proposals, event budgets, or financial liquidations requiring your official endorsement.
+        </p>
+      </div>
+      <div style="background-color: #f9fafb; padding: 16px; text-align: center; border-top: 1px solid #e0e0e0; font-size: 12px; color: #888888;">
+        © STI Sync — Campus Event & Organization Management System · STI College Ormoc
+      </div>
+    </div>
+  `;
+
+  return sendEmail({
+    to: params.to,
+    subject: `[STI Sync] Official Appointment as Institutional Signatory — Access Credentials`,
+    recipientName: params.signatoryName,
+    html,
+    text: `Welcome, ${params.signatoryName}!\n\nYou have been registered as an institutional signatory on STI Sync (${params.positionTitle || params.roleName}).\n\nLogin Email: ${params.to}\nTemporary Password: ${tempPass}\n\nPlease log in to set your password and register your official digital signature.`,
+    templateParams: {
+      to_email: params.to,
+      email: params.to,
+      to_name: params.signatoryName,
+      name: params.signatoryName,
+      signatory_name: params.signatoryName,
+      role_name: params.positionTitle || params.roleName,
+      department: params.department || '',
+      temp_password: tempPass,
+      temporary_password: tempPass,
+      password: tempPass,
+      message: `You have been registered as an institutional signatory on STI Sync (${params.positionTitle || params.roleName}). Your Login Email is ${params.to} and your Temporary Password is: ${tempPass}`,
+    },
+  });
+}
+
+/**
  * Helper: Send Officer Appointment Notification Email
  */
 export async function sendOfficerAppointmentEmail(params: {

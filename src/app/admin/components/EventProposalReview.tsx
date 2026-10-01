@@ -1694,6 +1694,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         <CancelEventModal
           event={event}
           role="admin"
+          userRole="admin"
+          userId={profile?.uid || 'admin-user'}
+          userName={profile?.displayName || 'SAO Admin'}
           isOpen={showCancelModal}
           onClose={() => setShowCancelModal(false)}
           onSuccess={() => {

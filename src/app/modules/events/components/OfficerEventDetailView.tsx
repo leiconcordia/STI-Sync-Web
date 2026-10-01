@@ -112,7 +112,7 @@ export default function OfficerEventDetailView({
 
   const withdrawCheck = canWithdrawProposal(event, 'officer');
   const isCancelled = event.isCancelled || event.lifecycleStatus === 'cancelled' || event.status === 'cancelled' || event.proposalStatus === 'cancelled';
-  const cancelCheck = canCancelEvent(event, 'officer', orgObj?.id);
+  const cancelCheck = canCancelEvent(event, 'officer', profile?.activeOrganizationId || undefined);
 
   const handleExportPDF = async () => {
     setExportingPdf(true);
@@ -1302,7 +1302,10 @@ export default function OfficerEventDetailView({
         <CancelEventModal
           event={event}
           role="officer"
-          currentOrgId={orgObj?.id}
+          userRole="officer"
+          userId={profile?.studentId || 'officer-user'}
+          userName={profile?.studentName || 'Student Officer'}
+          currentOrgId={profile?.activeOrganizationId || undefined}
           isOpen={showCancelModal}
           onClose={() => setShowCancelModal(false)}
           onSuccess={() => {

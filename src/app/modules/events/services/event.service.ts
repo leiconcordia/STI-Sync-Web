@@ -739,7 +739,7 @@ export const cancelEventTransaction = async (
   const eventData = eventSnap.data() as EventDocument;
 
   // 2. Validate cancellation permissions
-  const cancelCheck = canCancelEvent(eventData, cancelledByRole);
+  const cancelCheck = canCancelEvent(eventData, cancelledByRole, payload.userOrgId);
   if (!cancelCheck.canCancel) {
     throw new Error(cancelCheck.reason || 'This event cannot be cancelled.');
   }

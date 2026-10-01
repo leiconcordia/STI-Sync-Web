@@ -18,37 +18,27 @@ function canCancelEvent(event, userRole, userOrgId) {
   if (event.status === 'ongoing') {
     return { canCancel: false, reason: 'Ongoing events cannot be cancelled while live in session. Only upcoming events can be cancelled.' };
   }
+  const status = (event.proposalStatus || event.status || '').toLowerCase();
+  if (status === 'pending' || status === 'pending_review' || status === 'draft' || status === 'returned' || status === 'rejected') {
+    return {
+      canCancel: false,
+      reason: 'Only approved events can be cancelled. Unapproved proposals cannot be cancelled.',
+    };
+  }
+  const isApproved = status === 'approved' || event.isApproved === true || event.isDirectPublished === true;
+  if (!isApproved) {
+    return { canCancel: false, reason: 'Only approved events can be cancelled.' };
+  }
+  if (userRole === 'admin') {
+    // SAO Admin can cancel any approved upcoming event (institutional or student org)
+    return { canCancel: true };
+  }
   if (userRole === 'officer') {
     if (event.hostingOrgId === 'sas') {
       return { canCancel: false, reason: 'Institutional SAO events can only be cancelled by SAO administration.' };
     }
     if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
       return { canCancel: false, reason: "Officers can only cancel their own organization's events." };
-    }
-    return { canCancel: true };
-  }
-  if (userRole === 'admin') {
-    const status = (event.proposalStatus || event.status || '').toLowerCase();
-    if (status === 'pending' || status === 'pending_review' || status === 'draft') {
-      return {
-        canCancel: false,
-        reason: 'Pending proposals cannot be cancelled by Admin. Use the Review modal to Approve, Return, or Reject the proposal.',
-      };
-    }
-    const isInstitutional =
-      !event.hostingOrgId ||
-      event.hostingOrgId === 'sas' ||
-      event.hostingOrgId === 'sao' ||
-      event.hostingOrgId === 'sas_admin' ||
-      event.hostingOrgId === 'sao_admin' ||
-      event.isOfficerProposal === false ||
-      event.isInstitutional === true;
-
-    if (!isInstitutional) {
-      return {
-        canCancel: false,
-        reason: 'Admins cannot cancel student organization events. Only institutional, school, or SAS events can be cancelled by SAO administration.',
-      };
     }
     return { canCancel: true };
   }
@@ -152,11 +142,10 @@ describe('Phase 3: Event Cancellation & Financial Auto-Waiver Engine', () => {
       assert.equal(canCancelEvent(schoolEvent, 'admin').canCancel, true);
     });
 
-    test('SAO Admin CANNOT cancel student organization events', () => {
+    test('SAO Admin CAN cancel student organization events when approved & upcoming', () => {
       const orgEvent = { id: 'evt-org', status: 'approved', proposalStatus: 'approved', hostingOrgId: 'org-cs' };
       const res = canCancelEvent(orgEvent, 'admin');
-      assert.equal(res.canCancel, false);
-      assert.match(res.reason, /student organization/i);
+      assert.equal(res.canCancel, true);
     });
 
     test('SAO Admin CANNOT cancel pending proposals (must use Review modal instead)', () => {
@@ -165,15 +154,22 @@ describe('Phase 3: Event Cancellation & Financial Auto-Waiver Engine', () => {
       
       const res1 = canCancelEvent(pendingEvent, 'admin');
       assert.equal(res1.canCancel, false);
-      assert.match(res1.reason, /Review modal/i);
+      assert.match(res1.reason, /approved events/i);
 
       const res2 = canCancelEvent(pendingReviewEvent, 'admin');
       assert.equal(res2.canCancel, false);
-      assert.match(res2.reason, /Review modal/i);
+      assert.match(res2.reason, /approved events/i);
     });
 
-    test('Officer can cancel their own pending/approved proposal', () => {
-      const event = { id: 'evt-2', status: 'approved', hostingOrgId: 'org-cs' };
+    test('Officer CANNOT cancel unapproved/pending proposal (must use withdraw instead)', () => {
+      const pendingEvent = { id: 'evt-p3', status: 'pending', proposalStatus: 'pending', hostingOrgId: 'org-cs' };
+      const res = canCancelEvent(pendingEvent, 'officer', 'org-cs');
+      assert.equal(res.canCancel, false);
+      assert.match(res.reason, /approved events/i);
+    });
+
+    test('Officer can cancel their own approved upcoming event', () => {
+      const event = { id: 'evt-2', status: 'approved', proposalStatus: 'approved', hostingOrgId: 'org-cs' };
       const res = canCancelEvent(event, 'officer', 'org-cs');
       assert.equal(res.canCancel, true);
     });

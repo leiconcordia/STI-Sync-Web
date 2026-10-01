@@ -19,6 +19,11 @@ import { AuditLogs } from "./admin/pages/AuditLogs";
 // Auth Pages
 import SASAdminLogin from "./auth/SASAdminLogin";
 import OfficerLogin from "./auth/OfficerLogin";
+import PortalLogin from "./auth/PortalLogin";
+
+// Signatory Components
+import SignatoryLayout from "./signatory/components/SignatoryLayout";
+import SignatoryEndorsementsPage from "./signatory/pages/SignatoryEndorsementsPage";
 
 // Officer Components
 import { OfficerLayout } from "./officer/components/OfficerLayout";
@@ -51,9 +56,25 @@ export const router = createBrowserRouter([
     ErrorBoundary: ErrorPage,
   },
   {
-    path: "/officer/login",
-    Component: OfficerLogin,
+    path: "/portal/login",
+    Component: PortalLogin,
     ErrorBoundary: ErrorPage,
+  },
+  {
+    path: "/officer/login",
+    element: <Navigate to="/portal/login" replace />,
+    ErrorBoundary: ErrorPage,
+  },
+
+  // Institutional Signatory Routes
+  {
+    path: "/signatory",
+    Component: SignatoryLayout,
+    ErrorBoundary: ErrorPage,
+    children: [
+      { index: true, element: <Navigate to="/signatory/endorsements" replace /> },
+      { path: "endorsements", Component: SignatoryEndorsementsPage },
+    ],
   },
 
   // SAS Admin Routes - /home is the admin dashboard

@@ -981,9 +981,11 @@ export default function EventManagement() {
           isOpen={!!cancellingEvent}
           onClose={() => setCancellingEvent(null)}
           event={cancellingEvent}
+          role="officer"
           userRole="officer"
           userId={profile?.uid || 'officer-user'}
           userName={profile?.studentName || 'Student Officer'}
+          currentOrgId={activeOrgId}
         />
       )}
 

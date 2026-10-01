@@ -10,6 +10,7 @@ import OfficerManagement from '../components/settings/OfficerManagement';
 import EventConfiguration from '../components/settings/EventConfiguration';
 import PayableCategorySettings from '../components/settings/PayableCategorySettings';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
+import InstitutionalSignatoryManagement from '../components/settings/InstitutionalSignatoryManagement';
 import ArchiveCenter from '../components/settings/ArchiveCenter';
 import { useSearchParams } from 'react-router';
 
@@ -57,6 +58,8 @@ export function SystemSettings() {
         return <PayableCategorySettings onUnsavedChange={handleUnsavedChange} />;
       case 'document-management':
         return <DocumentManagementSettings />;
+      case 'institutional-signatories':
+        return <InstitutionalSignatoryManagement />;
       case 'archive-center':
         return <ArchiveCenter onUnsavedChange={handleUnsavedChange} />;
       default:

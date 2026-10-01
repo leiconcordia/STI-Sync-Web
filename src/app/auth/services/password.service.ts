@@ -132,3 +132,140 @@ export async function changeOfficerOrAdviserPassword(
     console.warn('[passwordService] Session update warning:', sessErr);
   }
 }
+
+/**
+ * SHA-256 password hashing helper for client-side verifiable credential caching
+ */
+export async function hashPassword(str: string): Promise<string> {
+  const buffer = new TextEncoder().encode(str);
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Change password for Institutional Signatories.
+ * Sets requiresPasswordChange to false, clears temporaryPassword, and stores new credentials.
+ * Ensures the temporary password can NEVER be used again until Admin resets it.
+ */
+export async function changeSignatoryPassword(
+  currentPassword: string,
+  newPassword: string,
+  signatorySession: { id?: string; uid?: string; email: string }
+): Promise<void> {
+  const email = signatorySession.email?.trim().toLowerCase();
+  if (!email) {
+    throw new Error('No email found in active signatory session.');
+  }
+
+  const trimmedCurrent = currentPassword.trim();
+  const trimmedNew = newPassword.trim();
+
+  if (trimmedNew.length < 8) {
+    throw new Error('New password must be at least 8 characters long.');
+  }
+
+  if (trimmedCurrent === trimmedNew) {
+    throw new Error('New password must be different from your current/temporary password.');
+  }
+
+  // ── 1. Verify Current Password against Firestore Signatory Document ──
+  const qSig = query(
+    collection(db, 'institutional_signatories'),
+    where('email', '==', email)
+  );
+  const sigSnap = await getDocs(qSig);
+  const sigDoc = sigSnap.docs[0];
+  const sigData = sigDoc ? sigDoc.data() : null;
+
+  if (sigData) {
+    const isTempActive = sigData.requiresPasswordChange === true;
+    if (isTempActive) {
+      if (sigData.temporaryPassword && sigData.temporaryPassword !== trimmedCurrent) {
+        throw new Error('The current temporary password you entered is incorrect. Please check your credentials email.');
+      }
+    } else {
+      const currentHash = await hashPassword(trimmedCurrent);
+      const matchesCustom = sigData.customPassword && sigData.customPassword === trimmedCurrent;
+      const matchesHash = sigData.passwordHash && sigData.passwordHash === currentHash;
+      if (!matchesCustom && !matchesHash) {
+        // Fallback to checking Firebase Auth before throwing
+        try {
+          await signInWithEmailAndPassword(auth, email, trimmedCurrent);
+        } catch {
+          throw new Error('The current password you entered is incorrect.');
+        }
+      }
+    }
+  }
+
+  // ── 2. Re-authenticate / Update Firebase Auth User if available ──
+  let user = auth.currentUser;
+  try {
+    if (!user || user.email?.toLowerCase() !== email) {
+      const cred = await signInWithEmailAndPassword(auth, email, trimmedCurrent);
+      user = cred.user;
+    } else {
+      const cred = EmailAuthProvider.credential(email, trimmedCurrent);
+      await reauthenticateWithCredential(user, cred);
+    }
+
+    if (user) {
+      await updatePassword(user, trimmedNew);
+    }
+  } catch (authErr: any) {
+    console.warn('[passwordService] Firebase Auth update note:', authErr?.message || authErr);
+  }
+
+  // ── 3. Update Firestore Document in institutional_signatories ──
+  // Compute secure hash of new password
+  const newPasswordHash = await hashPassword(trimmedNew);
+
+  try {
+    for (const d of sigSnap.docs) {
+      await updateDoc(doc(db, 'institutional_signatories', d.id), {
+        requiresPasswordChange: false,
+        temporaryPassword: null,
+        customPassword: trimmedNew,
+        passwordHash: newPasswordHash,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    if (signatorySession.id && (!sigDoc || sigDoc.id !== signatorySession.id)) {
+      await updateDoc(doc(db, 'institutional_signatories', signatorySession.id), {
+        requiresPasswordChange: false,
+        temporaryPassword: null,
+        customPassword: trimmedNew,
+        passwordHash: newPasswordHash,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (dbErr) {
+    console.error('[passwordService] Firestore signatory update error:', dbErr);
+    throw new Error('Failed to save updated password in institutional records.');
+  }
+
+  // ── 4. Update Local Session (Both Keys) ──
+  try {
+    const rawSig = localStorage.getItem('sti_sync_signatory_session');
+    if (rawSig) {
+      const parsed = JSON.parse(rawSig);
+      parsed.requiresPasswordChange = false;
+      delete parsed.temporaryPassword;
+      localStorage.setItem('sti_sync_signatory_session', JSON.stringify(parsed));
+    }
+
+    const rawOfficer = localStorage.getItem('sti_sync_officer_session');
+    if (rawOfficer) {
+      const parsed = JSON.parse(rawOfficer);
+      parsed.requiresPasswordChange = false;
+      delete parsed.temporaryPassword;
+      localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+    }
+  } catch (sessErr) {
+    console.warn('[passwordService] Session update warning:', sessErr);
+  }
+}
+

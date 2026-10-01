@@ -16,9 +16,9 @@ export default function OfficerLogin() {
   const handleLogin = async () => {
     if (!identifier.trim() || !password.trim()) return;
 
-    const success = await login(identifier, password);
-    if (success) {
-      navigate('/officer/dashboard');
+    const res = await login(identifier, password);
+    if (res && res.success) {
+      navigate(res.redirectPath || '/officer/dashboard');
     }
   };
 
@@ -50,7 +50,7 @@ export default function OfficerLogin() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#FFD41C] opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2 w-2 bg-[#FFD41C]"></span>
             </span>
-            Student Affairs Services · Organization Portal
+            Student Affairs Services · Campus Portal
           </div>
           <h1 className="text-white text-[32px] lg:text-[40px] font-black tracking-tight leading-tight mt-3">
             Connect, Participate, <br />
@@ -82,8 +82,11 @@ export default function OfficerLogin() {
             </div>
 
             <h2 className="text-[#001A4D] text-[28px] md:text-[30px] font-black tracking-tight">
-              Organization Login
+              STI Sync Portal
             </h2>
+            <p className="text-xs text-gray-500 mt-1">
+              Organization Officers & Institutional Signatories
+            </p>
           </div>
 
           <div className="h-px bg-[#E5E7EB] mb-5" />
@@ -93,7 +96,7 @@ export default function OfficerLogin() {
             {/* Username/ID Field */}
             <div>
               <label className="block text-[#001A4D] text-[13px] font-bold mb-1.5">
-                Username or Student ID
+                Email, Employee ID, or Student ID
               </label>
               <div className="relative">
                 <IdCard className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -102,7 +105,7 @@ export default function OfficerLogin() {
                   value={identifier}
                   onChange={(e) => setIdentifier(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
-                  placeholder="Enter your username or student ID"
+                  placeholder="Enter your institutional email, employee or student ID"
                   className="w-full h-[48px] pl-10 pr-4 border border-gray-300 rounded-xl text-[14px] focus:border-[#0E4EBD] focus:ring-2 focus:ring-[#0E4EBD]/20 outline-none transition-all"
                 />
               </div>
@@ -168,12 +171,14 @@ export default function OfficerLogin() {
             </div>
           )}
 
-          {/* Officer Registration Note */}
-          <div className="mt-4 bg-gradient-to-r from-purple-50/80 to-slate-50 border border-purple-200/70 rounded-xl p-3.5 flex items-start gap-3 shadow-xs">
-            <Info className="w-4 h-4 text-[#83358E] flex-shrink-0 mt-0.5" />
+          {/* Portal Access Note */}
+          <div className="mt-4 bg-gradient-to-r from-blue-50/80 to-slate-50 border border-blue-200/70 rounded-xl p-3.5 flex items-start gap-3 shadow-xs">
+            <Info className="w-4 h-4 text-[#001A4D] flex-shrink-0 mt-0.5" />
             <p className="text-[12px] leading-relaxed">
-              <span className="text-[#83358E] font-bold">Don't have an officer account? </span>
-              <span className="text-[#4B5563] font-medium">Officer accounts are created and managed by the SAO Adviser directly.</span>
+              <span className="text-[#001A4D] font-bold">Portal Access Notice: </span>
+              <span className="text-[#4B5563] font-medium">
+                Accounts for student officers, club advisers, and institutional signatories are appointed and managed by the SAS Administration directly.
+              </span>
             </p>
           </div>
 
@@ -188,3 +193,5 @@ export default function OfficerLogin() {
     </div>
   );
 }
+
+export { OfficerLogin as PortalLogin };

@@ -70,10 +70,6 @@ export function AppointOfficerModal({
     }
   }, [isOpen, preselectedMember]);
 
-  if (!isOpen) return null;
-
-  const activeRoles = roles.filter((r) => !r.archived);
-
   // Set of student IDs and emails that are already active officers in ANY organization
   const allActiveOfficerKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -91,6 +87,10 @@ export function AppointOfficerModal({
     });
     return keys;
   }, [allActiveOfficers, currentOfficers]);
+
+  const activeRoles = useMemo(() => roles.filter((r) => !r.archived), [roles]);
+
+  if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

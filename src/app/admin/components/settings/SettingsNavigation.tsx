@@ -1,7 +1,7 @@
 import {
   UserCircle, Lock, Calendar, Book,
   Building, Users, CalendarDays,
-  Coins, Files, Archive,
+  Coins, Files, Archive, FileSignature,
 } from 'lucide-react';
 
 interface SettingsNavigationProps {
@@ -49,6 +49,12 @@ const navItems = [
     group: 'DOCUMENTS',
     items: [
       { id: 'document-management', icon: Files, label: 'Document Management' },
+    ]
+  },
+  {
+    group: 'GOVERNANCE & APPROVALS',
+    items: [
+      { id: 'institutional-signatories', icon: FileSignature, label: 'Institutional Signatories' },
     ]
   },
   {

@@ -4,12 +4,15 @@ import { toast } from "sonner";
 import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
   Filter, ChevronDown, RotateCcw, MapPin, Download,
-  Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2
+  Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2,
+  FileText
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import SaoEventCreationModal from "../components/SaoEventCreationModal";
 import EventProposalReview from "../components/EventProposalReview";
+import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
+
 
 import { useAllEvents, useDraftEvents } from "../../modules/events/hooks/useEventStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
@@ -138,6 +141,7 @@ function formatSubmittedDate(dateStr?: any): string {
 export function EventApprovals() {
   const navigate = useNavigate();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
   const [resumeDraft, setResumeDraft] = useState<EventDocument | null>(null);
   const [modalKey, setModalKey] = useState(0);
   const [selectedEvent, setSelectedEvent] = useState<EventDocument | null>(null);
@@ -529,18 +533,28 @@ export function EventApprovals() {
           </p>
         </div>
 
-        {/* Solid button without gradients */}
-        <Button
-          onClick={() => {
-            setResumeDraft(null);
-            setModalKey(Date.now());
-            setIsModalOpen(true);
-          }}
-          className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4 text-[#FFD41C]" />
-          Create SAO Event
-        </Button>
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          <Button
+            onClick={() => setIsProposalModalOpen(true)}
+            className="bg-[#0E4EBD] hover:bg-[#0A3D96] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+          >
+            <FileText className="w-4 h-4 text-[#FFD41C]" />
+            New Activity Proposal
+          </Button>
+
+          <Button
+            onClick={() => {
+              setResumeDraft(null);
+              setModalKey(Date.now());
+              setIsModalOpen(true);
+            }}
+            variant="outline"
+            className="border-gray-300 text-[#001A4D] hover:bg-gray-100 font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-[#0E4EBD]" />
+            Create Quick Event
+          </Button>
+        </div>
       </div>
 
       {/* ── Enlarge 5 Stat Metric Cards (Pending, Approved, Rejected, Proposals, SAO Made) ── */}
@@ -1187,6 +1201,19 @@ export function EventApprovals() {
           adminName={adviserProfile?.displayName || 'SAO Admin'}
         />
       )}
+
+      {/* 7-Step Activity Proposal (AP) Wizard Modal */}
+      <CreateProposalModal
+        isOpen={isProposalModalOpen}
+        onClose={() => setIsProposalModalOpen(false)}
+        currentUser={{
+          uid: adviserProfile?.uid || 'admin-user',
+          name: adviserProfile?.displayName || 'SAO Admin',
+          email: adviserProfile?.email || 'sao@ormoc.sti.edu.ph',
+          role: 'sas_admin',
+        }}
+      />
     </div>
   );
 }
+
