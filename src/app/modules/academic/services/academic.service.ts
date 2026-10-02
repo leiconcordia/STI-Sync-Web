@@ -503,18 +503,22 @@ export async function executeSemesterRollover(
   });
 
   // 3. Automatically archive completed events for closing semester (Phase 5 Task 5.1)
-  let eventsArchivedCount = 0;
   try {
+    const actCol = firestoreCollection(db, 'activities');
     const eventsCol = firestoreCollection(db, 'events');
-    const [eventsBySemSnap, eventsByYearSnap] = await Promise.all([
+    const [actBySemSnap, eventsBySemSnap, actByYearSnap, eventsByYearSnap] = await Promise.all([
+      firestoreGetDocs(firestoreQuery(actCol, firestoreWhere('semesterId', '==', closingSemester.id))),
       firestoreGetDocs(firestoreQuery(eventsCol, firestoreWhere('semesterId', '==', closingSemester.id))),
+      closingSemester.academicYear
+        ? firestoreGetDocs(firestoreQuery(actCol, firestoreWhere('schoolYear', '==', closingSemester.academicYear)))
+        : Promise.resolve({ docs: [] } as any),
       closingSemester.academicYear
         ? firestoreGetDocs(firestoreQuery(eventsCol, firestoreWhere('schoolYear', '==', closingSemester.academicYear)))
         : Promise.resolve({ docs: [] } as any),
     ]);
 
     const seenEventDocIds = new Set<string>();
-    const allCandidateDocs = [...eventsBySemSnap.docs, ...eventsByYearSnap.docs];
+    const allCandidateDocs = [...actBySemSnap.docs, ...eventsBySemSnap.docs, ...actByYearSnap.docs, ...eventsByYearSnap.docs];
 
     for (const dSnap of allCandidateDocs) {
       if (!seenEventDocIds.has(dSnap.id)) {

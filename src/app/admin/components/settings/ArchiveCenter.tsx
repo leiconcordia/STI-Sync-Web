@@ -76,20 +76,43 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 1. Stream Archived / Soft-Deleted Events
+  // 1. Stream Archived / Soft-Deleted Activities
   useEffect(() => {
-    const unsubEvents = onSnapshot(
+    let actDocs: any[] = [];
+    let legDocs: any[] = [];
+
+    const updateCombined = () => {
+      const map = new Map<string, any>();
+      legDocs.forEach((d) => map.set(d.id, d));
+      actDocs.forEach((d) => map.set(d.id, d));
+      const archivedEvents = Array.from(map.values())
+        .filter((e: any) => e.isArchived === true || e.isDeleted === true);
+      setEvents(archivedEvents);
+      setLoading(false);
+    };
+
+    const unsubAct = onSnapshot(
+      collection(db, 'activities'),
+      (snap) => {
+        actDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        updateCombined();
+      },
+      () => setLoading(false)
+    );
+
+    const unsubLeg = onSnapshot(
       collection(db, 'events'),
       (snap) => {
-        const archivedEvents = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((e: any) => e.isArchived === true || e.isDeleted === true);
-        setEvents(archivedEvents);
-        setLoading(false);
+        legDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        updateCombined();
       },
-      (err) => console.warn('[ArchiveCenter] Error streaming events:', err)
+      () => {}
     );
-    return () => unsubEvents();
+
+    return () => {
+      unsubAct();
+      unsubLeg();
+    };
   }, []);
 
   // 2. Stream Archived Students

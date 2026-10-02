@@ -260,7 +260,10 @@ export async function recordPayment(
   // GUARD: Check if the associated event is cancelled
   if (data.eventId) {
     try {
-      const eventSnap = await getDoc(doc(db, 'events', data.eventId));
+      let eventSnap = await getDoc(doc(db, 'activities', data.eventId));
+      if (!eventSnap.exists()) {
+        eventSnap = await getDoc(doc(db, 'events', data.eventId));
+      }
       if (eventSnap.exists()) {
         const evData = eventSnap.data();
         if (
@@ -446,10 +449,14 @@ export async function recordEventFinePayables(
   createdBy: string,
   isOfficer: boolean = true
 ): Promise<{ created: number; skipped: number }> {
-  const eventRef = doc(db, 'events', eventId);
-  const eventSnap = await getDoc(eventRef);
+  let eventRef = doc(db, 'activities', eventId);
+  let eventSnap = await getDoc(eventRef);
   if (!eventSnap.exists()) {
-    throw new Error('Event not found');
+    eventRef = doc(db, 'events', eventId);
+    eventSnap = await getDoc(eventRef);
+  }
+  if (!eventSnap.exists()) {
+    throw new Error('Activity not found');
   }
   const eventData = eventSnap.data();
   const fineAmount = Number(eventData.latePenaltyAmount) || 50;
@@ -650,10 +657,14 @@ export async function generateDynamicEventFines(
       : Timestamp.fromDate(new Date(dueDate))
     : null;
 
-  const eventRef = doc(db, 'events', eventId);
-  const eventSnap = await getDoc(eventRef);
+  let eventRef = doc(db, 'activities', eventId);
+  let eventSnap = await getDoc(eventRef);
   if (!eventSnap.exists()) {
-    throw new Error('Event not found');
+    eventRef = doc(db, 'events', eventId);
+    eventSnap = await getDoc(eventRef);
+  }
+  if (!eventSnap.exists()) {
+    throw new Error('Activity not found');
   }
   const eventData = eventSnap.data();
 
@@ -1078,13 +1089,13 @@ export async function syncStudentPayablesForActiveEvents(
   let createdCount = 0;
 
   try {
-    // 1. Fetch approved events
-    const eventsRef = collection(db, 'events');
-    const qEvents = query(eventsRef, where('proposalStatus', '==', 'approved'));
-    const eventsSnap = await getDocs(qEvents);
-
-    const eligibleEvents = eventsSnap.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
+    // 1. Fetch approved activities (with fallback to legacy events)
+    const actSnap = await getDocs(query(collection(db, 'activities'), where('proposalStatus', '==', 'approved')));
+    const legacySnap = await getDocs(query(collection(db, 'events'), where('proposalStatus', '==', 'approved')));
+    const eventMap = new Map<string, any>();
+    legacySnap.docs.forEach((d) => eventMap.set(d.id, { id: d.id, ...d.data() }));
+    actSnap.docs.forEach((d) => eventMap.set(d.id, { id: d.id, ...d.data() }));
+    const eligibleEvents = Array.from(eventMap.values())
       .filter((event: any) => {
         const feeAmount =
           Number(event.adminFeeOverride) ||

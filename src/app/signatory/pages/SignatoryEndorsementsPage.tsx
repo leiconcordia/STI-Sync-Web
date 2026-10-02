@@ -1,8 +1,9 @@
 /**
  * src/app/signatory/pages/SignatoryEndorsementsPage.tsx
  *
- * Dedicated dashboard for Institutional Signatories (Program Heads, Principals, Deans, President).
- * Displays real-time proposals pending review, endorsed history, and signature management.
+ * Dedicated dashboard for Institutional Signatories (Accountants, Program Heads, Principals, Deans, President).
+ * Displays real-time Activity Proposals (Form AP-01) and Financial Liquidations (Form LF-01)
+ * pending review, endorsed history, and signature management.
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -28,13 +29,20 @@ import {
   Eye,
   Download,
   Loader2,
+  FileSpreadsheet,
+  DollarSign,
+  Layers,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
+import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 import { subscribeToProposals } from '../../modules/activity-proposals/services/proposal.service';
+import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
+import { formatCurrency, formatVariance } from '../../utils/currency';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
+import LiquidationEndorsementModal from '../components/LiquidationEndorsementModal';
 
 interface ContextType {
   session: any;
@@ -44,12 +52,16 @@ interface ContextType {
 
 export default function SignatoryEndorsementsPage() {
   const { session, onOpenSignatureModal, onOpenPasswordModal } = useOutletContext<ContextType>();
+  const [documentCategory, setDocumentCategory] = useState<'proposals' | 'liquidations'>('proposals');
   const [activeTab, setActiveTab] = useState<'pending' | 'endorsed' | 'returned'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [proposalsLoading, setProposalsLoading] = useState(true);
   const [selectedProposal, setSelectedProposal] = useState<ActivityProposal | null>(null);
+  const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const { liquidations: allLiquidations, loading: liquidationsLoading } = useAllLiquidations();
 
   const hasSignature = Boolean(session?.signatureUrl);
   const isTempPassActive = Boolean(session?.requiresPasswordChange);
@@ -85,7 +97,7 @@ export default function SignatoryEndorsementsPage() {
   useEffect(() => {
     const unsubscribe = subscribeToProposals((list) => {
       setAllProposals(list);
-      setLoading(false);
+      setProposalsLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -101,8 +113,12 @@ export default function SignatoryEndorsementsPage() {
       const currentIdx = p.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
-      // Check if pending at current stage for this signatory
-      if (p.status === 'under_review') {
+      const isUnderReview =
+        p.status === 'under_review' ||
+        (p as any).proposalStatus === 'pending' ||
+        (p as any).proposalStatus === 'pending_review';
+
+      if (isUnderReview) {
         const currentStage = p.currentStageIndex ?? 1;
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
@@ -121,7 +137,6 @@ export default function SignatoryEndorsementsPage() {
         }
       }
 
-      // Check if previously endorsed or approved by this signatory
       const hasEndorsedStep = chain.some(
         (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
       );
@@ -129,8 +144,11 @@ export default function SignatoryEndorsementsPage() {
         endorsed.push(p);
       }
 
-      // Check if returned by or to this signatory
-      if (p.status === 'returned_for_revision') {
+      const isReturnedStatus =
+        p.status === 'returned_for_revision' ||
+        (p as any).proposalStatus === 'returned';
+
+      if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
           (s) => s.status === 'returned' && matchesSignatory(s)
         );
@@ -147,7 +165,63 @@ export default function SignatoryEndorsementsPage() {
     };
   }, [allProposals, session]);
 
-  const activeList = useMemo(() => {
+  // Filter liquidations according to this signatory's role and status
+  const { pendingLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
+    const pending: LiquidationDocument[] = [];
+    const endorsed: LiquidationDocument[] = [];
+    const returned: LiquidationDocument[] = [];
+
+    allLiquidations.forEach((l) => {
+      const chain = l.approvalChain || [];
+      const currentIdx = l.currentStepIndex ?? 0;
+      const currentStep = chain[currentIdx];
+
+      const isUnderReview = l.status === 'under_review' || l.status === 'pending';
+
+      if (isUnderReview) {
+        const currentStage = l.currentStageIndex ?? 1;
+        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+
+        if (hasStages) {
+          const isMyTurnInStage = chain.some((s) => {
+            const inStage = (s.stageIndex ?? 1) === currentStage;
+            const isPending = s.status === 'current' || (!s.status && inStage);
+            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved';
+            return inStage && isPending && isNotSigned && matchesSignatory(s);
+          });
+          if (isMyTurnInStage) {
+            pending.push(l);
+          }
+        } else if (matchesSignatory(currentStep)) {
+          pending.push(l);
+        }
+      }
+
+      const hasEndorsedStep = chain.some(
+        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
+      );
+      if (hasEndorsedStep) {
+        endorsed.push(l);
+      }
+
+      if (l.status === 'returned') {
+        const hasReturnedStep = chain.some(
+          (s) => s.status === 'returned' && matchesSignatory(s)
+        );
+        if (hasReturnedStep) {
+          returned.push(l);
+        }
+      }
+    });
+
+    return {
+      pendingLiquidations: pending,
+      endorsedLiquidations: endorsed,
+      returnedLiquidations: returned,
+    };
+  }, [allLiquidations, session]);
+
+  const activeProposalsList = useMemo(() => {
     let list: ActivityProposal[] = [];
     if (activeTab === 'pending') list = pendingProposals;
     else if (activeTab === 'endorsed') list = endorsedProposals;
@@ -163,6 +237,32 @@ export default function SignatoryEndorsementsPage() {
         p.organizers?.some((o) => o.toLowerCase().includes(q))
     );
   }, [activeTab, pendingProposals, endorsedProposals, returnedProposals, searchQuery]);
+
+  const activeLiquidationsList = useMemo(() => {
+    let list: LiquidationDocument[] = [];
+    if (activeTab === 'pending') list = pendingLiquidations;
+    else if (activeTab === 'endorsed') list = endorsedLiquidations;
+    else if (activeTab === 'returned') list = returnedLiquidations;
+
+    if (!searchQuery.trim()) return list;
+
+    const q = searchQuery.toLowerCase();
+    return list.filter(
+      (l) =>
+        l.eventTitle?.toLowerCase().includes(q) ||
+        l.organizationName?.toLowerCase().includes(q) ||
+        l.createdByName?.toLowerCase().includes(q)
+    );
+  }, [activeTab, pendingLiquidations, endorsedLiquidations, returnedLiquidations, searchQuery]);
+
+  const currentPendingCount =
+    documentCategory === 'proposals' ? pendingProposals.length : pendingLiquidations.length;
+  const currentEndorsedCount =
+    documentCategory === 'proposals' ? endorsedProposals.length : endorsedLiquidations.length;
+  const currentReturnedCount =
+    documentCategory === 'proposals' ? returnedProposals.length : returnedLiquidations.length;
+
+  const loading = documentCategory === 'proposals' ? proposalsLoading : liquidationsLoading;
 
   return (
     <div className="space-y-6">
@@ -187,7 +287,7 @@ export default function SignatoryEndorsementsPage() {
           </div>
           <button
             onClick={onOpenPasswordModal}
-            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-sm transition-all whitespace-nowrap flex items-center justify-center gap-2"
+            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-sm transition-all whitespace-nowrap flex items-center justify-center gap-2 cursor-pointer"
           >
             <KeyRound className="w-3.5 h-3.5 text-[#FFD41C]" />
             Change Password Now
@@ -211,7 +311,7 @@ export default function SignatoryEndorsementsPage() {
           </div>
           <button
             onClick={onOpenSignatureModal}
-            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-sm transition-all whitespace-nowrap flex items-center justify-center gap-2"
+            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-sm transition-all whitespace-nowrap flex items-center justify-center gap-2 cursor-pointer"
           >
             <PenTool className="w-3.5 h-3.5 text-[#FFD41C]" />
             Register E-Signature
@@ -237,19 +337,70 @@ export default function SignatoryEndorsementsPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={onOpenPasswordModal}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-white border border-gray-300 hover:border-[#001A4D] text-gray-700 hover:text-[#001A4D] text-xs font-bold rounded-xl shadow-xs transition-colors"
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-white border border-gray-300 hover:border-[#001A4D] text-gray-700 hover:text-[#001A4D] text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
           >
             <KeyRound className="w-4 h-4 text-[#0E4EBD]" />
             Change Password
           </button>
           <button
             onClick={onOpenSignatureModal}
-            className="inline-flex items-center gap-2 px-3.5 py-2 bg-white border border-gray-300 hover:border-[#001A4D] text-gray-700 hover:text-[#001A4D] text-xs font-bold rounded-xl shadow-xs transition-colors"
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-white border border-gray-300 hover:border-[#001A4D] text-gray-700 hover:text-[#001A4D] text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
           >
             <FileSignature className="w-4 h-4 text-[#0E4EBD]" />
             {hasSignature ? 'Manage Signature' : 'Register Signature'}
           </button>
         </div>
+      </div>
+
+      {/* ── DOCUMENT CATEGORY SWITCHER ── */}
+      <div className="flex items-center gap-2 p-1.5 bg-slate-100/90 rounded-2xl max-w-md border border-slate-200 shadow-2xs">
+        <button
+          type="button"
+          onClick={() => setDocumentCategory('proposals')}
+          className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            documentCategory === 'proposals'
+              ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+          }`}
+        >
+          <FileText className="w-4 h-4" />
+          <span>Activity Proposals</span>
+          {pendingProposals.length > 0 && (
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                documentCategory === 'proposals'
+                  ? 'bg-[#FFD41C] text-[#001A4D]'
+                  : 'bg-blue-600 text-white'
+              }`}
+            >
+              {pendingProposals.length}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setDocumentCategory('liquidations')}
+          className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+            documentCategory === 'liquidations'
+              ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4" />
+          <span>Financial Liquidations</span>
+          {pendingLiquidations.length > 0 && (
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                documentCategory === 'liquidations'
+                  ? 'bg-[#FFD41C] text-[#001A4D]'
+                  : 'bg-emerald-600 text-white'
+              }`}
+            >
+              {pendingLiquidations.length}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* Metric Cards */}
@@ -272,12 +423,12 @@ export default function SignatoryEndorsementsPage() {
             </div>
           </div>
           <div className="mt-3 text-3xl font-black text-[#001A4D]">
-            {loading ? '...' : pendingProposals.length}
+            {loading ? '...' : currentPendingCount}
           </div>
           <p className="text-[11px] text-gray-500 mt-1">
-            {pendingProposals.length === 1
-              ? '1 proposal awaiting your sign-off'
-              : `${pendingProposals.length} proposals awaiting your sign-off`}
+            {currentPendingCount === 1
+              ? `1 ${documentCategory === 'proposals' ? 'proposal' : 'liquidation'} awaiting your sign-off`
+              : `${currentPendingCount} ${documentCategory === 'proposals' ? 'proposals' : 'liquidations'} awaiting your sign-off`}
           </p>
         </div>
 
@@ -299,7 +450,7 @@ export default function SignatoryEndorsementsPage() {
             </div>
           </div>
           <div className="mt-3 text-3xl font-black text-[#001A4D]">
-            {loading ? '...' : endorsedProposals.length}
+            {loading ? '...' : currentEndorsedCount}
           </div>
           <p className="text-[11px] text-gray-500 mt-1">Documents signed and forwarded</p>
         </div>
@@ -322,7 +473,7 @@ export default function SignatoryEndorsementsPage() {
             </div>
           </div>
           <div className="mt-3 text-3xl font-black text-[#001A4D]">
-            {loading ? '...' : returnedProposals.length}
+            {loading ? '...' : currentReturnedCount}
           </div>
           <p className="text-[11px] text-gray-500 mt-1">Returned with feedback remarks</p>
         </div>
@@ -333,13 +484,23 @@ export default function SignatoryEndorsementsPage() {
         {/* Table Header / Filter */}
         <div className="p-4 border-b border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <FileText className="w-5 h-5 text-[#001A4D]" />
+            {documentCategory === 'proposals' ? (
+              <FileText className="w-5 h-5 text-[#001A4D]" />
+            ) : (
+              <FileSpreadsheet className="w-5 h-5 text-[#001A4D]" />
+            )}
             <h2 className="font-bold text-[#001A4D] text-sm">
-              {activeTab === 'pending'
-                ? `Activity Proposals Pending Your Endorsement (${pendingProposals.length})`
+              {documentCategory === 'proposals'
+                ? activeTab === 'pending'
+                  ? `Activity Proposals Pending Your Endorsement (${pendingProposals.length})`
+                  : activeTab === 'endorsed'
+                  ? `Signed & Endorsed Proposals History (${endorsedProposals.length})`
+                  : `Proposals Returned for Revision (${returnedProposals.length})`
+                : activeTab === 'pending'
+                ? `Financial Liquidations Pending Your Endorsement (${pendingLiquidations.length})`
                 : activeTab === 'endorsed'
-                ? `Signed & Endorsed Proposals History (${endorsedProposals.length})`
-                : `Proposals Returned for Revision (${returnedProposals.length})`}
+                ? `Signed & Endorsed Liquidations History (${endorsedLiquidations.length})`
+                : `Liquidations Returned for Revision (${returnedLiquidations.length})`}
             </h2>
           </div>
 
@@ -347,7 +508,7 @@ export default function SignatoryEndorsementsPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
             <input
               type="text"
-              placeholder="Search proposals..."
+              placeholder={documentCategory === 'proposals' ? 'Search proposals...' : 'Search liquidations...'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-8 pr-3 py-1.5 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#001A4D]/20 outline-none"
@@ -355,64 +516,230 @@ export default function SignatoryEndorsementsPage() {
           </div>
         </div>
 
-        {/* Proposals List */}
-        {activeList.length > 0 ? (
-          <div className="divide-y divide-gray-100">
-            {activeList.map((proposal) => {
-              const currentStep = proposal.approvalChain?.[proposal.currentStepIndex ?? 0];
-              const totalSessions = proposal.sessions?.length || 0;
-              const earliestDate = proposal.sessions?.[0]?.date || 'TBD';
+        {/* ── PROPOSALS LIST ── */}
+        {documentCategory === 'proposals' && (
+          <>
+            {activeProposalsList.length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {activeProposalsList.map((proposal) => {
+                  const totalSessions = proposal.sessions?.length || 0;
+                  const earliestDate = proposal.sessions?.[0]?.date || 'TBD';
 
-              return (
-                <div
-                  key={proposal.id}
-                  className="p-5 hover:bg-slate-50/70 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-4"
-                >
-                  <div className="space-y-1.5 flex-1 min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200/80">
-                        {proposal.referenceNo}
-                      </span>
-                      {proposal.isUrgent && (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
-                          <AlertTriangle className="w-3 h-3" />
-                          URGENT FILING
-                        </span>
-                      )}
-                      <span className="text-[11px] text-gray-500">
-                        Submitted: {proposal.submissionDate}
-                      </span>
+                  return (
+                    <div
+                      key={proposal.id}
+                      className="p-5 hover:bg-slate-50/70 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-1.5 flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200/80">
+                            {proposal.referenceNo}
+                          </span>
+                          {proposal.isUrgent && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3" />
+                              URGENT FILING
+                            </span>
+                          )}
+                          <span className="text-[11px] text-gray-500">
+                            Submitted: {proposal.submissionDate}
+                          </span>
+                        </div>
+
+                        <h3 className="text-base font-bold text-slate-900 leading-snug">
+                          {proposal.title}
+                        </h3>
+
+                        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 pt-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{proposal.organizers?.join(', ')}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                            <span>{earliestDate} ({totalSessions} session{totalSessions > 1 ? 's' : ''})</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                            <span>Budget: {formatPHP(proposal.financialProjections?.totalExpenses || 0)}</span>
+                          </div>
+                        </div>
+
+                        {/* Step / Stage Tracker */}
+                        {(() => {
+                          const curStage = proposal.currentStageIndex ?? 1;
+                          const stageSteps = (proposal.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
+                          const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved').length;
+                          const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
+                          const isApproverForMe = (proposal.approvalChain || []).some(
+                            (s) => (s.stageIndex ?? 1) === curStage && matchesSignatory(s) && (s.actionType === 'approve' || s.role === 'school_president')
+                          );
+
+                          return (
+                            <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
+                              <span className="font-medium">Active Stage:</span>
+                              <span className="font-bold text-blue-900 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg flex items-center gap-1.5">
+                                <span>Stage {curStage}: {stageTitle}</span>
+                                {stageSteps.length > 1 && (
+                                  <span className="text-[10px] text-blue-700 bg-blue-200/60 px-1.5 py-0.2 rounded-full font-black">
+                                    {completedCount}/{stageSteps.length} Signed
+                                  </span>
+                                )}
+                              </span>
+                              {isApproverForMe && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                                  <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                                  Approver Action
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      {/* Right Action */}
+                      <div className="flex items-center gap-2 self-end lg:self-center flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => handleDownloadPdf(e, proposal)}
+                          disabled={downloadingId === proposal.id}
+                          className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                          title="Download Official STI AP-01 PDF"
+                        >
+                          {downloadingId === proposal.id ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
+                          ) : (
+                            <Download className="w-3.5 h-3.5 text-blue-600" />
+                          )}
+                          <span className="hidden sm:inline">AP-01 PDF</span>
+                        </button>
+
+                        {(() => {
+                          const curStage = proposal.currentStageIndex ?? 1;
+                          const isApproverForMe = (proposal.approvalChain || []).some(
+                            (s) => (s.stageIndex ?? 1) === curStage && matchesSignatory(s) && (s.actionType === 'approve' || s.role === 'school_president')
+                          );
+
+                          return (
+                            <button
+                              onClick={() => setSelectedProposal(proposal)}
+                              className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer ${
+                                activeTab === 'pending'
+                                  ? isApproverForMe
+                                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-500/20'
+                                    : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20'
+                                  : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300'
+                              }`}
+                            >
+                              {activeTab === 'pending' ? (
+                                isApproverForMe ? (
+                                  <>
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                    <span>Review & Approve</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <PenTool className="w-3.5 h-3.5" />
+                                    <span>Review & Endorse</span>
+                                  </>
+                                )
+                              ) : (
+                                <>
+                                  <Eye className="w-3.5 h-3.5 text-slate-500" />
+                                  <span>View Details</span>
+                                </>
+                              )}
+                            </button>
+                          );
+                        })()}
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="p-16 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-blue-50 text-[#001A4D] flex items-center justify-center mx-auto mb-4 border border-blue-100">
+                  <FileSignature className="w-8 h-8 text-[#0E4EBD]" />
+                </div>
+                <h3 className="font-bold text-gray-800 text-base">Your Queue is All Clear</h3>
+                <p className="text-xs text-gray-500 max-w-md mx-auto mt-1 leading-relaxed">
+                  {searchQuery
+                    ? 'No activity proposals match your search query.'
+                    : 'When Student Organizations or the SAS Department submit an Activity Proposal targeting your program or requiring your executive sign-off, it will appear here for your interactive review and digital endorsement.'}
+                </p>
+              </div>
+            )}
+          </>
+        )}
 
-                    <h3 className="text-base font-bold text-slate-900 leading-snug">
-                      {proposal.title}
-                    </h3>
+        {/* ── LIQUIDATIONS LIST ── */}
+        {documentCategory === 'liquidations' && (
+          <>
+            {activeLiquidationsList.length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {activeLiquidationsList.map((liquidation) => {
+                  const lineItemsCount = liquidation.lineItems?.length || 0;
+                  const curStage = liquidation.currentStageIndex ?? 1;
+                  const stageSteps = (liquidation.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
+                  const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved').length;
+                  const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
 
-                    <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 pt-0.5">
-                      <div className="flex items-center gap-1.5">
-                        <UserCheck className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{proposal.organizers?.join(', ')}</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{earliestDate} ({totalSessions} session{totalSessions > 1 ? 's' : ''})</span>
-                      </div>
-                      <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
-                        <span>Budget: {formatPHP(proposal.financialProjections?.totalExpenses || 0)}</span>
-                      </div>
-                    </div>
+                  const isApproverForMe = (liquidation.approvalChain || []).some(
+                    (s) =>
+                      (s.stageIndex ?? 1) === curStage &&
+                      matchesSignatory(s) &&
+                      (s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+                  );
 
-                    {/* Step / Stage Tracker */}
-                    {(() => {
-                      const curStage = proposal.currentStageIndex ?? 1;
-                      const stageSteps = (proposal.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
-                      const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved').length;
-                      const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
-                      const isApproverForMe = (proposal.approvalChain || []).some(
-                        (s) => (s.stageIndex ?? 1) === curStage && matchesSignatory(s) && (s.actionType === 'approve' || s.role === 'school_president')
-                      );
+                  const isCheckerForMe = (liquidation.approvalChain || []).some(
+                    (s) =>
+                      (s.stageIndex ?? 1) === curStage &&
+                      matchesSignatory(s) &&
+                      (s.actionType === 'check' || s.role === 'accountant')
+                  );
 
-                      return (
+                  const isDeficit = (liquidation.surplusOrDeficit ?? 0) < 0;
+
+                  return (
+                    <div
+                      key={liquidation.id}
+                      className="p-5 hover:bg-slate-50/70 transition-colors flex flex-col lg:flex-row lg:items-center justify-between gap-4"
+                    >
+                      <div className="space-y-1.5 flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/80">
+                            Form LF-01
+                          </span>
+                          <span className="text-[11px] text-gray-500">
+                            Org: <strong>{liquidation.organizationName || 'Student Affairs & Services'}</strong>
+                          </span>
+                        </div>
+
+                        <h3 className="text-base font-bold text-slate-900 leading-snug">
+                          {liquidation.eventTitle}
+                        </h3>
+
+                        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 pt-0.5">
+                          <div className="flex items-center gap-1.5">
+                            <UserCheck className="w-3.5 h-3.5 text-slate-400" />
+                            <span>Submitted by: {liquidation.createdByName}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 font-medium text-slate-700">
+                            <span>Allocated: {formatCurrency(liquidation.allocatedBudget || 0)}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-blue-700 font-semibold">
+                            <span>Spent: {formatCurrency(liquidation.totalActualSpending || 0)} ({lineItemsCount} items)</span>
+                          </div>
+                          <div
+                            className={`flex items-center gap-1.5 font-bold ${
+                              isDeficit ? 'text-rose-600' : 'text-emerald-700'
+                            }`}
+                          >
+                            <span>Variance: {formatVariance(liquidation.surplusOrDeficit || 0)}</span>
+                          </div>
+                        </div>
+
+                        {/* Stage Progress */}
                         <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
                           <span className="font-medium">Active Stage:</span>
                           <span className="font-bold text-blue-900 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg flex items-center gap-1.5">
@@ -423,48 +750,34 @@ export default function SignatoryEndorsementsPage() {
                               </span>
                             )}
                           </span>
+
                           {isApproverForMe && (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                              <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                              Approver Action
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#001A4D] text-[#FFD41C] flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3" />
+                              Presidential Approver
+                            </span>
+                          )}
+
+                          {isCheckerForMe && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3 text-blue-600" />
+                              Audit Verification
                             </span>
                           )}
                         </div>
-                      );
-                    })()}
-                  </div>
+                      </div>
 
-                  {/* Right Action */}
-                  <div className="flex items-center gap-2 self-end lg:self-center flex-shrink-0">
-                    <button
-                      type="button"
-                      onClick={(e) => handleDownloadPdf(e, proposal)}
-                      disabled={downloadingId === proposal.id}
-                      className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
-                      title="Download Official STI AP-01 PDF"
-                    >
-                      {downloadingId === proposal.id ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
-                      ) : (
-                        <Download className="w-3.5 h-3.5 text-blue-600" />
-                      )}
-                      <span className="hidden sm:inline">AP-01 PDF</span>
-                    </button>
-
-                    {(() => {
-                      const curStage = proposal.currentStageIndex ?? 1;
-                      const isApproverForMe = (proposal.approvalChain || []).some(
-                        (s) => (s.stageIndex ?? 1) === curStage && matchesSignatory(s) && (s.actionType === 'approve' || s.role === 'school_president')
-                      );
-
-                      return (
+                      {/* Right Action */}
+                      <div className="flex items-center gap-2 self-end lg:self-center flex-shrink-0">
                         <button
-                          onClick={() => setSelectedProposal(proposal)}
+                          onClick={() => setSelectedLiquidation(liquidation)}
                           className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer ${
                             activeTab === 'pending'
                               ? isApproverForMe
-                                ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-500/20'
-                                : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20'
+                                ? 'bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30'
+                                : isCheckerForMe
+                                ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-500/20'
                               : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-300'
                           }`}
                         >
@@ -473,6 +786,11 @@ export default function SignatoryEndorsementsPage() {
                               <>
                                 <ShieldCheck className="w-3.5 h-3.5" />
                                 <span>Review & Approve</span>
+                              </>
+                            ) : isCheckerForMe ? (
+                              <>
+                                <CheckCircle className="w-3.5 h-3.5" />
+                                <span>Audit & Verify</span>
                               </>
                             ) : (
                               <>
@@ -487,26 +805,25 @@ export default function SignatoryEndorsementsPage() {
                             </>
                           )}
                         </button>
-                      );
-                    })()}
-                  </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="p-16 text-center">
+                <div className="w-16 h-16 rounded-2xl bg-emerald-50 text-[#001A4D] flex items-center justify-center mx-auto mb-4 border border-emerald-100">
+                  <FileSpreadsheet className="w-8 h-8 text-emerald-600" />
                 </div>
-              );
-            })}
-          </div>
-        ) : (
-          /* Empty State */
-          <div className="p-16 text-center">
-            <div className="w-16 h-16 rounded-2xl bg-blue-50 text-[#001A4D] flex items-center justify-center mx-auto mb-4 border border-blue-100">
-              <FileSignature className="w-8 h-8 text-[#0E4EBD]" />
-            </div>
-            <h3 className="font-bold text-gray-800 text-base">Your Queue is All Clear</h3>
-            <p className="text-xs text-gray-500 max-w-md mx-auto mt-1 leading-relaxed">
-              {searchQuery
-                ? 'No activity proposals match your search query.'
-                : 'When Student Organizations or the SAS Department submit an Activity Proposal targeting your program or requiring your executive sign-off, it will appear here for your interactive review and digital endorsement.'}
-            </p>
-          </div>
+                <h3 className="font-bold text-gray-800 text-base">No Financial Liquidations in this Queue</h3>
+                <p className="text-xs text-gray-500 max-w-md mx-auto mt-1 leading-relaxed">
+                  {searchQuery
+                    ? 'No financial liquidations match your search query.'
+                    : 'When campus organizations submit completed event liquidations with itemized expenses and receipt evidence, they will appear here for your audit review and digital signature endorsement.'}
+                </p>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -520,6 +837,20 @@ export default function SignatoryEndorsementsPage() {
           onOpenSignaturePad={onOpenSignatureModal}
           onProposalUpdated={() => {
             setSelectedProposal(null);
+          }}
+        />
+      )}
+
+      {/* Liquidation Endorsement Modal */}
+      {selectedLiquidation && (
+        <LiquidationEndorsementModal
+          isOpen={!!selectedLiquidation}
+          onClose={() => setSelectedLiquidation(null)}
+          liquidation={selectedLiquidation}
+          signatorySession={session}
+          onOpenSignaturePad={onOpenSignatureModal}
+          onLiquidationUpdated={() => {
+            setSelectedLiquidation(null);
           }}
         />
       )}

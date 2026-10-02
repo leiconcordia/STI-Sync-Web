@@ -145,11 +145,12 @@ export default function Step2Schedule({ data, onUpdate, isOfficer, errors = {}, 
 
   const addSession = () => {
     const lastSession = sessions[sessions.length - 1];
-    const nextDate = lastSession?.date ? getNextDayDateStr(lastSession.date) : todayStr;
+    const eventMinDate = (data as any).startDate || (data as any).date || todayStr;
+    const nextDate = lastSession?.date ? getNextDayDateStr(lastSession.date) : eventMinDate;
     const newSession: EventSession = {
       id: Date.now().toString(),
       title: `Session ${sessions.length + 1}`,
-      date: nextDate,
+      date: nextDate < eventMinDate ? eventMinDate : nextDate,
       startTime: '09:00',
       endTime: '17:00',
       timeInOpen: '08:30',
@@ -479,7 +480,7 @@ export default function Step2Schedule({ data, onUpdate, isOfficer, errors = {}, 
                       </label>
                       <input
                         type="date"
-                        min={todayStr}
+                        min={(data as any).startDate || (data as any).date || todayStr}
                         value={session.date || ''}
                         disabled={isRestricted}
                         onChange={(e) => updateSession(session.id, 'date', e.target.value)}

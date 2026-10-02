@@ -96,6 +96,9 @@ export interface ActivityProposal {
   status: ProposalStatus;
   isUrgent?: boolean;
   urgentJustification?: string;
+  returnFlags?: string[];
+  stepRevisionRemarks?: Record<string, string> | null;
+  adviserRemarks?: string;
 
   // 1. Activity title
   title: string;

@@ -1,6 +1,6 @@
 import { Timestamp } from 'firebase/firestore';
 
-export type LiquidationStatus = 'draft' | 'pending' | 'approved' | 'returned' | 'voided';
+export type LiquidationStatus = 'draft' | 'pending' | 'under_review' | 'approved' | 'returned' | 'voided';
 
 export interface ReceiptAttachment {
   id: string;
@@ -33,10 +33,28 @@ export interface ExpenseLineItem {
 export interface LiquidationRemark {
   id: string;
   authorName: string;
-  authorRole: 'admin' | 'officer';
-  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'voided';
+  authorRole: 'admin' | 'officer' | 'signatory';
+  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'voided' | 'endorsed';
   comment: string;
   timestamp: string; // ISO string
+}
+
+export interface LiquidationApprovalStep {
+  id?: string;
+  step: number;
+  stageIndex?: number; // 1-indexed sequential stage grouping
+  stageName?: string; // e.g. "Checking & Verification", "Department Endorsements", "Executive Review"
+  role: string; // e.g. 'accountant' | 'program_head' | 'academic_head' | 'school_administrator' | 'school_president' | etc.
+  roleTitle: string; // e.g. 'Accountant / Auditor', 'Program Head', 'School Administrator', 'School President'
+  actionType?: 'check' | 'endorse' | 'approve' | 'note';
+  signatoryUid?: string;
+  signatoryName: string;
+  signatoryEmail: string;
+  department?: string;
+  status: 'waiting' | 'current' | 'endorsed' | 'approved' | 'returned';
+  signatureUrl?: string;
+  signedAt?: any;
+  remarks?: string;
 }
 
 export interface LiquidationDocument {
@@ -53,8 +71,13 @@ export interface LiquidationDocument {
   surplusOrDeficit: number;     // allocatedBudget - totalActualSpending
   status: LiquidationStatus;
   lineItems: ExpenseLineItem[];
+  approvalChain?: LiquidationApprovalStep[];
+  currentStageIndex?: number;
+  currentStepIndex?: number;
   remarksHistory?: LiquidationRemark[];
   submittedAt?: Timestamp | any;
+  submittedByName?: string;
+  submittedByRole?: string;
   approvedAt?: Timestamp | any;
   approvedBy?: string;
   returnRemarks?: string;
@@ -73,3 +96,4 @@ export interface EventAttendanceSummary {
   checkedIn: number;
   absent: number;
 }
+

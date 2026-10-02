@@ -7,7 +7,7 @@ import { Toaster } from "../../../components/ui/sonner";
 const pageTitles: Record<string, string> = {
   "/home": "Dashboard",
   "/home/organizations": "Organization Management",
-  "/home/event-approvals": "Events",
+  "/home/event-approvals": "Activities",
   "/home/attendance": "Attendance Monitoring",
   "/home/liquidations": "Financial Liquidations",
   "/home/students": "Student Registry",

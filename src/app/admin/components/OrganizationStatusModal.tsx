@@ -70,16 +70,21 @@ export function OrganizationStatusModal({
       };
 
       try {
-        // 1. Check Events for this org
+        // 1. Check Activities and Events for this org
+        const actRef = collection(db, 'activities');
         const eventsRef = collection(db, 'events');
-        const [qHost, qOrg] = await Promise.all([
+        const [qHostAct, qOrgAct, qHostEv, qOrgEv] = await Promise.all([
+          getDocs(query(actRef, where('hostingOrgId', '==', organization.id))),
+          getDocs(query(actRef, where('organizationId', '==', organization.id))),
           getDocs(query(eventsRef, where('hostingOrgId', '==', organization.id))),
           getDocs(query(eventsRef, where('organizationId', '==', organization.id))),
         ]);
 
         const eventMap = new Map<string, any>();
-        qHost.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
-        qOrg.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
+        qHostEv.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
+        qOrgEv.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
+        qHostAct.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
+        qOrgAct.docs.forEach(d => eventMap.set(d.id, { id: d.id, ...d.data() }));
 
         eventMap.forEach((evt) => {
           const status = evt.status || 'pending';

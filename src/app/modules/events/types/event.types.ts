@@ -66,6 +66,8 @@ export interface EventDocument {
   // ─── Budget ───
   budgetItems: BudgetLineItem[];
   totalApprovedBudget: number;
+  budgetCustodians?: BudgetCustodianAllocation[];
+  totalAllocatedBudget?: number;
 
   // ─── Documents ───
   documents: EventDocumentFile[];
@@ -87,6 +89,12 @@ export interface EventDocument {
   completedBy?: string | null;
   completedByName?: string | null;
   attendanceLocked?: boolean;
+  attendanceFinalized?: boolean;
+  cashAllocationsLocked?: boolean;
+  liquidationRequired?: boolean;
+  liquidationStatus?: 'none_required' | 'pending' | 'submitted' | 'approved' | 'returned';
+  liquidationReportId?: string | null;
+  absenteesMarkedCount?: number;
 
   // ─── Soft Deletion & Archiving ───
   isDeleted?: boolean;                     // true = soft-deleted (hidden from standard lists)
@@ -122,6 +130,7 @@ export interface EventDocument {
   returnFlags?: string[];
   returnDeadline?: string | null;
   returnedSnapshot?: Record<string, any> | null;
+  stepRevisionRemarks?: Record<string, string> | null;
   version?: number;                        // e.g. 1, 2, 3
   versionLabel?: string;                   // e.g. "v1.0", "v2.0"
   proposalHistory?: EventProposalHistoryLog[];
@@ -159,6 +168,7 @@ export interface EventProposalHistoryLog {
   reason?: string;
   remarks?: string;
   returnFlags?: string[];
+  stepRemarks?: Record<string, string>;
 }
 
 export interface EventVersionSnapshot {
@@ -213,6 +223,21 @@ export interface EventDocumentFile {
   name: string;
   fileUrl: string | null;
   required: boolean;
+}
+
+export interface BudgetCustodianAllocation {
+  id: string;                      // unique row ID (e.g. "ca_1")
+  taskId?: string;                 // optional linkage to proposal task
+  taskName?: string;               // description of the task
+  isCustomItem?: boolean;          // true if added outside original proposal task list
+  expenseItemId?: string;          // optional linkage to proposal expense line item
+  personName: string;              // Name of designated custodian/person (e.g. "Juan Dela Cruz")
+  personUid?: string;              // optional UID if member of system
+  personRole?: string;             // committee / title (e.g. "Logistics Committee Lead")
+  purpose: string;                 // category/purpose (e.g. "Venue & Sound System Rental")
+  allocatedAmount: number;         // Amount of budget entrusted to this person (e.g. 2000)
+  notes?: string;                  // instructions or notes
+  allocatedAt?: any;               // timestamp
 }
 
 // In-memory shape for the wizard form

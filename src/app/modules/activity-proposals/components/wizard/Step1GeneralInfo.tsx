@@ -4,7 +4,7 @@
  * Section 1, 2, 3: Activity Title, Description/Rationale, Organizers, and 15-Day Policy Notice.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   FileText,
   Building,
@@ -15,6 +15,7 @@ import {
   Calendar,
   UserCheck,
 } from 'lucide-react';
+import { useOrganizationStream } from '../../../../modules/organizations/hooks/useOrganizationStream';
 import type { ProposalFormData } from '../../types/proposal.types';
 
 interface Step1Props {
@@ -23,18 +24,22 @@ interface Step1Props {
   errors?: Record<string, string>;
 }
 
-const COMMON_ORGANIZERS = [
-  'Student Affairs & Services (SAS)',
-  'IT Department & IT Guild Club',
-  'Hospitality Management Society',
-  'Business Administration Club',
-  'Senior High School Student Council',
-  'Supreme Student Council (SSC)',
-];
-
 export default function Step1GeneralInfo({ formData, onChange, errors = {} }: Step1Props) {
+  const { data: organizations = [] } = useOrganizationStream();
   const [organizerInput, setOrganizerInput] = useState('');
   const [proponentInput, setProponentInput] = useState('');
+
+  const orgSuggestions = useMemo(() => {
+    const list: string[] = ['Student Affairs & Services (SAS)'];
+    organizations.forEach((org: any) => {
+      if (!org || org.archived) return;
+      const orgLabel = org.acronym ? `${org.name} (${org.acronym})` : org.name;
+      if (orgLabel && !list.includes(orgLabel)) {
+        list.push(orgLabel);
+      }
+    });
+    return list;
+  }, [organizations]);
 
   const organizers = formData.organizers || ['Student Affairs & Services (SAS)'];
   const proponents = formData.proponents && formData.proponents.length > 0
@@ -280,15 +285,18 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
           </button>
         </div>
 
-        {/* Preset chips */}
+        {/* Organization preset chips from database */}
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
-          <span className="font-semibold text-gray-400">Suggestions:</span>
-          {COMMON_ORGANIZERS.map((sug, idx) => (
+          <span className="font-semibold text-gray-500 flex items-center gap-1">
+            <Building className="w-3 h-3 text-[#0E4EBD]" />
+            <span>Campus Organizations:</span>
+          </span>
+          {orgSuggestions.map((sug, idx) => (
             <button
               key={idx}
               type="button"
               onClick={() => addOrganizer(sug)}
-              className="px-2 py-0.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-md transition-colors"
+              className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-[#0E4EBD] hover:border-blue-300 text-slate-700 border border-slate-200 rounded-lg transition-colors cursor-pointer font-medium"
             >
               + {sug}
             </button>

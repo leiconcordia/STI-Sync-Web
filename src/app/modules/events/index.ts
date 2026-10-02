@@ -17,4 +17,8 @@ export { default as ArchiveEventModal } from './components/ArchiveEventModal';
 export * from './components/ArchiveEventModal';
 export { default as DeleteArchivedEventModal } from './components/DeleteArchivedEventModal';
 export * from './components/DeleteArchivedEventModal';
+export { default as ActivityOperationalUtilsModal } from './components/ActivityOperationalUtilsModal';
+export { default as PublishStudentFeedModal } from './components/PublishStudentFeedModal';
+export { default as AttendanceScannersModal } from './components/AttendanceScannersModal';
+export { default as CashCustodiansModal } from './components/CashCustodiansModal';
 

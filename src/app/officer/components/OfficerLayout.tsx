@@ -8,7 +8,7 @@ import { FirstTimePasswordReminderModal } from './FirstTimePasswordReminderModal
 
 const pageTitles: Record<string, string> = {
   '/officer/dashboard': 'Dashboard',
-  '/officer/events': 'Event Management',
+  '/officer/events': 'Activities',
   '/officer/attendance': 'Attendance Logs',
   '/officer/liquidation': 'Financial Liquidation',
   '/officer/members': 'Member Directory',

@@ -9,7 +9,6 @@ import {
   Users,
   Bell,
   Settings,
-  Wallet,
   Files,
   BarChart3,
 } from 'lucide-react';
@@ -27,7 +26,7 @@ const navGroups = [
   {
     title: "Events & Activities",
     items: [
-      { icon: Calendar, label: 'Event Management', path: '/officer/events', badge: null },
+      { icon: Calendar, label: 'Activities', path: '/officer/events', badge: null },
       { icon: QrCode, label: 'Attendance Logs', path: '/officer/attendance', badge: null },
       { icon: Award, label: 'Certificates', path: '/officer/certificates', badge: 2 },
     ]
@@ -35,7 +34,6 @@ const navGroups = [
   {
     title: "Finance & Docs",
     items: [
-      { icon: Wallet, label: 'Finance Center', path: '/officer/finance', badge: 2 },
       { icon: Receipt, label: 'Financial Liquidation', path: '/officer/liquidation', badge: null },
       { icon: Files, label: 'Documents', path: '/officer/documents', badge: 2 },
       { icon: BarChart3, label: 'Reports & Analytics', path: '/officer/reports', badge: null },

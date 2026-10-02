@@ -379,6 +379,39 @@ export default function InstitutionalSignatoryManagement() {
         </button>
       </div>
 
+      {/* SAS Signatory Highlight Banner */}
+      <div className="p-4 bg-gradient-to-r from-blue-900 via-indigo-950 to-[#001A4D] rounded-2xl text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm border border-blue-800">
+        <div className="flex items-center gap-3.5">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-400/30 flex items-center justify-center text-[#FFD41C]">
+            <ShieldCheck className="w-5 h-5 text-[#FFD41C]" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h4 className="font-bold text-sm text-white">Student Affairs & Services (SAS) Mandatory Signatory Gate</h4>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-[#FFD41C]/20 text-[#FFD41C] border border-[#FFD41C]/30">
+                Gate 1 Locked
+              </span>
+            </div>
+            <p className="text-xs text-blue-200 mt-0.5">
+              Maintain the authorized SAS Head / Coordinator name, position title, and digital e-signature automatically stamped on all student proposals.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            const url = new URL(window.location.href);
+            url.searchParams.set('section', 'sas-signatory');
+            window.history.pushState({}, '', url.toString());
+            window.dispatchEvent(new PopStateEvent('popstate'));
+          }}
+          className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-all flex-shrink-0 cursor-pointer"
+        >
+          <FileSignature className="w-3.5 h-3.5 text-[#FFD41C]" />
+          <span>Configure SAS Signatory & E-Signature</span>
+        </button>
+      </div>
+
       {/* Filter and Search Bar */}
       <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
         {/* Search */}

@@ -105,15 +105,36 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
     );
     unsubs.push(unsubOrgs);
 
-    // 2.1 Subscribe to Events collection to resolve host organization and session count
+    // 2.1 Subscribe to Activities and Events collections to resolve host organization and session count
+    let evMapLegacy = new Map<string, any>();
+    let evMapActivities = new Map<string, any>();
+
+    const updateAllEvents = () => {
+      const merged = new Map<string, any>([...evMapLegacy, ...evMapActivities]);
+      setAllEvents(merged);
+    };
+
+    const unsubActivities = onSnapshot(
+      collection(db, 'activities'),
+      (snap) => {
+        evMapActivities = new Map<string, any>();
+        snap.docs.forEach((doc) => {
+          evMapActivities.set(doc.id, { id: doc.id, ...doc.data() });
+        });
+        updateAllEvents();
+      },
+      (err) => console.warn('Error streaming activities in useStudentDetail:', err)
+    );
+    unsubs.push(unsubActivities);
+
     const unsubEvents = onSnapshot(
       collection(db, 'events'),
       (snap) => {
-        const evMap = new Map<string, any>();
+        evMapLegacy = new Map<string, any>();
         snap.docs.forEach((doc) => {
-          evMap.set(doc.id, { id: doc.id, ...doc.data() });
+          evMapLegacy.set(doc.id, { id: doc.id, ...doc.data() });
         });
-        setAllEvents(evMap);
+        updateAllEvents();
       },
       (err) => console.warn('Error streaming events in useStudentDetail:', err)
     );

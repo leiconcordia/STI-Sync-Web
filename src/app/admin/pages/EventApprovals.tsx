@@ -5,11 +5,10 @@ import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
   Filter, ChevronDown, RotateCcw, MapPin, Download,
   Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2,
-  FileText
+  FileText, SlidersHorizontal, Lock
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import SaoEventCreationModal from "../components/SaoEventCreationModal";
 import EventProposalReview from "../components/EventProposalReview";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
 
@@ -140,10 +139,8 @@ function formatSubmittedDate(dateStr?: any): string {
 
 export function EventApprovals() {
   const navigate = useNavigate();
-  const [isModalOpen, setIsModalOpen] = useState(false);
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
   const [resumeDraft, setResumeDraft] = useState<EventDocument | null>(null);
-  const [modalKey, setModalKey] = useState(0);
   const [selectedEvent, setSelectedEvent] = useState<EventDocument | null>(null);
   const [cancellingEvent, setCancellingEvent] = useState<EventDocument | null>(null);
   const { profile: adviserProfile } = useAdviserProfile();
@@ -184,7 +181,18 @@ export function EventApprovals() {
     }
   }, [targetId, events]);
 
+  // Keep selectedEvent synchronized with live events stream
+  useEffect(() => {
+    if (selectedEvent) {
+      const live = events.find((e) => e.id === selectedEvent.id);
+      if (live && live !== selectedEvent) {
+        setSelectedEvent(live);
+      }
+    }
+  }, [events, selectedEvent]);
+
   // Modal states for lifecycle actions
+  const [configuringEvent, setConfiguringEvent] = useState<EventDocument | null>(null);
   const [concludingEvent, setConcludingEvent] = useState<EventDocument | null>(null);
   const [archivingEvent, setArchivingEvent] = useState<EventDocument | null>(null);
   const [deletingArchivedEvent, setDeletingArchivedEvent] = useState<EventDocument | null>(null);
@@ -379,8 +387,7 @@ export function EventApprovals() {
 
   const handleResumeDraft = (draft: EventDocument) => {
     setResumeDraft(draft);
-    setModalKey(Date.now());
-    setIsModalOpen(true);
+    setIsProposalModalOpen(true);
   };
 
   const handleExportCSV = () => {
@@ -527,32 +534,22 @@ export function EventApprovals() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-[#001A4D] tracking-tight">Event Approvals & Registry</h2>
+          <h2 className="text-xl font-black text-[#001A4D] tracking-tight">Activity Approvals & Registry</h2>
           <p className="text-gray-500 text-sm font-medium">
-            Review and approve event proposals from student organizations, or author institutional SAO events
+            Review and endorse activity proposals from student organizations, or author institutional SAO activities
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-auto">
           <Button
-            onClick={() => setIsProposalModalOpen(true)}
+            onClick={() => {
+              setResumeDraft(null);
+              setIsProposalModalOpen(true);
+            }}
             className="bg-[#0E4EBD] hover:bg-[#0A3D96] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
           >
             <FileText className="w-4 h-4 text-[#FFD41C]" />
             New Activity Proposal
-          </Button>
-
-          <Button
-            onClick={() => {
-              setResumeDraft(null);
-              setModalKey(Date.now());
-              setIsModalOpen(true);
-            }}
-            variant="outline"
-            className="border-gray-300 text-[#001A4D] hover:bg-gray-100 font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
-          >
-            <Plus className="w-4 h-4 text-[#0E4EBD]" />
-            Create Quick Event
           </Button>
         </div>
       </div>
@@ -600,7 +597,7 @@ export function EventApprovals() {
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${activeTab === "approved" ? "text-emerald-100" : "text-gray-500"}`}>
-              Approved Events
+              Approved Activities
             </span>
             <div className={`p-2 rounded-xl ${activeTab === "approved" ? "bg-white/20 text-white" : "bg-emerald-50 text-emerald-600"}`}>
               <CheckCircle2 className="w-4 h-4" />
@@ -877,110 +874,135 @@ export function EventApprovals() {
         <div className="overflow-x-auto relative">
           {isLoading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
-              Loading events...
+              Loading activities...
             </div>
           ) : activeList.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-2">
               <Calendar className="w-12 h-12 text-gray-300 mx-auto" />
-              <div className="font-bold text-gray-700 text-sm">No events found</div>
+              <div className="font-bold text-gray-700 text-sm">No activities found</div>
               <p className="text-xs text-gray-400 max-w-sm">
                 {activeTab === "drafts"
-                  ? "No saved drafts. You can create a new SAO event and save as draft."
-                  : "No events match the current filter or search criteria."}
+                  ? "No saved drafts. You can create a new SAO activity proposal and save as draft."
+                  : "No activities match the current filter or search criteria."}
               </p>
             </div>
           ) : (
             <table className="w-full text-left text-xs border-collapse">
               <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
                 <tr>
-                  <th className="py-3 px-4">Event</th>
-                  <th className="py-3 px-4">Organization</th>
-                  <th className="py-3 px-4">Type</th>
-                  <th className="py-3 px-4">Date</th>
-                  <th className="py-3 px-4">Venue</th>
+                  <th className="py-3 px-4">Activity & Reference</th>
+                  <th className="py-3 px-4">Host Org</th>
+                  <th className="py-3 px-4">Target Audience & Pax</th>
+                  <th className="py-3 px-4">Schedule & Venue</th>
                   <th className="py-3 px-4">Budget</th>
-                  <th className="py-3 px-4">Submitted</th>
-                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">Signatory Stage</th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
                 {activeTab === "drafts" ? (
-                  (paginatedItems as EventDocument[]).map((draft) => (
-                    <tr key={draft.id} className="hover:bg-gray-50/80 transition-colors">
-                      <td className="py-3.5 px-4">
-                        <div className="font-bold text-gray-900 text-sm leading-snug">
-                          {draft.title || "Untitled Draft"}
-                        </div>
-                        {draft.referenceId && (
-                          <div className="text-[11px] text-gray-400 font-mono mt-0.5">
-                            Ref: {draft.referenceId}
+                  (paginatedItems as EventDocument[]).map((draft) => {
+                    const targetPax = (draft as any).expectedParticipantCount || draft.targetPax || (draft as any).targetAudienceCount || (draft as any).estimatedAttendance || 0;
+                    const targetAudienceStr = (draft as any).targetAcademicLevel || 'All Levels';
+                    return (
+                      <tr key={draft.id} className="hover:bg-gray-50/80 transition-colors">
+                        <td className="py-3.5 px-4 max-w-[240px]">
+                          <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 uppercase tracking-wider flex-shrink-0">
+                              Draft AP
+                            </span>
+                            <span className="truncate">{draft.title || "Untitled Draft"}</span>
                           </div>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] flex items-center justify-center flex-shrink-0">
-                            {getOrgAcronym(draft.hostingOrgId || "").slice(0, 2)}
+                          {draft.referenceId && (
+                            <div className="text-[11px] text-gray-400 font-mono mt-0.5">
+                              Ref: {draft.referenceId}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] flex items-center justify-center flex-shrink-0">
+                              {getOrgAcronym(draft.hostingOrgId || "").slice(0, 2)}
+                            </div>
+                            <span className="font-semibold text-gray-800 text-xs">
+                              {getOrgAcronym(draft.hostingOrgId || "")}
+                            </span>
                           </div>
-                          <span className="font-semibold text-gray-800 text-xs">
-                            {getOrgAcronym(draft.hostingOrgId || "")}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-gray-100 text-gray-700">
-                          {getCategoryName(draft.eventCategoryId || "")}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-600 font-medium">
-                        <div className="flex items-center gap-1.5">
-                          <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{formatShortDate(getFirstSessionDate(draft))}</span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-600">
-                        <div className="flex items-center gap-1.5">
-                          <MapPin className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{getVenueName(draft.venueId)}</span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4 font-bold text-gray-900">
-                        {formatCurrency(draft.totalRequestedBudget || 0)}
-                      </td>
-                      <td className="py-3.5 px-4 text-gray-500 text-[11px]">
-                        {formatSubmittedDate(draft.updatedAt || draft.createdAt)}
-                      </td>
-                      <td className="py-3.5 px-4">
-                        {renderStatusBadge("draft", draft)}
-                      </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <Button
-                          size="sm"
-                          onClick={() => handleResumeDraft(draft)}
-                          className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1 rounded-lg shadow-xs cursor-pointer"
-                        >
-                          Resume Draft
-                        </Button>
-                      </td>
-                    </tr>
-                  ))
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <div className="font-medium text-gray-800 text-xs">{targetAudienceStr}</div>
+                          <div className="text-[11px] text-gray-400 font-medium">Est. {targetPax} pax</div>
+                        </td>
+                        <td className="py-3.5 px-4 text-gray-600">
+                          <div className="flex items-center gap-1.5 font-medium">
+                            <Calendar className="w-3.5 h-3.5 text-gray-400" />
+                            <span>{formatShortDate(getFirstSessionDate(draft))}</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-[11px] text-gray-400 mt-0.5 truncate max-w-[140px]">
+                            <MapPin className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                            <span className="truncate">{getVenueName(draft.venueId) || (draft as any).customVenueName || "TBD"}</span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <div className="font-bold text-gray-700 text-sm">
+                            {formatCurrency(draft.totalRequestedBudget || 0)}
+                          </div>
+                          <span className="text-[10px] uppercase font-semibold text-gray-400">Proposed</span>
+                        </td>
+                        <td className="py-3.5 px-4">
+                          {renderStatusBadge("draft", draft)}
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <Button
+                            size="sm"
+                            onClick={() => handleResumeDraft(draft)}
+                            className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xs cursor-pointer"
+                          >
+                            Resume Draft
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   (paginatedItems as EventDocument[]).map((event) => {
                     const orgAcronym = getOrgAcronym(event.hostingOrgId);
                     const orgLogo = getOrgLogo(event.hostingOrgId);
                     const isRejected = event.proposalStatus === "rejected";
+                    const isReturned = event.proposalStatus === "returned";
+                    const isApproved = event.proposalStatus === "approved" || event.status === "approved";
+                    const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
+
+                    const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
+                    const audienceLevel = (event as any).targetAcademicLevel || 'Campus-wide';
+                    const targetCourses = (event as any).targetCourses || [];
+                    const audienceSub = targetCourses.length > 0
+                      ? targetCourses.slice(0, 2).join(', ') + (targetCourses.length > 2 ? ` +${targetCourses.length - 2}` : '')
+                      : 'All Programs';
+
+                    const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
+                    const currentStageIdx = (event as any).currentStageIndex || 1;
 
                     return (
                       <tr key={event.id} className="hover:bg-slate-50/80 transition-colors">
-                        {/* Event Title */}
-                        <td className="py-3.5 px-4 max-w-[220px]">
-                          <div className="font-bold text-gray-900 text-sm leading-snug truncate">
-                            {event.title}
+                        {/* Activity & Reference */}
+                        <td className="py-3.5 px-4 max-w-[240px]">
+                          <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
+                            {isAP && (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wider flex-shrink-0">
+                                AP-01
+                              </span>
+                            )}
+                            <span className="truncate">{event.title}</span>
                           </div>
-                          {isRejected && event.rejectionReason ? (
-                            <div className="text-[11px] text-red-600 font-medium truncate mt-0.5">
-                              {event.rejectionReason}
+                          {event.tagline && (
+                            <div className="text-[11px] text-[#0E4EBD] italic truncate mt-0.5 font-medium">
+                              "{event.tagline}"
+                            </div>
+                          )}
+                          {(isRejected || isReturned) && (event.rejectionReason || (event as any).adviserRemarks) ? (
+                            <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium truncate mt-1">
+                              Note: {event.rejectionReason || (event as any).adviserRemarks}
                             </div>
                           ) : event.referenceId ? (
                             <div className="text-[11px] text-gray-400 font-mono mt-0.5">
@@ -989,7 +1011,7 @@ export function EventApprovals() {
                           ) : null}
                         </td>
 
-                        {/* Organization */}
+                        {/* Host Org */}
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-2">
                             {orgLogo ? (
@@ -1009,42 +1031,79 @@ export function EventApprovals() {
                           </div>
                         </td>
 
-                        {/* Type / Category */}
+                        {/* Target Audience & Pax */}
                         <td className="py-3.5 px-4">
-                          <span className="px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-700 inline-block">
-                            {getCategoryName(event.eventCategoryId || "")}
-                          </span>
-                        </td>
-
-                        {/* Date */}
-                        <td className="py-3.5 px-4 text-gray-600 font-medium whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                            <span>{formatShortDate(getFirstSessionDate(event))}</span>
+                          <div className="font-semibold text-gray-800 text-xs truncate max-w-[160px]">
+                            {audienceLevel} • {audienceSub}
+                          </div>
+                          <div className="text-[11px] text-gray-500 font-medium">
+                            Est. {targetPax} pax
                           </div>
                         </td>
 
-                        {/* Venue */}
-                        <td className="py-3.5 px-4 text-gray-600 whitespace-nowrap max-w-[160px] truncate">
-                          <div className="flex items-center gap-1.5 truncate">
-                            <MapPin className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-                            <span className="truncate">{getVenueName(event.venueId)}</span>
+                        {/* Schedule & Venue */}
+                        <td className="py-3.5 px-4 text-gray-600 whitespace-nowrap">
+                          <div className="flex items-center gap-1.5 font-medium">
+                            <Calendar className="w-3.5 h-3.5 text-gray-400" />
+                            <span>{formatShortDate(getFirstSessionDate(event))}</span>
+                          </div>
+                          <div className="flex items-center gap-1 text-[11px] text-gray-500 max-w-[150px] truncate mt-0.5">
+                            <MapPin className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                            <span className="truncate">{getVenueName(event.venueId) || (event as any).customVenueName || "TBD"}</span>
                           </div>
                         </td>
 
                         {/* Budget */}
-                        <td className="py-3.5 px-4 font-bold text-gray-900 whitespace-nowrap text-sm">
-                          {formatCurrency(event.totalRequestedBudget || event.totalApprovedBudget || 0)}
-                        </td>
-
-                        {/* Submitted */}
-                        <td className="py-3.5 px-4 text-gray-500 text-xs whitespace-nowrap">
-                          {formatSubmittedDate(event.createdAt)}
-                        </td>
-
-                        {/* Status */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          {renderStatusBadge(event.proposalStatus, event)}
+                          {isApproved ? (
+                            <>
+                              <div className="font-extrabold text-emerald-700 text-sm">
+                                {formatCurrency(event.totalApprovedBudget || event.totalRequestedBudget || 0)}
+                              </div>
+                              <span className="text-[10px] uppercase font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                                Approved
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <div className="font-bold text-gray-700 text-sm">
+                                {formatCurrency(event.totalRequestedBudget || event.totalApprovedBudget || 0)}
+                              </div>
+                              <span className="text-[10px] uppercase font-semibold text-gray-400">
+                                Proposed
+                              </span>
+                            </>
+                          )}
+                        </td>
+
+                        {/* Signatory Stage */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          {isRejected ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                              Rejected
+                            </span>
+                          ) : isReturned ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              Revision
+                            </span>
+                          ) : isApproved ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              Approved
+                            </span>
+                          ) : event.status === 'completed' || event.proposalStatus === 'completed' ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                              Completed
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                              {currentStep ? (currentStep.roleTitle || currentStep.role || 'In Review') : `Stage ${currentStageIdx} • Review`}
+                            </span>
+                          )}
                         </td>
 
                         {/* Actions */}
@@ -1052,13 +1111,35 @@ export function EventApprovals() {
                           <div className="flex items-center justify-end gap-1.5">
                             <button
                               onClick={() => setSelectedEvent(event)}
-                              className="px-3 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                              className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                              title="View Proposal Form AP-01"
                             >
                               <Eye className="w-3.5 h-3.5" />
                               <span>View</span>
                             </button>
 
-                            {/* If archived: Show Restore and Delete */}
+                            {/* Operational Setup / Utils button */}
+                            {isApproved ? (
+                              <button
+                                onClick={() => setSelectedEvent(event)}
+                                className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title="Configure Activity: Promotional Banner, Student Publishing, Attendance Scanners & Budget Custodians"
+                              >
+                                <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
+                                <span>Configure</span>
+                              </button>
+                            ) : (
+                              <button
+                                disabled
+                                className="px-2.5 py-1.5 bg-gray-50 text-gray-400 border border-gray-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-not-allowed opacity-60"
+                                title="Operational controls unlock after approval"
+                              >
+                                <Lock className="w-3.5 h-3.5 text-gray-400" />
+                                <span>Locked</span>
+                              </button>
+                            )}
+
+                            {/* Lifecycle action buttons for admin */}
                             {event.isArchived ? (
                               <>
                                 <button
@@ -1080,8 +1161,7 @@ export function EventApprovals() {
                               </>
                             ) : (
                               <>
-                                {/* Conclude Button if Approved & not yet marked completed */}
-                                {event.proposalStatus === 'approved' && event.status !== 'completed' && (
+                                {isApproved && event.status !== 'completed' && (
                                   <button
                                     onClick={() => setConcludingEvent(event)}
                                     className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1092,7 +1172,6 @@ export function EventApprovals() {
                                   </button>
                                 )}
 
-                                {/* Archive Button if Completed */}
                                 {(event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && (
                                   <button
                                     onClick={() => setArchivingEvent(event)}
@@ -1133,21 +1212,9 @@ export function EventApprovals() {
           totalItems={activeList.length}
           itemsPerPage={ITEMS_PER_PAGE}
           onPageChange={setCurrentPage}
-          itemName="events"
+          itemName="activities"
         />
       </div>
-
-      {/* SAO Event Creation / Resume Draft Modal */}
-      <SaoEventCreationModal
-        key={modalKey}
-        isOpen={isModalOpen}
-        onClose={() => {
-          setIsModalOpen(false);
-          setResumeDraft(null);
-        }}
-        initialDraft={resumeDraft ?? undefined}
-        draftId={resumeDraft?.id}
-      />
 
       {/* Event Proposal Review */}
       {selectedEvent && (
@@ -1203,16 +1270,24 @@ export function EventApprovals() {
       )}
 
       {/* 7-Step Activity Proposal (AP) Wizard Modal */}
-      <CreateProposalModal
-        isOpen={isProposalModalOpen}
-        onClose={() => setIsProposalModalOpen(false)}
-        currentUser={{
-          uid: adviserProfile?.uid || 'admin-user',
-          name: adviserProfile?.displayName || 'SAO Admin',
-          email: adviserProfile?.email || 'sao@ormoc.sti.edu.ph',
-          role: 'sas_admin',
-        }}
-      />
+      {isProposalModalOpen && (
+        <CreateProposalModal
+          isOpen={isProposalModalOpen}
+          onClose={() => {
+            setIsProposalModalOpen(false);
+            setResumeDraft(null);
+          }}
+          initialData={resumeDraft ?? undefined}
+          currentUser={{
+            uid: adviserProfile?.uid || 'admin-user',
+            name: adviserProfile?.displayName || 'SAO Admin',
+            email: adviserProfile?.email || 'sao@ormoc.sti.edu.ph',
+            role: 'sas_admin',
+          }}
+        />
+      )}
+
+
     </div>
   );
 }

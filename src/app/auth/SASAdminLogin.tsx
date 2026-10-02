@@ -26,10 +26,10 @@ function resolveAuthError(code: string): string {
 export default function SASAdminLogin() {
   const navigate = useNavigate();
 
-  const [email, setEmail]             = useState('');
-  const [password, setPassword]       = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [isLoading, setIsLoading]     = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // ─── Handle sign-in ────────────────────────────────────────────────────────
@@ -185,13 +185,6 @@ export default function SASAdminLogin() {
                   </button>
                 </div>
               </div>
-            </div>
-
-            {/* Forgot Password */}
-            <div className="text-right mb-4">
-              <button type="button" className="text-[#0E4EBD] text-[13px] font-semibold hover:underline">
-                Forgot Password?
-              </button>
             </div>
 
             {/* Login Button */}

@@ -27,6 +27,7 @@ import { EVENTS_COLLECTION } from './event.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
+import { finalizeEventAttendance } from '../../attendance/services/attendance.service';
 import type { EventDocument, EventProposalHistoryLog } from '../types/event.types';
 import { getEventTimingStatus, areEventSessionsOver } from '../utils/event-lifecycle.utils';
 
@@ -51,21 +52,63 @@ export interface ArchiveEventOptions {
   waiveUnpaidPayables?: boolean;
 }
 
+export interface ConcludeEventOptions {
+  note?: string;
+  finalizeAttendance?: boolean;
+  forceConclude?: boolean;
+  targetedStudents?: any[];
+  rawOrganizations?: any[];
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
+  ]);
+}
+
+function cleanUndefined<T extends Record<string, any>>(obj: T): T {
+  const result: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 /**
  * Marks an event as officially Concluded / Completed.
- * Locks the live attendance scanner to prevent late/fraudulent check-ins.
+ * 1. Locks the live attendance scanner.
+ * 2. If finalizeAttendance is requested, marks all non-attendees as Absent (both time-in & time-out)
+ *    and completes any unfinished check-outs.
+ * 3. Locks cash advance custodian allocations into read-only mode for audit integrity.
+ * 4. Determines whether financial liquidation is compulsory (required if budget > 0 or has cash custodians).
  */
 export async function concludeEvent(
   eventId: string,
   adminUid: string,
   adminName?: string,
-  note?: string
-): Promise<void> {
-  const eventRef = doc(db, EVENTS_COLLECTION, eventId);
-  const snap = await getDoc(eventRef);
+  optionsOrNote?: string | ConcludeEventOptions
+): Promise<{ absenteesCount: number; liquidationRequired: boolean }> {
+  const options: ConcludeEventOptions =
+    typeof optionsOrNote === 'string'
+      ? { note: optionsOrNote, finalizeAttendance: true }
+      : { finalizeAttendance: true, ...(optionsOrNote || {}) };
 
-  if (!snap.exists()) {
-    throw new Error('Event not found.');
+  // Fetch document with fallback to 'events' or 'activities'
+  let eventRef = doc(db, EVENTS_COLLECTION, eventId);
+  let snap = await getDoc(eventRef).catch(() => null);
+
+  if (!snap || !snap.exists()) {
+    const fallbackRef = doc(db, 'events', eventId);
+    const fallbackSnap = await getDoc(fallbackRef).catch(() => null);
+    if (fallbackSnap && fallbackSnap.exists()) {
+      eventRef = fallbackRef;
+      snap = fallbackSnap;
+    } else {
+      throw new Error('Event not found.');
+    }
   }
 
   const eventData = snap.data() as EventDocument;
@@ -74,40 +117,103 @@ export async function concludeEvent(
     throw new Error('Archived events cannot be modified.');
   }
 
-  // Enforce session completion validation
-  const sessionsOver = areEventSessionsOver(eventData);
-  if (!sessionsOver.allOver) {
-    throw new Error(
-      sessionsOver.reason ||
-        'Cannot conclude event: Scheduled sessions are not over yet. All sessions must end before concluding.'
-    );
+  // Enforce session completion validation (bypass if forceConclude is explicitly requested)
+  if (!options.forceConclude) {
+    const sessionsOver = areEventSessionsOver(eventData);
+    if (!sessionsOver.allOver) {
+      throw new Error(
+        sessionsOver.reason ||
+          'Cannot conclude event: Scheduled sessions are not over yet. All sessions must end before concluding.'
+      );
+    }
   }
 
-  const historyEntry: EventProposalHistoryLog = {
+  // Determine financial liquidation requirement
+  const totalApprovedBudget =
+    Number(eventData.totalApprovedBudget || 0) ||
+    Number(eventData.approvedBudget || 0) ||
+    Number(eventData.totalBudget || 0) ||
+    (eventData.budgetItems || []).reduce(
+      (sum, bi) =>
+        sum +
+        Number(
+          bi.approvedAmount ||
+            bi.totalCost ||
+            Number(bi.quantity || 1) * Number(bi.unitCost || 0) ||
+            0
+        ),
+      0
+    );
+  const hasCashCustodians =
+    Array.isArray(eventData.budgetCustodians) &&
+    eventData.budgetCustodians.some((c) => Number(c.allocatedAmount || 0) > 0);
+
+  const isLiquidationRequired = totalApprovedBudget > 0 || hasCashCustodians;
+
+  // Finalize attendance if enabled with strict 7s safety timeout to prevent hanging
+  let absenteesCount = 0;
+  if (options.finalizeAttendance !== false) {
+    try {
+      const attResult = await withTimeout(
+        finalizeEventAttendance(
+          { ...eventData, id: eventId },
+          options.targetedStudents,
+          options.rawOrganizations
+        ),
+        7000,
+        { absenteesCreated: 0, incompleteCheckoutsMarked: 0 }
+      );
+      absenteesCount = attResult.absenteesCreated;
+    } catch (attErr) {
+      console.warn('[concludeEvent] Non-fatal attendance finalization notice:', attErr);
+    }
+  }
+
+  const historyEntry: EventProposalHistoryLog = cleanUndefined({
     id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     action: 'completed',
-    performedBy: adminUid,
+    performedBy: adminUid || 'administrator',
     performedByName: adminName || 'Administrator',
-    performedAt: new Date(),
-    reason: note || 'All sessions concluded. Event officially closed.',
-  };
+    performedAt: Timestamp.now(),
+    reason:
+      options.note ||
+      (options.forceConclude
+        ? 'Concluded early ahead of scheduled end. Event officially closed.'
+        : 'All sessions concluded. Event officially closed and attendance sealed.'),
+  });
 
-  await updateDoc(eventRef, {
+  const updatePayload = cleanUndefined({
     status: 'completed',
     proposalStatus: 'completed',
+    lifecycleStatus: 'completed',
     completedAt: serverTimestamp(),
-    completedBy: adminUid,
+    completedBy: adminUid || 'administrator',
     completedByName: adminName || 'Administrator',
     attendanceLocked: true,
+    attendanceFinalized: options.finalizeAttendance !== false,
+    cashAllocationsLocked: true,
+    liquidationRequired: isLiquidationRequired,
+    liquidationStatus: isLiquidationRequired ? 'pending' : 'none_required',
+    absenteesMarkedCount: absenteesCount,
     updatedAt: serverTimestamp(),
     proposalHistory: arrayUnion(historyEntry),
   });
+
+  // Concurrently update across both activities and events collections
+  await Promise.allSettled([
+    updateDoc(doc(db, 'activities', eventId), updatePayload),
+    updateDoc(doc(db, 'events', eventId), updatePayload),
+  ]);
 
   try {
     await logAuditEvent({
       action: 'CONCLUDE_EVENT',
       actionType: 'UPDATE',
-      details: `Event "${eventData.title || eventId}" was marked as completed and attendance scanner locked by ${adminName || 'Admin'}.`,
+      details: `Event "${eventData.title || eventId}" was marked as completed. Attendance finalized: ${
+        options.finalizeAttendance !== false ? 'Yes' : 'No'
+      }, Absentees marked: ${absenteesCount}, Cash allocations locked: Yes, Liquidation compulsory: ${
+        isLiquidationRequired ? 'Yes' : 'No (Zero budget)'
+      } by ${adminName || 'Admin'}.`,
       performedBy: adminName || 'Admin',
       userRole: 'SAO Admin',
       targetId: eventId,
@@ -116,6 +222,11 @@ export async function concludeEvent(
   } catch (auditErr) {
     console.warn('[concludeEvent] Non-critical audit log failure:', auditErr);
   }
+
+  return {
+    absenteesCount,
+    liquidationRequired: isLiquidationRequired,
+  };
 }
 
 /**

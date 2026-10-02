@@ -63,8 +63,25 @@ export function LiquidationExportPreviewModal({
     report.lineItems?.find((i) => i.receiptNumber)?.receiptNumber || ''
   );
 
-  // Dynamic signatories state
+  // Dynamic signatories state pre-populated from approvalChain
   const [signatories, setSignatories] = useState<StiSignatory[]>(() => {
+    if (report.approvalChain && report.approvalChain.length > 0) {
+      const chain = report.approvalChain;
+      const submittedBy = report.submittedByName || report.createdByName || officerName;
+      const accountant = chain.find((s) => s.actionType === 'check' || s.role === 'accountant');
+      const supervisor = chain.find((s) => (s.stageIndex ?? 1) === 2 || s.role === 'program_head');
+      const academicHead = chain.find((s) => (s.stageIndex ?? 1) === 3 || s.role === 'academic_head');
+      const president = chain.find((s) => (s.stageIndex ?? 1) === 4 || s.role === 'school_president' || s.role === 'school_administrator');
+
+      return [
+        { id: '1', type: 'Submitted By:', name: submittedBy, role: '(Name of Employee / Treasurer)' },
+        { id: '2', type: 'Checked By:', name: accountant?.signatoryName || '', role: `(${accountant?.roleTitle || 'Accountant / Auditor'})` },
+        { id: '3', type: 'Indorsed By:', name: supervisor?.signatoryName || '', role: `(${supervisor?.roleTitle || 'Supervisor / Adviser'})` },
+        { id: '4', type: 'Recommending Approval:', name: academicHead?.signatoryName || '', role: `(${academicHead?.roleTitle || 'Supervisor'})` },
+        { id: '5', type: 'Approved By:', name: president?.signatoryName || '', role: `(${president?.roleTitle || 'Administrator / Academic Head'})` },
+        { id: '6', type: 'Noted By:', name: president?.signatoryName || '', role: `(${president?.roleTitle || 'President'})` },
+      ];
+    }
     return DEFAULT_STI_SIGNATORIES.map((sig, idx) =>
       idx === 0 ? { ...sig, name: officerName } : sig
     );

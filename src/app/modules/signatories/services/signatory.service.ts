@@ -86,6 +86,40 @@ export function subscribeToSignatories(
 }
 
 /**
+ * Fetch all institutional signatories directly
+ */
+export async function getInstitutionalSignatories(): Promise<InstitutionalSignatory[]> {
+  try {
+    const q = query(
+      collection(db, SIGNATORIES_COLLECTION),
+      orderBy('createdAt', 'desc')
+    );
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map((docSnap) => {
+      const data = docSnap.data();
+      return {
+        id: docSnap.id,
+        uid: data.uid || docSnap.id,
+        name: data.name || '',
+        email: data.email || '',
+        role: data.role || 'program_head',
+        roleTitle: data.roleTitle || '',
+        department: data.department || '',
+        departmentId: data.departmentId,
+        actionType: data.actionType || 'endorse',
+        status: data.status || 'active',
+        signatureUrl: data.signatureUrl || undefined,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt,
+      } as InstitutionalSignatory;
+    });
+  } catch (err) {
+    console.error('[SignatoryService] Error fetching signatories:', err);
+    return [];
+  }
+}
+
+/**
  * Create a new institutional signatory:
  * 1. Generates temporary credentials
  * 2. Creates Firebase Auth user via secondary app (without logging out current admin)

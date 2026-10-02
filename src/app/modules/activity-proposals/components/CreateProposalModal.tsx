@@ -5,7 +5,7 @@
  * Based on official documents AP IT Expert Talk 1.docx, AP2025 (1).docx, and AP EVRAA.docx.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   X,
   ChevronLeft,
@@ -21,6 +21,10 @@ import {
   DollarSign,
   Send,
   Building,
+  AlertTriangle,
+  AlertCircle,
+  RotateCcw,
+  Shield,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -41,6 +45,9 @@ import Step4SessionsScheduler from './wizard/Step4SessionsScheduler';
 import Step5TaskAllocation from './wizard/Step5TaskAllocation';
 import Step6FinancialProjections from './wizard/Step6FinancialProjections';
 import Step7ReviewSubmit from './wizard/Step7ReviewSubmit';
+import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { getInstitutionalSignatories } from '../../signatories/services/signatory.service';
+import { buildDynamicApprovalChain } from '../utils/proposal-routing';
 
 interface CreateProposalModalProps {
   isOpen: boolean;
@@ -52,6 +59,8 @@ interface CreateProposalModalProps {
     name: string;
     email: string;
     role?: string;
+    organizationId?: string;
+    organizationName?: string;
   };
 }
 
@@ -64,6 +73,92 @@ const STEPS = [
   { id: 6, label: 'Financials', subtitle: 'Financial Projections' },
   { id: 7, label: 'Review & Submit', subtitle: 'Signatories & Vetting' },
 ];
+
+/**
+ * Extracts a normalized, serialized representation of step-specific fields
+ * to detect whether a proposal maker has modified a flagged step upon return.
+ */
+function extractStepData(stepNumber: number, data: ProposalFormData | undefined): any {
+  if (!data) return null;
+  switch (stepNumber) {
+    case 1:
+      return {
+        title: (data.title || '').trim(),
+        description: (data.description || '').trim(),
+        theme: ((data as any).theme || '').trim(),
+        organizers: (data.organizers || []).map((o) => o.trim()).filter(Boolean),
+        proponents: (data.proponents || []).map((p) => p.trim()).filter(Boolean),
+      };
+    case 2:
+      return {
+        objectives: (data.objectives || []).map((o) => o.trim()).filter(Boolean),
+        successIndicators: (data.successIndicators || []).map((s) => s.trim()).filter(Boolean),
+        mechanics: (data.mechanics || []).map((m) => m.trim()).filter(Boolean),
+        materials: (data.materials || []).map((m) => m.trim()).filter(Boolean),
+      };
+    case 3:
+      return {
+        targetAudience: data.targetAudience || {},
+        estAttendanceCount: data.estAttendanceCount,
+        estAttendanceQualifier: data.estAttendanceQualifier,
+        estimatedAttendance: (data.estimatedAttendance || '').trim(),
+        marketingPlan: (data.marketingPlan || []).map((m) => m.trim()).filter(Boolean),
+        documentationPlan: (data.documentationPlan || []).map((d) => d.trim()).filter(Boolean),
+      };
+    case 4:
+      return {
+        date: data.date || '',
+        startTime: data.startTime || '',
+        endTime: data.endTime || '',
+        venueId: data.venueId || '',
+        venueName: (data.venueName || '').trim(),
+        sessions: (data.sessions || []).map((s) => ({
+          title: (s.title || '').trim(),
+          date: s.date || '',
+          startTime: s.startTime || '',
+          endTime: s.endTime || '',
+          venueName: (s.venueName || '').trim(),
+        })),
+      };
+    case 5:
+      return {
+        tasks: (data.tasks || []).map((t) => ({
+          taskName: (t.taskName || '').trim(),
+          assignedPerson: (t.assignedPerson || '').trim(),
+          completionDate: t.completionDate || '',
+        })),
+      };
+    case 6:
+      return {
+        revenues: (data.financialProjections?.revenues || []).map((r) => ({
+          description: (r.description || '').trim(),
+          totalAmount: Number(r.totalAmount || 0),
+          remarks: (r.remarks || '').trim(),
+        })),
+        expenses: (data.financialProjections?.expenses || []).map((e) => ({
+          description: (e.description || '').trim(),
+          totalAmount: Number(e.totalAmount || 0),
+          remarks: (e.remarks || '').trim(),
+        })),
+        totalRevenue: Number(data.financialProjections?.totalRevenue || 0),
+        totalExpenses: Number(data.financialProjections?.totalExpenses || 0),
+        balance: Number(data.financialProjections?.balance || 0),
+      };
+    case 7:
+      return {
+        isUrgent: Boolean(data.isUrgent),
+        urgentJustification: (data.urgentJustification || '').trim(),
+        approvalChain: (data.approvalChain || []).map((c) => ({
+          id: c.id,
+          role: c.role,
+          signatoryName: c.signatoryName,
+          signatoryEmail: c.signatoryEmail,
+        })),
+      };
+    default:
+      return null;
+  }
+}
 
 export default function CreateProposalModal({
   isOpen,
@@ -210,34 +305,182 @@ export default function CreateProposalModal({
 
   // Sync initial data or set default reference number
   useEffect(() => {
-    if (initialData) {
-      setFormData((prev) => ({
-        ...prev,
-        ...initialData,
-        createdByName: initialData.createdByName || currentUser.name,
-        createdByEmail: initialData.createdByEmail || currentUser.email,
-        creatorRole: initialData.creatorRole || currentUser.role,
-        proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || 'Student Affairs & Services'],
-      }));
-    } else {
-      generateProposalReferenceNumber('SAS').then((ref) => {
+    const isOfficer = currentUser.role === 'officer';
+
+    getSasSignatoryConfig().then(async (sasConfig) => {
+      let defaultChain: ProposalApprovalStep[] = [];
+
+      if (isOfficer) {
+        defaultChain = [
+          {
+            id: 'step_sas_mandatory',
+            step: 1,
+            stageIndex: 1,
+            stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+            role: 'sas_coordinator',
+            roleTitle: sasConfig.roleTitle || 'SAS Coordinator / Reviewer',
+            actionType: 'endorse' as const,
+            signatoryName: sasConfig.name || 'Student Affairs & Services',
+            signatoryEmail: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+            department: sasConfig.department || 'Student Affairs & Services',
+            status: 'current' as const,
+          },
+        ];
+      } else {
+        // Admin or SAS: generate dynamic approval chain following institutional stages
+        try {
+          const institutionalSignatories = await getInstitutionalSignatories();
+          defaultChain = buildDynamicApprovalChain(
+            institutionalSignatories,
+            initialData?.targetAudience || {},
+            true,
+            sasConfig.name || currentUser.name,
+            sasConfig.email || currentUser.email
+          );
+        } catch {
+          defaultChain = buildDynamicApprovalChain([], initialData?.targetAudience || {}, true, currentUser.name, currentUser.email);
+        }
+      }
+
+      if (initialData) {
         setFormData((prev) => ({
           ...prev,
-          referenceNo: ref,
-          createdByName: currentUser.name,
-          createdByEmail: currentUser.email,
-          creatorRole: currentUser.role,
-          proponents: [currentUser.name || 'Student Affairs & Services'],
-          approvalChain: [],
+          ...initialData,
+          createdByName: initialData.createdByName || currentUser.name,
+          createdByEmail: initialData.createdByEmail || currentUser.email,
+          creatorRole: initialData.creatorRole || currentUser.role,
+          organizationId: initialData.organizationId || currentUser.organizationId,
+          hostingOrgId: (initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId,
+          organizationName: initialData.organizationName || currentUser.organizationName,
+          organizers:
+            initialData.organizers && initialData.organizers.length > 0
+              ? initialData.organizers
+              : [currentUser.organizationName || (currentUser.role === 'officer' ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
+          proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || 'Student Affairs & Services'],
+          approvalChain:
+            initialData.approvalChain && initialData.approvalChain.length > 0
+              ? initialData.approvalChain
+              : defaultChain,
         }));
-      });
-    }
-  }, [initialData, currentUser.name, currentUser.email, currentUser.role]);
+      } else {
+        const refPrefix = isOfficer ? (currentUser.organizationName?.slice(0, 4) || 'ORG') : 'SAS';
+        generateProposalReferenceNumber(refPrefix).then((ref) => {
+          setFormData((prev) => ({
+            ...prev,
+            referenceNo: ref,
+            createdByName: currentUser.name,
+            createdByEmail: currentUser.email,
+            creatorRole: currentUser.role,
+            organizationId: currentUser.organizationId,
+            hostingOrgId: currentUser.organizationId,
+            organizationName: currentUser.organizationName,
+            organizers: [currentUser.organizationName || (isOfficer ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
+            proponents: [currentUser.name || 'Student Affairs & Services'],
+            approvalChain: defaultChain,
+          }));
+        });
+      }
+    });
+  }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName]);
 
   if (!isOpen) return null;
 
   const updateFormData = (updates: Partial<ProposalFormData>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
+  };
+
+  // Revision Tracking & Per-Step Enforcement
+  const isReturnedProposal = useMemo(() => {
+    const st = (
+      formData.status ||
+      (formData as any).proposalStatus ||
+      (initialData as any)?.status ||
+      (initialData as any)?.proposalStatus ||
+      ''
+    ).toLowerCase();
+    const hasRemarks = Boolean(
+      (formData.stepRevisionRemarks && Object.keys(formData.stepRevisionRemarks).length > 0) ||
+      (initialData?.stepRevisionRemarks && Object.keys(initialData.stepRevisionRemarks).length > 0)
+    );
+    const hasFlags = Boolean(
+      (formData.returnFlags && formData.returnFlags.length > 0) ||
+      (initialData?.returnFlags && initialData.returnFlags.length > 0)
+    );
+    return st === 'returned' || hasRemarks || hasFlags;
+  }, [
+    formData.status,
+    (formData as any).proposalStatus,
+    formData.stepRevisionRemarks,
+    formData.returnFlags,
+    initialData,
+  ]);
+
+  const stepRemarksDict: Record<string, string> = useMemo(() => {
+    return (
+      (formData.stepRevisionRemarks as Record<string, string>) ||
+      (initialData?.stepRevisionRemarks as Record<string, string>) ||
+      {}
+    );
+  }, [formData.stepRevisionRemarks, initialData?.stepRevisionRemarks]);
+
+  const returnFlagsList: string[] = useMemo(() => {
+    return (
+      formData.returnFlags ||
+      initialData?.returnFlags ||
+      []
+    );
+  }, [formData.returnFlags, initialData?.returnFlags]);
+
+  const getStepDirective = (stepNum: number): string | null => {
+    const s = String(stepNum);
+    if (stepRemarksDict[s]?.trim()) return stepRemarksDict[s].trim();
+    if (stepRemarksDict[`step-${stepNum}`]?.trim()) return stepRemarksDict[`step-${stepNum}`].trim();
+    if (stepRemarksDict[`step_${stepNum}`]?.trim()) return stepRemarksDict[`step_${stepNum}`].trim();
+    for (const [k, v] of Object.entries(stepRemarksDict)) {
+      if (k.toLowerCase().includes(`step ${stepNum}`) && typeof v === 'string' && v.trim()) {
+        return v.trim();
+      }
+    }
+    for (const flag of returnFlagsList) {
+      if (flag.toLowerCase().includes(`step ${stepNum}`) || flag.startsWith(`Step ${stepNum}:`)) {
+        return stepRemarksDict[flag]?.trim() || `Adviser returned this step for revision: ${flag}`;
+      }
+    }
+    return null;
+  };
+
+  const isStepFlagged = (stepNum: number): boolean => {
+    return Boolean(getStepDirective(stepNum));
+  };
+
+  // Snapshot initial step data upon mounting to detect modifications
+  const [initialStepSnapshots, setInitialStepSnapshots] = useState<Record<number, string>>(() => {
+    if (!initialData) return {};
+    const snaps: Record<number, string> = {};
+    for (let s = 1; s <= 7; s++) {
+      snaps[s] = JSON.stringify(extractStepData(s, initialData));
+    }
+    return snaps;
+  });
+
+  useEffect(() => {
+    if (initialData && Object.keys(initialStepSnapshots).length === 0) {
+      const snaps: Record<number, string> = {};
+      for (let s = 1; s <= 7; s++) {
+        snaps[s] = JSON.stringify(extractStepData(s, initialData));
+      }
+      setInitialStepSnapshots(snaps);
+    }
+  }, [initialData]);
+
+  // Check if a flagged step has been modified from its initial return snapshot
+  const isStepModified = (stepNum: number): boolean => {
+    if (!isReturnedProposal) return true;
+    if (!isStepFlagged(stepNum)) return true;
+    const initialJson = initialStepSnapshots[stepNum];
+    if (!initialJson) return false;
+    const currentJson = JSON.stringify(extractStepData(stepNum, formData));
+    return currentJson !== initialJson;
   };
 
   // Step validation before advancing
@@ -293,11 +536,20 @@ export default function CreateProposalModal({
   };
 
   const handleNext = () => {
-    if (validateStep(currentStep)) {
-      setCurrentStep((prev) => Math.min(prev + 1, 7));
-    } else {
+    if (!validateStep(currentStep)) {
       toast.error('Please complete all required fields before proceeding.');
+      return;
     }
+
+    // Strict revision enforcement: Cannot advance if this flagged step is unmodified
+    if (isReturnedProposal && isStepFlagged(currentStep) && !isStepModified(currentStep)) {
+      toast.error(
+        `Step ${currentStep} has revision instructions that have not been modified yet. Please apply the required changes to proceed.`
+      );
+      return;
+    }
+
+    setCurrentStep((prev) => Math.min(prev + 1, 7));
   };
 
   const handlePrevious = () => {
@@ -328,6 +580,21 @@ export default function CreateProposalModal({
     if (!validateStep(7)) {
       toast.error('Please resolve the required items before submission.');
       return;
+    }
+
+    // Strict revision enforcement: Verify all flagged steps have been modified
+    if (isReturnedProposal) {
+      const unmodifiedSteps = [1, 2, 3, 4, 5, 6, 7].filter(
+        (s) => isStepFlagged(s) && !isStepModified(s)
+      );
+      if (unmodifiedSteps.length > 0) {
+        toast.error(
+          `Cannot submit proposal: The following flagged steps have not been modified: ${unmodifiedSteps
+            .map((s) => `Step ${s}`)
+            .join(', ')}. Please address their revision directives.`
+        );
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -407,6 +674,17 @@ export default function CreateProposalModal({
                     <button
                       type="button"
                       onClick={() => {
+                        if (s.id > currentStep) {
+                          // Prevent skipping past an unmodified flagged step
+                          for (let checkStep = currentStep; checkStep < s.id; checkStep++) {
+                            if (isStepFlagged(checkStep) && !isStepModified(checkStep)) {
+                              toast.error(
+                                `You cannot advance to Step ${s.id} because Step ${checkStep} has revision instructions that have not been modified yet.`
+                              );
+                              return;
+                            }
+                          }
+                        }
                         if (isCompleted || s.id === currentStep) {
                           setCurrentStep(s.id);
                         }
@@ -431,14 +709,27 @@ export default function CreateProposalModal({
                         {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : s.id}
                       </div>
                       <div>
-                        <div
-                          className={`text-xs ${
-                            isActive ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'
-                          }`}
-                        >
-                          {s.label}
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`text-xs ${
+                              isActive ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'
+                            }`}
+                          >
+                            {s.label}
+                          </span>
+                          {isReturnedProposal && isStepFlagged(s.id) && (
+                            <span
+                              className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
+                                isStepModified(s.id)
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                  : 'bg-amber-100 text-amber-900 border border-amber-300'
+                              }`}
+                            >
+                              {isStepModified(s.id) ? '✓ Revised' : '⚠ Required'}
+                            </span>
+                          )}
                         </div>
-                        <div className="text-[10px] text-slate-400 leading-none">
+                        <div className="text-[10px] text-slate-400 leading-none mt-0.5">
                           {s.subtitle}
                         </div>
                       </div>
@@ -460,6 +751,103 @@ export default function CreateProposalModal({
 
         {/* ── MODAL BODY / CURRENT STEP CONTENT ── */}
         <div className="flex-1 overflow-y-auto p-6 sm:p-8">
+          {/* Top returned proposal summary banner */}
+          {isReturnedProposal && !submittedReferenceNo && (
+            <div className="mb-5 bg-amber-50/80 border border-amber-200 rounded-2xl p-4 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
+                    <RotateCcw className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-amber-950 flex items-center gap-2">
+                      Activity Proposal Returned for Revision
+                      <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full">
+                        Per-Step Revision Enforced
+                      </span>
+                    </h4>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      Specific revision directives have been issued. You must modify all marked steps before advancing or submitting.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {STEPS.filter((s) => isStepFlagged(s.id)).map((s) => {
+                    const modified = isStepModified(s.id);
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => setCurrentStep(s.id)}
+                        className={`text-[10px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                          modified
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
+                            : 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 ring-1 ring-amber-300/50'
+                        }`}
+                      >
+                        {modified ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-amber-600" />}
+                        <span>Step {s.id} ({modified ? 'Modified' : 'Unmodified'})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Active step revision directive banner */}
+          {isReturnedProposal && isStepFlagged(currentStep) && !submittedReferenceNo && (
+            <div
+              className={`mb-6 p-4 rounded-2xl border transition-all ${
+                isStepModified(currentStep)
+                  ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                  : 'bg-gradient-to-r from-amber-50 to-orange-50 border-amber-300 text-amber-950 shadow-xs'
+              }`}
+            >
+              <div className="flex items-start gap-3.5">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 ${
+                    isStepModified(currentStep)
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-amber-500 text-white shadow-xs'
+                  }`}
+                >
+                  {isStepModified(currentStep) ? (
+                    <CheckCircle2 className="w-5 h-5" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold uppercase tracking-wider">
+                      Adviser Revision Directive for Step {currentStep}
+                    </h4>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        isStepModified(currentStep)
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-200 text-amber-900'
+                      }`}
+                    >
+                      {isStepModified(currentStep)
+                        ? 'Changes Detected • Ready to Advance'
+                        : 'Action Required • Step Unmodified'}
+                    </span>
+                  </div>
+                  <p className="text-xs font-medium mt-1 leading-relaxed text-slate-800">
+                    "{getStepDirective(currentStep)}"
+                  </p>
+                  {!isStepModified(currentStep) && (
+                    <p className="text-[11px] text-amber-800/80 mt-1 italic">
+                      You cannot proceed to subsequent steps or submit until you modify this step according to the directive.
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
           {submittedReferenceNo ? (
             /* Success confirmation screen */
             <div className="max-w-lg mx-auto text-center py-8 space-y-4">

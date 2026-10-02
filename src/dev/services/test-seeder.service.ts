@@ -704,7 +704,7 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
 
       const recordId = `test_att_${event.id}_${session.id}_${student.studentId}`;
       const topAttendanceRef = doc(db, ATTENDANCE_COLLECTION, recordId);
-      const eventSubAttendanceRef = doc(db, 'events', event.id, 'attendance_logs', recordId);
+      const eventSubAttendanceRef = doc(db, 'activities', event.id, 'attendance_logs', recordId);
 
       const recordData = cleanForFirestore<any>({
         id: recordId,
@@ -743,13 +743,22 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
 
   const totalActual = uniqueAttendees.size;
   try {
-    const eventRef = doc(db, 'events', event.id);
-    await updateDoc(eventRef, {
+    const actRef = doc(db, 'activities', event.id);
+    await updateDoc(actRef, {
       actualAttendees: totalActual,
       attendeesCount: totalActual,
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
+    try {
+      const eventRef = doc(db, 'events', event.id);
+      await updateDoc(eventRef, {
+        actualAttendees: totalActual,
+        attendeesCount: totalActual,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {}
+  }
     console.warn('Could not update event actualAttendees count:', err);
   }
 

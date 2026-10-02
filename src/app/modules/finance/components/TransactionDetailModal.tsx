@@ -163,8 +163,10 @@ export default function TransactionDetailModal({
 
         // 2. Fetch ONLY Event Budget Line Items if event_budget
         else if (source === 'event_budget' && eventId && eventId !== 'unassigned') {
-          const eventRef = doc(db, 'events', eventId);
-          const eventSnap = await getDoc(eventRef);
+          let eventSnap = await getDoc(doc(db, 'activities', eventId));
+          if (!eventSnap.exists()) {
+            eventSnap = await getDoc(doc(db, 'events', eventId));
+          }
           if (eventSnap.exists() && isMounted) {
             setEventData({ id: eventSnap.id, ...eventSnap.data() } as EventDocument);
           }

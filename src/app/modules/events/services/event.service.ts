@@ -30,7 +30,8 @@ import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
 
-export const EVENTS_COLLECTION = 'events';
+export const ACTIVITIES_COLLECTION = 'activities';
+export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
 
 export const generateReferenceId = (): string => {
   const year = new Date().getFullYear();
@@ -273,6 +274,10 @@ const cleanUndefined = (obj: any): any => {
   if (obj === null || obj === undefined) return undefined;
   if (Array.isArray(obj)) return obj.map(cleanUndefined).filter(v => v !== undefined);
   if (typeof obj === 'object' && typeof obj.toDate !== 'function' && !(obj instanceof Date)) {
+    // Preserve Firestore FieldValues (serverTimestamp, arrayUnion, deleteField, etc.)
+    if ('_methodName' in obj || obj.constructor?.name === 'FieldValue' || typeof obj.isEqual === 'function') {
+      return obj;
+    }
     const res: any = {};
     for (const key of Object.keys(obj)) {
       const val = obj[key];
@@ -328,13 +333,13 @@ export const createEvent = async (
 
   if (isResubmission) {
     actionType = 'resubmitted';
-    logRemarks = `Revised proposal resubmitted for SAO review (${versionLabel})`;
+    logRemarks = `Revised proposal resubmitted for review (${versionLabel})`;
   } else if (isOfficerProposal) {
     actionType = 'submitted';
     logRemarks = `Proposal submitted for review (${versionLabel})`;
   } else {
-    actionType = 'approved';
-    logRemarks = `Institutional Event created and published by SAS/SAO (${versionLabel})`;
+    actionType = 'submitted';
+    logRemarks = `Institutional Event proposal submitted for review (${versionLabel})`;
   }
 
   const historyEntry: EventProposalHistoryLog = cleanUndefined({
@@ -348,13 +353,17 @@ export const createEvent = async (
     remarks: logRemarks,
   });
 
+  const initialProposalStatus = (data.proposalStatus && data.proposalStatus !== 'approved')
+    ? data.proposalStatus
+    : 'pending_review';
+
   const versionSnapshot: any = cleanUndefined({
     version: newVersion,
     versionLabel,
     savedAt: Timestamp.now(),
     savedBy: uid,
     savedByName: userName || (isOfficerProposal ? 'Student Officer' : 'SAS / SAO Administrator'),
-    proposalStatus: isOfficerProposal ? 'pending_review' : 'approved',
+    proposalStatus: initialProposalStatus,
     snapshot: buildEventSnapshot(data),
   });
 
@@ -374,7 +383,7 @@ export const createEvent = async (
     referenceId: refId,
     scannerUserIds,
     isOfficerProposal: Boolean(isOfficerProposal),
-    proposalStatus: isOfficerProposal ? 'pending_review' : 'approved',
+    proposalStatus: initialProposalStatus,
     version: newVersion,
     versionLabel,
     createdBy: uid,
@@ -496,8 +505,10 @@ export const approveEvent = async (
     remarks: remarks?.trim() || undefined,
   });
 
-  await updateDoc(ref, {
+  const payload: any = cleanUndefined({
     proposalStatus: 'approved',
+    status: 'approved',
+    lifecycleStatus: 'approved',
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     adviserRemarks: remarks?.trim() || null,
@@ -505,21 +516,31 @@ export const approveEvent = async (
     updatedAt: serverTimestamp(),
   });
 
-  if (eventData) {
-    await generatePayablesForEvent(
-      { ...eventData, proposalStatus: 'approved' },
-      eventId,
-      adminUserId
-    );
+  if (!snap.exists()) {
+    let legacyData: any = {};
     try {
-      await deductApprovedEventBudget(
-        { ...eventData, proposalStatus: 'approved' },
-        eventId,
-        adminUserId
-      );
-    } catch (err) {
-      console.warn('[approveEvent] Budget deduction error:', err);
-    }
+      const legEv = await getDoc(doc(db, 'events', eventId));
+      if (legEv.exists()) {
+        legacyData = legEv.data() || {};
+        await updateDoc(doc(db, 'events', eventId), payload);
+      }
+    } catch {}
+    try {
+      const legProp = await getDoc(doc(db, 'activity_proposals', eventId));
+      if (legProp.exists()) {
+        legacyData = { ...legacyData, ...(legProp.data() || {}) };
+        await updateDoc(doc(db, 'activity_proposals', eventId), payload);
+      }
+    } catch {}
+    await setDoc(ref, { ...legacyData, ...payload }, { merge: true });
+  } else {
+    await updateDoc(ref, payload);
+    try {
+      await updateDoc(doc(db, 'events', eventId), payload);
+    } catch {}
+    try {
+      await updateDoc(doc(db, 'activity_proposals', eventId), payload);
+    } catch {}
   }
 };
 
@@ -615,7 +636,9 @@ export const returnEvent = async (
   adminUserId: string,
   flags: string[],
   deadline: string,
-  remarks: string
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  adminUserName?: string
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   const snap = await getDoc(ref);
@@ -626,22 +649,49 @@ export const returnEvent = async (
     id: `log-${Date.now()}`,
     action: 'returned',
     performedBy: adminUserId,
+    performedByName: adminUserName || 'Adviser Reviewer',
     performedAt: Timestamp.now(),
     returnFlags: flags || [],
     remarks: remarks?.trim() || undefined,
+    stepRemarks: stepRevisionRemarks || {},
   });
 
-  await updateDoc(ref, {
+  const updatePayload: any = cleanUndefined({
     proposalStatus: 'returned',
+    status: 'returned',
     returnedBy: adminUserId,
+    returnedByName: adminUserName || null,
     returnedAt: serverTimestamp(),
-    returnFlags: flags,
+    returnFlags: flags || [],
     returnDeadline: deadline || null,
     adviserRemarks: remarks?.trim() || null,
+    stepRevisionRemarks: stepRevisionRemarks || {},
     returnedSnapshot,
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
   });
+
+  await updateDoc(ref, updatePayload);
+
+  // Sync to proposals collection if exists
+  try {
+    const propRef = doc(db, 'proposals', eventId);
+    const propSnap = await getDoc(propRef);
+    if (propSnap.exists()) {
+      await updateDoc(propRef, {
+        status: 'returned',
+        proposalStatus: 'returned',
+        returnFlags: flags || [],
+        returnDeadline: deadline || null,
+        adviserRemarks: remarks?.trim() || null,
+        stepRevisionRemarks: stepRevisionRemarks || {},
+        proposalHistory: arrayUnion(historyEntry),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.warn('Could not sync to proposals collection:', err);
+  }
 };
 
 export const updateAdviserRemarks = async (

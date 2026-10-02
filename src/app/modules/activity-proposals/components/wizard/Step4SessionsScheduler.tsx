@@ -57,8 +57,9 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
   };
 
   const [date, setDate] = useState(singleSession.date || '');
-  const [startTime, setStartTime] = useState(singleSession.startTime || '08:00');
-  const [endTime, setEndTime] = useState(singleSession.endTime || '12:00');
+  const [startTime, setStartTime] = useState(singleSession.startTime || '');
+  const [endTime, setEndTime] = useState(singleSession.endTime || '');
+  const [includeTime, setIncludeTime] = useState<boolean>(Boolean(singleSession.startTime && singleSession.endTime));
   const [venueId, setVenueId] = useState(singleSession.venueId || '');
   const [venueName, setVenueName] = useState(singleSession.venueName || '');
 
@@ -84,8 +85,8 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
       id: 'main-session',
       title: formData.title || 'Main Program',
       date: updatedDate,
-      startTime: updatedStart,
-      endTime: updatedEnd,
+      startTime: updatedStart || '08:00',
+      endTime: updatedEnd || '17:00',
       venueId: updatedVId,
       venueName: updatedVName,
     };
@@ -102,7 +103,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
 
   const handleDateChange = (val: string) => {
     setDate(val);
-    syncToFormData(val, startTime, endTime, venueId, venueName);
+    syncToFormData(val, includeTime ? startTime : '', includeTime ? endTime : '', venueId, venueName);
   };
 
   const handleStartTimeChange = (val: string) => {
@@ -125,7 +126,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
     const vName = found ? found.name : '';
     setVenueId(selectedId);
     setVenueName(vName);
-    syncToFormData(date, startTime, endTime, selectedId, vName);
+    syncToFormData(date, includeTime ? startTime : '', includeTime ? endTime : '', selectedId, vName);
   };
 
   // Save new venue to database
@@ -152,7 +153,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
       // Auto-select the newly created venue
       setVenueId(created.id);
       setVenueName(trimmed);
-      syncToFormData(date, startTime, endTime, created.id, trimmed);
+      syncToFormData(date, includeTime ? startTime : '', includeTime ? endTime : '', created.id, trimmed);
     } catch (err: any) {
       console.error('Failed to save venue:', err);
       toast.error(err?.message || 'Failed to save venue to database.');
@@ -175,9 +176,27 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
           <div className="w-6 h-6 rounded-lg bg-blue-100 text-[#001A4D] flex items-center justify-center font-bold text-xs">
             12
           </div>
-          <label className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-            Date & time (and Venue) <span className="text-red-500">*</span>
-          </label>
+          <div>
+            <label className="text-xs font-bold text-gray-800 uppercase tracking-wider block">
+              Date & time (and Venue) <span className="text-red-500">*</span>
+            </label>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Official event start schedule and campus location. Basis for event launch and subsequent attendance sessions.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Informational Guidance Banner */}
+      <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-2xl flex items-start gap-3">
+        <Info className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
+        <div className="text-xs text-blue-950 space-y-1">
+          <p className="font-bold">
+            Event Starting Schedule & Venue Anchor
+          </p>
+          <p className="text-blue-800 leading-relaxed font-normal">
+            This marks where and when the event is initiated. If you create attendance sessions later on, sessions will be wired up to start on or after this event date.
+          </p>
         </div>
       </div>
 
@@ -189,50 +208,87 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
         </div>
       )}
 
-      {/* Single Schedule Card */}
+      {/* Schedule & Venue Card */}
       <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-xs space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-          {/* Date */}
-          <div className="md:col-span-4">
+          {/* Event Start Date */}
+          <div className="md:col-span-12">
             <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-blue-600" />
-              <span>Event Date <span className="text-red-500">*</span></span>
+              <span>Event Start Date <span className="text-red-500">*</span></span>
             </label>
             <input
               type="date"
               value={date}
               onChange={(e) => handleDateChange(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900 font-medium"
+              className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900 font-semibold"
             />
+            <p className="text-[11px] text-gray-500 mt-1">
+              The official date the event takes place. All attendance sessions must be scheduled on or after this date.
+            </p>
           </div>
 
-          {/* Start Time */}
-          <div className="md:col-span-4">
-            <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-blue-600" />
-              <span>Start Time <span className="text-red-500">*</span></span>
+          {/* Operational Hours Toggle (Optional) */}
+          <div className="md:col-span-12 flex items-center justify-between p-3.5 bg-gray-50 rounded-xl border border-gray-200">
+            <div>
+              <span className="text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-blue-600" />
+                <span>Specify Operational Hours (Optional)</span>
+              </span>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {includeTime ? 'Operational hours active' : 'Time can be left open/flexible or specified here'}
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeTime}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setIncludeTime(checked);
+                  const newStart = checked ? (startTime || '08:00') : '';
+                  const newEnd = checked ? (endTime || '12:00') : '';
+                  if (checked && !startTime) setStartTime('08:00');
+                  if (checked && !endTime) setEndTime('12:00');
+                  syncToFormData(date, newStart, newEnd, venueId, venueName);
+                }}
+                className="sr-only peer"
+              />
+              <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#001A4D]"></div>
             </label>
-            <input
-              type="time"
-              value={startTime}
-              onChange={(e) => handleStartTimeChange(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900"
-            />
           </div>
 
-          {/* End Time */}
-          <div className="md:col-span-4">
-            <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-blue-600" />
-              <span>End Time <span className="text-red-500">*</span></span>
-            </label>
-            <input
-              type="time"
-              value={endTime}
-              onChange={(e) => handleEndTimeChange(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900"
-            />
-          </div>
+          {includeTime && (
+            <>
+              {/* Start Time */}
+              <div className="md:col-span-6">
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-blue-600" />
+                  <span>Start Time (Optional)</span>
+                </label>
+                <input
+                  type="time"
+                  value={startTime}
+                  onChange={(e) => handleStartTimeChange(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900"
+                />
+              </div>
+
+              {/* End Time */}
+              <div className="md:col-span-6">
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
+                  <Clock className="w-4 h-4 text-blue-600" />
+                  <span>End Time (Optional)</span>
+                </label>
+                <input
+                  type="time"
+                  value={endTime}
+                  onChange={(e) => handleEndTimeChange(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900"
+                />
+              </div>
+            </>
+          )}
 
           {/* Venue (Loaded exclusively from Database) */}
           <div className="md:col-span-12">

@@ -191,8 +191,8 @@ export default function OfficerDashboardPage() {
       if (e.proposalStatus === 'returned') {
         tasks.push({
           id: `evt-${e.id}`,
-          task: `Revise returned event proposal: ${e.title}`,
-          dueDate: e.adviserRemarks ? `Remarks: ${e.adviserRemarks.slice(0, 35)}...` : 'Revision requested by SAO Adviser',
+          task: `Revise returned activity proposal: ${e.title}`,
+          dueDate: e.adviserRemarks ? `Remarks: ${e.adviserRemarks.slice(0, 35)}...` : 'Revision requested by reviewer',
           isDueDays: true,
           link: '/officer/events',
           createdAtTime: getTimestampMs(e.createdAt),
@@ -230,12 +230,12 @@ export default function OfficerDashboardPage() {
       }
     });
 
-    // 5. Draft event proposals (In progress)
+    // 5. Draft activity proposals (In progress)
     events.forEach((e) => {
       if (e.proposalStatus === 'draft') {
         tasks.push({
           id: `evt-${e.id}`,
-          task: `Submit draft event proposal: ${e.title}`,
+          task: `Submit draft activity proposal: ${e.title}`,
           dueDate: 'Draft in progress',
           isDueDays: false,
           link: '/officer/events',
@@ -327,21 +327,21 @@ export default function OfficerDashboardPage() {
 
       {/* Two-column section */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Upcoming Events (5 rows, FIFO created date) */}
+        {/* Upcoming Activities (5 rows, FIFO created date) */}
         <div className="lg:col-span-7 bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden shadow-xs flex flex-col justify-between">
           <div>
             <div className="p-5 border-b border-[#E0E0E0] flex items-center justify-between">
-              <h3 className="text-[#001A4D] text-[16px] font-bold">Upcoming Events</h3>
+              <h3 className="text-[#001A4D] text-[16px] font-bold">Upcoming Activities</h3>
               <Link to="/officer/events" className="text-[#0E4EBD] text-[13px] font-bold hover:underline flex items-center gap-1">
-                View All Events <ArrowRight className="w-3.5 h-3.5" />
+                View All Activities <ArrowRight className="w-3.5 h-3.5" />
               </Link>
             </div>
             <div className="p-5 space-y-4">
               {eventsLoading ? (
-                <div className="text-center text-gray-400 py-6 text-xs">Loading events...</div>
+                <div className="text-center text-gray-400 py-6 text-xs">Loading activities...</div>
               ) : upcomingEventsList.length === 0 ? (
                 <div className="text-center text-gray-500 py-8 text-sm">
-                  No upcoming events scheduled. Create a proposal in Event Management.
+                  No upcoming activities scheduled. Create a proposal in Activity Management.
                 </div>
               ) : (
                 upcomingEventsList.slice(0, 5).map((event) => {

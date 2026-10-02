@@ -113,84 +113,45 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     onChange({ materials: materials.filter((_, idx) => idx !== index) });
   };
 
-  // ── Target Market: Courses & Year Levels from Database ──
-  const isShsCourse = (course: any): boolean => {
-    if (!course) return false;
-    return (
-      course.academicLevel === 'SHS' ||
-      course.departmentId === 'SHS' ||
-      String(course.code || '').toUpperCase().includes('SHS') ||
-      String(course.code || '').toUpperCase().includes('STEM') ||
-      String(course.code || '').toUpperCase().includes('ABM') ||
-      String(course.code || '').toUpperCase().includes('HUMSS') ||
-      String(course.code || '').toUpperCase().includes('TVL') ||
-      String(course.code || '').toUpperCase().includes('GAS') ||
-      String(course.name || '').toLowerCase().includes('senior high')
-    );
-  };
+  const [targetMarketInput, setTargetMarketInput] = useState('');
 
-  const toggleCourse = (courseId: string) => {
-    const isSelected = selectedCourses.includes(courseId);
-    const updatedCourses = isSelected
-      ? selectedCourses.filter((id) => id !== courseId)
-      : [...selectedCourses, courseId];
+  const targetMarkets: string[] = useMemo(() => {
+    if (targetAudience.courseCodes && targetAudience.courseCodes.length > 0) {
+      return targetAudience.courseCodes;
+    }
+    if (targetAudience.departments && targetAudience.departments.length > 0) {
+      return targetAudience.departments;
+    }
+    if (targetAudience.courses && targetAudience.courses.length > 0) {
+      return targetAudience.courses;
+    }
+    return [];
+  }, [targetAudience]);
 
-    // Compute updated course codes and academic levels
-    const selectedCourseObjs = activeCourses.filter((c) => updatedCourses.includes(c.id));
-    const codes = selectedCourseObjs.map((c) => c.code || c.name);
-    const hasSHS = selectedCourseObjs.some(isShsCourse);
-    const hasCollege = selectedCourseObjs.some((c) => !isShsCourse(c));
-
-    const deptIds = Array.from(
-      new Set(selectedCourseObjs.map((c) => c.departmentId).filter(Boolean))
-    );
-
+  const handleAddTargetMarket = (val: string) => {
+    const trimmed = val.trim();
+    if (!trimmed || targetMarkets.includes(trimmed)) return;
+    const updated = [...targetMarkets, trimmed];
     onChange({
       targetAudience: {
         ...targetAudience,
-        courses: updatedCourses,
-        courseCodes: codes,
-        departments: codes,
-        departmentIds: deptIds,
-        academicLevels: levels.length > 0 ? levels : ['College'],
+        departments: updated,
+        courseCodes: updated,
+        courses: updated,
+        academicLevels: targetAudience.academicLevels && targetAudience.academicLevels.length > 0 ? targetAudience.academicLevels : ['College'],
       },
     });
+    setTargetMarketInput('');
   };
 
-  const selectAllCourses = () => {
-    const allIds = activeCourses.map((c) => c.id);
-    const codes = activeCourses.map((c) => c.code || c.name);
-    const hasSHS = activeCourses.some(isShsCourse);
-    const hasCollege = activeCourses.some((c) => !isShsCourse(c));
-    const levels: ('SHS' | 'College')[] = [];
-    if (hasSHS) levels.push('SHS');
-    if (hasCollege) levels.push('College');
-
-    const allDeptIds = Array.from(
-      new Set(activeCourses.map((c) => c.departmentId).filter(Boolean))
-    );
-
+  const handleRemoveTargetMarket = (idxToRemove: number) => {
+    const updated = targetMarkets.filter((_, i) => i !== idxToRemove);
     onChange({
       targetAudience: {
         ...targetAudience,
-        courses: allIds,
-        courseCodes: codes,
-        departments: codes,
-        departmentIds: allDeptIds,
-        academicLevels: levels,
-      },
-    });
-  };
-
-  const clearAllCourses = () => {
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        courses: [],
-        courseCodes: [],
-        departments: [],
-        departmentIds: [],
-        academicLevels: [],
+        departments: updated,
+        courseCodes: updated,
+        courses: updated,
       },
     });
   };
@@ -332,7 +293,7 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
         </div>
       </div>
 
-      {/* ── Section 8: Target market (PULLED FROM DATABASE) ── */}
+      {/* ── Section 8: Target market (MANUALLY INPUTTED TEXT FIELD) ── */}
       <div className="space-y-4 pt-4 border-t border-gray-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -344,77 +305,118 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
             </label>
           </div>
           <span className="text-[11px] text-gray-500">
-            {selectedCourses.length === 0 ? 'All Programs / Strands' : `${selectedCourses.length} Program(s) Selected`}
+            {targetMarkets.length === 0 ? 'No target market added yet' : `${targetMarkets.length} Target(s) Added`}
           </span>
         </div>
 
-        {/* 1. Programs / Strands Covered (From DB only) */}
         <div className="p-4 border border-gray-200 rounded-2xl bg-white space-y-3">
+          {/* Active Target Market Badges */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <BookOpen className="w-4 h-4 text-[#0E4EBD]" />
-              <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-                Programs / Strands Covered
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+              Target Programs / Audiences
+            </span>
+            {targetMarkets.length > 0 && (
               <button
                 type="button"
-                onClick={selectAllCourses}
-                className="text-xs text-[#0E4EBD] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                onClick={() =>
+                  onChange({
+                    targetAudience: {
+                      ...targetAudience,
+                      departments: [],
+                      courseCodes: [],
+                      courses: [],
+                    },
+                  })
+                }
+                className="text-xs text-gray-500 hover:text-red-600 font-medium cursor-pointer"
               >
-                <CheckSquare className="w-3.5 h-3.5" /> Select All ({activeCourses.length})
+                Clear all
               </button>
-              <span className="text-gray-300">|</span>
-              <button
-                type="button"
-                onClick={clearAllCourses}
-                className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-              >
-                Clear
-              </button>
-            </div>
+            )}
           </div>
 
-          {coursesLoading ? (
-            <div className="text-xs text-gray-400 py-3">Loading active programs from database...</div>
-          ) : activeCourses.length === 0 ? (
-            <div className="text-xs text-gray-400 py-3">No active programs found in database registry.</div>
+          {targetMarkets.length === 0 ? (
+            <div className="p-3 bg-amber-50/70 border border-dashed border-amber-300 rounded-xl text-xs text-amber-800 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <span>Please add at least one target market (e.g. type BSIT and click Add, then type BSHM and click Add).</span>
+            </div>
           ) : (
             <div className="flex flex-wrap gap-2">
-              {activeCourses.map((course) => {
-                const isSelected = selectedCourses.includes(course.id);
-                const isShs = isShsCourse(course);
-
-                return (
+              {targetMarkets.map((market, idx) => (
+                <span
+                  key={idx}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#001A4D] text-[#FFD41C] border border-[#001A4D] rounded-xl text-xs font-bold shadow-xs"
+                >
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>{market}</span>
                   <button
                     type="button"
-                    key={course.id}
-                    onClick={() => toggleCourse(course.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-1.5 cursor-pointer ${isSelected
-                        ? 'bg-[#0E4EBD] text-white border-[#0E4EBD] shadow-xs'
-                        : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#0E4EBD] hover:bg-blue-50/50'
-                      }`}
+                    onClick={() => handleRemoveTargetMarket(idx)}
+                    className="hover:text-red-400 transition-colors ml-1 cursor-pointer"
+                    title="Remove target market"
                   >
-                    <span>{course.code || course.name}</span>
-                    <span
-                      className={`text-[10px] px-1.5 py-0.2 rounded font-normal ${isSelected
-                          ? 'bg-white/20 text-white'
-                          : isShs
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-blue-100 text-blue-800'
-                        }`}
-                    >
-                      {isShs ? 'SHS' : 'College'}
-                    </span>
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {/* Text Input & Add Button */}
+          <div className="flex gap-2 pt-1">
+            <input
+              type="text"
+              value={targetMarketInput}
+              onChange={(e) => setTargetMarketInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleAddTargetMarket(targetMarketInput);
+                }
+              }}
+              placeholder="Type target market (e.g. BSIT, BSHM, Grade 11 STEM)..."
+              className="flex-1 px-3.5 py-2.5 bg-gray-50/60 border border-gray-300 rounded-xl text-xs font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
+            />
+            <button
+              type="button"
+              onClick={() => handleAddTargetMarket(targetMarketInput)}
+              className="px-4 py-2.5 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add
+            </button>
+          </div>
+
+          {/* Quick-add suggestions from campus programs */}
+          <div className="pt-2 border-t border-gray-100">
+            <div className="flex items-center gap-1.5 text-[11px] text-gray-500 mb-1.5">
+              <span className="font-semibold text-gray-600">Quick suggestions:</span>
+              <span className="text-[10px] text-gray-400">(click to add quickly)</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {['BSIT', 'BSHM', 'BSBA', 'BSCS', 'BSTM', 'Grade 11 STEM', 'Grade 12 ABM', 'Grade 11 HUMSS', 'Grade 12 TVL', 'All College Students', 'All SHS Students', 'All Campus Students'].map((sug) => {
+                const isAdded = targetMarkets.includes(sug);
+                return (
+                  <button
+                    key={sug}
+                    type="button"
+                    disabled={isAdded}
+                    onClick={() => handleAddTargetMarket(sug)}
+                    className={`px-2.5 py-1 text-xs rounded-lg border transition-all cursor-pointer font-medium ${
+                      isAdded
+                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                        : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-blue-50 hover:text-[#0E4EBD] hover:border-blue-300'
+                    }`}
+                  >
+                    {isAdded ? `✓ ${sug}` : `+ ${sug}`}
                   </button>
                 );
               })}
             </div>
-          )}
+          </div>
         </div>
 
-        {/* 2. Year Levels (From DB / Campus Standard) */}
+        {/* 2. Year Levels (Optional Campus Standard) */}
         <div className="p-4 border border-gray-200 rounded-2xl bg-white space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -450,10 +452,11 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
                   type="button"
                   key={year}
                   onClick={() => toggleYearLevel(year)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${isSelected
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all cursor-pointer ${
+                    isSelected
                       ? 'bg-[#001A4D] text-white border-[#001A4D] shadow-xs'
                       : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#001A4D] hover:bg-gray-100'
-                    }`}
+                  }`}
                 >
                   {year}
                 </button>

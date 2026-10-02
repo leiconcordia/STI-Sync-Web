@@ -12,7 +12,6 @@ import {
   Bell,
   Settings,
   GraduationCap,
-  Banknote,
   Files,
 } from "lucide-react";
 
@@ -29,14 +28,13 @@ const navGroups = [
     title: "Organizations & Activities",
     items: [
       { icon: Building2, label: "Organization Management", path: "/home/organizations" },
-      { icon: CalendarCheck, label: "Events", path: "/home/event-approvals" },
+      { icon: CalendarCheck, label: "Activities", path: "/home/event-approvals" },
       { icon: QrCode, label: "Attendance Monitoring", path: "/home/attendance" },
     ]
   },
   {
     title: "Finance & Documents",
     items: [
-      { icon: Banknote, label: "Budget & Fund", path: "/home/budget-fund" },
       { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations" },
       { icon: Files, label: "Document Management", path: "/home/documents" },
       { icon: Award, label: "Certificates", path: "/home/certificates" },

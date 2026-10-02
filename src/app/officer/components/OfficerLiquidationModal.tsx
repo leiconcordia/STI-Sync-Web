@@ -16,6 +16,8 @@ import {
   Paperclip,
   ExternalLink,
   Lock,
+  ShieldCheck,
+  Layers,
 } from 'lucide-react';
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
@@ -25,12 +27,18 @@ import {
   createLiquidationReport,
   updateLiquidationReport,
   submitLiquidationReport,
+  generateDefaultLiquidationChain,
 } from '../../modules/finance/services/liquidation.service';
+import { subscribeToSignatories } from '../../modules/signatories/services/signatory.service';
+import type { InstitutionalSignatory } from '../../modules/signatories/types/signatory.types';
 import type {
   LiquidationDocument,
   ExpenseLineItem,
   ReceiptAttachment,
+  LiquidationApprovalStep,
 } from '../../modules/finance/types/liquidation.types';
+import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
+import LiquidationFlowBuilder from '../../modules/finance/components/LiquidationFlowBuilder';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { toast } from 'sonner';
@@ -264,6 +272,9 @@ export default function OfficerLiquidationModal({
   const [selectedEventId, setSelectedEventId] = useState<string>('');
   const [allocatedBudget, setAllocatedBudget] = useState<number>(0);
   const [lineItems, setLineItems] = useState<ExpenseLineItem[]>([]);
+  const [approvalChain, setApprovalChain] = useState<LiquidationApprovalStep[]>([]);
+  const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
+  const [activeModalTab, setActiveModalTab] = useState<'expenses' | 'signatories'>('expenses');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -276,12 +287,27 @@ export default function OfficerLiquidationModal({
     fileType?: string;
   } | null>(null);
 
+  // Subscribe to active institutional signatories for dynamic pipeline builder
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => {
+      setActiveSignatories(list);
+    });
+    return () => unsub();
+  }, []);
+
   // Pre-fill if editing an existing / returned report
   useEffect(() => {
     if (editingReport) {
       setSelectedEventId(editingReport.eventId);
       setAllocatedBudget(editingReport.allocatedBudget || 0);
       setLineItems(normalizeLineItems(editingReport.lineItems || []));
+      if (editingReport.approvalChain && editingReport.approvalChain.length > 0) {
+        setApprovalChain(editingReport.approvalChain);
+      } else {
+        generateDefaultLiquidationChain(orgId, orgName, editingReport.allocatedBudget || 0, activeSignatories).then((chain) => {
+          setApprovalChain(chain);
+        });
+      }
     } else {
       setSelectedEventId('');
       setAllocatedBudget(0);
@@ -300,42 +326,84 @@ export default function OfficerLiquidationModal({
           receiptFiles: [],
         },
       ]);
+      generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories).then((chain) => {
+        setApprovalChain(chain);
+      });
     }
-  }, [editingReport, isOpen]);
+  }, [editingReport, isOpen, orgId, orgName]);
 
   // Update budget & auto-fetch budgetItems when event is selected
-  const handleEventSelect = (eventId: string) => {
+  const handleEventSelect = async (eventId: string) => {
     setSelectedEventId(eventId);
     const event = eligibleEvents.find((e) => e.id === eventId) || allEvents.find((e) => e.id === eventId);
     if (event) {
       const budget = calculateEventBudget(event);
       setAllocatedBudget(budget);
 
-      // Auto-fetch budgetItems from the event proposal if not editing existing report
-      if (!editingReport && (event as any).budgetItems && (event as any).budgetItems.length > 0) {
-        const fetchedItems: ExpenseLineItem[] = (event as any).budgetItems.map((bi: any, i: number) => {
-          const allocatedCost = bi.approvedAmount || bi.quantity * bi.unitCost || bi.totalCost || 0;
-          const propQty = bi.quantity || 1;
-          const propUnit = bi.unitCost || (allocatedCost > 0 ? Math.round(allocatedCost / propQty) : 0);
+      // Auto-load liquidation approval chain
+      if (!editingReport || !editingReport.approvalChain || editingReport.approvalChain.length === 0) {
+        const defaultChain = await generateDefaultLiquidationChain(
+          event.hostingOrgId || orgId,
+          event.hostingOrgName || orgName,
+          budget
+        );
+        setApprovalChain(defaultChain);
+      }
 
-          return {
-            id: `item-${i}-${Date.now()}`,
-            description: bi.item || bi.description || `Budget Item ${i + 1}`,
-            category: bi.category || EXPENSE_CATEGORIES[0],
-            allocatedCost: allocatedCost,
-            proposedQuantity: propQty,
-            proposedUnitCost: propUnit,
-            isPreFilled: true,
-            quantity: propQty,
-            unitCost: 0,
-            totalCost: 0,
-            vendorName: '',
-            receiptUrl: '',
-            receiptUrls: [],
-            receiptFiles: [],
-          };
-        });
-        setLineItems(fetchedItems);
+      // Auto-fetch line items: Prioritize Budget Custodians ("Hold Money"), fallback to budgetItems
+      if (!editingReport) {
+        if ((event as any).budgetCustodians && (event as any).budgetCustodians.length > 0) {
+          const fetchedItems: ExpenseLineItem[] = (event as any).budgetCustodians.map((c: any, i: number) => {
+            const allocatedCost = Number(c.allocatedAmount || 0);
+            return {
+              id: `item-${i}-${Date.now()}`,
+              description: `${c.purpose || 'Expense'}${c.personName ? ` (Custodian: ${c.personName})` : ''}`,
+              category: c.purpose?.toLowerCase().includes('food') || c.purpose?.toLowerCase().includes('snack')
+                ? 'Food & Catering'
+                : c.purpose?.toLowerCase().includes('venue') || c.purpose?.toLowerCase().includes('sound')
+                ? 'Venue & Facilities'
+                : c.purpose?.toLowerCase().includes('token') || c.purpose?.toLowerCase().includes('cert')
+                ? 'Materials & Printing'
+                : EXPENSE_CATEGORIES[0],
+              allocatedCost: allocatedCost,
+              proposedQuantity: 1,
+              proposedUnitCost: allocatedCost,
+              isPreFilled: true,
+              quantity: 1,
+              unitCost: 0,
+              totalCost: 0,
+              vendorName: '',
+              receiptUrl: '',
+              receiptUrls: [],
+              receiptFiles: [],
+            };
+          });
+          setLineItems(fetchedItems);
+        } else if ((event as any).budgetItems && (event as any).budgetItems.length > 0) {
+          const fetchedItems: ExpenseLineItem[] = (event as any).budgetItems.map((bi: any, i: number) => {
+            const allocatedCost = bi.approvedAmount || bi.quantity * bi.unitCost || bi.totalCost || 0;
+            const propQty = bi.quantity || 1;
+            const propUnit = bi.unitCost || (allocatedCost > 0 ? Math.round(allocatedCost / propQty) : 0);
+
+            return {
+              id: `item-${i}-${Date.now()}`,
+              description: bi.item || bi.description || `Budget Item ${i + 1}`,
+              category: bi.category || EXPENSE_CATEGORIES[0],
+              allocatedCost: allocatedCost,
+              proposedQuantity: propQty,
+              proposedUnitCost: propUnit,
+              isPreFilled: true,
+              quantity: propQty,
+              unitCost: 0,
+              totalCost: 0,
+              vendorName: '',
+              receiptUrl: '',
+              receiptUrls: [],
+              receiptFiles: [],
+            };
+          });
+          setLineItems(fetchedItems);
+        }
       }
     }
   };
@@ -443,6 +511,11 @@ export default function OfficerLiquidationModal({
   const surplusOrDeficit = allocatedBudget - totalActualSpending;
   const isDeficit = surplusOrDeficit < 0;
 
+  const selectedEvent =
+    eligibleEvents.find((e) => e.id === selectedEventId) ||
+    allEvents.find((e) => e.id === selectedEventId);
+  const eventTitle = selectedEvent?.title || editingReport?.eventTitle || 'Event Liquidation';
+
   const handleSave = async (shouldSubmit: boolean) => {
     if (!selectedEventId) {
       setError('Please select an event for this liquidation report.');
@@ -473,17 +546,36 @@ export default function OfficerLiquidationModal({
         setError('Please attach at least one valid receipt or proof document for every expense line item before submitting.');
         return;
       }
+      if (approvalChain.length === 0) {
+        setError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
+        return;
+      }
+      const hasApprover = approvalChain.some(
+        (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
+      );
+      if (!hasApprover) {
+        setError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
+        return;
+      }
     }
 
     setIsSubmitting(true);
     setError(null);
 
     try {
-      const selectedEvent = eligibleEvents.find((e) => e.id === selectedEventId) || allEvents.find((e) => e.id === selectedEventId);
-      const eventTitle = selectedEvent ? selectedEvent.title : editingReport?.eventTitle || 'Event Liquidation';
-
       const isAdmin = userRole === 'admin';
-      const nextStatus = shouldSubmit ? (isAdmin ? 'approved' : 'pending') : 'draft';
+      const nextStatus = shouldSubmit ? (isAdmin ? 'approved' : 'under_review') : 'draft';
+
+      // Ensure approval chain statuses are set appropriately on submit
+      let finalizedChain = approvalChain;
+      if (shouldSubmit) {
+        finalizedChain = approvalChain.map((step) => {
+          if ((step.stageIndex ?? 1) === 1) {
+            return { ...step, status: 'current' as const };
+          }
+          return { ...step, status: 'waiting' as const };
+        });
+      }
 
       const payload: Omit<LiquidationDocument, 'id' | 'createdAt' | 'updatedAt'> = {
         eventId: selectedEventId,
@@ -493,10 +585,15 @@ export default function OfficerLiquidationModal({
         createdById: userUid,
         createdByRole: userRole,
         createdByName: userName,
+        submittedByName: userName,
+        submittedByRole: userRole,
         allocatedBudget,
         totalActualSpending,
         surplusOrDeficit,
         status: nextStatus,
+        approvalChain: finalizedChain,
+        currentStageIndex: 1,
+        currentStepIndex: 0,
         lineItems,
       };
 
@@ -508,14 +605,14 @@ export default function OfficerLiquidationModal({
         });
         toast.success(
           shouldSubmit
-            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for review.')
+            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for institutional endorsement.')
             : 'Draft liquidation report updated successfully.'
         );
       } else {
         await createLiquidationReport(payload);
         toast.success(
           shouldSubmit
-            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for review.')
+            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for institutional endorsement.')
             : 'Draft liquidation report saved successfully.'
         );
       }
@@ -665,356 +762,462 @@ export default function OfficerLiquidationModal({
             </div>
           </div>
 
-          {/* Line Items Section */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-bold text-[#001A4D]">Expense Line Items & Receipts</h3>
-              <button
-                onClick={handleAddLineItem}
-                className="px-3 py-1.5 bg-[#1E70E8] text-white text-xs font-medium rounded-lg hover:bg-[#0E4EBD] flex items-center gap-1.5 transition-colors cursor-pointer"
+          {/* Tab Navigation: Expenses vs Signatory Pipeline */}
+          <div className="flex items-center gap-2 border-b border-gray-200 pb-2">
+            <button
+              type="button"
+              onClick={() => setActiveModalTab('expenses')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                activeModalTab === 'expenses'
+                  ? 'bg-[#001A4D] text-[#FFD41C] shadow-xs'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900'
+              }`}
+            >
+              <DollarSign className="w-4 h-4" />
+              <span>1. Line Items & Receipts</span>
+              <span
+                className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                  activeModalTab === 'expenses' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                }`}
               >
-                <Plus className="w-4 h-4" /> Add Line Item
-              </button>
-            </div>
+                {lineItems.length}
+              </span>
+            </button>
 
+            <button
+              type="button"
+              onClick={() => setActiveModalTab('signatories')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                activeModalTab === 'signatories'
+                  ? 'bg-[#001A4D] text-[#FFD41C] shadow-xs'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 hover:text-gray-900'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>2. Signatory & Audit Route (Form LF-01)</span>
+              <span
+                className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                  activeModalTab === 'signatories' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                }`}
+              >
+                {approvalChain.length} Signers
+              </span>
+            </button>
+          </div>
+
+          {/* TAB 1: Expenses & Receipts */}
+          {activeModalTab === 'expenses' && (
             <div className="space-y-4">
-              {lineItems.map((item, index) => {
-                const attachedFiles = item.receiptFiles || [];
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-bold text-[#001A4D]">Expense Line Items & Receipts</h3>
+                  <p className="text-xs text-gray-500">
+                    Input actual disbursements, quantities, unit prices, and attach digital invoices/receipts.
+                  </p>
+                </div>
+                <button
+                  onClick={handleAddLineItem}
+                  className="px-3 py-1.5 bg-[#1E70E8] text-white text-xs font-medium rounded-lg hover:bg-[#0E4EBD] flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" /> Add Line Item
+                </button>
+              </div>
 
-                return (
-                  <div
-                    key={item.id}
-                    className="p-4 border border-gray-200 rounded-xl bg-white space-y-3 relative group"
-                  >
-                    <div className="flex items-center justify-between border-b border-gray-100 pb-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                          Item #{index + 1}
-                        </span>
-                        {item.isPreFilled && (
-                          <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#0E4EBD] rounded border border-blue-200 uppercase">
-                            Proposal Budget Item
+              <div className="space-y-4">
+                {lineItems.map((item, index) => {
+                  const attachedFiles = item.receiptFiles || [];
+
+                  return (
+                    <div
+                      key={item.id}
+                      className="p-4 border border-gray-200 rounded-xl bg-white space-y-3 relative group"
+                    >
+                      <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                            Item #{index + 1}
                           </span>
-                        )}
-                        {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                          <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
-                            Allocated: {formatCurrency(item.allocatedCost)}
-                          </span>
-                        )}
+                          {item.isPreFilled && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#0E4EBD] rounded border border-blue-200 uppercase">
+                              Allocated Item
+                            </span>
+                          )}
+                          {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
+                            <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
+                              Allocated: {formatCurrency(item.allocatedCost)}
+                            </span>
+                          )}
+                          {attachedFiles.length > 0 ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              Receipt Attached ({attachedFiles.length})
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded flex items-center gap-1">
+                              <AlertCircle className="w-3 h-3 text-rose-600" />
+                              Receipt Required
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3">
+                          {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
+                            <span
+                              className={`text-[11px] font-bold px-2.5 py-0.5 rounded ${
+                                item.allocatedCost - item.totalCost < 0
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-green-100 text-green-800'
+                              }`}
+                            >
+                              {item.allocatedCost - item.totalCost < 0
+                                ? `Item Deficit (-${formatCurrency(Math.abs(item.allocatedCost - item.totalCost))})`
+                                : `Item Surplus (+${formatCurrency(item.allocatedCost - item.totalCost)})`}
+                            </span>
+                          )}
+                          {!item.isPreFilled && lineItems.length > 1 && (
+                            <button
+                              onClick={() => handleRemoveLineItem(index)}
+                              className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
+                              title="Remove custom item"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
-                        {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                          <span
-                            className={`text-[11px] font-bold px-2.5 py-0.5 rounded ${
-                              item.allocatedCost - item.totalCost < 0
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block text-xs text-gray-600 mb-1">Description / Item Name *</label>
+                          <input
+                            type="text"
+                            value={item.description}
+                            disabled={item.isPreFilled}
+                            onChange={(e) => handleLineItemChange(index, 'description', e.target.value)}
+                            placeholder="e.g. Lunch Catering for 50 Pax"
+                            className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
+                              item.isPreFilled
+                                ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
+                                : 'focus:ring-1 focus:ring-[#0E4EBD]'
+                            }`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">Category</label>
+                          <select
+                            value={item.category}
+                            disabled={item.isPreFilled}
+                            onChange={(e) => handleLineItemChange(index, 'category', e.target.value)}
+                            className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
+                              item.isPreFilled
+                                ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
+                                : 'focus:ring-1 focus:ring-[#0E4EBD]'
+                            }`}
+                          >
+                            {EXPENSE_CATEGORIES.map((cat) => (
+                              <option key={cat} value={cat}>
+                                {cat}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Side-by-Side Proposed vs Actual Comparison Banner */}
+                      {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
+                        <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <div>
+                              <span className="text-gray-500 font-medium">Proposed Baseline:</span>
+                              <span className="ml-1.5 font-bold text-[#001A4D]">
+                                {item.proposedQuantity || item.quantity || 1} Qty ×{' '}
+                                {formatCurrency(item.proposedUnitCost || 0)} = {formatCurrency(item.allocatedCost || 0)}
+                              </span>
+                            </div>
+                            <span className="text-blue-300 hidden sm:inline">|</span>
+                            <div>
+                              <span className="text-gray-500 font-medium">Actual Input:</span>
+                              <span className="ml-1.5 font-bold text-[#0E4EBD]">
+                                {item.quantity} Qty × {formatCurrency(item.unitCost)} = {formatCurrency(item.totalCost)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div
+                            className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+                              (item.allocatedCost || 0) - item.totalCost < 0
                                 ? 'bg-red-100 text-red-800'
                                 : 'bg-green-100 text-green-800'
                             }`}
                           >
-                            {item.allocatedCost - item.totalCost < 0
-                              ? `Item Deficit (-${formatCurrency(Math.abs(item.allocatedCost - item.totalCost))})`
-                              : `Item Surplus (+${formatCurrency(item.allocatedCost - item.totalCost)})`}
-                          </span>
-                        )}
-                        {!item.isPreFilled && lineItems.length > 1 && (
-                          <button
-                            onClick={() => handleRemoveLineItem(index)}
-                            className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
-                            title="Remove custom item"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="sm:col-span-2">
-                        <label className="block text-xs text-gray-600 mb-1">Description / Item Name *</label>
-                        <input
-                          type="text"
-                          value={item.description}
-                          disabled={item.isPreFilled}
-                          onChange={(e) => handleLineItemChange(index, 'description', e.target.value)}
-                          placeholder="e.g. Lunch Catering for 50 Pax"
-                          className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
-                            item.isPreFilled
-                              ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
-                              : 'focus:ring-1 focus:ring-[#0E4EBD]'
-                          }`}
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">Category</label>
-                        <select
-                          value={item.category}
-                          disabled={item.isPreFilled}
-                          onChange={(e) => handleLineItemChange(index, 'category', e.target.value)}
-                          className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
-                            item.isPreFilled
-                              ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
-                              : 'focus:ring-1 focus:ring-[#0E4EBD]'
-                          }`}
-                        >
-                          {EXPENSE_CATEGORIES.map((cat) => (
-                            <option key={cat} value={cat}>
-                              {cat}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Side-by-Side Proposed vs Actual Comparison Banner */}
-                    {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                      <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <div>
-                            <span className="text-gray-500 font-medium">Proposed Baseline:</span>
-                            <span className="ml-1.5 font-bold text-[#001A4D]">
-                              {item.proposedQuantity || item.quantity || 1} Qty ×{' '}
-                              {formatCurrency(item.proposedUnitCost || 0)} = {formatCurrency(item.allocatedCost || 0)}
-                            </span>
-                          </div>
-                          <span className="text-blue-300 hidden sm:inline">|</span>
-                          <div>
-                            <span className="text-gray-500 font-medium">Actual Input:</span>
-                            <span className="ml-1.5 font-bold text-[#0E4EBD]">
-                              {item.quantity} Qty × {formatCurrency(item.unitCost)} = {formatCurrency(item.totalCost)}
-                            </span>
+                            {(item.allocatedCost || 0) - item.totalCost < 0
+                              ? `Deficit: -${formatCurrency(Math.abs((item.allocatedCost || 0) - item.totalCost))}`
+                              : `Surplus: +${formatCurrency((item.allocatedCost || 0) - item.totalCost)}`}
                           </div>
                         </div>
+                      )}
 
-                        <div
-                          className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-                            (item.allocatedCost || 0) - item.totalCost < 0
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-green-100 text-green-800'
-                          }`}
-                        >
-                          {(item.allocatedCost || 0) - item.totalCost < 0
-                            ? `Deficit: -${formatCurrency(Math.abs((item.allocatedCost || 0) - item.totalCost))}`
-                            : `Surplus: +${formatCurrency((item.allocatedCost || 0) - item.totalCost)}`}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">Actual Quantity</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={item.quantity}
-                          onChange={(e) => handleLineItemChange(index, 'quantity', e.target.value)}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">Actual Unit Cost (₱)</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={item.unitCost}
-                          onChange={(e) => handleLineItemChange(index, 'unitCost', e.target.value)}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium text-gray-900"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs text-gray-600 mb-1">Total Actual Cost (₱)</label>
-                        <input
-                          type="number"
-                          readOnly
-                          value={item.totalCost}
-                          className="w-full px-3 py-1.5 border border-gray-200 bg-gray-50 rounded text-sm font-bold text-[#0E4EBD]"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Vendor Name & Multi-Receipt Upload Section */}
-                    <div className="space-y-3 pt-2 border-t border-gray-100">
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
-                          <label className="block text-xs text-gray-600 mb-1">Vendor / Store Name *</label>
+                          <label className="block text-xs text-gray-600 mb-1">Actual Quantity</label>
                           <input
-                            type="text"
-                            value={item.vendorName}
-                            onChange={(e) => handleLineItemChange(index, 'vendorName', e.target.value)}
-                            placeholder="e.g. Jollibee Ormoc, National Book Store"
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            type="number"
+                            min="1"
+                            value={item.quantity}
+                            onChange={(e) => handleLineItemChange(index, 'quantity', e.target.value)}
+                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium"
                           />
                         </div>
 
                         <div>
-                          <label className="block text-xs text-gray-600 mb-1">Receipt / Invoice Ref Number (Optional)</label>
+                          <label className="block text-xs text-gray-600 mb-1">Actual Unit Cost (₱)</label>
                           <input
-                            type="text"
-                            value={item.receiptNumber || ''}
-                            onChange={(e) => handleLineItemChange(index, 'receiptNumber', e.target.value)}
-                            placeholder="e.g. OR #104928"
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            type="number"
+                            min="0"
+                            value={item.unitCost}
+                            onChange={(e) => handleLineItemChange(index, 'unitCost', e.target.value)}
+                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium text-gray-900"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs text-gray-600 mb-1">Total Actual Cost (₱)</label>
+                          <input
+                            type="number"
+                            readOnly
+                            value={item.totalCost}
+                            className="w-full px-3 py-1.5 border border-gray-200 bg-gray-50 rounded text-sm font-bold text-[#0E4EBD]"
                           />
                         </div>
                       </div>
 
-                      {/* Multi-file Receipt Proof Attachments */}
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="block text-xs font-semibold text-gray-700">
-                            Receipts & Proof Documents ({attachedFiles.length})
-                          </label>
-                          <span className="text-[11px] text-gray-500">
-                            Allowed: Images (PNG/JPG), PDF, Word, Excel/CSV, Text
-                          </span>
+                      {/* Vendor Name & Multi-Receipt Upload Section */}
+                      <div className="space-y-3 pt-2 border-t border-gray-100">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Vendor / Store Name *</label>
+                            <input
+                              type="text"
+                              value={item.vendorName}
+                              onChange={(e) => handleLineItemChange(index, 'vendorName', e.target.value)}
+                              placeholder="e.g. Jollibee Ormoc, National Book Store"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Receipt / Invoice Ref Number (Optional)</label>
+                            <input
+                              type="text"
+                              value={item.receiptNumber || ''}
+                              onChange={(e) => handleLineItemChange(index, 'receiptNumber', e.target.value)}
+                              placeholder="e.g. OR #104928"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            />
+                          </div>
                         </div>
 
-                        {/* List of uploaded receipt files */}
-                        {attachedFiles.length > 0 && (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                            {attachedFiles.map((file) => {
-                              const isImg = file.fileType === 'image';
-                              const isPdf = file.fileType === 'pdf';
-                              const isSheet = file.fileType === 'spreadsheet';
-                              const isDoc = file.fileType === 'document';
+                        {/* Multi-file Receipt Proof Attachments */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-xs font-semibold text-gray-700">
+                              Receipts & Proof Documents ({attachedFiles.length})
+                            </label>
+                            <span className="text-[11px] text-gray-500">
+                              Allowed: Images (PNG/JPG), PDF, Word, Excel/CSV, Text
+                            </span>
+                          </div>
 
-                              return (
-                                <div
-                                  key={file.id}
-                                  className="flex items-center justify-between gap-2 p-2 bg-gray-50 hover:bg-gray-100/80 border border-gray-200 rounded-lg transition-colors group/file text-xs"
-                                >
-                                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    {isImg ? (
-                                      <div className="w-7 h-7 rounded border border-gray-200 overflow-hidden bg-gray-200 flex-shrink-0 flex items-center justify-center">
-                                        <img
-                                          src={file.url}
-                                          alt={file.name}
-                                          className="w-full h-full object-cover"
-                                          onError={(e) => {
-                                            (e.target as HTMLElement).style.display = 'none';
-                                          }}
-                                        />
-                                      </div>
-                                    ) : isPdf ? (
-                                      <div className="w-7 h-7 rounded bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0 border border-red-200">
-                                        <FileText className="w-4 h-4" />
-                                      </div>
-                                    ) : isSheet ? (
-                                      <div className="w-7 h-7 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0 border border-emerald-200">
-                                        <FileSpreadsheet className="w-4 h-4" />
-                                      </div>
-                                    ) : isDoc ? (
-                                      <div className="w-7 h-7 rounded bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 border border-blue-200">
-                                        <FileText className="w-4 h-4" />
-                                      </div>
-                                    ) : (
-                                      <div className="w-7 h-7 rounded bg-gray-100 text-gray-600 flex items-center justify-center flex-shrink-0 border border-gray-200">
-                                        <File className="w-4 h-4" />
-                                      </div>
-                                    )}
+                          {/* List of uploaded receipt files */}
+                          {attachedFiles.length > 0 && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                              {attachedFiles.map((file) => {
+                                const isImg = file.fileType === 'image';
+                                const isPdf = file.fileType === 'pdf';
+                                const isSheet = file.fileType === 'spreadsheet';
+                                const isDoc = file.fileType === 'document';
 
-                                    <div className="min-w-0 flex-1">
-                                      <div
-                                        className="font-semibold text-gray-800 truncate"
-                                        title={file.name}
-                                      >
-                                        {file.name}
-                                      </div>
-                                      <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
-                                        <span className="uppercase">{file.fileType}</span>
-                                        {file.size ? (
-                                          <>
-                                            <span>•</span>
-                                            <span>{formatFileSize(file.size)}</span>
-                                          </>
-                                        ) : null}
+                                return (
+                                  <div
+                                    key={file.id}
+                                    className="flex items-center justify-between gap-2 p-2 bg-gray-50 hover:bg-gray-100/80 border border-gray-200 rounded-lg transition-colors group/file text-xs"
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                      {isImg ? (
+                                        <div className="w-7 h-7 rounded border border-gray-200 overflow-hidden bg-gray-200 flex-shrink-0 flex items-center justify-center">
+                                          <img
+                                            src={file.url}
+                                            alt={file.name}
+                                            className="w-full h-full object-cover"
+                                            onError={(e) => {
+                                              (e.target as HTMLElement).style.display = 'none';
+                                            }}
+                                          />
+                                        </div>
+                                      ) : isPdf ? (
+                                        <div className="w-7 h-7 rounded bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0 border border-red-200">
+                                          <FileText className="w-4 h-4" />
+                                        </div>
+                                      ) : isSheet ? (
+                                        <div className="w-7 h-7 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0 border border-emerald-200">
+                                          <FileSpreadsheet className="w-4 h-4" />
+                                        </div>
+                                      ) : isDoc ? (
+                                        <div className="w-7 h-7 rounded bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 border border-blue-200">
+                                          <FileText className="w-4 h-4" />
+                                        </div>
+                                      ) : (
+                                        <div className="w-7 h-7 rounded bg-gray-100 text-gray-600 flex items-center justify-center flex-shrink-0 border border-gray-200">
+                                          <File className="w-4 h-4" />
+                                        </div>
+                                      )}
+
+                                      <div className="min-w-0 flex-1">
+                                        <div
+                                          className="font-semibold text-gray-800 truncate"
+                                          title={file.name}
+                                        >
+                                          {file.name}
+                                        </div>
+                                        <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                                          <span className="uppercase">{file.fileType}</span>
+                                          {file.size ? (
+                                            <>
+                                              <span>•</span>
+                                              <span>{formatFileSize(file.size)}</span>
+                                            </>
+                                          ) : null}
+                                        </div>
                                       </div>
                                     </div>
+
+                                    <div className="flex items-center gap-1 flex-shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setLightboxData({
+                                            url: file.url,
+                                            title: item.description || 'Receipt File',
+                                            vendor: item.vendorName,
+                                            amount: item.totalCost,
+                                            fileName: file.name,
+                                            fileType: file.fileType,
+                                          })
+                                        }
+                                        className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                                        title="Preview Receipt"
+                                      >
+                                        <Eye className="w-4 h-4" />
+                                      </button>
+
+                                      <a
+                                        href={file.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors"
+                                        title="Open in new tab"
+                                      >
+                                        <ExternalLink className="w-3.5 h-3.5" />
+                                      </a>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveReceiptFile(index, file.id)}
+                                        className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
+                                        title="Remove file"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    </div>
                                   </div>
-
-                                  <div className="flex items-center gap-1 flex-shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setLightboxData({
-                                          url: file.url,
-                                          title: item.description || 'Receipt File',
-                                          vendor: item.vendorName,
-                                          amount: item.totalCost,
-                                          fileName: file.name,
-                                          fileType: file.fileType,
-                                        })
-                                      }
-                                      className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors cursor-pointer"
-                                      title="Preview Receipt"
-                                    >
-                                      <Eye className="w-4 h-4" />
-                                    </button>
-
-                                    <a
-                                      href={file.url}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors"
-                                      title="Open in new tab"
-                                    >
-                                      <ExternalLink className="w-3.5 h-3.5" />
-                                    </a>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRemoveReceiptFile(index, file.id)}
-                                      className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                                      title="Remove file"
-                                    >
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-
-                        {/* Upload trigger button / dropzone */}
-                        <label className="cursor-pointer flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed border-gray-300 hover:border-[#1E70E8] rounded-xl hover:bg-blue-50/40 text-xs font-semibold text-gray-700 transition-colors">
-                          {uploadingIndex === index ? (
-                            <>
-                              <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
-                              <span className="text-[#0E4EBD]">Uploading files to secure storage...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="w-4 h-4 text-[#1E70E8]" />
-                              <span>
-                                {attachedFiles.length > 0 ? '+ Upload Additional Receipts / Files' : 'Upload Receipt Files (Select multiple files)'}
-                              </span>
-                            </>
+                                );
+                              })}
+                            </div>
                           )}
-                          <input
-                            type="file"
-                            multiple
-                            accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf"
-                            disabled={uploadingIndex === index}
-                            className="hidden"
-                            onChange={(e) => {
-                              if (e.target.files && e.target.files.length > 0) {
-                                handleReceiptUpload(index, e.target.files);
-                                e.target.value = ''; // Reset input
-                              }
-                            }}
-                          />
-                        </label>
+
+                          {/* Upload trigger button / dropzone */}
+                          <label className="cursor-pointer flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed border-gray-300 hover:border-[#1E70E8] rounded-xl hover:bg-blue-50/40 text-xs font-semibold text-gray-700 transition-colors">
+                            {uploadingIndex === index ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
+                                <span className="text-[#0E4EBD]">Uploading files to secure storage...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Upload className="w-4 h-4 text-[#1E70E8]" />
+                                <span>
+                                  {attachedFiles.length > 0 ? '+ Upload Additional Receipts / Files' : 'Upload Receipt Files (Select multiple files)'}
+                                </span>
+                              </>
+                            )}
+                            <input
+                              type="file"
+                              multiple
+                              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf"
+                              disabled={uploadingIndex === index}
+                              className="hidden"
+                              onChange={(e) => {
+                                if (e.target.files && e.target.files.length > 0) {
+                                  handleReceiptUpload(index, e.target.files);
+                                  e.target.value = ''; // Reset input
+                                }
+                              }}
+                            />
+                          </label>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
+
+              {/* Navigation Helper to Next Tab */}
+              <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl flex items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2.5 text-blue-950 font-medium">
+                  <ShieldCheck className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
+                  <span>
+                    Ready to set your reviewers? Configure your custom multi-stage approval route (Accountants, Program Heads, President) in the next tab.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveModalTab('signatories')}
+                  className="px-3.5 py-1.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-[#FFD41C] font-bold rounded-lg transition-colors flex-shrink-0 cursor-pointer shadow-xs text-xs"
+                >
+                  Configure Route ➔
+                </button>
+              </div>
             </div>
-          </div>
+          )}
+
+          {/* TAB 2: Dynamic Liquidation Signatory & Audit Route Builder */}
+          {activeModalTab === 'signatories' && (
+            <div className="space-y-4">
+              <LiquidationFlowBuilder
+                approvalChain={approvalChain}
+                onChange={setApprovalChain}
+                activeSignatories={activeSignatories}
+                orgId={orgId}
+                orgName={orgName}
+                allocatedBudget={allocatedBudget}
+              />
+
+              {/* If report is already in review or concluded, show visual tracker */}
+              {editingReport && editingReport.status !== 'draft' && (
+                <div className="space-y-2 pt-4 border-t border-gray-200">
+                  <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                    Live Progress Tracker
+                  </h4>
+                  <LiquidationSignatoryTracker
+                    approvalChain={approvalChain}
+                    currentStageIndex={editingReport?.currentStageIndex ?? 1}
+                    liquidationStatus={editingReport?.status ?? 'draft'}
+                  />
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Modal Footer */}

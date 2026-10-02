@@ -150,8 +150,10 @@ export function EventPayablesQRControl({
     try {
       // If no payables exist, generate them for this event
       if (payables.length === 0) {
-        const eventDocRef = doc(db, 'events', eventId);
-        const snap = await getDoc(eventDocRef);
+        let snap = await getDoc(doc(db, 'activities', eventId));
+        if (!snap.exists()) {
+          snap = await getDoc(doc(db, 'events', eventId));
+        }
         if (snap.exists()) {
           await generatePayablesForEvent({ ...snap.data(), proposalStatus: 'approved' }, eventId, recordedByUid);
         }

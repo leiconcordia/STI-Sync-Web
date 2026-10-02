@@ -52,6 +52,17 @@ export interface SasAdminDocument {
   /** Whether the account is currently active (can log in) */
   isActive: boolean;
 
+  // ─── Official Signatory & Digital Signature ───
+  /** Official digital signatory e-signature URL or Base64 data URL */
+  signatureUrl?: string | null;
+  signatureDataUrl?: string | null;
+
+  /** Official signatory role / position title for Form AP-01 signatory boxes */
+  signatoryRoleTitle?: string | null;
+
+  /** Timestamp of when signature was last updated */
+  signatureUpdatedAt?: Timestamp | string | null;
+
   // ─── Timestamps ───
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -74,5 +85,9 @@ export type SasAdminUpdatePayload = Partial<
     | 'department'
     | 'avatarUrl'
     | 'isActive'
+    | 'signatureUrl'
+    | 'signatureDataUrl'
+    | 'signatoryRoleTitle'
+    | 'signatureUpdatedAt'
   >
 >;

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot, doc, where } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { EventDocument } from '../types/event.types';
-import { EVENTS_COLLECTION } from '../services/event.service';
+import { ACTIVITIES_COLLECTION, EVENTS_COLLECTION } from '../services/event.service';
 
 export function useAllEvents() {
   const [events, setEvents] = useState<EventDocument[]>([]);
@@ -10,33 +10,85 @@ export function useAllEvents() {
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    // Get all events that are not drafts
-    const q = collection(db, EVENTS_COLLECTION);
+    let activitiesDocs: EventDocument[] = [];
+    let legacyEventsDocs: EventDocument[] = [];
 
-    const unsubscribe = onSnapshot(
-      q,
+    const updateCombined = () => {
+      // Merge by ID: activities collection combined with legacy events, prioritizing confirmed approval markers
+      const map = new Map<string, EventDocument>();
+      legacyEventsDocs.forEach((e) => map.set(e.id, e));
+      activitiesDocs.forEach((act) => {
+        const existing = map.get(act.id);
+        if (existing) {
+          const isActApproved =
+            act.proposalStatus === 'approved' ||
+            act.status === 'approved' ||
+            Boolean(act.approvedAt) ||
+            Boolean(act.approvedBy);
+          const isExistingApproved =
+            existing.proposalStatus === 'approved' ||
+            existing.status === 'approved' ||
+            Boolean(existing.approvedAt) ||
+            Boolean(existing.approvedBy);
+
+          const merged: EventDocument = { ...existing, ...act };
+          if (isExistingApproved || isActApproved) {
+            merged.proposalStatus = 'approved';
+            if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+              merged.status = 'approved';
+            }
+            if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+              merged.lifecycleStatus = 'approved';
+            }
+            merged.approvedAt = act.approvedAt || existing.approvedAt;
+            merged.approvedBy = act.approvedBy || existing.approvedBy;
+          }
+          map.set(act.id, merged);
+        } else {
+          map.set(act.id, act);
+        }
+      });
+
+      const combined = Array.from(map.values()).filter((e) => e.proposalStatus !== 'draft');
+      combined.sort((a, b) => {
+        const aTime = (a.createdAt as any)?.seconds ?? (a.updatedAt as any)?.seconds ?? 0;
+        const bTime = (b.createdAt as any)?.seconds ?? (b.updatedAt as any)?.seconds ?? 0;
+        return bTime - aTime;
+      });
+
+      setEvents(combined);
+      setLoading(false);
+    };
+
+    // Primary: activities collection
+    const unsubActivities = onSnapshot(
+      collection(db, 'activities'),
       (snapshot) => {
-        const fetchedEvents = snapshot.docs
-          .map(doc => ({ id: doc.id, ...doc.data() } as EventDocument))
-          .filter(e => e.proposalStatus !== 'draft');
-
-        fetchedEvents.sort((a, b) => {
-          const aTime = (a.createdAt as any)?.seconds ?? 0;
-          const bTime = (b.createdAt as any)?.seconds ?? 0;
-          return bTime - aTime;
-        });
-
-        setEvents(fetchedEvents);
-        setLoading(false);
+        activitiesDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
       },
       (err) => {
-        console.error('Error fetching events:', err);
-        setError(err);
+        console.warn('Activities listener error:', err);
         setLoading(false);
       }
     );
 
-    return () => unsubscribe();
+    // Fallback/Legacy: events collection
+    const unsubLegacy = onSnapshot(
+      collection(db, 'events'),
+      (snapshot) => {
+        legacyEventsDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
+      },
+      () => {
+        // Silently ignore if events collection doesn't exist or is empty
+      }
+    );
+
+    return () => {
+      unsubActivities();
+      unsubLegacy();
+    };
   }, []);
 
   return { events, loading, error };
@@ -54,25 +106,77 @@ export function useEventById(eventId: string | undefined) {
       return;
     }
 
-    const docRef = doc(db, EVENTS_COLLECTION, eventId);
-    const unsubscribe = onSnapshot(
-      docRef,
+    let actData: EventDocument | null = null;
+    let evtData: EventDocument | null = null;
+
+    const updateMerged = () => {
+      if (!actData && !evtData) {
+        setEvent(null);
+        return;
+      }
+      const merged: EventDocument = { ...(evtData || {}), ...(actData || {}) } as EventDocument;
+      const isActApproved =
+        actData?.proposalStatus === 'approved' ||
+        actData?.status === 'approved' ||
+        Boolean(actData?.approvedAt) ||
+        Boolean(actData?.approvedBy);
+      const isEvtApproved =
+        evtData?.proposalStatus === 'approved' ||
+        evtData?.status === 'approved' ||
+        Boolean(evtData?.approvedAt) ||
+        Boolean(evtData?.approvedBy);
+
+      if (isActApproved || isEvtApproved) {
+        merged.proposalStatus = 'approved';
+        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+          merged.status = 'approved';
+        }
+        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+          merged.lifecycleStatus = 'approved';
+        }
+        merged.approvedAt = actData?.approvedAt || evtData?.approvedAt;
+        merged.approvedBy = actData?.approvedBy || evtData?.approvedBy;
+      }
+      setEvent(merged);
+      setLoading(false);
+    };
+
+    const unsubActivities = onSnapshot(
+      doc(db, 'activities', eventId),
       (snapshot) => {
         if (snapshot.exists()) {
-          setEvent({ id: snapshot.id, ...snapshot.data() } as EventDocument);
+          actData = { id: snapshot.id, ...snapshot.data() } as EventDocument;
         } else {
-          setEvent(null);
+          actData = null;
         }
-        setLoading(false);
+        updateMerged();
       },
       (err) => {
-        console.error('Error fetching event by ID:', err);
+        console.error('Error fetching activity by ID:', err);
         setError(err);
         setLoading(false);
       }
     );
 
-    return () => unsubscribe();
+    const unsubLegacy = onSnapshot(
+      doc(db, 'events', eventId),
+      (legacySnap) => {
+        if (legacySnap.exists()) {
+          evtData = { id: legacySnap.id, ...legacySnap.data() } as EventDocument;
+        } else {
+          evtData = null;
+        }
+        updateMerged();
+      },
+      () => {
+        // Silently ignore legacy events error
+      }
+    );
+
+    return () => {
+      unsubActivities();
+      unsubLegacy();
+    };
   }, [eventId]);
 
   return { event, loading, error };
@@ -84,33 +188,46 @@ export function useDraftEvents() {
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const q = query(
-      collection(db, EVENTS_COLLECTION),
-      where('proposalStatus', '==', 'draft')
-    );
+    let actDrafts: EventDocument[] = [];
+    let legDrafts: EventDocument[] = [];
 
-    const unsubscribe = onSnapshot(
-      q,
+    const updateCombined = () => {
+      const map = new Map<string, EventDocument>();
+      legDrafts.forEach((d) => map.set(d.id, d));
+      actDrafts.forEach((d) => map.set(d.id, d));
+
+      const combined = Array.from(map.values());
+      combined.sort((a, b) => {
+        const aTime = (a.updatedAt as any)?.seconds ?? 0;
+        const bTime = (b.updatedAt as any)?.seconds ?? 0;
+        return bTime - aTime;
+      });
+      setDrafts(combined);
+      setLoading(false);
+    };
+
+    const unsubAct = onSnapshot(
+      query(collection(db, 'activities'), where('proposalStatus', '==', 'draft')),
       (snapshot) => {
-        const fetchedDrafts = snapshot.docs.map(
-          (doc) => ({ id: doc.id, ...doc.data() } as EventDocument)
-        );
-        fetchedDrafts.sort((a, b) => {
-          const aTime = (a.updatedAt as any)?.seconds ?? 0;
-          const bTime = (b.updatedAt as any)?.seconds ?? 0;
-          return bTime - aTime;
-        });
-        setDrafts(fetchedDrafts);
-        setLoading(false);
+        actDrafts = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
       },
-      (err) => {
-        console.error('Error fetching drafts:', err);
-        setError(err);
-        setLoading(false);
-      }
+      () => setLoading(false)
     );
 
-    return () => unsubscribe();
+    const unsubLeg = onSnapshot(
+      query(collection(db, 'events'), where('proposalStatus', '==', 'draft')),
+      (snapshot) => {
+        legDrafts = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubAct();
+      unsubLeg();
+    };
   }, []);
 
   return { drafts, loading, error };
@@ -122,51 +239,76 @@ export function useOrgEvents(orgId: string | null | undefined) {
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const q = collection(db, EVENTS_COLLECTION);
+    let actDocs: EventDocument[] = [];
+    let legDocs: EventDocument[] = [];
 
-    const unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        let fetched = snapshot.docs.map(
-          (doc) => ({ id: doc.id, ...doc.data() } as EventDocument)
-        );
+    const updateCombined = () => {
+      const map = new Map<string, EventDocument>();
+      legDocs.forEach((d) => map.set(d.id, d));
+      actDocs.forEach((d) => map.set(d.id, d));
 
-        if (orgId && orgId.trim()) {
-          const cleanOrgId = orgId.trim().toLowerCase();
-          fetched = fetched.filter((e: any) => {
-            const orgFields = [
-              e.hostingOrgId,
-              e.organizationId,
-              e.createdByOrgId,
-              e.orgId,
-              e.hostingOrgName,
-              e.orgName,
-            ];
-            return orgFields.some(
-              (f) => f && String(f).trim().toLowerCase().includes(cleanOrgId)
-            );
-          });
-        }
+      let fetched = Array.from(map.values());
 
-        fetched.sort((a, b) => {
-          const aTime = (a.createdAt as any)?.seconds ?? (a.updatedAt as any)?.seconds ?? 0;
-          const bTime = (b.createdAt as any)?.seconds ?? (b.updatedAt as any)?.seconds ?? 0;
-          return bTime - aTime;
+      if (orgId && orgId.trim()) {
+        const cleanOrgId = orgId.trim().toLowerCase();
+        fetched = fetched.filter((e: any) => {
+          const orgFields = [
+            e.hostingOrgId,
+            e.organizationId,
+            e.createdByOrgId,
+            e.orgId,
+            e.hostingOrgName,
+            e.orgName,
+          ];
+          return orgFields.some(
+            (f) => f && String(f).trim().toLowerCase().includes(cleanOrgId)
+          );
         });
+      }
 
-        setEvents(fetched);
-        setLoading(false);
+      fetched.sort((a, b) => {
+        const aTime = (a.createdAt as any)?.seconds ?? (a.updatedAt as any)?.seconds ?? 0;
+        const bTime = (b.createdAt as any)?.seconds ?? (b.updatedAt as any)?.seconds ?? 0;
+        return bTime - aTime;
+      });
+
+      setEvents(fetched);
+      setLoading(false);
+    };
+
+    const unsubAct = onSnapshot(
+      collection(db, 'activities'),
+      (snapshot) => {
+        actDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
       },
       (err) => {
-        console.error('[useOrgEvents] Error streaming org events:', err);
-        setError(err);
+        console.error('[useOrgEvents] Error streaming activities:', err);
         setLoading(false);
       }
     );
 
-    return () => unsubscribe();
+    const unsubLeg = onSnapshot(
+      collection(db, 'events'),
+      (snapshot) => {
+        legDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        updateCombined();
+      },
+      () => {}
+    );
+
+    return () => {
+      unsubAct();
+      unsubLeg();
+    };
   }, [orgId]);
 
   return { events, loading, error };
 }
+
+// Aliases for modern activities terminology
+export const useAllActivities = useAllEvents;
+export const useActivityById = useEventById;
+export const useDraftActivities = useDraftEvents;
+export const useOrgActivities = useOrgEvents;
 

@@ -33,6 +33,7 @@ import type { ActivityProposal } from '../../modules/activity-proposals/types/pr
 import {
   endorseProposal,
   returnProposalForRevision,
+  rejectProposal,
 } from '../../modules/activity-proposals/services/proposal.service';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
@@ -57,6 +58,8 @@ export default function ProposalEndorsementModal({
   const [remarks, setRemarks] = useState('');
   const [returnRemarks, setReturnRemarks] = useState('');
   const [isReturning, setIsReturning] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
@@ -178,6 +181,36 @@ export default function ProposalEndorsementModal({
     } catch (err: any) {
       console.error('Failed to return proposal:', err);
       toast.error(err?.message || 'Failed to return proposal.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectionReason.trim()) {
+      toast.error('Please specify the official reason for declining/rejecting this proposal.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await rejectProposal(
+        proposal.id,
+        {
+          uid: signatorySession.id || signatorySession.uid,
+          name: signatorySession.name,
+          email: signatorySession.email,
+          roleTitle: signatorySession.roleTitle,
+        },
+        rejectionReason
+      );
+
+      toast.success('Proposal officially rejected and archived for audit records.');
+      if (onProposalUpdated) onProposalUpdated();
+      onClose();
+    } catch (err: any) {
+      console.error('Failed to reject proposal:', err);
+      toast.error(err?.message || 'Failed to reject proposal.');
     } finally {
       setIsSubmitting(false);
     }
@@ -727,22 +760,69 @@ export default function ProposalEndorsementModal({
                 </div>
               </div>
             )}
+
+            {/* Reject Mode Textarea if toggled (Approver only) */}
+            {isRejecting && (
+              <div className="p-4 bg-rose-50/90 border border-rose-300 rounded-2xl space-y-2">
+                <label className="block text-xs font-bold text-rose-950 flex items-center gap-1.5">
+                  <X className="w-3.5 h-3.5 text-rose-700" />
+                  <span>Official Reason for Rejection / Decline (Required)</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={rejectionReason}
+                  onChange={(e) => setRejectionReason(e.target.value)}
+                  placeholder="State the institutional reason for declining this proposal (e.g. unapproved venue risk, scheduling conflict with institutional exams, or policy violation)..."
+                  className="w-full px-3 py-2 bg-white border border-rose-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-rose-500/30"
+                />
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsRejecting(false)}
+                    className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReject}
+                    disabled={isSubmitting || !rejectionReason.trim()}
+                    className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-xs disabled:opacity-50"
+                  >
+                    {isSubmitting ? 'Rejecting...' : 'Confirm Proposal Rejection'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
         {/* ── MODAL FOOTER ACTIONS ── */}
         <div className="bg-slate-50 border-t border-slate-200 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
-          <div>
-            {!isReturning && (
-              <button
-                type="button"
-                onClick={() => setIsReturning(true)}
-                disabled={isSubmitting}
-                className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors"
-              >
-                <RotateCcw className="w-4 h-4" />
-                <span>Return for Revision</span>
-              </button>
+          <div className="flex items-center gap-2">
+            {!isReturning && !isRejecting && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsReturning(true)}
+                  disabled={isSubmitting}
+                  className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>Return for Revision</span>
+                </button>
+                {isFinalApprover && (
+                  <button
+                    type="button"
+                    onClick={() => setIsRejecting(true)}
+                    disabled={isSubmitting}
+                    className="text-xs text-rose-700 hover:text-rose-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-rose-100/50 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Reject</span>
+                  </button>
+                )}
+              </>
             )}
           </div>
 

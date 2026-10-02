@@ -9,6 +9,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import { STUDENTS_COLLECTION } from '../../students/services/student.service';
 import type { AttendanceRecord, AttendanceStatus } from '../types/attendance.types';
 
 export const ATTENDANCE_COLLECTION = 'attendance';
@@ -176,7 +177,8 @@ export function isStudentTargetedForEvent(
  */
 export async function syncEventAbsenteeRecords(
   event: any,
-  eligibleStudents: any[]
+  eligibleStudents: any[],
+  options?: { markTimeFieldsAbsent?: boolean }
 ): Promise<number> {
   if (!event || !event.id) return 0;
   const sessions = event.sessions && event.sessions.length > 0 ? event.sessions : [
@@ -188,6 +190,8 @@ export async function syncEventAbsenteeRecords(
       endTime: event.endTime,
     }
   ];
+
+  const markAbsentTime = options?.markTimeFieldsAbsent || event.proposalStatus === 'completed' || event.status === 'completed';
 
   // 1. Fetch current attendance records for this event
   const attRef = collection(db, ATTENDANCE_COLLECTION);
@@ -204,7 +208,7 @@ export async function syncEventAbsenteeRecords(
       event.gracePeriodMinutes,
       event.lateThresholdMinutes
     );
-    if (!isPassed && event.proposalStatus !== 'completed' && event.status !== 'Completed') {
+    if (!isPassed && event.proposalStatus !== 'completed' && event.status !== 'completed' && event.status !== 'Completed') {
       return;
     }
 
@@ -239,8 +243,8 @@ export async function syncEventAbsenteeRecords(
           eventId: event.id,
           event: event.title || event.name || 'Event',
           sessionId: sId,
-          checkIn: '—',
-          checkOut: '—',
+          checkIn: markAbsentTime ? 'Absent' : '—',
+          checkOut: markAbsentTime ? 'Absent' : '—',
           status: 'Absent',
         });
       }
@@ -266,3 +270,69 @@ export async function syncEventAbsenteeRecords(
 
   return newRecords.length;
 }
+
+/**
+ * Conclusively seals event attendance:
+ * 1. Synchronizes Absent records (both checkIn and checkOut explicitly marked 'Absent') for all non-attendees.
+ * 2. For students who checked in but never checked out before event conclusion, sets checkOut to 'Absent'.
+ */
+export async function finalizeEventAttendance(
+  event: any,
+  providedStudents?: any[],
+  rawOrganizations?: any[]
+): Promise<{ absenteesCreated: number; incompleteCheckoutsMarked: number }> {
+  if (!event || !event.id) return { absenteesCreated: 0, incompleteCheckoutsMarked: 0 };
+
+  // 1. Resolve student cohort
+  let studentPool = providedStudents;
+  if (!studentPool || studentPool.length === 0) {
+    const studentsSnap = await getDocs(collection(db, STUDENTS_COLLECTION));
+    studentPool = studentsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  }
+
+  const targetedStudents = studentPool.filter((s) =>
+    isStudentTargetedForEvent(s, event, rawOrganizations)
+  );
+
+  // 2. Mark missing absentees
+  const absenteesCreated = await syncEventAbsenteeRecords(event, targetedStudents, {
+    markTimeFieldsAbsent: true,
+  });
+
+  // 3. Mark incomplete checkouts for students who checked in but didn't check out
+  let incompleteCheckoutsMarked = 0;
+  const attRef = collection(db, ATTENDANCE_COLLECTION);
+  const q = query(attRef, where('eventId', '==', event.id));
+  const snap = await getDocs(q);
+
+  const updates: Array<{ id: string }> = [];
+  snap.docs.forEach((docSnap) => {
+    const data = docSnap.data() as AttendanceRecord;
+    if (data.status !== 'Absent') {
+      const missingCheckout = !data.checkOut || data.checkOut === '—' || data.checkOut.trim() === '';
+      if (missingCheckout) {
+        updates.push({ id: docSnap.id });
+      }
+    }
+  });
+
+  if (updates.length > 0) {
+    const CHUNK_SIZE = 450;
+    for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+      const chunk = updates.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach((u) => {
+        const docRef = doc(db, ATTENDANCE_COLLECTION, u.id);
+        batch.update(docRef, {
+          checkOut: 'Absent',
+          updatedAt: serverTimestamp(),
+        });
+      });
+      await batch.commit();
+      incompleteCheckoutsMarked += chunk.length;
+    }
+  }
+
+  return { absenteesCreated, incompleteCheckoutsMarked };
+}
+

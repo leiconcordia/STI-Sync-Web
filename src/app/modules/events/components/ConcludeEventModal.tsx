@@ -8,11 +8,15 @@ import {
   Clock,
   Calendar,
   Loader2,
+  DollarSign,
+  UserCheck,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { EventDocument } from '../types/event.types';
 import { concludeEvent } from '../services/event-lifecycle.service';
 import { areEventSessionsOver } from '../utils/event-lifecycle.utils';
+import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
 
 interface ConcludeEventModalProps {
   isOpen: boolean;
@@ -32,32 +36,78 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
   onSuccess,
 }) => {
   const [note, setNote] = useState('');
+  const [finalizeAttendance, setFinalizeAttendance] = useState(true);
+  const [forceConclude, setForceConclude] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Check if scheduled sessions are finished
   const sessions = event?.sessions || [];
   const sessionsOver = useMemo(() => areEventSessionsOver(event), [event]);
 
+  // Compute total approved budget & cash custodian allocations
+  const totalApprovedBudget = useMemo(() => {
+    if (!event) return 0;
+    if (event.totalApprovedBudget && Number(event.totalApprovedBudget) > 0) {
+      return Number(event.totalApprovedBudget);
+    }
+    if (event.approvedBudget && Number(event.approvedBudget) > 0) {
+      return Number(event.approvedBudget);
+    }
+    if (event.totalBudget && Number(event.totalBudget) > 0) {
+      return Number(event.totalBudget);
+    }
+    const fromItems = (event.budgetItems || []).reduce(
+      (sum, bi) =>
+        sum +
+        Number(
+          bi.approvedAmount ||
+            bi.totalCost ||
+            Number(bi.quantity || 1) * Number(bi.unitCost || 0) ||
+            0
+        ),
+      0
+    );
+    if (fromItems > 0) return fromItems;
+    return Number((event as any).financialProjections?.totalExpenses || 0);
+  }, [event]);
+
+  const hasCashCustodians = useMemo(() => {
+    return (
+      Array.isArray(event?.budgetCustodians) &&
+      event.budgetCustodians.some((c) => Number(c.allocatedAmount || 0) > 0)
+    );
+  }, [event]);
+
+  const isLiquidationCompulsory = totalApprovedBudget > 0 || hasCashCustodians;
+
   if (!isOpen || !event) return null;
 
   const handleConfirm = async () => {
-    if (!sessionsOver.allOver) {
+    if (!sessionsOver.allOver && !forceConclude) {
       toast.error('Cannot Conclude Event', {
         description:
           sessionsOver.reason ||
-          'Scheduled sessions are not finished yet. All sessions must end before concluding the event.',
+          'Scheduled sessions are not finished yet. Check early conclusion override if testing or event finished ahead of time.',
       });
       return;
     }
 
     try {
       setIsSubmitting(true);
-      await concludeEvent(event.id, adminUid, adminName, note);
-      if (event.enableQRTickets !== false) {
-        toast.success(`Event "${event.title}" is concluded and ready to generate certificates!`);
+      const res = await concludeEvent(event.id, adminUid, adminName, {
+        note,
+        finalizeAttendance,
+        forceConclude,
+      });
+
+      if (finalizeAttendance && res.absenteesCount > 0) {
+        toast.success(
+          `Event "${event.title}" concluded! Attendance finalized with ${res.absenteesCount} absentee record(s) logged.`
+        );
       } else {
         toast.success(`Event "${event.title}" is now marked as Completed!`);
       }
+
       if (onSuccess) onSuccess();
       onClose();
     } catch (err: any) {
@@ -123,43 +173,127 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
             </div>
           </div>
 
-          {/* Sessions Not Over Blocking Warning */}
+          {/* Sessions Ongoing Warning & Override */}
           {!sessionsOver.allOver && (
-            <div className="p-3.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800 flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
-              <div className="text-xs text-red-800 dark:text-red-200 leading-relaxed">
-                <span className="font-bold block text-xs mb-0.5 text-red-900 dark:text-red-100">
-                  Event cannot be concluded yet:
-                </span>
-                {sessionsOver.reason ||
-                  'Scheduled sessions are not finished yet. All sessions must end before concluding this event.'}
+            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 space-y-2">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
+                  <span className="font-bold block text-xs mb-0.5 text-amber-950 dark:text-amber-100">
+                    Sessions Ongoing / Scheduled:
+                  </span>
+                  {sessionsOver.reason ||
+                    'Scheduled sessions have not ended yet based on the event schedule.'}
+                </div>
               </div>
+
+              <label className="flex items-center gap-2 pt-2 border-t border-amber-200/80 dark:border-amber-800/80 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={forceConclude}
+                  onChange={(e) => setForceConclude(e.target.checked)}
+                  disabled={isSubmitting}
+                  className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+                />
+                <span className="text-xs font-semibold text-amber-950 dark:text-amber-100">
+                  Conclude early ahead of scheduled end (Testing & Operational Override)
+                </span>
+              </label>
             </div>
           )}
 
-          {/* Action Impact List */}
-          <div className="space-y-2.5 pt-1">
-            <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
-              What happens when you conclude this event:
+          {/* Financial Liquidation Readiness Card */}
+          <div
+            className={`p-3.5 rounded-xl border flex items-start gap-3 ${
+              isLiquidationCompulsory
+                ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/60'
+                : 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/60'
+            }`}
+          >
+            <div
+              className={`p-2 rounded-lg flex-shrink-0 ${
+                isLiquidationCompulsory
+                  ? 'bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300'
+                  : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300'
+              }`}
+            >
+              <DollarSign className="w-4 h-4" />
+            </div>
+            <div className="text-xs leading-relaxed space-y-0.5">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-slate-900 dark:text-white">
+                  {isLiquidationCompulsory
+                    ? 'Compulsory Financial Liquidation Ready'
+                    : 'Zero-Budget Event (Liquidation Exempt)'}
+                </span>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.2 rounded-full uppercase tracking-wider ${
+                    isLiquidationCompulsory
+                      ? 'bg-amber-200 dark:bg-amber-900 text-amber-900 dark:text-amber-100'
+                      : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-900 dark:text-emerald-100'
+                  }`}
+                >
+                  {isLiquidationCompulsory ? 'Required' : 'Exempt'}
+                </span>
+              </div>
+              <p className="text-slate-600 dark:text-slate-400">
+                {isLiquidationCompulsory
+                  ? `This event has approved allocations of ₱${formatPHP(totalApprovedBudget)}. Pre-set expense items will be locked into the liquidation report and require verified receipt attachments.`
+                  : 'This event has ₱0.00 approved funds and no cash advances. No financial liquidation report is required.'}
+              </p>
+            </div>
+          </div>
+
+          {/* Attendance Finalization Toggle */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <UserCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <span className="text-xs font-bold text-slate-900 dark:text-white">
+                  Finalize Attendance & Mark Absentees
+                </span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={finalizeAttendance}
+                  onChange={(e) => setFinalizeAttendance(e.target.checked)}
+                  disabled={isSubmitting}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-emerald-600"></div>
+              </label>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+              {finalizeAttendance
+                ? 'All eligible students who did not scan in will have both Time-In and Time-Out recorded as Absent. Any incomplete check-outs will be sealed.'
+                : 'Leave attendance as currently scanned without generating automated absentee records.'}
             </p>
-            <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-2">
+          </div>
+
+          {/* Action Impact List */}
+          <div className="space-y-2 pt-1">
+            <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
+              Enforced Lifecycle Policies:
+            </p>
+            <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-1.5">
               <li className="flex items-start gap-2">
-                <Lock className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <Lock className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <span>
-                  <strong>Locks Attendance Scanners:</strong> QR check-in gates are sealed from new scans.
+                  <strong>Cash Allocations Sealed:</strong> Cash advance allocations are switched to read-only for audit and liquidation.
                 </span>
               </li>
               <li className="flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <span>
-                  <strong>Unlocks Post-Event Workflows:</strong> Enables financial liquidation submission, certificate distribution, and eventual archiving.
+                  <strong>Post-Event Readiness:</strong> Live scanners are locked and completion audit trail is written.
                 </span>
               </li>
             </ul>
           </div>
 
           {/* Optional Note */}
-          <div className="space-y-1.5 pt-2">
+          <div className="space-y-1.5 pt-1">
             <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
               Closing Remarks / Notes (Optional)
             </label>
@@ -185,7 +319,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
           </button>
           <button
             onClick={handleConfirm}
-            disabled={isSubmitting || !sessionsOver.allOver}
+            disabled={isSubmitting || (!sessionsOver.allOver && !forceConclude)}
             className="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSubmitting ? (

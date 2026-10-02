@@ -30,6 +30,7 @@ import {
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
+import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
@@ -883,6 +884,18 @@ export function FinancialLiquidations() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+
+              {/* Multi-Stage Institutional Signatory Pipeline */}
+              <div className="space-y-2 pt-2 border-t border-gray-200">
+                <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                  Institutional Signatory & Audit Route (Form LF-01)
+                </h4>
+                <LiquidationSignatoryTracker
+                  approvalChain={selectedReport.approvalChain}
+                  currentStageIndex={selectedReport.currentStageIndex ?? 1}
+                  liquidationStatus={selectedReport.status}
+                />
               </div>
 
               {/* Remarks History Log */}
