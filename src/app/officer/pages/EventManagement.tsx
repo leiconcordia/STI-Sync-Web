@@ -30,7 +30,7 @@ import {
 } from '../../modules/events/hooks/useEventConfigStream';
 import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
-import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus } from '../../modules/events/utils/event-lifecycle.utils';
+import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
 import {
   OfficerEventDetailView,
@@ -204,12 +204,21 @@ export default function EventManagement() {
     }
   };
 
+  const isEventApproved = (e: EventDocument) => {
+    const chain = (e as any).approvalChain || [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    if (hasChain) {
+      return isProposalFullySigned(chain);
+    }
+    return e.proposalStatus === 'approved' || e.status === 'approved';
+  };
+
   const isEventCompleted = (e: EventDocument) => {
     if (e.isArchived || e.isDeleted) return false;
     if (e.proposalStatus === 'completed' || e.status === 'completed' || (e as any).lifecycleStatus === 'completed') {
       return true;
     }
-    if (e.proposalStatus === 'approved' || e.status === 'approved') {
+    if (isEventApproved(e)) {
       return getEventTimingStatus(e) === 'completed';
     }
     return false;
@@ -217,11 +226,12 @@ export default function EventManagement() {
 
   const isEventApprovedUpcoming = (e: EventDocument) => {
     if (e.isArchived || e.isDeleted) return false;
-    if (e.proposalStatus === 'approved' || e.status === 'approved') {
+    if (isEventApproved(e)) {
       return getEventTimingStatus(e) !== 'completed' && e.status !== 'completed';
     }
     return false;
   };
+
 
   const statusCounts = {
     all: events.filter((e) => !e.isArchived && !e.isDeleted).length,
@@ -784,7 +794,7 @@ export default function EventManagement() {
                   const isRejected = event.proposalStatus === 'rejected';
                   const isReturned = event.proposalStatus === 'returned';
                   const isDraft = event.proposalStatus === 'draft';
-                  const isApproved = event.proposalStatus === 'approved' || event.status === 'approved';
+                  const isApproved = isEventApproved(event);
                   const isAP = Boolean((event as any).isActivityProposal || (event as any).referenceId?.startsWith('AP-'));
 
                   const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;

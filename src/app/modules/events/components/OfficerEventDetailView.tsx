@@ -22,7 +22,7 @@ import AttendanceScannersModal from './AttendanceScannersModal';
 import CashCustodiansModal from './CashCustodiansModal';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
-import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus } from '../utils/event-lifecycle.utils';
+import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../utils/event-lifecycle.utils';
 import { CancelEventModal } from './CancelEventModal';
 import { ConcludeEventModal } from './ConcludeEventModal';
 import { ArchiveEventModal } from './ArchiveEventModal';
@@ -118,20 +118,56 @@ export default function OfficerEventDetailView({
 
     const syncLive = () => {
       const merged: any = { ...(event || {}), ...(evtData || {}), ...(actData || {}) };
-      const isPropApproved = (event as any)?.proposalStatus === 'approved' || (event as any)?.status === 'approved' || Boolean((event as any)?.approvedAt) || (event as any)?.isApproved === true;
-      const isEvtApproved = evtData?.proposalStatus === 'approved' || evtData?.status === 'approved' || Boolean(evtData?.approvedAt) || evtData?.isApproved === true;
-      const isActApproved = actData?.proposalStatus === 'approved' || actData?.status === 'approved' || Boolean(actData?.approvedAt) || actData?.isApproved === true;
-      if (isPropApproved || isEvtApproved || isActApproved) {
-        merged.proposalStatus = 'approved';
-        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
-          merged.status = 'approved';
+      const chain: any[] = actData?.approvalChain || evtData?.approvalChain || (event as any)?.approvalChain || [];
+      const hasChain = Array.isArray(chain) && chain.length > 0;
+      const fullySigned = isProposalFullySigned(chain);
+
+      // Explicit pending/review markers prevent forced approval unless fully signed
+      const isExplicitPending =
+        merged.proposalStatus === 'pending' ||
+        merged.proposalStatus === 'pending_review' ||
+        merged.proposalStatus === 'under_review' ||
+        merged.status === 'under_review' ||
+        merged.status === 'pending' ||
+        merged.lifecycleStatus === 'pending_review';
+
+      if (hasChain) {
+        if (fullySigned) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
+        } else if (isExplicitPending) {
+          merged.proposalStatus = 'pending';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'pending';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'pending_review';
+          }
         }
-        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
-          merged.lifecycleStatus = 'approved';
+      } else {
+        const isPropApproved = (event as any)?.proposalStatus === 'approved' || (event as any)?.status === 'approved' || Boolean((event as any)?.approvedAt) || (event as any)?.isApproved === true;
+        const isEvtApproved = evtData?.proposalStatus === 'approved' || evtData?.status === 'approved' || Boolean(evtData?.approvedAt) || evtData?.isApproved === true;
+        const isActApproved = actData?.proposalStatus === 'approved' || actData?.status === 'approved' || Boolean(actData?.approvedAt) || actData?.isApproved === true;
+        if (!isExplicitPending && (isPropApproved || isEvtApproved || isActApproved)) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
         }
-        merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
-        merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
       }
+
       setLiveEvent(merged as EventDocument);
       setFullProposal((prev: any) => ({ ...prev, ...merged }));
     };
@@ -411,10 +447,23 @@ export default function OfficerEventDetailView({
     if (isCancelled) return false;
     if (isCompleted) return true;
 
+    const chain: any[] =
+      fullProposal?.approvalChain ||
+      (activeEvent as any).approvalChain ||
+      (event as any).approvalChain ||
+      [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    const fullySigned = isProposalFullySigned(chain);
+
+    // If an approval chain is configured, it MUST be fully signed by all signatories before considered approved
+    if (hasChain) {
+      return fullySigned;
+    }
+
     // Check all candidates (activeEvent, liveEvent, original event prop, fullProposal)
     const candidates = [activeEvent, liveEvent, event, fullProposal].filter(Boolean);
 
-    // 0. Explicit rejection, return, or pending states NEVER count as approved
+    // Explicit rejection, return, or pending states NEVER count as approved
     for (const c of candidates) {
       const pStatus = ((c as any).proposalStatus || '').toLowerCase().trim();
       const st = ((c as any).status || '').toLowerCase().trim();
@@ -432,17 +481,7 @@ export default function OfficerEventDetailView({
         st === 'under_review' ||
         lc === 'pending_review'
       ) {
-        // If there's an explicit pending/review/rejected status, it is not yet fully approved
-        // unless all steps in approvalChain are completed
-        const chain: any[] = fullProposal?.approvalChain || (activeEvent as any).approvalChain || (event as any).approvalChain || [];
-        if (chain.length > 0) {
-          const allStepsSigned = chain.every(
-            (s) => s.status === 'endorsed' || s.status === 'approved'
-          );
-          if (!allStepsSigned) return false;
-        } else {
-          return false;
-        }
+        return false;
       }
     }
 
@@ -451,7 +490,7 @@ export default function OfficerEventDetailView({
       const st = ((c as any).status || '').toLowerCase().trim();
       const lc = ((c as any).lifecycleStatus || '').toLowerCase().trim();
 
-      // 1. Direct explicit approval
+      // Direct explicit approval
       if (
         pStatus === 'approved' ||
         st === 'approved' ||
@@ -464,7 +503,7 @@ export default function OfficerEventDetailView({
         return true;
       }
 
-      // 2. Active campus timing or published states (only approved activities reach these states)
+      // Active campus timing or published states (only approved activities reach these states)
       if (
         st === 'upcoming' ||
         st === 'active' ||
@@ -477,20 +516,11 @@ export default function OfficerEventDetailView({
       }
     }
 
-    // 3. Full proposal status from signatory execution
+    // Full proposal status from signatory execution
     const fullSt = (fullProposal?.status || '').toLowerCase().trim();
     const fullPropSt = (fullProposal?.proposalStatus || '').toLowerCase().trim();
     if (fullSt === 'approved' || fullSt === 'approved_president' || fullPropSt === 'approved') {
       return true;
-    }
-
-    // 4. Approval chain check: if all stages/steps in approvalChain are endorsed/approved
-    const chain: any[] = fullProposal?.approvalChain || (activeEvent as any).approvalChain || (event as any).approvalChain || [];
-    if (chain.length > 0) {
-      const allStepsSigned = chain.every(
-        (s) => s.status === 'endorsed' || s.status === 'approved'
-      );
-      if (allStepsSigned) return true;
     }
 
     return false;

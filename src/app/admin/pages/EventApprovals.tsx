@@ -24,6 +24,7 @@ import {
   ArchiveEventModal,
   DeleteArchivedEventModal,
   restoreArchivedEvent,
+  isProposalFullySigned,
 } from "../../modules/events";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import type { EventDocument } from "../../modules/events/types/event.types";
@@ -280,14 +281,19 @@ export function EventApprovals() {
           return false;
         }
 
-        if (activeTab === "pending" && event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review") return false;
+        const chain = (event as any).approvalChain || [];
+        const hasChain = Array.isArray(chain) && chain.length > 0;
+        const fullySigned = isProposalFullySigned(chain);
+        const isApprovedStatus = hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved");
+
+        if (activeTab === "pending" && (isApprovedStatus || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
         if (activeTab === "returned" && event.proposalStatus !== "returned") return false;
         if (activeTab === "approved") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || isEventPast(event);
-          if (event.proposalStatus !== "approved" || isDone) return false;
+          if (!isApprovedStatus || isDone) return false;
         }
         if (activeTab === "completed") {
-          const isDone = event.status === "completed" || event.proposalStatus === "completed" || (event.proposalStatus === "approved" && isEventPast(event));
+          const isDone = event.status === "completed" || event.proposalStatus === "completed" || (isApprovedStatus && isEventPast(event));
           if (!isDone) return false;
         }
         if (activeTab === "rejected" && event.proposalStatus !== "rejected") return false;
@@ -970,7 +976,10 @@ export function EventApprovals() {
                     const orgLogo = getOrgLogo(event.hostingOrgId);
                     const isRejected = event.proposalStatus === "rejected";
                     const isReturned = event.proposalStatus === "returned";
-                    const isApproved = event.proposalStatus === "approved" || event.status === "approved";
+                    const chain = (event as any).approvalChain || [];
+                    const hasChain = Array.isArray(chain) && chain.length > 0;
+                    const fullySigned = isProposalFullySigned(chain);
+                    const isApproved = hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved");
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
                     const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;

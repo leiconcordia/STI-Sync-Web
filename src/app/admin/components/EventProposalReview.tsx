@@ -29,6 +29,7 @@ import {
   ArchiveEventModal,
   DeleteArchivedEventModal,
   getEventTimingStatus,
+  isProposalFullySigned,
   PublishStudentFeedModal,
   AttendanceScannersModal,
   CashCustodiansModal,
@@ -234,24 +235,60 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
     const syncLive = () => {
       const merged: any = { ...(event || {}), ...(evtData || {}), ...(actData || {}) };
-      // If any source (parent event prop, evtData, or actData) has confirmed approval markers, preserve them
-      const isPropApproved = (event as any)?.proposalStatus === 'approved' || (event as any)?.status === 'approved' || Boolean((event as any)?.approvedAt) || (event as any)?.isApproved === true;
-      const isEvtApproved = evtData?.proposalStatus === 'approved' || evtData?.status === 'approved' || Boolean(evtData?.approvedAt) || evtData?.isApproved === true;
-      const isActApproved = actData?.proposalStatus === 'approved' || actData?.status === 'approved' || Boolean(actData?.approvedAt) || actData?.isApproved === true;
-      if (isPropApproved || isEvtApproved || isActApproved) {
-        merged.proposalStatus = 'approved';
-        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
-          merged.status = 'approved';
+      const chain: any[] = actData?.approvalChain || evtData?.approvalChain || (event as any)?.approvalChain || [];
+      const hasChain = Array.isArray(chain) && chain.length > 0;
+      const fullySigned = isProposalFullySigned(chain);
+
+      // Explicit pending/review markers prevent forced approval unless fully signed
+      const isExplicitPending =
+        merged.proposalStatus === 'pending' ||
+        merged.proposalStatus === 'pending_review' ||
+        merged.proposalStatus === 'under_review' ||
+        merged.status === 'under_review' ||
+        merged.status === 'pending' ||
+        merged.lifecycleStatus === 'pending_review';
+
+      if (hasChain) {
+        if (fullySigned) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
+        } else if (isExplicitPending) {
+          merged.proposalStatus = 'pending';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'pending';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'pending_review';
+          }
         }
-        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
-          merged.lifecycleStatus = 'approved';
+      } else {
+        const isPropApproved = (event as any)?.proposalStatus === 'approved' || (event as any)?.status === 'approved' || Boolean((event as any)?.approvedAt) || (event as any)?.isApproved === true;
+        const isEvtApproved = evtData?.proposalStatus === 'approved' || evtData?.status === 'approved' || Boolean(evtData?.approvedAt) || evtData?.isApproved === true;
+        const isActApproved = actData?.proposalStatus === 'approved' || actData?.status === 'approved' || Boolean(actData?.approvedAt) || actData?.isApproved === true;
+        if (!isExplicitPending && (isPropApproved || isEvtApproved || isActApproved)) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
         }
-        merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
-        merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
       }
+
       setLiveEvent(merged as EventDocument);
       setFullProposal((prev: any) => ({ ...prev, ...merged }));
     };
+
 
     const unsubAct = onSnapshot(doc(db, 'activities', event.id), (snap) => {
       if (snap.exists()) {
@@ -398,11 +435,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     return displayApprovalChain.find(
       (s: any) =>
         s.role === 'sas_coordinator' ||
+        s.role === 'adviser' ||
+        s.role === 'sao_head' ||
         s.id === 'step_sas_mandatory' ||
-        (s.stageIndex === 1 && s.stepNumber === 1) ||
-        (s.stageIndex === 1 && (s.roleTitle?.toLowerCase().includes('sas') || s.signatoryName?.toLowerCase().includes('sas')))
+        (s.stageIndex === 1 && s.stepNumber === 1 && (!s.role || s.role === 'sas_coordinator' || s.roleTitle?.toLowerCase().includes('sas') || s.roleTitle?.toLowerCase().includes('adviser'))) ||
+        s.roleTitle?.toLowerCase().includes('sas') ||
+        s.roleTitle?.toLowerCase().includes('student affairs') ||
+        s.roleTitle?.toLowerCase().includes('adviser') ||
+        (profile?.email && s.signatoryEmail?.toLowerCase() === profile.email.toLowerCase()) ||
+        s.signatoryEmail?.toLowerCase() === 'sao@ormoc.sti.edu.ph'
     );
-  }, [displayApprovalChain]);
+  }, [displayApprovalChain, profile?.email]);
 
   const isSasStepPending = Boolean(
     sasStep && sasStep.status !== 'endorsed' && sasStep.status !== 'approved'
@@ -426,10 +469,19 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     if (isCancelled) return false;
     if (isCompleted) return true;
 
+    const chain: any[] = displayApprovalChain || [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    const fullySigned = isProposalFullySigned(chain);
+
+    // If an approval chain is configured, it MUST be fully signed before the activity is considered approved
+    if (hasChain) {
+      return fullySigned;
+    }
+
     // Check all candidates (activeEvent, liveEvent, original event prop, fullProposal)
     const candidates = [activeEvent, liveEvent, event, fullProposal].filter(Boolean);
 
-    // 0. Explicit rejection, return, or pending states NEVER count as approved
+    // Explicit rejection, return, or pending states NEVER count as approved
     for (const c of candidates) {
       const pStatus = ((c as any).proposalStatus || '').toLowerCase().trim();
       const st = ((c as any).status || '').toLowerCase().trim();
@@ -447,17 +499,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         st === 'under_review' ||
         lc === 'pending_review'
       ) {
-        // If there's an explicit pending/review/rejected status, it is not yet fully approved
-        // unless all steps in approvalChain are completed
-        const chain: any[] = fullProposal?.approvalChain || (activeEvent as any).approvalChain || (event as any).approvalChain || [];
-        if (chain.length > 0) {
-          const allStepsSigned = chain.every(
-            (s) => s.status === 'endorsed' || s.status === 'approved'
-          );
-          if (!allStepsSigned) return false;
-        } else {
-          return false;
-        }
+        return false;
       }
     }
 
@@ -466,7 +508,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       const st = ((c as any).status || '').toLowerCase().trim();
       const lc = ((c as any).lifecycleStatus || '').toLowerCase().trim();
 
-      // 1. Direct explicit approval
+      // Direct explicit approval
       if (
         pStatus === 'approved' ||
         st === 'approved' ||
@@ -479,7 +521,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         return true;
       }
 
-      // 2. Active campus timing or published states (only approved activities reach these states)
+      // Active campus timing or published states (only approved activities reach these states)
       if (
         st === 'upcoming' ||
         st === 'active' ||
@@ -492,31 +534,51 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       }
     }
 
-    // 3. Full proposal status from signatory execution
+    // Full proposal status from signatory execution
     const fullSt = (fullProposal?.status || '').toLowerCase().trim();
     const fullPropSt = (fullProposal?.proposalStatus || '').toLowerCase().trim();
     if (fullSt === 'approved' || fullSt === 'approved_president' || fullPropSt === 'approved') {
       return true;
     }
 
-    // 4. Approval chain check: if all stages/steps in approvalChain are endorsed/approved
-    const chain: any[] = fullProposal?.approvalChain || (activeEvent as any).approvalChain || (event as any).approvalChain || [];
-    if (chain.length > 0) {
-      const allStepsSigned = chain.every(
-        (s) => s.status === 'endorsed' || s.status === 'approved'
-      );
-      if (allStepsSigned) return true;
-    }
-
     return false;
   }, [
     isCancelled,
     isCompleted,
+    displayApprovalChain,
     activeEvent,
     liveEvent,
     event,
     fullProposal,
   ]);
+
+  // Adviser Decision panel should ONLY show if and only if the proposal is coming from an Org AND SAS needs to review it
+  const showAdviserDecision = useMemo(() => {
+    if (isCancelled || isApproved || isCompleted) return false;
+    // Must be an Org proposal, NOT authored/created by SAS
+    if (isSasCreated) return false;
+
+    // If an approval chain exists:
+    if (displayApprovalChain && displayApprovalChain.length > 0) {
+      if (sasStep) {
+        // If SAS is in the chain and has already signed/endorsed, SAS does NOT need to review it
+        if (sasStep.status === 'endorsed' || sasStep.status === 'approved') {
+          return false;
+        }
+        return true;
+      }
+      // If SAS is not in the chain, it's an Org proposal in routing:
+      // SAS can review if stage 1 is currently active/pending
+      const isFirstStageActive = displayApprovalChain.some(
+        (s: any) => (s.stageIndex === 1 || !s.stageIndex) && s.status !== 'approved' && s.status !== 'endorsed'
+      );
+      return isFirstStageActive;
+    }
+
+    // If no chain, Org proposal pending in SAS admin needs review
+    return true;
+  }, [isCancelled, isApproved, isCompleted, isSasCreated, displayApprovalChain, sasStep]);
+
 
   const initialDecision: Decision = isApproved
     ? 'approved'
@@ -2330,7 +2392,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             </div>
           ) : isApproved || isCompleted ? (
             isSasCreated ? (
-              /* 2. SAS INSTITUTIONAL EVENT — Management Controls */
+              /* 2. SAS INSTITUTIONAL EVENT — Management Controls (Only when fully endorsed/approved) */
               <div className="space-y-4">
                 <div className="flex items-center gap-2 mb-1">
                   <Shield className="w-5 h-5 text-[#0E4EBD]" />
@@ -2539,8 +2601,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
             </div>
             )
-          ) : (
-            /* PENDING / RETURNED / REJECTED PROPOSALS — Active Decision Controls */
+          ) : showAdviserDecision ? (
+            /* PENDING / RETURNED / REJECTED PROPOSALS — Active Adviser Decision Controls (Org Proposal under SAS Review) */
             <div className="space-y-4">
               <div className="flex items-center gap-2">
                 <Gavel className="w-5 h-5 text-[#001A4D]" />
@@ -2619,6 +2681,166 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               >
                 Close & Back to Approvals
               </button>
+            </div>
+          ) : isSasCreated ? (
+            /* SAS INSTITUTIONAL EVENT — In Signatory Routing (Not an Adviser Decision) */
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 mb-1">
+                <Shield className="w-5 h-5 text-[#0E4EBD]" />
+                <div>
+                  <p className="text-[#001A4D] font-bold text-base">SAS Institutional Activity</p>
+                  <p className="text-gray-500 text-xs">Direct activity created by Student Affairs & Services</p>
+                </div>
+              </div>
+
+              {/* Status Banner */}
+              <div className="bg-gradient-to-br from-[#001A4D] via-[#002B7F] to-[#0E4EBD] rounded-2xl p-5 text-white shadow-xs space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+                    <Clock className="w-6 h-6 text-[#FFD41C]" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-base text-white">In Signatory Routing</h4>
+                    <p className="text-xs text-blue-100">
+                      Awaiting Campus Signatory Approvals
+                    </p>
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-white/20 flex items-center justify-between text-xs text-white/90">
+                  <span>Routing Progress:</span>
+                  <span className="font-semibold text-[#FFD41C]">
+                    {displayApprovalChain.length > 0
+                      ? `${displayApprovalChain.filter((s) => s.status === 'approved' || s.status === 'endorsed').length} of ${displayApprovalChain.length} Signed`
+                      : 'Pending Signatories'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Info Box */}
+              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 text-xs text-blue-900 shadow-xs space-y-1">
+                <p className="font-bold text-blue-950 flex items-center gap-1.5">
+                  <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                  <span>Institutional Routing Active</span>
+                </p>
+                <p className="text-blue-800 leading-relaxed text-[11px]">
+                  This activity was authored by SAS. Operational tools (Publishing, Attendance, Cash Custodians) will automatically unlock once all designated signatories have completed their endorsement.
+                </p>
+              </div>
+
+              {/* Activity Parameters Card */}
+              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-xs space-y-3">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                  Activity Parameters
+                </p>
+                <div className="space-y-2.5 text-xs">
+                  <div className="flex justify-between py-1.5 border-b border-gray-100">
+                    <span className="text-gray-500">Proposed Budget</span>
+                    <span className="font-bold text-[#001A4D] font-mono">{formatPHP(totalExpenseAmount)}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-gray-100">
+                    <span className="text-gray-500">Expected Attendance</span>
+                    <span className="font-bold text-[#001A4D]">{event.expectedParticipantCount || 0} Students</span>
+                  </div>
+                  <div className="flex justify-between py-1.5 border-b border-gray-100">
+                    <span className="text-gray-500">Sessions</span>
+                    <span className="font-bold text-[#001A4D]">{event.sessions?.length || 1} Session{(event.sessions?.length || 1) > 1 ? 's' : ''}</span>
+                  </div>
+                  <div className="flex justify-between py-1.5">
+                    <span className="text-gray-500">Venue</span>
+                    <span className="font-bold text-[#001A4D] truncate max-w-[150px]">{venueName}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="space-y-2 pt-1">
+                <button
+                  onClick={handleExportPDF}
+                  disabled={exportingPdf}
+                  className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                </button>
+                <button
+                  onClick={onClose}
+                  className="w-full py-2.5 bg-[#001A4D] text-white hover:bg-[#001A4D]/90 rounded-xl font-bold text-xs transition-colors shadow-xs cursor-pointer"
+                >
+                  Close & Back to Approvals
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* ORG PROPOSAL ENDORSED BY SAS — Awaiting Subsequent Campus Signatories */
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 mb-1">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+                <div>
+                  <p className="text-[#001A4D] font-bold text-base">Endorsed by SAS</p>
+                  <p className="text-gray-500 text-xs">Awaiting subsequent campus signatories</p>
+                </div>
+              </div>
+
+              {/* Status Banner */}
+              <div className="bg-gradient-to-br from-[#001A4D] via-[#002B7F] to-[#0E4EBD] rounded-2xl p-5 text-white shadow-xs space-y-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+                    <CheckCircle2 className="w-6 h-6 text-[#FFD41C]" />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-base text-white">SAS Endorsement Complete</h4>
+                    <p className="text-xs text-blue-100">
+                      Routing in Progress
+                    </p>
+                  </div>
+                </div>
+                <div className="pt-2 border-t border-white/20 flex items-center justify-between text-xs text-white/90">
+                  <span>Routing Progress:</span>
+                  <span className="font-semibold text-[#FFD41C]">
+                    {displayApprovalChain.filter((s) => s.status === 'approved' || s.status === 'endorsed').length} of {displayApprovalChain.length} Signatures
+                  </span>
+                </div>
+              </div>
+
+              {/* Next Signatories Card */}
+              {displayApprovalChain.filter((s) => s.status !== 'approved' && s.status !== 'endorsed').length > 0 && (
+                <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-xs space-y-2.5">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
+                    Pending Campus Signatories
+                  </p>
+                  <div className="space-y-2 text-xs">
+                    {displayApprovalChain.filter((s) => s.status !== 'approved' && s.status !== 'endorsed').map((s, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-gray-50 border border-gray-100">
+                        <div>
+                          <p className="font-bold text-gray-800">{s.signatoryName || s.roleTitle}</p>
+                          <p className="text-[11px] text-gray-500">{s.roleTitle} {s.department ? `• ${s.department}` : ''}</p>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800">
+                          Pending
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="space-y-2 pt-1">
+                <button
+                  onClick={handleExportPDF}
+                  disabled={exportingPdf}
+                  className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                </button>
+                <button
+                  onClick={onClose}
+                  className="w-full py-2.5 bg-[#001A4D] text-white hover:bg-[#001A4D]/90 rounded-xl font-bold text-xs transition-colors shadow-xs cursor-pointer"
+                >
+                  Close & Back to Approvals
+                </button>
+              </div>
             </div>
           )}
         </aside>

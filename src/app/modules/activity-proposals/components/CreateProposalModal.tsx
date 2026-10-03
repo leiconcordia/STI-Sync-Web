@@ -45,9 +45,6 @@ import Step4SessionsScheduler from './wizard/Step4SessionsScheduler';
 import Step5TaskAllocation from './wizard/Step5TaskAllocation';
 import Step6FinancialProjections from './wizard/Step6FinancialProjections';
 import Step7ReviewSubmit from './wizard/Step7ReviewSubmit';
-import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
-import { getInstitutionalSignatories } from '../../signatories/services/signatory.service';
-import { buildDynamicApprovalChain } from '../utils/proposal-routing';
 
 interface CreateProposalModalProps {
   isOpen: boolean;
@@ -307,40 +304,9 @@ export default function CreateProposalModal({
   useEffect(() => {
     const isOfficer = currentUser.role === 'officer';
 
-    getSasSignatoryConfig().then(async (sasConfig) => {
-      let defaultChain: ProposalApprovalStep[] = [];
+    // Start approval pipeline from scratch with no predefined persons for both admin and officer
+    const defaultChain: ProposalApprovalStep[] = [];
 
-      if (isOfficer) {
-        defaultChain = [
-          {
-            id: 'step_sas_mandatory',
-            step: 1,
-            stageIndex: 1,
-            stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
-            role: 'sas_coordinator',
-            roleTitle: sasConfig.roleTitle || 'SAS Coordinator / Reviewer',
-            actionType: 'endorse' as const,
-            signatoryName: sasConfig.name || 'Student Affairs & Services',
-            signatoryEmail: sasConfig.email || 'sao@ormoc.sti.edu.ph',
-            department: sasConfig.department || 'Student Affairs & Services',
-            status: 'current' as const,
-          },
-        ];
-      } else {
-        // Admin or SAS: generate dynamic approval chain following institutional stages
-        try {
-          const institutionalSignatories = await getInstitutionalSignatories();
-          defaultChain = buildDynamicApprovalChain(
-            institutionalSignatories,
-            initialData?.targetAudience || {},
-            true,
-            sasConfig.name || currentUser.name,
-            sasConfig.email || currentUser.email
-          );
-        } catch {
-          defaultChain = buildDynamicApprovalChain([], initialData?.targetAudience || {}, true, currentUser.name, currentUser.email);
-        }
-      }
 
       if (initialData) {
         setFormData((prev) => ({
@@ -380,7 +346,6 @@ export default function CreateProposalModal({
           }));
         });
       }
-    });
   }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName]);
 
   if (!isOpen) return null;

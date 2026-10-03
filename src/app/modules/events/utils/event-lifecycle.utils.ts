@@ -668,3 +668,19 @@ export function isEventReadyForCertificates(event?: Partial<EventDocument> | nul
   return isEventConcluded(event) && isEventAttendanceEnabled(event);
 }
 
+/**
+ * Checks whether an event proposal has been fully signed and endorsed by all designated signatories.
+ * If an approval chain is present and non-empty, every step MUST have a confirmed status of 'endorsed' or 'approved'.
+ * If the chain has no designated steps, it cannot be considered signed.
+ */
+export function isProposalFullySigned(chain?: any[] | null): boolean {
+  if (!Array.isArray(chain) || chain.length === 0) {
+    return false;
+  }
+  return chain.every(
+    (step) => step && (step.status === 'endorsed' || step.status === 'approved')
+  );
+}
+
+
+

@@ -4,6 +4,8 @@ import { db } from '../../../../services/firebase';
 import type { EventDocument } from '../types/event.types';
 import { ACTIVITIES_COLLECTION, EVENTS_COLLECTION } from '../services/event.service';
 
+import { isProposalFullySigned } from '../utils/event-lifecycle.utils';
+
 export function useAllEvents() {
   const [events, setEvents] = useState<EventDocument[]>([]);
   const [loading, setLoading] = useState(true);
@@ -14,40 +16,75 @@ export function useAllEvents() {
     let legacyEventsDocs: EventDocument[] = [];
 
     const updateCombined = () => {
-      // Merge by ID: activities collection combined with legacy events, prioritizing confirmed approval markers
+      // Merge by ID: activities collection combined with legacy events
       const map = new Map<string, EventDocument>();
       legacyEventsDocs.forEach((e) => map.set(e.id, e));
       activitiesDocs.forEach((act) => {
         const existing = map.get(act.id);
         if (existing) {
-          const isActApproved =
-            act.proposalStatus === 'approved' ||
-            act.status === 'approved' ||
-            Boolean(act.approvedAt) ||
-            Boolean(act.approvedBy);
-          const isExistingApproved =
-            existing.proposalStatus === 'approved' ||
-            existing.status === 'approved' ||
-            Boolean(existing.approvedAt) ||
-            Boolean(existing.approvedBy);
-
           const merged: EventDocument = { ...existing, ...act };
-          if (isExistingApproved || isActApproved) {
-            merged.proposalStatus = 'approved';
-            if (merged.status !== 'completed' && merged.status !== 'cancelled') {
-              merged.status = 'approved';
+          const chain: any[] = (merged as any).approvalChain || [];
+          const hasChain = Array.isArray(chain) && chain.length > 0;
+          const fullySigned = isProposalFullySigned(chain);
+
+          const isExplicitPending =
+            merged.proposalStatus === 'pending' ||
+            merged.proposalStatus === 'pending_review' ||
+            merged.proposalStatus === 'under_review' ||
+            merged.status === 'under_review' ||
+            merged.status === 'pending' ||
+            (merged as any).lifecycleStatus === 'pending_review';
+
+          if (hasChain) {
+            if (fullySigned) {
+              merged.proposalStatus = 'approved';
+              if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+                merged.status = 'approved';
+              }
+              if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+                merged.lifecycleStatus = 'approved';
+              }
+              merged.approvedAt = act.approvedAt || existing.approvedAt;
+              merged.approvedBy = act.approvedBy || existing.approvedBy;
+            } else if (isExplicitPending) {
+              merged.proposalStatus = 'pending';
+              if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+                merged.status = 'pending';
+              }
+              if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+                merged.lifecycleStatus = 'pending_review';
+              }
             }
-            if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
-              merged.lifecycleStatus = 'approved';
+          } else {
+            const isActApproved =
+              act.proposalStatus === 'approved' ||
+              act.status === 'approved' ||
+              Boolean(act.approvedAt) ||
+              Boolean(act.approvedBy);
+            const isExistingApproved =
+              existing.proposalStatus === 'approved' ||
+              existing.status === 'approved' ||
+              Boolean(existing.approvedAt) ||
+              Boolean(existing.approvedBy);
+
+            if (!isExplicitPending && (isExistingApproved || isActApproved)) {
+              merged.proposalStatus = 'approved';
+              if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+                merged.status = 'approved';
+              }
+              if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+                merged.lifecycleStatus = 'approved';
+              }
+              merged.approvedAt = act.approvedAt || existing.approvedAt;
+              merged.approvedBy = act.approvedBy || existing.approvedBy;
             }
-            merged.approvedAt = act.approvedAt || existing.approvedAt;
-            merged.approvedBy = act.approvedBy || existing.approvedBy;
           }
           map.set(act.id, merged);
         } else {
           map.set(act.id, act);
         }
       });
+
 
       const combined = Array.from(map.values()).filter((e) => e.proposalStatus !== 'draft');
       combined.sort((a, b) => {
@@ -115,27 +152,61 @@ export function useEventById(eventId: string | undefined) {
         return;
       }
       const merged: EventDocument = { ...(evtData || {}), ...(actData || {}) } as EventDocument;
-      const isActApproved =
-        actData?.proposalStatus === 'approved' ||
-        actData?.status === 'approved' ||
-        Boolean(actData?.approvedAt) ||
-        Boolean(actData?.approvedBy);
-      const isEvtApproved =
-        evtData?.proposalStatus === 'approved' ||
-        evtData?.status === 'approved' ||
-        Boolean(evtData?.approvedAt) ||
-        Boolean(evtData?.approvedBy);
+      const chain: any[] = (merged as any).approvalChain || [];
+      const hasChain = Array.isArray(chain) && chain.length > 0;
+      const fullySigned = isProposalFullySigned(chain);
 
-      if (isActApproved || isEvtApproved) {
-        merged.proposalStatus = 'approved';
-        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
-          merged.status = 'approved';
+      const isExplicitPending =
+        merged.proposalStatus === 'pending' ||
+        merged.proposalStatus === 'pending_review' ||
+        merged.proposalStatus === 'under_review' ||
+        merged.status === 'under_review' ||
+        merged.status === 'pending' ||
+        (merged as any).lifecycleStatus === 'pending_review';
+
+      if (hasChain) {
+        if (fullySigned) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy;
+        } else if (isExplicitPending) {
+          merged.proposalStatus = 'pending';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'pending';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'pending_review';
+          }
         }
-        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
-          merged.lifecycleStatus = 'approved';
+      } else {
+        const isActApproved =
+          actData?.proposalStatus === 'approved' ||
+          actData?.status === 'approved' ||
+          Boolean(actData?.approvedAt) ||
+          Boolean(actData?.approvedBy);
+        const isEvtApproved =
+          evtData?.proposalStatus === 'approved' ||
+          evtData?.status === 'approved' ||
+          Boolean(evtData?.approvedAt) ||
+          Boolean(evtData?.approvedBy);
+
+        if (!isExplicitPending && (isActApproved || isEvtApproved)) {
+          merged.proposalStatus = 'approved';
+          if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+            merged.status = 'approved';
+          }
+          if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+            merged.lifecycleStatus = 'approved';
+          }
+          merged.approvedAt = actData?.approvedAt || evtData?.approvedAt;
+          merged.approvedBy = actData?.approvedBy || evtData?.approvedBy;
         }
-        merged.approvedAt = actData?.approvedAt || evtData?.approvedAt;
-        merged.approvedBy = actData?.approvedBy || evtData?.approvedBy;
       }
       setEvent(merged);
       setLoading(false);

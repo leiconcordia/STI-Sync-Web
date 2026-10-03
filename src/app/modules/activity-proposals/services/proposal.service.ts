@@ -627,9 +627,13 @@ export async function endorseProposal(
     isFullyApproved ? 'approved' : 'pending',
     {
       currentStageIndex: nextStageIndex,
-      ...(isFullyApproved ? { proposalStatus: 'approved' } : {}),
+      status: isFullyApproved ? 'approved' : 'pending',
+      lifecycleStatus: isFullyApproved ? 'approved' : 'pending_review',
+      proposalStatus: isFullyApproved ? 'approved' : 'pending',
+      ...(isFullyApproved ? { approvedAt: serverTimestamp() } : {}),
     }
   );
+
 
   return {
     success: true,
