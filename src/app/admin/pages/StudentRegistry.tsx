@@ -1,31 +1,36 @@
+/**
+ * src/app/admin/pages/StudentRegistry.tsx
+ *
+ * Streamlined Student Registry with automated Registrar Bulk Enrollment,
+ * Active Student Directory, Inactive/Unenrolled Tracking, and Graduate Archives.
+ */
+
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router';
-import { Clock, RefreshCw, UserCheck, UserX, Archive, Loader2 } from 'lucide-react';
-import RegistryDashboard from '../components/student-registry/RegistryDashboard';
-import PendingVerification from '../components/student-registry/PendingVerification';
-import ReEnrollmentManagement from '../components/student-registry/ReEnrollmentManagement';
+import {
+  UserCheck,
+  UserX,
+  Archive,
+  LayoutDashboard,
+  Loader2,
+} from 'lucide-react';
 import ActiveStudents from '../components/student-registry/ActiveStudents';
 import InactiveSuspended from '../components/student-registry/InactiveSuspended';
 import ArchivedGraduates from '../components/student-registry/ArchivedGraduates';
+import RegistryDashboard from '../components/student-registry/RegistryDashboard';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
-import { StudentDocument } from '../../modules/students/types/student.types';
-import { isDeadlinePassed } from '../../utils/date';
+import type { StudentDocument } from '../../modules/students/types/student.types';
 
-type RegistryView = 'dashboard' | 'pending' | 'reenrollment' | 'active' | 'inactive' | 'archived';
+type RegistryView = 'active' | 'inactive' | 'archived' | 'dashboard';
 
 export function StudentRegistry() {
-  const [activeView, setActiveView] = useState<RegistryView>('dashboard');
   const [searchParams, setSearchParams] = useSearchParams();
-
-  const targetStudentId = searchParams.get('id') || searchParams.get('studentId') || undefined;
+  const [activeView, setActiveView] = useState<RegistryView>('active');
 
   useEffect(() => {
     const tab = searchParams.get('tab');
-    const id = searchParams.get('id') || searchParams.get('studentId');
-    if (tab === 'pending' || tab === 'pending-verification' || id) {
-      setActiveView('pending');
-    } else if (tab && ['dashboard', 'pending', 'reenrollment', 'active', 'inactive', 'archived'].includes(tab)) {
+    if (tab && ['active', 'inactive', 'archived', 'dashboard'].includes(tab)) {
       setActiveView(tab as RegistryView);
     }
   }, [searchParams]);
@@ -43,72 +48,45 @@ export function StudentRegistry() {
   const {
     activeCollegePeriod,
     activeShsPeriod,
-    isStudentPendingReEnrollment,
     loading: loadingSemesters,
     error: errorSemesters,
   } = useActiveAcademicPeriods();
 
   const loading = loadingStudents || loadingSemesters;
   const error = errorStudents || errorSemesters;
-
   const activeSemester = activeCollegePeriod || activeShsPeriod;
 
   const categorizedStudents = useMemo(() => {
-    const pending: StudentDocument[] = [];
     const active: StudentDocument[] = [];
     const inactive: StudentDocument[] = [];
     const archived: StudentDocument[] = [];
-    const reenrollment: StudentDocument[] = [];
 
     students.forEach((student) => {
       switch (student.status) {
-        case 'PENDING':
-          pending.push(student);
+        case 'ACTIVE':
+          active.push(student);
           break;
-        case 'ACTIVE': {
-          const isShs =
-            student.academicLevel === 'SHS' ||
-            (student.semester && String(student.semester).includes('Trimester')) ||
-            student.yearLevel === 'Grade 11' ||
-            student.yearLevel === 'Grade 12';
-          const activePeriod = isShs ? activeShsPeriod : activeCollegePeriod;
-          const deadlinePassed = isDeadlinePassed(activePeriod?.reenrollDeadline);
-          const needsReenroll = isStudentPendingReEnrollment(student);
-
-          // If the student is still not re-enrolled while deadline has passed,
-          // they should not show up in re-enrollment tab anymore, and only appear in inactive tab.
-          if (needsReenroll && deadlinePassed) {
-            inactive.push(student);
-          } else {
-            active.push(student);
-            if (needsReenroll) {
-              reenrollment.push(student);
-            }
-          }
-          break;
-        }
         case 'INACTIVE':
+        case 'SUSPENDED':
           inactive.push(student);
           break;
         case 'ARCHIVED':
           archived.push(student);
           break;
         default:
-          if ((student.status as string) === 'SUSPENDED') {
-            inactive.push(student);
-          }
+          active.push(student);
           break;
       }
     });
 
-    return { pending, active, inactive, archived, reenrollment };
-  }, [students, isStudentPendingReEnrollment, activeCollegePeriod, activeShsPeriod]);
+    return { active, inactive, archived, reenrollment: [] };
+  }, [students]);
 
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-64 space-y-4">
-        <Loader2 className="w-8 h-8 animate-spin text-[#0E4EBD]" />
-        <p className="text-gray-500 font-medium">Loading registry data...</p>
+        <Loader2 className="w-8 h-8 animate-spin text-[#001A4D]" />
+        <p className="text-gray-500 font-medium">Loading student registry data...</p>
       </div>
     );
   }
@@ -116,134 +94,113 @@ export function StudentRegistry() {
   if (error) {
     return (
       <div className="p-6 bg-red-50 text-red-600 rounded-xl border border-red-200">
-        <h3 className="font-bold mb-2">Error loading data</h3>
+        <h3 className="font-bold mb-2">Error loading registry</h3>
         <p>{error.message}</p>
       </div>
     );
   }
 
-  const { pending, active, inactive, archived, reenrollment } = categorizedStudents;
+  const { active, inactive, archived } = categorizedStudents;
 
   const renderView = () => {
     switch (activeView) {
-      case 'dashboard':
-        return (
-          <RegistryDashboard
-            onNavigate={handleNavigate}
-            categorizedStudents={{ ...categorizedStudents, suspended: [] }}
-            activeSemester={activeSemester}
-            activeCollegePeriod={activeCollegePeriod}
-            activeShsPeriod={activeShsPeriod}
-            allStudents={students}
-          />
-        );
-      case 'pending':
-        return <PendingVerification students={pending} initialStudentId={targetStudentId} />;
-      case 'reenrollment':
-        return (
-          <ReEnrollmentManagement
-            students={active}
-            activeSemester={activeSemester}
-            activeCollegePeriod={activeCollegePeriod}
-            activeShsPeriod={activeShsPeriod}
-          />
-        );
       case 'active':
         return <ActiveStudents students={active} />;
       case 'inactive':
         return <InactiveSuspended inactiveStudents={inactive} suspendedStudents={[]} />;
       case 'archived':
         return <ArchivedGraduates students={archived} />;
-      default:
+      case 'dashboard':
         return (
           <RegistryDashboard
             onNavigate={handleNavigate}
-            categorizedStudents={{ ...categorizedStudents, suspended: [] }}
+            categorizedStudents={categorizedStudents}
             activeSemester={activeSemester}
             activeCollegePeriod={activeCollegePeriod}
             activeShsPeriod={activeShsPeriod}
             allStudents={students}
           />
         );
+      default:
+        return <ActiveStudents students={active} />;
     }
   };
 
   return (
     <div className="space-y-6">
-      {/* Sub-navigation */}
-      <div className="flex flex-wrap items-center gap-2 bg-white border border-[#E0E0E0] rounded-xl p-2 shadow-sm">
-        <button
-          onClick={() => setActiveView('dashboard')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'dashboard'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
+      {/* Streamlined Sub-navigation */}
+      <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-[#E0E0E0] rounded-xl p-2 shadow-sm">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={() => handleNavigate('active')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
+              activeView === 'active'
+                ? 'bg-[#001A4D] text-white shadow-sm'
+                : 'text-gray-700 hover:bg-gray-100'
             }`}
-        >
-          Registry Home
-        </button>
-        <button
-          onClick={() => setActiveView('pending')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'pending'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
-            }`}
-        >
-          <Clock className="w-4 h-4" />
-          Pending Verification
-          {pending.length > 0 && (
-            <span className="px-2 py-0.5 bg-red-500 text-white rounded-full text-xs font-bold font-mono">
-              {pending.length}
+          >
+            <UserCheck className="w-4 h-4 text-emerald-400" />
+            <span>Active Students</span>
+            <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
+              activeView === 'active' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+            }`}>
+              {active.length}
             </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveView('reenrollment')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'reenrollment'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
+          </button>
+
+          <button
+            onClick={() => handleNavigate('inactive')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
+              activeView === 'inactive'
+                ? 'bg-[#001A4D] text-white shadow-sm'
+                : 'text-gray-700 hover:bg-gray-100'
             }`}
-        >
-          <RefreshCw className="w-4 h-4" />
-          Re-enrollment
-          {reenrollment.length > 0 && (
-            <span className="px-2 py-0.5 bg-amber-500 text-white rounded-full text-xs font-bold font-mono">
-              {reenrollment.length}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setActiveView('active')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'active'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
+          >
+            <UserX className="w-4 h-4 text-amber-400" />
+            <span>Inactive / Dropped</span>
+            {inactive.length > 0 && (
+              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
+                activeView === 'inactive' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+              }`}>
+                {inactive.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            onClick={() => handleNavigate('archived')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
+              activeView === 'archived'
+                ? 'bg-[#001A4D] text-white shadow-sm'
+                : 'text-gray-700 hover:bg-gray-100'
             }`}
-        >
-          <UserCheck className="w-4 h-4" />
-          Active Students
-        </button>
+          >
+            <Archive className="w-4 h-4 text-purple-400" />
+            <span>Archived Graduates</span>
+            {archived.length > 0 && (
+              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
+                activeView === 'archived' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+              }`}>
+                {archived.length}
+              </span>
+            )}
+          </button>
+        </div>
+
         <button
-          onClick={() => setActiveView('inactive')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'inactive'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
-            }`}
+          onClick={() => handleNavigate('dashboard')}
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+            activeView === 'dashboard'
+              ? 'bg-blue-50 text-[#001A4D] font-bold border border-blue-200'
+              : 'text-gray-500 hover:bg-gray-50'
+          }`}
         >
-          <UserX className="w-4 h-4" />
-          Inactive Students
-        </button>
-        <button
-          onClick={() => setActiveView('archived')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${activeView === 'archived'
-            ? 'bg-[#001A4D] text-white'
-            : 'text-[#001A4D] hover:bg-gray-50'
-            }`}
-        >
-          <Archive className="w-4 h-4" />
-          Archived
+          <LayoutDashboard className="w-4 h-4" />
+          <span>Analytics Overview</span>
         </button>
       </div>
 
-      {/* Main Content */}
+      {/* Main Content Area */}
       {renderView()}
     </div>
   );

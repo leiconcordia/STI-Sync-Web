@@ -194,9 +194,39 @@ export function useOfficerAuth() {
         }
       }
 
+      // E. Resolve Student Document for Officer Identity
+      let studentDocData: any = null;
+      const targetStudentId = officerRecords[0]?.studentId || (RegExp(/^\d{8,15}$/).test(trimmedId) ? trimmedId : null);
+      if (targetStudentId) {
+        try {
+          const qStud = query(collection(db, 'students'), where('studentId', '==', targetStudentId));
+          const studSnap = await getDocs(qStud);
+          if (!studSnap.empty) {
+            studentDocData = studSnap.docs[0].data();
+          }
+        } catch (sErr) {
+          console.warn('[useOfficerAuth] Student fetch warning:', sErr);
+        }
+      }
+
       const allRecords = [...signatoryRecords, ...officerRecords, ...adviserRecords];
 
       if (allRecords.length === 0) {
+        // Check if user is an enrolled student without an active officer role
+        try {
+          const qCheckStudent = query(
+            collection(db, 'students'),
+            where('studentId', '==', trimmedId)
+          );
+          const checkStudentSnap = await getDocs(qCheckStudent);
+          if (!checkStudentSnap.empty) {
+            setError(
+              'You are officially enrolled as a student, but you do not hold an active appointed officer role in any registered organization.'
+            );
+            return null;
+          }
+        } catch (_) {}
+
         setError(
           'No active organization officer, adviser, or institutional staff account found with these credentials.'
         );
@@ -205,12 +235,13 @@ export function useOfficerAuth() {
 
       // Determine target email for Firebase Auth
       const targetEmail = (
+        studentDocData?.email ||
         allRecords[0]?.email ||
         (cleanId.includes('@') ? cleanId : '')
       ).trim().toLowerCase();
 
 
-      // ── 2. Authenticate: Firebase Auth vs. Permanent Password vs. Temporary Password ──
+      // ── 2. Authenticate: Firebase Auth vs. Student Default Password vs. Permanent/Temporary Password ──
       let authenticated = false;
       let matchedRecord: any = null;
       let isSignatoryUser = false;
@@ -234,15 +265,33 @@ export function useOfficerAuth() {
           }
         } catch (authErr: any) {
           // Firebase Auth failed with the entered password.
-          // This happens when the user is logging in with a temporary password (first-time login or admin reset).
+          // This happens when the user is logging in with a default student password or temporary credentials.
         }
       }
 
-      // Strategy B: Check Permanent Custom / Hashed Password in Firestore (STRICTLY when requiresPasswordChange !== true)
+      // Strategy B: Student Default Password Check (for newly appointed officers or before mobile profile completion)
+      if (!authenticated && studentDocData && officerRecords.length > 0) {
+        const lastName = (studentDocData.lastName || '').trim();
+        const sId = (studentDocData.studentId || '').trim();
+        const formulaPass = lastName && sId.length >= 6
+          ? `${lastName[0].toUpperCase()}${lastName.slice(1).toLowerCase()}${sId.slice(-6)}`
+          : '';
+
+        const isDefaultValid =
+          (studentDocData.defaultPassword && studentDocData.defaultPassword === trimmedPass) ||
+          (formulaPass && formulaPass === trimmedPass);
+
+        if (isDefaultValid) {
+          authenticated = true;
+          matchedRecord = officerRecords[0];
+          isSignatoryUser = false;
+        }
+      }
+
+      // Strategy C: Check Permanent Custom / Hashed Password in Firestore (for advisers / signatories)
       if (!authenticated) {
         const hashedInput = await hashPassword(trimmedPass);
         const matchingPermanentRecord = allRecords.find((rec) => {
-          // If record is flagged as requiring password change, permanent password is NOT active!
           if (rec.requiresPasswordChange === true) return false;
           return (
             (rec.passwordHash && rec.passwordHash === hashedInput) ||
@@ -263,10 +312,8 @@ export function useOfficerAuth() {
         }
       }
 
-      // Strategy C: Temporary Password ONLY for first-time login or after Admin Reset (requiresPasswordChange === true)
+      // Strategy D: Temporary Password ONLY for first-time login or after Admin Reset (signatories / advisers)
       if (!authenticated) {
-        // STRICT RULE: Only matches if requiresPasswordChange === true!
-        // Once the user changes password, requiresPasswordChange is false, so temporary password CANNOT be used again.
         const matchingTempRecord = allRecords.find(
           (rec) =>
             rec.requiresPasswordChange === true &&
@@ -278,7 +325,6 @@ export function useOfficerAuth() {
           authenticated = true;
           matchedRecord = matchingTempRecord;
 
-          // Determine record type
           if (signatoryRecords.some((s) => s.id === matchingTempRecord.id)) {
             isSignatoryUser = true;
           } else if (adviserRecords.some((a) => a.email === matchingTempRecord.email)) {
@@ -290,7 +336,7 @@ export function useOfficerAuth() {
       }
 
       if (!authenticated || !matchedRecord) {
-        setError('Incorrect password. Please enter your valid account password or temporary password.');
+        setError('Incorrect password. Please enter your valid student password or account credentials.');
         return null;
       }
 
@@ -356,13 +402,13 @@ export function useOfficerAuth() {
       } else {
         const session = {
           studentId: matchedRecord.studentId || matchedRecord.employeeId || matchedRecord.email,
-          studentName: matchedRecord.studentName || matchedRecord.name || 'Club Officer',
-          email: matchedRecord.email,
+          studentName: matchedRecord.studentName || matchedRecord.name || (studentDocData ? `${studentDocData.firstName} ${studentDocData.lastName}` : 'Club Officer'),
+          email: matchedRecord.email || studentDocData?.email || '',
           activeOrganizationId: matchedRecord.organizationId,
           activeRoleId: isAdviserUser ? 'adviser' : matchedRecord.roleId,
           isAdviser: isAdviserUser,
           isSignatory: false,
-          requiresPasswordChange: matchedRecord.requiresPasswordChange ?? false,
+          requiresPasswordChange: studentDocData?.requiresPasswordChange ?? (matchedRecord.requiresPasswordChange ?? false),
           availableWorkspaces: {
             hasSignatory: signatoryRecords.length > 0,
             hasOfficer: true,

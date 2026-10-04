@@ -4,7 +4,7 @@ import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
-import { useDepartments } from '../../modules/academic/hooks/useAcademicStream';
+
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useOrgOfficers } from '../../modules/organizations/hooks/useOrgOfficers';
 import { updateOrganization } from '../../modules/organizations/services/organization.service';
@@ -17,7 +17,7 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
 
   const { data: orgs, loading: orgsLoading } = useOrganizationStream();
   const { data: types, loading: typesLoading } = useOrganizationTypes();
-  const { data: departments, loading: deptsLoading } = useDepartments();
+
   const { data: roles } = useRoles();
   const { members, loading: membersLoading } = useOrgMembers(activeOrgId);
   const { officers, loading: officersLoading } = useOrgOfficers(activeOrgId);
@@ -238,20 +238,7 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                   </select>
                 </div>
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Department</label>
-                  <select
-                    value={formData.departmentId || ''}
-                    onChange={(e) => setFormData({...formData, departmentId: e.target.value})}
-                    disabled={!canEdit}
-                    className={inputClass}
-                  >
-                    <option value="cross-departmental">Cross-Departmental (All)</option>
-                    {departments.filter(d => !d.archived).map(dept => (
-                      <option key={dept.id} value={dept.id}>{dept.name}</option>
-                    ))}
-                  </select>
-                </div>
+
               </div>
 
               <div>

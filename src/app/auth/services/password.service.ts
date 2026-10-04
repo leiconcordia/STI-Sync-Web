@@ -7,7 +7,7 @@
  */
 
 import { updatePassword, reauthenticateWithCredential, EmailAuthProvider, signInWithEmailAndPassword } from 'firebase/auth';
-import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, query, where, getDocs, doc, updateDoc, serverTimestamp, deleteField } from 'firebase/firestore';
 import { auth, db } from '../../../services/firebase';
 import type { OfficerProfile } from '../hooks/useOfficerProfile';
 
@@ -83,6 +83,7 @@ export async function changeOfficerOrAdviserPassword(
         await updateDoc(doc(db, 'students', d.id), {
           requiresPasswordChange: false,
           temporaryPassword: null,
+          defaultPassword: deleteField(),
           updatedAt: serverTimestamp(),
         });
       }

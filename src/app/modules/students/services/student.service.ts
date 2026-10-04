@@ -85,6 +85,155 @@ export async function isStudentIdTaken(studentId: string): Promise<boolean> {
   return !snap.empty;
 }
 
+/** Returns existing student if studentId is taken, or null if available. */
+export async function getStudentByStudentId(studentId: string): Promise<StudentDocument | null> {
+  const cleanId = studentId.trim();
+  if (!cleanId) return null;
+  const q = query(
+    collection(db, STUDENTS_COLLECTION),
+    where('studentId', '==', cleanId)
+  );
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  return { id: snap.docs[0].id, ...snap.docs[0].data() } as StudentDocument;
+}
+
+export interface LateEnrolleePayload {
+  studentId: string;
+  lastName: string;
+  firstName: string;
+  middleName?: string;
+  sex: StudentSex;
+  academicLevel: AcademicLevel;
+  courseId: string;
+  courseCode: string;
+  courseName: string;
+  departmentId?: string;
+  departmentName?: string;
+  yearLevel: StudentYearLevel;
+  section?: string;
+  schoolYear: string;
+  semester: StudentSemester;
+}
+
+/**
+ * Creates a late enrollee student record with essential info only.
+ * Auto-generates default password formula and marks isProfileComplete = false
+ * so the student can complete their personal details and photos on mobile first login.
+ */
+export async function createLateEnrolleeStudent(
+  payload: LateEnrolleePayload,
+  adminUid: string
+): Promise<string> {
+  const cleanStudentId = payload.studentId.trim();
+  const existing = await getStudentByStudentId(cleanStudentId);
+
+  if (existing) {
+    const exLast = (existing.lastName || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+    const inLast = payload.lastName.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (exLast !== inLast) {
+      throw new Error(`Conflict: Student ID ${cleanStudentId} already belongs to an existing student: ${existing.lastName}, ${existing.firstName}.`);
+    } else {
+      throw new Error(`Student ${existing.lastName}, ${existing.firstName} is already registered with ID ${cleanStudentId}. Please update/promote their standing instead.`);
+    }
+  }
+
+  const { generateDefaultStudentPassword } = await import('./registrar-import.service');
+  const defaultPassword = generateDefaultStudentPassword(payload.lastName, cleanStudentId);
+
+  const docRef = doc(collection(db, STUDENTS_COLLECTION));
+  const newStudent: StudentDocument = {
+    id: docRef.id,
+    studentId: cleanStudentId,
+    lastName: payload.lastName.trim().toUpperCase(),
+    firstName: payload.firstName.trim().toUpperCase(),
+    middleName: (payload.middleName || '').trim().toUpperCase(),
+    sex: payload.sex,
+    dateOfBirth: '',
+    contactNumber: '',
+    academicLevel: payload.academicLevel,
+    courseId: payload.courseId,
+    courseCode: payload.courseCode,
+    courseName: payload.courseName,
+    departmentId: payload.departmentId || '',
+    departmentName: payload.departmentName || '',
+    yearLevel: payload.yearLevel,
+    section: (payload.section || 'UNASSIGNED').trim(),
+    schoolYear: payload.schoolYear,
+    semester: payload.semester,
+    term: payload.semester,
+    email: '', // Student uploads/provides their email directly on mobile app during first login
+    authUid: '',
+    requiresPasswordChange: true,
+    requiresChangePassword: true,
+    isProfileComplete: false,
+    defaultPassword,
+    profilePhotoUrl: '',
+    schoolIdPhotoUrl: '',
+    status: 'ACTIVE',
+    registrationSource: 'MANUAL',
+    addedBy: adminUid,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  await setDoc(docRef, newStudent);
+  return docRef.id;
+}
+
+/**
+ * Updates / advances an existing student's academic standing when re-enrolling or advancing terms manually.
+ */
+export async function promoteOrUpdateStudentStanding(
+  studentDocId: string,
+  updates: {
+    yearLevel: StudentYearLevel;
+    courseId: string;
+    courseCode: string;
+    courseName: string;
+    departmentId?: string;
+    departmentName?: string;
+    section?: string;
+    schoolYear: string;
+    semester: StudentSemester;
+    academicLevel?: AcademicLevel;
+  }
+): Promise<void> {
+  const ref = doc(db, STUDENTS_COLLECTION, studentDocId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new Error('Student document not found.');
+
+  const existing = snap.data() as StudentDocument;
+  const priorHistory = existing.enrollmentHistory || [];
+  const historyItem = {
+    schoolYear: existing.schoolYear || 'PRIOR',
+    semester: existing.semester || 'PRIOR',
+    yearLevel: existing.yearLevel || '',
+    courseCode: existing.courseCode || '',
+    courseName: existing.courseName || '',
+    section: existing.section || '',
+    updatedAt: new Date().toISOString(),
+  };
+
+  await updateDoc(ref, {
+    yearLevel: updates.yearLevel,
+    courseId: updates.courseId,
+    courseCode: updates.courseCode,
+    courseName: updates.courseName,
+    departmentId: updates.departmentId || existing.departmentId || '',
+    departmentName: updates.departmentName || existing.departmentName || '',
+    section: (updates.section || existing.section || 'UNASSIGNED').trim(),
+    schoolYear: updates.schoolYear,
+    semester: updates.semester,
+    term: updates.semester,
+    academicLevel: updates.academicLevel || existing.academicLevel || 'COLLEGE',
+    status: 'ACTIVE',
+    rejectionReason: '',
+    enrollmentHistory: [...priorHistory, historyItem],
+    updatedAt: Timestamp.now(),
+  });
+}
+
 /** Returns true if an email is already registered across any user role (students, sas_admins, organization_advisers, organization_officers). */
 export async function isEmailTaken(email: string): Promise<boolean> {
   const cleanEmail = email.trim().toLowerCase();

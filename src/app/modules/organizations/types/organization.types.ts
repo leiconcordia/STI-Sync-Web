@@ -26,6 +26,11 @@ export interface OrganizationDocument {
   acronym: string;
   typeId: string;                              // FK → /organization_types
   departmentId: string | 'cross-departmental'; // FK → /departments or sentinel
+  departmentName?: string;
+  departmentCode?: string;
+  department?: string;
+  scope?: 'departmental' | 'cross-departmental';
+  isCrossDepartmental?: boolean;
   description: string;
 
   // ─── Adviser ───
@@ -52,6 +57,11 @@ export interface CreateOrganizationPayload {
   acronym: string;
   typeId: string;
   departmentId: string | 'cross-departmental';
+  departmentName?: string;
+  departmentCode?: string;
+  department?: string;
+  scope?: 'departmental' | 'cross-departmental';
+  isCrossDepartmental?: boolean;
   description: string;
   academicYear: string;
   semester: string;

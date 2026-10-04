@@ -195,7 +195,7 @@ export default function AttendanceScannersModal({
       const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
       await updateDoc(docRef, {
         enableQRTickets,
-        attendanceEnabled,
+        attendanceEnabled: enableQRTickets,
         gracePeriodMinutes: Number(gracePeriodMinutes) || 15,
         lateThresholdMinutes: Number(lateThresholdMinutes) || 30,
         sessions,
@@ -283,31 +283,18 @@ export default function AttendanceScannersModal({
                   type="checkbox"
                   disabled={readOnly}
                   checked={enableQRTickets}
-                  onChange={(e) => setEnableQRTickets(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setEnableQRTickets(checked);
+                    setAttendanceEnabled(checked);
+                  }}
                   className="sr-only peer"
                 />
                 <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#001A4D]"></div>
               </label>
             </div>
 
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900">Mandatory Attendance Verification</h4>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Record entrance timestamps for campus clearance and certificate issuance.
-                </p>
-              </div>
-              <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                <input
-                  type="checkbox"
-                  disabled={readOnly}
-                  checked={attendanceEnabled}
-                  onChange={(e) => setAttendanceEnabled(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-              </label>
-            </div>
+
 
             {/* Thresholds */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">

@@ -40,6 +40,8 @@ export interface StudentDocument {
   authUid:      string;       // Firebase Auth UID, filled after account creation
   requiresPasswordChange?: boolean; // Set true when admin creates temporary credentials
   requiresChangePassword?: boolean; // Alias for mobile app compatibility
+  isProfileComplete?: boolean;      // False for bulk-imported students until they complete their profile on mobile
+  defaultPassword?: string;         // Temporary initial password (e.g. Ablen496332) for mobile first login
 
   // ── Media ─────────────────────────────────────────────────────────────────
   profilePhotoUrl: string;    // Cloudinary URL, '' if not yet uploaded
@@ -47,9 +49,20 @@ export interface StudentDocument {
 
   // ── Registry ──────────────────────────────────────────────────────────────
   status:       StudentStatus;
-  registrationSource: 'MANUAL' | 'SELF_REGISTER'; // how the account was created
+  registrationSource: 'MANUAL' | 'SELF_REGISTER' | 'REGISTRAR_IMPORT'; // how the account was created
   addedBy:      string;       // admin UID who created the record manually
   rejectionReason?: string;   // if status is RETURNED, admin reason for return
+
+  // ── Historical Records ────────────────────────────────────────────────────
+  enrollmentHistory?: Array<{
+    schoolYear: string;
+    semester: string;
+    yearLevel: string;
+    courseCode: string;
+    courseName?: string;
+    section?: string;
+    updatedAt: string;
+  }>;
 
   // ── Archival ──────────────────────────────────────────────────────────────
   archiveReason?: string;     // e.g. "Graduated", "Transferred", "Dropped", "Manual"

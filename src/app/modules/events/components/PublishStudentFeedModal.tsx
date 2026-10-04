@@ -13,7 +13,6 @@ import {
   Smartphone,
   Upload,
   Image as ImageIcon,
-  Calendar,
   BookOpen,
   Check,
   Save,
@@ -37,7 +36,12 @@ interface PublishStudentFeedModalProps {
   readOnly?: boolean;
 }
 
-const YEAR_LEVELS = ['Grade 11', 'Grade 12', '1st Year', '2nd Year', '3rd Year', '4th Year'];
+const SHS_STRANDS = ['STEM', 'ABM', 'HUMSS', 'GAS', 'TVL-ICT', 'TVL-HE', 'TVL-IA', 'ICT'];
+const COLLEGE_COURSES = ['BSIT', 'BSCS', 'BSCPE', 'BSHM', 'BSTM', 'BSA', 'BSAIS', 'BSBA'];
+
+const SHS_YEAR_LEVELS = ['Grade 11', 'Grade 12'];
+const COLLEGE_YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
+const ALL_YEAR_LEVELS = [...SHS_YEAR_LEVELS, ...COLLEGE_YEAR_LEVELS];
 
 export default function PublishStudentFeedModal({
   isOpen,
@@ -49,16 +53,10 @@ export default function PublishStudentFeedModal({
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingBanner, setIsUploadingBanner] = useState(false);
 
-  const { data: courses = [] } = useCourses();
+  const { data: fetchedCourses = [] } = useCourses();
 
   // State
   const [bannerUrl, setBannerUrl] = useState<string>(activity.bannerImageUrl || '');
-  const [visibleToStudents, setVisibleToStudents] = useState<boolean>(
-    activity.visibleToStudents ?? activity.isVisible ?? true
-  );
-  const [visibilityDate, setVisibilityDate] = useState<string>(
-    typeof activity.visibilityStart === 'string' ? activity.visibilityStart : ''
-  );
   const [targetAcademicLevel, setTargetAcademicLevel] = useState<'COLLEGE' | 'SHS' | 'BOTH'>(
     activity.targetAcademicLevel || 'BOTH'
   );
@@ -72,10 +70,6 @@ export default function PublishStudentFeedModal({
   useEffect(() => {
     if (activity) {
       setBannerUrl(activity.bannerImageUrl || '');
-      setVisibleToStudents(activity.visibleToStudents ?? activity.isVisible ?? true);
-      setVisibilityDate(
-        typeof activity.visibilityStart === 'string' ? activity.visibilityStart : ''
-      );
       setTargetAcademicLevel(activity.targetAcademicLevel || 'BOTH');
       setTargetCourses(activity.targetCourses || []);
       setTargetYearLevels(activity.targetYearLevels || []);
@@ -102,13 +96,38 @@ export default function PublishStudentFeedModal({
     }
   };
 
-  // Course Toggle
+  // Academic Division Change with automatic pruning
+  const handleAcademicLevelChange = (lvl: 'COLLEGE' | 'SHS' | 'BOTH') => {
+    setTargetAcademicLevel(lvl);
+    if (lvl === 'SHS') {
+      setTargetCourses((prev) => prev.filter((c) => SHS_STRANDS.includes(c)));
+      setTargetYearLevels((prev) => prev.filter((y) => SHS_YEAR_LEVELS.includes(y)));
+    } else if (lvl === 'COLLEGE') {
+      setTargetCourses((prev) => prev.filter((c) => COLLEGE_COURSES.includes(c)));
+      setTargetYearLevels((prev) => prev.filter((y) => COLLEGE_YEAR_LEVELS.includes(y)));
+    }
+  };
+
+  // Course Toggle with automatic year level pruning
   const handleToggleCourse = (courseCode: string) => {
-    setTargetCourses((prev) =>
-      prev.includes(courseCode)
+    setTargetCourses((prev) => {
+      const nextCourses = prev.includes(courseCode)
         ? prev.filter((c) => c !== courseCode)
-        : [...prev, courseCode]
-    );
+        : [...prev, courseCode];
+
+      if (nextCourses.length > 0) {
+        const hasCollegeOnly = nextCourses.every((c) => COLLEGE_COURSES.includes(c));
+        const hasShsOnly = nextCourses.every((c) => SHS_STRANDS.includes(c));
+
+        if (hasCollegeOnly) {
+          setTargetYearLevels((prevYears) => prevYears.filter((y) => !SHS_YEAR_LEVELS.includes(y)));
+        } else if (hasShsOnly) {
+          setTargetYearLevels((prevYears) => prevYears.filter((y) => !COLLEGE_YEAR_LEVELS.includes(y)));
+        }
+      }
+
+      return nextCourses;
+    });
   };
 
   // Year Level Toggle
@@ -120,23 +139,23 @@ export default function PublishStudentFeedModal({
     );
   };
 
-  // Save Settings
+  // Save Settings (Automatically publishes approved activity on save)
   const handleSave = async () => {
     setIsSaving(true);
     try {
       const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
       await updateDoc(docRef, {
         bannerImageUrl: bannerUrl || null,
-        visibleToStudents,
-        isVisible: visibleToStudents,
-        visibilityStart: visibilityDate || null,
+        visibleToStudents: true,
+        isVisible: true,
+        visibilityStart: null,
         targetAcademicLevel,
         targetCourses,
         targetYearLevels,
         updatedAt: serverTimestamp(),
       });
 
-      toast.success('Mobile feed and audience settings updated successfully!');
+      toast.success('Activity published & feed settings updated successfully!');
       if (onUpdated) onUpdated();
       onClose();
     } catch (err: any) {
@@ -146,6 +165,28 @@ export default function PublishStudentFeedModal({
       setIsSaving(false);
     }
   };
+
+  // Available courses/strands based on targetAcademicLevel
+  const availableCourses =
+    targetAcademicLevel === 'SHS'
+      ? SHS_STRANDS
+      : targetAcademicLevel === 'COLLEGE'
+      ? COLLEGE_COURSES
+      : [...COLLEGE_COURSES, ...SHS_STRANDS];
+
+  // Check if selected courses prune year levels
+  const selectedAreCollegeOnly =
+    targetCourses.length > 0 && targetCourses.every((c) => COLLEGE_COURSES.includes(c));
+  const selectedAreShsOnly =
+    targetCourses.length > 0 && targetCourses.every((c) => SHS_STRANDS.includes(c));
+
+  // Available year levels based on targetAcademicLevel & selected courses
+  const availableYearLevels =
+    targetAcademicLevel === 'SHS' || selectedAreShsOnly
+      ? SHS_YEAR_LEVELS
+      : targetAcademicLevel === 'COLLEGE' || selectedAreCollegeOnly
+      ? COLLEGE_YEAR_LEVELS
+      : ALL_YEAR_LEVELS;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-200">
@@ -195,40 +236,23 @@ export default function PublishStudentFeedModal({
             </div>
           )}
 
-          {/* Section 1: Mobile App Visibility Toggle */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900">Show Activity in Student Feed</h4>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Controls if this activity appears in the STI Sync mobile app and student event discovery.
-                </p>
+          {/* Section 1: Automatic Mobile App Feed Publication */}
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0">
+                  <Check className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-emerald-950">Auto-Published to Mobile Student Feed</h4>
+                  <p className="text-[11px] text-emerald-800 mt-0.5">
+                    Clicking "Save & Publish Activity" automatically publishes this approved activity to eligible students on the mobile app.
+                  </p>
+                </div>
               </div>
-              <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                <input
-                  type="checkbox"
-                  disabled={readOnly}
-                  checked={visibleToStudents}
-                  onChange={(e) => setVisibleToStudents(e.target.checked)}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-              </label>
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-slate-500" />
-                <span>Scheduled Publish Date & Time</span>
-              </label>
-              <input
-                type="datetime-local"
-                disabled={readOnly}
-                value={visibilityDate}
-                onChange={(e) => setVisibilityDate(e.target.value)}
-                className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none focus:ring-2 focus:ring-blue-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
-              />
-              <p className="text-[10px] text-slate-400 mt-1">Leave empty to make the activity visible immediately upon saving.</p>
+              <span className="px-2.5 py-1 text-[10px] font-bold uppercase rounded-full bg-emerald-600 text-white tracking-wider flex-shrink-0">
+                Auto-Publish
+              </span>
             </div>
           </div>
 
@@ -303,7 +327,7 @@ export default function PublishStudentFeedModal({
             )}
           </div>
 
-          {/* Section 3: Target Audience & Academic Filters */}
+          {/* Section 3: Target Audience Scope & Academic Filters */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
             <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
               Target Audience Scope & Academic Filters
@@ -320,7 +344,7 @@ export default function PublishStudentFeedModal({
                     key={lvl}
                     type="button"
                     disabled={readOnly}
-                    onClick={() => setTargetAcademicLevel(lvl)}
+                    onClick={() => handleAcademicLevelChange(lvl)}
                     className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all text-center ${
                       readOnly ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
                     } ${
@@ -329,7 +353,7 @@ export default function PublishStudentFeedModal({
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
-                    {lvl === 'BOTH' ? 'SHS & College' : lvl}
+                    {lvl === 'BOTH' ? 'SHS & College' : lvl === 'SHS' ? 'Senior High (SHS)' : 'College Only'}
                   </button>
                 ))}
               </div>
@@ -339,15 +363,16 @@ export default function PublishStudentFeedModal({
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-[11px] font-bold text-slate-500 uppercase">
-                  Eligible Academic Programs / Strands
+                  Eligible Academic Programs / Strands ({targetAcademicLevel})
                 </label>
                 <span className="text-[11px] text-slate-400">
-                  {targetCourses.length === 0 ? 'All programs eligible' : `${targetCourses.length} selected`}
+                  {targetCourses.length === 0 ? 'All programs in division eligible' : `${targetCourses.length} selected`}
                 </span>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {['BSIT', 'BSCS', 'BSHM', 'BSTM', 'BSBA', 'BSA', 'STEM', 'ABM', 'HUMSS', 'ICT'].map((code) => {
+                {availableCourses.map((code) => {
                   const isSelected = targetCourses.includes(code);
+                  const isShs = SHS_STRANDS.includes(code);
                   return (
                     <button
                       key={code}
@@ -358,12 +383,17 @@ export default function PublishStudentFeedModal({
                         readOnly ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
                       } ${
                         isSelected
-                          ? 'bg-[#0E4EBD] text-white shadow-2xs'
+                          ? isShs
+                            ? 'bg-amber-600 text-white shadow-2xs'
+                            : 'bg-[#0E4EBD] text-white shadow-2xs'
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                       }`}
                     >
                       {isSelected && <Check className="w-3 h-3" />}
                       <span>{code}</span>
+                      <span className="text-[9px] opacity-75 font-normal">
+                        ({isShs ? 'SHS' : 'College'})
+                      </span>
                     </button>
                   );
                 })}
@@ -377,11 +407,11 @@ export default function PublishStudentFeedModal({
                   Target Year Levels
                 </label>
                 <span className="text-[11px] text-slate-400">
-                  {targetYearLevels.length === 0 ? 'All year levels' : `${targetYearLevels.length} selected`}
+                  {targetYearLevels.length === 0 ? 'All year levels in scope' : `${targetYearLevels.length} selected`}
                 </span>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {YEAR_LEVELS.map((year) => {
+                {availableYearLevels.map((year) => {
                   const isSelected = targetYearLevels.includes(year);
                   return (
                     <label
@@ -436,7 +466,7 @@ export default function PublishStudentFeedModal({
                 className="px-5 py-2.5 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
               >
                 <Save className="w-4 h-4" />
-                <span>{isSaving ? 'Saving...' : 'Save Feed & Audience'}</span>
+                <span>{isSaving ? 'Saving & Publishing...' : 'Save & Publish Activity'}</span>
               </button>
             </>
           )}

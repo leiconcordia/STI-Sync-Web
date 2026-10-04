@@ -275,11 +275,7 @@ export default function OfficerAnnouncements() {
                     ) : (
                       <span className="flex items-center gap-1 text-blue-700 font-medium">
                         <Users className="w-3.5 h-3.5" /> Targeted Members
-                        {announcement.targetDepartments && announcement.targetDepartments.length > 0 && (
-                          <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                            Depts: {announcement.targetDepartments.join(', ')}
-                          </span>
-                        )}
+
                         {announcement.targetYearLevels && announcement.targetYearLevels.length > 0 && (
                           <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded text-[10px] font-bold">
                             Years: {announcement.targetYearLevels.join(', ')}
@@ -353,21 +349,13 @@ function CreateModal({
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [priority, setPriority] = useState<AnnouncementPriority>('Normal');
-  const [targetType, setTargetType] = useState<'all' | 'department' | 'year'>('all');
-  const [selectedDepts, setSelectedDepts] = useState<string[]>([]);
+  const [targetType, setTargetType] = useState<'all' | 'year'>('all');
   const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [selectedEventId, setSelectedEventId] = useState('');
   const [isPinned, setIsPinned] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const availableDepts = ['BSIT', 'BSCS', 'BSA', 'BSBA', 'BSHM'];
   const availableYears = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
-
-  const toggleDept = (dept: string) => {
-    setSelectedDepts((prev) =>
-      prev.includes(dept) ? prev.filter((d) => d !== dept) : [...prev, dept]
-    );
-  };
 
   const toggleYear = (year: string) => {
     setSelectedYears((prev) =>
@@ -391,7 +379,7 @@ function CreateModal({
           audience: targetType === 'all' ? 'specific' : 'specific',
           targetOrgIds: [activeOrgId],
           targetOrgNames: [activeOrgName],
-          targetDepartments: targetType === 'department' ? selectedDepts : [],
+          targetDepartments: [],
           targetYearLevels: targetType === 'year' ? selectedYears : [],
           organizationId: activeOrgId,
           organizationName: activeOrgName,
@@ -501,33 +489,6 @@ function CreateModal({
                 />
                 <span>All Organization Members</span>
               </label>
-
-              <label className="flex items-center gap-2 text-sm text-[#001A4D] cursor-pointer">
-                <input
-                  type="radio"
-                  name="targetType"
-                  checked={targetType === 'department'}
-                  onChange={() => setTargetType('department')}
-                  className="w-4 h-4 text-[#7F77DD]"
-                />
-                <span>Filter by Department</span>
-              </label>
-
-              {targetType === 'department' && (
-                <div className="ml-6 grid grid-cols-3 gap-2 pt-1">
-                  {availableDepts.map((dept) => (
-                    <label key={dept} className="flex items-center gap-2 text-xs text-gray-700 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedDepts.includes(dept)}
-                        onChange={() => toggleDept(dept)}
-                        className="rounded text-[#7F77DD]"
-                      />
-                      <span>{dept}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
 
               <label className="flex items-center gap-2 text-sm text-[#001A4D] cursor-pointer">
                 <input

@@ -23,7 +23,7 @@ const navItems = [
     group: 'ACADEMIC',
     items: [
       { id: 'academic-calendar', icon: Calendar, label: 'Academic Calendar' },
-      { id: 'course-department', icon: Book, label: 'Course & Department Registry' },
+      { id: 'course-department', icon: Book, label: 'Programs & Sections Registry' },
     ]
   },
   {

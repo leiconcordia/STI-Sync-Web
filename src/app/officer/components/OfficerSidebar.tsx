@@ -11,6 +11,7 @@ import {
   Settings,
   Files,
   BarChart3,
+  Wallet,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
@@ -34,6 +35,7 @@ const navGroups = [
   {
     title: "Finance & Docs",
     items: [
+      { icon: Wallet, label: 'Finance Center', path: '/officer/finance', badge: null },
       { icon: Receipt, label: 'Financial Liquidation', path: '/officer/liquidation', badge: null },
       { icon: Files, label: 'Documents', path: '/officer/documents', badge: 2 },
       { icon: BarChart3, label: 'Reports & Analytics', path: '/officer/reports', badge: null },

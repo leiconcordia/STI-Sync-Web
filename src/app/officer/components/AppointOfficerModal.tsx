@@ -103,16 +103,17 @@ export function AppointOfficerModal({
       return;
     }
 
-    // 1. Enforce that only registered members of this organization can be appointed
+    // 1. Enforce that only registered active members of this organization can be appointed
     const sId = (selectedCandidate.studentId || '').trim().toLowerCase();
     const sEmail = (selectedCandidate.email || '').trim().toLowerCase();
     const isMember = members.some(
       (m) =>
-        (m.studentId && m.studentId.trim().toLowerCase() === sId) ||
-        (m.id && m.id === selectedCandidate.memberDocId)
+        (m.status === 'active' || !m.status) &&
+        ((m.studentId && m.studentId.trim().toLowerCase() === sId) ||
+        (m.id && m.id === selectedCandidate.memberDocId))
     );
     if (!isMember) {
-      setError('Only registered members of this organization can be appointed as an officer.');
+      setError('Only active registered members of this organization can be appointed as an officer. Students must join the organization first.');
       return;
     }
 
@@ -210,13 +211,13 @@ export function AppointOfficerModal({
           {!selectedCandidate ? (
             <div className="mb-6 relative">
               <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-                Select Candidate <span className="text-gray-400 font-normal">(Registered Club Members Only)</span>
+                Select Candidate <span className="text-[#0E4EBD] font-medium">(Active Club Members Only)</span>
               </label>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search registered club members by name or ID..."
+                  placeholder="Search active club members by name or ID..."
                   value={searchQuery}
                   onChange={(e) => {
                     setSearchQuery(e.target.value);
@@ -270,8 +271,8 @@ export function AppointOfficerModal({
                         return (
                           <div className="p-4 text-sm text-gray-500 text-center">
                             {searchQuery
-                              ? `No eligible club members found matching "${searchQuery}". (Students who already hold an officer role in any organization are excluded)`
-                              : 'No eligible club members available. All members are either already officers or no members have registered yet.'}
+                              ? `No eligible active club members found matching "${searchQuery}". (Students must be active members first and not hold an officer role elsewhere)`
+                              : 'No eligible active members found. Students must join the organization first before they can be appointed as officers.'}
                           </div>
                         );
                       }
@@ -292,7 +293,7 @@ export function AppointOfficerModal({
                                 {candidate.studentName}
                               </span>
                               <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-bold">
-                                Member
+                                Active Member
                               </span>
                             </div>
                             <div className="text-xs text-gray-500 font-mono mt-0.5">
@@ -320,15 +321,9 @@ export function AppointOfficerModal({
                     <span className="font-bold text-[#001A4D] text-sm">
                       {selectedCandidate.studentName}
                     </span>
-                    {selectedCandidate.isExistingMember ? (
-                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-bold">
-                        Club Member
-                      </span>
-                    ) : (
-                      <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded-full text-[10px] font-bold">
-                        Enrolled Student
-                      </span>
-                    )}
+                    <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded-full text-[10px] font-bold">
+                      Active Member
+                    </span>
                   </div>
                   <div className="text-xs text-gray-500 font-mono">
                     ID: {selectedCandidate.studentId} {selectedCandidate.course ? `· ${selectedCandidate.course} (${selectedCandidate.year})` : ''}

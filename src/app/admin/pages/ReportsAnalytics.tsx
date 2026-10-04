@@ -271,7 +271,7 @@ export function ReportsAnalytics() {
               <p className="text-xs text-gray-500 font-semibold uppercase">Total Enrolled</p>
               <h3 className="text-2xl font-bold text-[#001A4D]">{scopedStudents.length}</h3>
               <p className="text-[11px] text-gray-400">
-                {scopedStudents.filter((s) => s.verificationStatus === "APPROVED").length} Verified IDs
+                {scopedStudents.filter((s) => s.status === "ACTIVE").length} Active Enrolled
               </p>
             </div>
           </CardContent>

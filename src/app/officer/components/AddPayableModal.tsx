@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   X,
   Loader2,
@@ -30,6 +30,7 @@ interface AddPayableModalProps {
   organizationName: string;
   addedBy: string;
   onOpenCategoryMaintenance?: () => void;
+  preselectedMemberId?: string;
 }
 
 export function AddPayableModal({
@@ -39,6 +40,7 @@ export function AddPayableModal({
   organizationName,
   addedBy,
   onOpenCategoryMaintenance,
+  preselectedMemberId,
 }: AddPayableModalProps) {
   const { data: semesters = [] } = useSemesters();
   const activeSemester = semesters.find((s) => s.status === 'ACTIVE') || semesters[0];
@@ -75,6 +77,22 @@ export function AddPayableModal({
   const activeMembers = useMemo(() => {
     return (members || []).filter((m) => m && m.status === 'active');
   }, [members]);
+
+  // Pre-select member if preselectedMemberId provided
+  useEffect(() => {
+    if (isOpen) {
+      if (preselectedMemberId) {
+        setTargetMode('specific');
+        const match = activeMembers.find(
+          (m) => m.id === preselectedMemberId || m.studentId === preselectedMemberId
+        );
+        const mId = match ? (match.studentId || match.id) : preselectedMemberId;
+        setSelectedMemberIds([mId]);
+      } else {
+        setSelectedMemberIds([]);
+      }
+    }
+  }, [isOpen, preselectedMemberId, activeMembers]);
 
   // Dynamic year levels derived from selected course or standards
   const dynamicYearLevels = useMemo(() => {
@@ -188,7 +206,12 @@ export function AddPayableModal({
     const targetMembers =
       targetMode === 'all'
         ? activeMembers
-        : activeMembers.filter((m) => selectedMemberIds.includes(m.studentId || m.id));
+        : activeMembers.filter(
+            (m) =>
+              selectedMemberIds.includes(m.studentId || m.id) ||
+              selectedMemberIds.includes(m.id) ||
+              (m.studentId && selectedMemberIds.includes(m.studentId))
+          );
 
     if (targetMembers.length === 0) {
       toast.error('Please select at least one active member to assign this payable.');

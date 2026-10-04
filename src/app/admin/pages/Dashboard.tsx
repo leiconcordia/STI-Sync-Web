@@ -175,27 +175,10 @@ export function Dashboard() {
       });
     });
 
-    // 4. Pending Students (Route directly to student verification)
-    pendingStudents.forEach((s) => {
-      const ms = getMillis(s.createdAt);
-      items.push({
-        id: `student-${s.id}`,
-        rawId: s.id,
-        domain: "student",
-        domainLabel: "Student Verification",
-        title: `${s.firstName} ${s.lastName}`,
-        subtitle: `${s.courseCode || "Student"} · ID: ${s.studentId || "New Registration"}`,
-        timestampMs: ms,
-        dateFormatted: formatTimestampDate(s.createdAt),
-        route: `/home/students?tab=pending&id=${s.id}`,
-        badgeColor: "bg-red-500",
-      });
-    });
-
     // Sort FIFO: oldest pending items first (first in, first out)
     items.sort((a, b) => a.timestampMs - b.timestampMs);
     return items;
-  }, [pendingIncomingDocs, pendingEvents, pendingLiquidations, pendingStudents, orgMap]);
+  }, [pendingIncomingDocs, pendingEvents, pendingLiquidations, orgMap]);
 
   // ─── Real Organization Activity Roster ─────────────────────────────────────
   const organizationActivityList = useMemo(() => {
@@ -244,7 +227,7 @@ export function Dashboard() {
               {greeting}, {adviserDisplayName}.
             </h2>
             <p className="text-white/80 text-sm mt-1 max-w-2xl">
-              STI College Ormoc — Real-time overview of student verifications, event proposals, organization activities, and financial reviews.
+              STI College Ormoc — Real-time overview of enrolled students, event proposals, organization activities, and financial reviews.
             </p>
           </div>
 
@@ -263,23 +246,17 @@ export function Dashboard() {
 
       {/* Top 5 Real-Time Reactive Metric Cards (Non-redirecting informative summary cards) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* 1. Pending Student Verifications */}
+        {/* 1. Enrolled Students */}
         <MetricCard
-          title="Pending Student Verifications"
-          value={pendingStudents.length}
-          icon={UserCheck}
-          gradient="red-orange"
-          change="New student registrations"
+          title="Enrolled Students"
+          value={activeStudents.length}
+          icon={Users}
+          gradient="blue-dark"
+          change="Officially enrolled roster"
           badge={
-            pendingStudents.length > 0 ? (
-              <span className="px-2.5 py-1 bg-white text-red-700 rounded-full text-xs font-bold shadow-xs">
-                {pendingStudents.length} To Verify
-              </span>
-            ) : (
-              <span className="px-2.5 py-1 bg-white/30 text-white rounded-full text-xs font-semibold">
-                All Cleared
-              </span>
-            )
+            <span className="px-2.5 py-1 bg-[#FFD41C] text-[#001A4D] rounded-full text-xs font-bold shadow-xs">
+              {activeStudents.length} Active
+            </span>
           }
         />
 
@@ -471,18 +448,16 @@ export function Dashboard() {
           </CardHeader>
           <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start space-y-2 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
             <Button
-              onClick={() => navigate("/home/students?tab=pending")}
+              onClick={() => navigate("/home/students")}
               className="w-full bg-[#001A4D] hover:bg-[#0E4EBD] text-white justify-between font-semibold text-xs py-3.5 cursor-pointer"
             >
               <span className="flex items-center gap-2">
                 <UserCheck className="w-4 h-4 text-[#FFD41C]" />
-                Verify Students
+                Student Registry
               </span>
-              {pendingStudents.length > 0 && (
-                <span className="px-2 py-0.5 bg-red-500 text-white rounded-full text-[11px] font-bold">
-                  {pendingStudents.length}
-                </span>
-              )}
+              <span className="px-2 py-0.5 bg-white/20 text-white rounded-full text-[11px] font-bold">
+                {activeStudents.length} Active
+              </span>
             </Button>
 
             <Button

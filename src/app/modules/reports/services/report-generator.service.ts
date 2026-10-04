@@ -53,7 +53,7 @@ export function generateStudentEnrollmentReport(
   const shsCount = filtered.filter((s) => isStudentInTrack(s, 'SHS')).length;
   const maleCount = filtered.filter((s) => s.sex === 'Male').length;
   const femaleCount = filtered.filter((s) => s.sex === 'Female').length;
-  const verifiedCount = filtered.filter((s) => s.verificationStatus === 'APPROVED').length;
+  const verifiedCount = filtered.filter((s) => s.status === 'ACTIVE').length;
 
   const rows = filtered.map((s) => ({
     studentId: s.studentId || '—',
@@ -64,7 +64,7 @@ export function generateStudentEnrollmentReport(
     section: s.section || 'Unassigned',
     sex: s.sex || '—',
     status: s.status || 'Active',
-    verified: s.verificationStatus === 'APPROVED' ? 'Verified' : 'Pending',
+    verified: s.status === 'ACTIVE' ? 'Active Enrolled' : (s.status || 'Inactive'),
   }));
 
   return {
@@ -73,7 +73,7 @@ export function generateStudentEnrollmentReport(
     category: 'INSTITUTIONAL',
     metadata: {
       title: 'Student Enrollment & Demographic Master Report',
-      subtitle: 'Complete institutional breakdown of student population, academic tracks, and verification records.',
+      subtitle: 'Complete institutional breakdown of student population, academic tracks, and enrollment records.',
       academicYear: filter.academicYear,
       semester: filter.semester,
       scope: filter.scope,
@@ -84,7 +84,7 @@ export function generateStudentEnrollmentReport(
       { label: 'Total Enrolled', value: total },
       { label: 'College Students', value: collegeCount },
       { label: 'SHS Students', value: shsCount },
-      { label: 'Verified Profiles', value: `${verifiedCount} (${total ? Math.round((verifiedCount / total) * 100) : 0}%)` },
+      { label: 'Active Roster', value: `${verifiedCount} (${total ? Math.round((verifiedCount / total) * 100) : 0}%)` },
       { label: 'Sex Ratio (M / F)', value: `${maleCount} / ${femaleCount}` },
     ],
     columns: [
@@ -96,7 +96,7 @@ export function generateStudentEnrollmentReport(
       { key: 'section', header: 'Section' },
       { key: 'sex', header: 'Sex' },
       { key: 'status', header: 'Status' },
-      { key: 'verified', header: 'ID Status' },
+      { key: 'verified', header: 'Enrollment Status' },
     ],
     rows,
     signatories: {

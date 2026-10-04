@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { X, Upload, Loader2, Edit3, Image as ImageIcon } from 'lucide-react';
 import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
-import { useDepartments } from '../../modules/academic/hooks/useAcademicStream';
+
 import { updateOrganization } from '../../modules/organizations/services/organization.service';
 import { toast } from 'sonner';
 
@@ -15,13 +15,11 @@ interface EditOrganizationModalProps {
 
 export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess }: EditOrganizationModalProps) {
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
-  const { data: departments, loading: loadingDepts } = useDepartments();
 
   const [formData, setFormData] = useState({
     name: '',
     acronym: '',
     typeId: '',
-    department: '',
     description: '',
   });
 
@@ -35,7 +33,6 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
         name: organization.name || '',
         acronym: organization.acronym || '',
         typeId: organization.typeId || '',
-        department: organization.department || '',
         description: organization.description || '',
       });
       setLogoPreview(organization.logoUrl || null);
@@ -77,7 +74,6 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
           name: formData.name.trim(),
           acronym: formData.acronym.trim().toUpperCase(),
           typeId: formData.typeId,
-          department: formData.department,
           description: formData.description.trim(),
         },
         logoFile
@@ -186,24 +182,7 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
                 ))}
               </select>
             </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Department</label>
-              <select
-                value={formData.department}
-                onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                disabled={loadingDepts}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none disabled:opacity-50"
-              >
-                <option value="">College-wide / All Departments</option>
-                {departments.map((d) => (
-                  <option key={d.id} value={d.code || d.name}>
-                    {d.name} ({d.code})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+        </div>
 
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>

@@ -337,7 +337,7 @@ export default function ActivityOperationalUtilsModal({
       await updateDoc(docRef, {
         // Attendance & QR Tickets
         enableQRTickets,
-        attendanceEnabled,
+        attendanceEnabled: enableQRTickets,
         gracePeriodMinutes: Number(gracePeriodMinutes) || 15,
         lateThresholdMinutes: Number(lateThresholdMinutes) || 30,
         sessions,
@@ -508,39 +508,27 @@ export default function ActivityOperationalUtilsModal({
               <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                   <div>
-                    <h4 className="text-xs font-bold text-slate-900">Enable QR Gate Tickets</h4>
+                    <h4 className="text-xs font-bold text-slate-900">Enable QR Gate Passes</h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Generate official mobile QR entry passes for registered students to scan at the gate.
+                      Generate personal QR codes on student mobile tickets for scanning upon entry and exit.
                     </p>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
                       type="checkbox"
                       checked={enableQRTickets}
-                      onChange={(e) => setEnableQRTickets(e.target.checked)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setEnableQRTickets(checked);
+                        setAttendanceEnabled(checked);
+                      }}
                       className="sr-only peer"
                     />
                     <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#001A4D]"></div>
                   </label>
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-900">Mandatory Attendance Tracking</h4>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Enforce entry / exit verification for participation clearance and certificates.
-                    </p>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={attendanceEnabled}
-                      onChange={(e) => setAttendanceEnabled(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                  </label>
-                </div>
+
               </div>
 
               {/* Attendance Rules (Grace Period & Late Threshold) */}

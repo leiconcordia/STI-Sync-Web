@@ -346,14 +346,15 @@ export const appointAsOfficer = async (
 ): Promise<void> => {
   const batch = writeBatch(db);
   
-  // 1. If memberDocId exists, update the member doc to reflect they are an officer.
-  // If not, automatically provision their member document in organization_members!
+  // 1. Enforce that the student is already a registered active member of this organization
+  let targetMemberRef = null;
   if (memberDocId && memberDocId.trim()) {
     const memberRef = doc(db, COLLECTION, memberDocId);
-    batch.update(memberRef, {
-      isOfficer: true,
-      updatedAt: serverTimestamp(),
-    });
+    const memberSnap = await getDoc(memberRef);
+    if (!memberSnap.exists() || (memberSnap.data()?.status && memberSnap.data()?.status !== 'active')) {
+      throw new Error('Student must be an active member of this organization before being appointed as an officer.');
+    }
+    targetMemberRef = memberRef;
   } else {
     // Check if member already exists by studentId
     const qExisting = query(
@@ -362,41 +363,20 @@ export const appointAsOfficer = async (
       where('studentId', '==', studentId)
     );
     const existingSnap = await getDocs(qExisting);
-    if (!existingSnap.empty) {
-      batch.update(existingSnap.docs[0].ref, {
-        isOfficer: true,
-        status: 'active',
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      const newMemberRef = doc(collection(db, COLLECTION));
-      batch.set(newMemberRef, {
-        id: newMemberRef.id,
-        organizationId,
-        studentId,
-        studentName,
-        email,
-        course: studentDetails?.course || 'N/A',
-        year: studentDetails?.year || 'N/A',
-        department: studentDetails?.department || 'N/A',
-        contactNumber: studentDetails?.contactNumber || '',
-        status: 'active',
-        paymentStatus: 'paid',
-        isOfficer: true,
-        dateJoined: serverTimestamp(),
-        applicationDate: serverTimestamp(),
-        addedBy: 'Officer Appointment',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      // Increment organization memberCount
-      const orgRef = doc(db, 'organizations', organizationId);
-      batch.update(orgRef, {
-        memberCount: increment(1),
-        updatedAt: serverTimestamp(),
-      });
+    if (existingSnap.empty) {
+      throw new Error('Student must be an active member of this organization before being appointed as an officer.');
     }
+    const memberData = existingSnap.docs[0].data();
+    if (memberData?.status && memberData.status !== 'active') {
+      throw new Error('Only active members can be appointed as officers.');
+    }
+    targetMemberRef = existingSnap.docs[0].ref;
   }
+
+  batch.update(targetMemberRef, {
+    isOfficer: true,
+    updatedAt: serverTimestamp(),
+  });
   
   // 2. Create the officer doc in organization_officers
   const officersCollectionRef = collection(db, 'organization_officers');
@@ -409,8 +389,9 @@ export const appointAsOfficer = async (
     roleName: roleName || '',
     studentId,
     studentName,
-    email,
-    temporaryPassword: tempPassword || 'TempPass123!',
+    email: email || '',
+    temporaryPassword: tempPassword || null,
+    useStudentCredentials: true,
     isActive: true,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

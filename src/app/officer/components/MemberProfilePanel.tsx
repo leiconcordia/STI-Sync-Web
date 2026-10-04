@@ -21,11 +21,13 @@ import {
   Search,
   Maximize2,
   Shield,
+  Plus,
 } from 'lucide-react';
 import { collection, query, where, onSnapshot, collectionGroup } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
 import type { OrganizationMemberDocument } from '../../modules/organizations/types/member.types';
 import type { OrganizationOfficerDocument } from '../../modules/organizations/hooks/useOrgOfficers';
+import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { formatCurrency } from '../../utils/currency';
 import { formatAppDate, formatAppDateTime } from '../../utils/date';
 import type { PayableDocument } from '../../modules/finance/types/payable.types';
@@ -33,6 +35,7 @@ import { updateMemberStatus } from '../../modules/organizations/services/member.
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
+import { AddPayableModal } from './AddPayableModal';
 
 interface MemberProfilePanelProps {
   member: OrganizationMemberDocument;
@@ -54,10 +57,13 @@ export function MemberProfilePanel({
   const { profile } = useOfficerProfile();
   const { data: roles = [] } = useRoles();
   const { data: allStudents = [] } = useStudents();
+  const { data: orgs = [] } = useOrganizationStream();
 
   const activeOrgId = profile?.activeOrganizationId || member.organizationId || '';
+  const activeOrg = orgs.find((o) => o.id === activeOrgId);
 
   const [activeTab, setActiveTab] = useState<ModalTab>('ledger');
+  const [showAddPayableModal, setShowAddPayableModal] = useState(false);
   const [allPayables, setAllPayables] = useState<PayableDocument[]>([]);
   const [loadingPayables, setLoadingPayables] = useState(true);
   const [attendances, setAttendances] = useState<any[]>([]);
@@ -388,16 +394,28 @@ export function MemberProfilePanel({
             </button>
           </div>
 
-          {/* Quick Balance Pill */}
-          <div className="hidden sm:flex items-center gap-2 text-xs">
-            <span className="text-gray-500">Club Balance:</span>
-            <span
-              className={`font-bold font-mono px-2.5 py-0.5 rounded-full ${
-                totalOutstanding > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'
-              }`}
-            >
-              {formatCurrency(totalOutstanding)}
-            </span>
+          {/* Quick Balance Pill & Add Payable Action */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="hidden sm:flex items-center gap-2">
+              <span className="text-gray-500">Club Balance:</span>
+              <span
+                className={`font-bold font-mono px-2.5 py-0.5 rounded-full ${
+                  totalOutstanding > 0 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-800'
+                }`}
+              >
+                {formatCurrency(totalOutstanding)}
+              </span>
+            </div>
+            {activeTab === 'ledger' && (
+              <button
+                type="button"
+                onClick={() => setShowAddPayableModal(true)}
+                className="px-3 py-1.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 text-[#FFD41C]" />
+                Add Payable / Fine
+              </button>
+            )}
           </div>
         </div>
 
@@ -830,6 +848,18 @@ export function MemberProfilePanel({
             )}
           </div>
         </div>
+      )}
+
+      {/* Add Payable / Fine Modal */}
+      {showAddPayableModal && (
+        <AddPayableModal
+          isOpen={showAddPayableModal}
+          onClose={() => setShowAddPayableModal(false)}
+          organizationId={activeOrgId}
+          organizationName={activeOrg?.name || member.organizationName || 'Student Organization'}
+          addedBy={profile?.studentId || 'Officer'}
+          preselectedMemberId={member.studentId || member.id}
+        />
       )}
     </div>
   );

@@ -17,13 +17,15 @@ import {
   X,
   ArrowUpAZ,
   ArrowDownAZ,
+  Coins,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useOrgOfficers } from '../../modules/organizations/hooks/useOrgOfficers';
+import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
-import { useCourses, useDepartments } from '../../modules/academic/hooks/useAcademicStream';
+import { useCourses } from '../../modules/academic/hooks/useAcademicStream';
 import {
   approveMemberApplication,
   rejectMemberApplication,
@@ -33,6 +35,7 @@ import { MemberProfilePanel } from '../components/MemberProfilePanel';
 import { AddMemberModal } from '../components/AddMemberModal';
 import { AppointOfficerModal } from '../components/AppointOfficerModal';
 import { RemoveMemberModal } from '../components/RemoveMemberModal';
+import { AddPayableModal } from '../components/AddPayableModal';
 import type { OrganizationMemberDocument } from '../../modules/organizations/types/member.types';
 import { formatTimestampDate } from '../../modules/students/utils/date.utils';
 import { TablePagination } from '../../components/common/TablePagination';
@@ -44,12 +47,15 @@ export default function MemberDirectory() {
   const { profile } = useOfficerProfile();
   const activeOrgId = profile?.activeOrganizationId || '';
 
+  const { data: orgs = [] } = useOrganizationStream();
+  const activeOrg = orgs.find((o) => o.id === activeOrgId);
+
   const { data: roles = [] } = useRoles();
   const { members = [], loading: loadingMembers } = useOrgMembers(activeOrgId);
   const { officers = [], loading: loadingOfficers } = useOrgOfficers(activeOrgId);
   const { data: allStudents = [] } = useStudents();
   const { data: dbCourses = [] } = useCourses();
-  const { data: dbDepartments = [] } = useDepartments();
+
 
   const [activeTab, setActiveTab] = useState<'members' | 'pending' | 'officers' | 'inactive'>(() => {
     if (tabParam && ['members', 'pending', 'officers', 'inactive'].includes(tabParam)) {
@@ -75,6 +81,7 @@ export default function MemberDirectory() {
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [isAppointOfficerOpen, setIsAppointOfficerOpen] = useState(false);
   const [appointPreselected, setAppointPreselected] = useState<OrganizationMemberDocument | null>(null);
+  const [payableTargetMember, setPayableTargetMember] = useState<OrganizationMemberDocument | null>(null);
   const [memberToRemove, setMemberToRemove] = useState<OrganizationMemberDocument | null>(null);
 
   const [processingId, setProcessingId] = useState<string | null>(null);
@@ -579,6 +586,17 @@ export default function MemberDirectory() {
                           >
                             View Profile
                           </button>
+                          {canManageMembers && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPayableTargetMember(member);
+                              }}
+                              className="w-full text-left px-4 py-2 text-sm text-[#001A4D] hover:bg-amber-50 font-medium flex items-center gap-2"
+                            >
+                              <Coins className="w-4 h-4 text-amber-600" /> Add Payable / Fine
+                            </button>
+                          )}
                           {canAppointOfficers && !member.isOfficer && (
                             <button
                               onClick={(e) => {
@@ -959,6 +977,15 @@ export default function MemberDirectory() {
         organizationId={activeOrgId}
         isOpen={Boolean(memberToRemove)}
         onClose={() => setMemberToRemove(null)}
+      />
+
+      <AddPayableModal
+        isOpen={Boolean(payableTargetMember)}
+        onClose={() => setPayableTargetMember(null)}
+        organizationId={activeOrgId}
+        organizationName={activeOrg?.name || 'Student Organization'}
+        addedBy={profile?.studentId || 'Officer'}
+        preselectedMemberId={payableTargetMember?.studentId || payableTargetMember?.id}
       />
 
       {/* Lightbox / Fixed-Size Image Enlarge Preview Modal */}

@@ -1,22 +1,17 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useRef } from 'react';
 import {
-  X, Upload, Crown, Star, FileText, Calculator, ClipboardCheck, Users,
-  Mail, Lock, Eye, EyeOff, Building, ChevronDown, Check, ArrowRight,
-  ArrowLeft, Search, Loader2, AlertCircle, ShieldCheck, UserCheck, Sparkles,
-  Info
+  X, Upload, Mail, Building, Check, ArrowRight,
+  ArrowLeft, Loader2, AlertCircle, ShieldCheck, Sparkles,
+  Info, Users
 } from 'lucide-react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { useOrganizationTypes } from '../hooks/useOrganizationTypes';
 import { useOrganizationMutations } from '../hooks/useOrganizationMutations';
 import { useOrganizationStream } from '../hooks/useOrganizationStream';
-import { useAllActiveOfficers } from '../hooks/useOrgOfficers';
-import { useDepartments, useSemesters, useActiveAcademicPeriods } from '../../academic';
-import { useRoles } from '../../roles';
+import { useSemesters, useActiveAcademicPeriods } from '../../academic';
 import { useStudents } from '../../students/hooks/useStudentStream';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
-import type { OfficerAssignmentData } from '../services/officer.service';
-
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface CreateClubModalProps {
@@ -26,25 +21,10 @@ interface CreateClubModalProps {
   onSuccess?: () => void;
 }
 
-interface OfficerAssignment {
-  roleId: string;
-  roleName: string;
-  isRequired: boolean;
-  studentName?: string;
-  studentId?: string;
-  email?: string;
-  course?: string;
-  year?: string;
-  department?: string;
-  contactNumber?: string;
-  avatar?: string;
-}
-
 // ─── Validation ───────────────────────────────────────────────────────────────
 interface Step1Errors {
   name?: string;
   typeId?: string;
-  department?: string;
   acronym?: string;
   description?: string;
   logo?: string;
@@ -54,13 +34,11 @@ interface Step2Errors {
   name?: string;
   employeeId?: string;
   email?: string;
-  departmentId?: string;
 }
 
 function validateStep1(form: {
   name: string;
   typeId: string;
-  department: string;
   acronym: string;
   description: string;
   logo: File | null;
@@ -68,7 +46,6 @@ function validateStep1(form: {
   const errors: Step1Errors = {};
   if (!form.name.trim()) errors.name = 'Organization name is required.';
   if (!form.typeId) errors.typeId = 'Please select an organization type.';
-  if (!form.department) errors.department = 'Please select a department.';
   if (!form.acronym.trim()) errors.acronym = 'Acronym is required.';
   if (!form.description.trim()) errors.description = 'Description is required.';
   if (!form.logo) errors.logo = 'Organization logo is required.';
@@ -79,7 +56,6 @@ function validateStep2(adviser: {
   name: string;
   employeeId?: string;
   email: string;
-  departmentId: string;
 }) {
   const errors: Step2Errors = {};
   if (!adviser.name.trim()) errors.name = 'Adviser full name is required.';
@@ -88,50 +64,46 @@ function validateStep2(adviser: {
   } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adviser.email.trim())) {
     errors.email = 'Please enter a valid email address.';
   }
-  if (!adviser.departmentId) errors.departmentId = 'Please select adviser department.';
   return errors;
 }
 
-// ─── Role icons ───────────────────────────────────────────────────────────────
-function getRoleIcon(role: string) {
-  switch (role) {
-    case 'President': return Crown;
-    case 'Vice President': return Star;
-    case 'Secretary': return FileText;
-    case 'Treasurer': return Calculator;
-    case 'Auditor': return ClipboardCheck;
-    case 'P.R.O.': return Users;
-    default: return Users;
-  }
-}
-
-// ─── Step Indicator ───────────────────────────────────────────────────────────
+// ─── Step Indicator (3 Steps: Details -> Adviser -> Review) ──────────────────
 function StepIndicator({ current }: { current: number }) {
   const steps = [
     { number: 1, label: 'Organization Details' },
     { number: 2, label: 'Assign Adviser' },
-    { number: 3, label: 'Assign Officers' },
-    { number: 4, label: 'Review & Confirm' },
+    { number: 3, label: 'Review & Confirm' },
   ];
   return (
-    <div className="flex items-center justify-center gap-2 py-5 px-6 border-b border-gray-200 bg-gray-50/50">
+    <div className="flex items-center justify-center gap-2 py-4 px-6 border-b border-gray-200 bg-gray-50/50">
       {steps.map((step, idx) => (
         <div key={step.number} className="flex items-center">
           <div className="flex items-center gap-2">
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs ${current > step.number
-                ? 'bg-[#0E4EBD] text-white'
-                : current === step.number
+            <div
+              className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-xs ${
+                current > step.number
+                  ? 'bg-[#0E4EBD] text-white'
+                  : current === step.number
                   ? 'bg-[#FFC107] text-[#001A4D] shadow-xs'
                   : 'bg-[#E0E0E0] text-gray-500'
-              }`}>
+              }`}
+            >
               {current > step.number ? <Check className="w-3.5 h-3.5" /> : step.number}
             </div>
-            <span className={`text-xs font-semibold hidden sm:inline ${current === step.number ? 'text-[#001A4D]' : 'text-gray-500'}`}>
+            <span
+              className={`text-xs font-semibold hidden sm:inline ${
+                current === step.number ? 'text-[#001A4D]' : 'text-gray-500'
+              }`}
+            >
               {step.label}
             </span>
           </div>
           {idx < steps.length - 1 && (
-            <div className={`w-8 sm:w-12 h-0.5 mx-2 ${current > step.number ? 'bg-[#0E4EBD]' : 'bg-[#E0E0E0]'}`} />
+            <div
+              className={`w-8 sm:w-16 h-0.5 mx-2 ${
+                current > step.number ? 'bg-[#0E4EBD]' : 'bg-[#E0E0E0]'
+              }`}
+            />
           )}
         </div>
       ))}
@@ -158,26 +130,18 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isCheckingAdviser, setIsCheckingAdviser] = useState(false);
 
-  // Officer Assignment Mode (Optional toggle)
-  const [appointOfficersNow, setAppointOfficersNow] = useState(false);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // ─── Live data ───────────────────────────────────────────────────────────────
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
-  const { data: departments, loading: loadingDepts } = useDepartments();
   const { data: semesters } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
-  const { data: rawRoles, loading: loadingRoles } = useRoles();
   const { data: allStudents } = useStudents();
-  const { officers: existingOfficers } = useAllActiveOfficers();
   const { data: allOrganizations } = useOrganizationStream();
   const { create, isSaving } = useOrganizationMutations();
 
   const activeOrgTypes = orgTypes.filter(t => !t.archived);
-  const activeDepts = departments.filter(d => !d.archived);
   const activeSemester = useMemo(() => semesters.find(s => s.status === 'ACTIVE') ?? null, [semesters]);
-  const activeRoles = useMemo(() => rawRoles.filter(r => !r.archived), [rawRoles]);
 
   // Active period display string
   const currentAcademicPeriodLabel = useMemo(() => {
@@ -190,7 +154,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const [formData, setFormData] = useState({
     name: '',
     typeId: '',
-    department: '',
+    department: 'cross-departmental',
     acronym: '',
     description: '',
     logo: null as File | null,
@@ -207,72 +171,15 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     requiresPasswordChange: true,
   });
 
-  // Step 3 Officers State
-  const [officers, setOfficers] = useState<OfficerAssignment[]>([]);
-
-  // Initialize officers based on active roles
-  useEffect(() => {
-    if (activeRoles.length > 0 && officers.length === 0) {
-      setOfficers(activeRoles.map(role => ({
-        roleId: role.id,
-        roleName: role.name,
-        isRequired: role.isRequired,
-      })));
-    }
-  }, [activeRoles, officers.length]);
-
-  // Map of existing active officers across ALL organizations for cross-org exclusion
-  const existingOfficerMap = useMemo(() => {
-    const map = new Map<string, string>(); // studentId -> Org Name/Acronym
-    (existingOfficers || []).forEach(off => {
-      const org = (allOrganizations || []).find(o => o.id === off.organizationId);
-      const orgLabel = org ? (org.acronym || org.name) : 'Another Club';
-      if (off.studentId) {
-        map.set(off.studentId.trim().toLowerCase(), orgLabel);
-      }
-    });
-    return map;
-  }, [existingOfficers, allOrganizations]);
-
-  // Search and dropdown state for Step 3 officer assignment
-  const [searchQueries, setSearchQueries] = useState<Record<string, string>>({});
-  const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
-
   if (!isOpen) return null;
-
-  const assignedOfficers = officers.filter(o => o.studentName);
-
-  // Set of student IDs already assigned in THIS organization form (intra-org exclusion)
-  const currentlyAssignedStudentIds = new Set(
-    assignedOfficers.map(o => (o.studentId || '').trim().toLowerCase()).filter(Boolean)
-  );
-
-  const handleAssignOfficer = (roleId: string, student: any) => {
-    setOfficers(prev => prev.map(o =>
-      o.roleId === roleId
-        ? {
-            ...o,
-            studentName: `${student.firstName} ${student.lastName}`.trim(),
-            studentId: student.studentId,
-            email: student.email,
-            course: student.courseCode || student.courseName || 'N/A',
-            year: student.yearLevel || 'N/A',
-            department: student.departmentId || 'N/A',
-            contactNumber: student.contactNumber || '',
-            avatar: `${student.firstName?.[0] || ''}${student.lastName?.[0] || ''}`.toUpperCase(),
-          }
-        : o
-    ));
-  };
-
-  const handleRemoveOfficer = (roleId: string) => {
-    setOfficers(prev => prev.map(o => o.roleId === roleId ? { roleId: o.roleId, roleName: o.roleName, isRequired: o.isRequired } : o));
-  };
 
   // ─── Step Navigation Handlers ──────────────────────────────────────────────
   const handleNextFromStep1 = () => {
     const errors = validateStep1(formData);
-    if (Object.keys(errors).length > 0) { setStep1Errors(errors); return; }
+    if (Object.keys(errors).length > 0) {
+      setStep1Errors(errors);
+      return;
+    }
     setStep1Errors({});
     setCurrentStep(2);
   };
@@ -369,25 +276,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     }
 
     setStep2Errors({});
-    setCurrentStep(3);
-  };
-
-  const handleNextFromStep3 = () => {
-    // If officers assignment is active, validate duplicate selections
-    if (appointOfficersNow && assignedOfficers.length > 0) {
-      const studentRoles = new Map<string, string>();
-      for (const officer of assignedOfficers) {
-        if (!officer.studentId) continue;
-        if (studentRoles.has(officer.studentId)) {
-          const previousRole = studentRoles.get(officer.studentId);
-          alert(`Student ${officer.studentName} is assigned to multiple roles (${previousRole} and ${officer.roleName}). A student can only hold one role per organization.`);
-          return;
-        }
-        studentRoles.set(officer.studentId, officer.roleName);
-      }
-    }
-
-    setCurrentStep(4);
+    setCurrentStep(3); // Moves directly to Review & Confirm
   };
 
   // ─── Final Creation Handler ────────────────────────────────────────────────
@@ -398,7 +287,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       name: formData.name.trim(),
       acronym: formData.acronym.trim(),
       typeId: formData.typeId,
-      departmentId: formData.department,
+      departmentId: formData.department || 'cross-departmental',
       description: formData.description.trim(),
       academicYear: activePeriod?.academicYear || '',
       semester: activePeriod?.semester || '',
@@ -410,21 +299,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       },
     };
 
-    const officersPayload: OfficerAssignmentData[] = appointOfficersNow
-      ? assignedOfficers.map(o => ({
-          roleId: o.roleId,
-          roleName: o.roleName,
-          studentId: o.studentId!,
-          studentName: o.studentName!,
-          email: o.email!,
-          course: o.course,
-          year: o.year,
-          department: o.department,
-          contactNumber: o.contactNumber,
-        }))
-      : [];
-
-    const result = await create(payload, createdBy, formData.logo, officersPayload);
+    const result = await create(payload, createdBy, formData.logo, []);
     if (result.success) {
       onSuccess?.();
       onClose();
@@ -435,13 +310,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
   // Get display labels for review step
   const selectedType = activeOrgTypes.find(t => t.id === formData.typeId);
-  const selectedDept = activeDepts.find(d => d.id === formData.department);
-  const deptLabel = formData.department === 'cross-departmental'
-    ? 'Cross-Departmental'
-    : selectedDept ? `${selectedDept.code} — ${selectedDept.name}` : formData.department;
-
-  const adviserDept = activeDepts.find(d => d.id === adviserData.departmentId);
-  const adviserDeptLabel = adviserDept ? `${adviserDept.code} — ${adviserDept.name}` : adviserData.departmentId;
 
   // ─── Step 1: Organization Details ─────────────────────────────────────────
   const renderStep1 = () => (
@@ -460,14 +328,19 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <input
             type="text"
             value={formData.name}
-            onChange={(e) => { setFormData({ ...formData, name: e.target.value }); setStep1Errors(prev => { const n = { ...prev }; delete n.name; return n; }); }}
+            onChange={(e) => {
+              setFormData({ ...formData, name: e.target.value });
+              setStep1Errors(prev => { const n = { ...prev }; delete n.name; return n; });
+            }}
             placeholder="e.g. Junior Philippine Computer Society"
-            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step1Errors.name ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+              step1Errors.name ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+            }`}
           />
           <FieldError msg={step1Errors.name} />
         </div>
 
-        {/* Type + Department */}
+        {/* Type + Acronym */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
@@ -480,8 +353,13 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             ) : (
               <select
                 value={formData.typeId}
-                onChange={(e) => { setFormData({ ...formData, typeId: e.target.value }); setStep1Errors(prev => { const n = { ...prev }; delete n.typeId; return n; }); }}
-                className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step1Errors.typeId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+                onChange={(e) => {
+                  setFormData({ ...formData, typeId: e.target.value });
+                  setStep1Errors(prev => { const n = { ...prev }; delete n.typeId; return n; });
+                }}
+                className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                  step1Errors.typeId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+                }`}
               >
                 <option value="">Select type</option>
                 {activeOrgTypes.map(t => (
@@ -497,43 +375,23 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
           <div>
             <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-              Department <span className="text-red-500">*</span>
+              Acronym <span className="text-red-500">*</span>
             </label>
-            {loadingDepts ? (
-              <div className="flex items-center gap-2 px-4 py-2.5 border border-[#E0E0E0] rounded-xl text-sm text-gray-400">
-                <Loader2 className="w-4 h-4 animate-spin" /> Loading...
-              </div>
-            ) : (
-              <select
-                value={formData.department}
-                onChange={(e) => { setFormData({ ...formData, department: e.target.value }); setStep1Errors(prev => { const n = { ...prev }; delete n.department; return n; }); }}
-                className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step1Errors.department ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
-              >
-                <option value="">Select department</option>
-                <option value="cross-departmental">🔀 Cross-Departmental (Institutional)</option>
-                {activeDepts.map(d => (
-                  <option key={d.id} value={d.id}>{d.code} — {d.name}</option>
-                ))}
-              </select>
-            )}
-            <FieldError msg={step1Errors.department} />
+            <input
+              type="text"
+              value={formData.acronym}
+              onChange={(e) => {
+                setFormData({ ...formData, acronym: e.target.value.toUpperCase() });
+                setStep1Errors(prev => { const n = { ...prev }; delete n.acronym; return n; });
+              }}
+              placeholder="e.g. JPCS"
+              maxLength={10}
+              className={`w-full px-4 py-2.5 border rounded-xl font-mono text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                step1Errors.acronym ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+              }`}
+            />
+            <FieldError msg={step1Errors.acronym} />
           </div>
-        </div>
-
-        {/* Acronym */}
-        <div>
-          <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-            Acronym <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="text"
-            value={formData.acronym}
-            onChange={(e) => { setFormData({ ...formData, acronym: e.target.value.toUpperCase() }); setStep1Errors(prev => { const n = { ...prev }; delete n.acronym; return n; }); }}
-            placeholder="e.g. JPCS"
-            maxLength={10}
-            className={`w-full px-4 py-2.5 border rounded-xl font-mono text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step1Errors.acronym ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
-          />
-          <FieldError msg={step1Errors.acronym} />
         </div>
 
         {/* Description */}
@@ -543,10 +401,15 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           </label>
           <textarea
             value={formData.description}
-            onChange={(e) => { setFormData({ ...formData, description: e.target.value }); setStep1Errors(prev => { const n = { ...prev }; delete n.description; return n; }); }}
+            onChange={(e) => {
+              setFormData({ ...formData, description: e.target.value });
+              setStep1Errors(prev => { const n = { ...prev }; delete n.description; return n; });
+            }}
             placeholder="Provide a brief overview of the organization's purpose and objectives..."
             rows={3}
-            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent resize-none ${step1Errors.description ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent resize-none ${
+              step1Errors.description ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+            }`}
           />
           <FieldError msg={step1Errors.description} />
         </div>
@@ -558,7 +421,9 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           </label>
           <div
             onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-6 text-center hover:bg-blue-50/50 transition-all cursor-pointer ${step1Errors.logo ? 'border-red-400 bg-red-50' : 'border-[#0E4EBD]/40 hover:border-[#0E4EBD]'}`}
+            className={`border-2 border-dashed rounded-2xl p-6 text-center hover:bg-blue-50/50 transition-all cursor-pointer ${
+              step1Errors.logo ? 'border-red-400 bg-red-50' : 'border-[#0E4EBD]/40 hover:border-[#0E4EBD]'
+            }`}
           >
             <input
               type="file"
@@ -582,7 +447,9 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             ) : (
               <>
                 <Upload className={`w-8 h-8 mx-auto mb-2 ${step1Errors.logo ? 'text-red-400' : 'text-[#0E4EBD]'}`} />
-                <div className={`text-sm font-semibold mb-0.5 ${step1Errors.logo ? 'text-red-600' : 'text-[#001A4D]'}`}>Click to upload logo</div>
+                <div className={`text-sm font-semibold mb-0.5 ${step1Errors.logo ? 'text-red-600' : 'text-[#001A4D]'}`}>
+                  Click to upload logo
+                </div>
                 <div className="text-gray-400 text-xs">PNG, JPG or WebP up to 5MB</div>
               </>
             )}
@@ -606,7 +473,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       <div className="bg-blue-50/60 border border-blue-200/80 rounded-2xl p-4 flex items-start gap-3">
         <ShieldCheck className="w-5 h-5 text-[#0E4EBD] shrink-0 mt-0.5" />
         <div className="text-xs text-blue-900 leading-relaxed">
-          <strong>Adviser First-Access Protocol:</strong> The appointed faculty adviser will receive their account credentials via email. Upon logging in, they will be prompted to change their temporary password and can appoint executive officers from the student directory.
+          <strong>Adviser First-Access Protocol:</strong> The appointed faculty adviser will receive login instructions and credentials via email. Upon logging in, they will lead the organization and appoint student officers exclusively from active registered members.
         </div>
       </div>
 
@@ -624,33 +491,15 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
               setStep2Errors(prev => { const n = { ...prev }; delete n.name; return n; });
             }}
             placeholder="e.g. Prof. Juan Dela Cruz, MIT"
-            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.name ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+              step2Errors.name ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+            }`}
           />
           <FieldError msg={step2Errors.name} />
         </div>
 
-        {/* Department + Email */}
+        {/* Email + Faculty / Employee ID */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-              Department <span className="text-red-500">*</span>
-            </label>
-            <select
-              value={adviserData.departmentId}
-              onChange={(e) => {
-                setAdviserData({ ...adviserData, departmentId: e.target.value });
-                setStep2Errors(prev => { const n = { ...prev }; delete n.departmentId; return n; });
-              }}
-              className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.departmentId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
-            >
-              <option value="">Select faculty department</option>
-              {activeDepts.map(d => (
-                <option key={d.id} value={d.id}>{d.code} — {d.name}</option>
-              ))}
-            </select>
-            <FieldError msg={step2Errors.departmentId} />
-          </div>
-
           <div>
             <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
               Email <span className="text-red-500">*</span>
@@ -665,10 +514,31 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                   setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
                 }}
                 placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
-                className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'}`}
+                className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                  step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+                }`}
               />
             </div>
             <FieldError msg={step2Errors.email} />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+              Faculty / Employee ID <span className="text-gray-400 text-xs font-normal">(Optional)</span>
+            </label>
+            <input
+              type="text"
+              value={adviserData.employeeId || ''}
+              onChange={(e) => {
+                setAdviserData({ ...adviserData, employeeId: e.target.value });
+                setStep2Errors(prev => { const n = { ...prev }; delete n.employeeId; return n; });
+              }}
+              placeholder="e.g. FAC-2024-001"
+              className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                step2Errors.employeeId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+              }`}
+            />
+            <FieldError msg={step2Errors.employeeId} />
           </div>
         </div>
 
@@ -698,197 +568,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     </div>
   );
 
-  // ─── Step 3: Assign Officers (Optional) ────────────────────────────────────
+  // ─── Step 3: Review & Confirm ──────────────────────────────────────────────
   const renderStep3 = () => (
-    <div className="p-6 space-y-6">
-      <div className="border-l-4 border-[#FFC107] pl-4 flex items-start justify-between">
-        <div>
-          <h3 className="text-[#001A4D] font-bold text-lg">Assign Executive Officers</h3>
-          <p className="text-gray-500 text-xs mt-0.5">
-            Appoint student officers now or leave it for the Club Adviser to appoint later.
-          </p>
-        </div>
-      </div>
-
-      {/* Mode Switcher Banner */}
-      <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-white flex items-center justify-center font-bold">
-            <Users className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-sm font-bold text-[#001A4D]">Appoint Officers Now?</div>
-            <div className="text-xs text-gray-500">
-              {appointOfficersNow
-                ? 'Select students to assign to executive board roles.'
-                : 'Officers can be appointed later by the Club Adviser via the Officer Portal.'}
-            </div>
-          </div>
-        </div>
-
-        <button
-          type="button"
-          onClick={() => setAppointOfficersNow(!appointOfficersNow)}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${appointOfficersNow
-              ? 'bg-[#0E4EBD] text-white shadow-xs'
-              : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-100'
-            }`}
-        >
-          {appointOfficersNow ? '✓ Appointing Now' : '+ Appoint Officers'}
-        </button>
-      </div>
-
-      {appointOfficersNow ? (
-        <div className="space-y-3">
-          {loadingRoles ? (
-            <div className="flex items-center justify-center p-8 text-gray-500">
-              <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading roles...
-            </div>
-          ) : activeRoles.length === 0 ? (
-            <div className="text-center p-8 border border-dashed rounded-2xl border-gray-300 text-gray-500 text-xs">
-              No officer roles defined yet in Settings.
-            </div>
-          ) : (
-            officers.map((officer) => {
-              const Icon = getRoleIcon(officer.roleName);
-              return (
-                <div
-                  key={officer.roleId}
-                  className={`border rounded-2xl p-4 flex items-center justify-between transition-all ${officer.studentName ? 'border-[#0E4EBD] bg-blue-50/20' : 'border-[#E0E0E0] bg-white'
-                    }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-[#001A4D] rounded-xl flex items-center justify-center text-white shrink-0">
-                      <Icon className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-[#001A4D] text-sm">{officer.roleName}</span>
-                        <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded-md text-[10px] font-bold uppercase tracking-wider">
-                          Officer
-                        </span>
-                      </div>
-                      <div className="text-xs text-gray-400">
-                        {officer.studentName ? officer.course : 'No student assigned'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="w-72">
-                    {officer.studentName ? (
-                      <div className="flex items-center gap-2 bg-[#001A4D] rounded-xl px-3 py-2 shadow-xs">
-                        <div className="w-7 h-7 bg-white rounded-full flex items-center justify-center text-[#001A4D] font-bold text-xs shrink-0">
-                          {officer.avatar}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="text-white text-xs font-bold truncate">{officer.studentName}</div>
-                          <div className="text-white/70 text-[10px] truncate">{officer.studentId}</div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveOfficer(officer.roleId)}
-                          className="text-white/70 hover:text-white shrink-0 p-1"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-                        <input
-                          type="text"
-                          placeholder="Search student by name or ID..."
-                          value={searchQueries[officer.roleId] || ''}
-                          onChange={(e) => {
-                            setSearchQueries(prev => ({ ...prev, [officer.roleId]: e.target.value }));
-                            setActiveDropdown(officer.roleId);
-                          }}
-                          onFocus={() => setActiveDropdown(officer.roleId)}
-                          className="w-full pl-9 pr-3 py-2 border border-[#E0E0E0] rounded-xl text-xs focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent outline-none"
-                        />
-
-                        {/* Dropdown with Deduplication & Cross-Org Filtering */}
-                        {activeDropdown === officer.roleId && (searchQueries[officer.roleId] || '').length > 0 && (
-                          <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#E0E0E0] rounded-xl shadow-xl z-50 max-h-52 overflow-y-auto">
-                            {(() => {
-                              const query = (searchQueries[officer.roleId] || '').toLowerCase();
-                              const matches = (allStudents || []).filter(s =>
-                                `${s.firstName} ${s.lastName}`.toLowerCase().includes(query) ||
-                                s.studentId.toLowerCase().includes(query)
-                              ).slice(0, 8);
-
-                              if (matches.length === 0) {
-                                return <div className="p-3 text-xs text-gray-500 text-center">No students found</div>;
-                              }
-
-                              return matches.map(s => {
-                                const cleanSId = s.studentId.trim().toLowerCase();
-                                const isAlreadyAssignedInThisOrg = currentlyAssignedStudentIds.has(cleanSId);
-                                const otherOrgOfficerName = existingOfficerMap.get(cleanSId);
-                                const isBlocked = isAlreadyAssignedInThisOrg || !!otherOrgOfficerName;
-
-                                return (
-                                  <div
-                                    key={s.id}
-                                    onClick={() => {
-                                      if (isBlocked) return;
-                                      handleAssignOfficer(officer.roleId, s);
-                                      setActiveDropdown(null);
-                                      setSearchQueries(prev => ({ ...prev, [officer.roleId]: '' }));
-                                    }}
-                                    className={`px-3.5 py-2 border-b border-gray-100 last:border-0 flex items-center justify-between ${isBlocked
-                                        ? 'bg-gray-50 opacity-60 cursor-not-allowed'
-                                        : 'hover:bg-blue-50 cursor-pointer'
-                                      }`}
-                                  >
-                                    <div>
-                                      <div className="font-semibold text-[#001A4D] text-xs">
-                                        {s.firstName} {s.lastName}
-                                      </div>
-                                      <div className="text-[10px] text-gray-400">
-                                        {s.studentId} • {s.courseCode || s.departmentId}
-                                      </div>
-                                    </div>
-
-                                    {isAlreadyAssignedInThisOrg ? (
-                                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded text-[9px] font-bold">
-                                        Already Selected
-                                      </span>
-                                    ) : otherOrgOfficerName ? (
-                                      <span className="px-2 py-0.5 bg-red-100 text-red-700 rounded text-[9px] font-bold">
-                                        Officer in {otherOrgOfficerName}
-                                      </span>
-                                    ) : (
-                                      <span className="text-[10px] font-bold text-[#0E4EBD]">Select &rarr;</span>
-                                    )}
-                                  </div>
-                                );
-                              });
-                            })()}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      ) : (
-        <div className="border border-dashed border-gray-300 bg-gray-50/50 rounded-2xl p-8 text-center space-y-2">
-          <UserCheck className="w-8 h-8 text-gray-400 mx-auto" />
-          <div className="text-sm font-bold text-[#001A4D]">No Officers Appointed Yet</div>
-          <p className="text-xs text-gray-500 max-w-md mx-auto">
-            You can proceed without assigning officers. The Club Adviser ({adviserData.name || 'Adviser'}) can appoint student officers from the student database after logging in.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-
-  // ─── Step 4: Review & Confirm ──────────────────────────────────────────────
-  const renderStep4 = () => (
     <div className="p-6 space-y-5">
       <div className="border-l-4 border-[#FFC107] pl-4">
         <h3 className="text-[#001A4D] font-bold text-lg">Review & Confirm Organization</h3>
@@ -921,14 +602,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
         <div className="grid grid-cols-2 gap-3 pt-3 border-t border-gray-100 text-xs">
           <div>
-            <div className="text-gray-400 font-medium">Department</div>
-            <div className="text-[#001A4D] font-semibold">{deptLabel || '—'}</div>
-          </div>
-          <div>
             <div className="text-gray-400 font-medium">Academic Period</div>
-            <div className="text-[#001A4D] font-semibold">
-              {currentAcademicPeriodLabel}
-            </div>
+            <div className="text-[#001A4D] font-semibold">{currentAcademicPeriodLabel}</div>
           </div>
           <div className="col-span-2">
             <div className="text-gray-400 font-medium">Description</div>
@@ -947,7 +622,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <span className="px-2 py-0.5 bg-[#001A4D] text-white text-[10px] font-bold rounded">MANDATORY</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs pt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
           <div>
             <div className="text-gray-500">Name</div>
             <div className="text-[#001A4D] font-bold">{adviserData.name}</div>
@@ -956,42 +631,21 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             <div className="text-gray-500">Email</div>
             <div className="text-[#0E4EBD] font-semibold">{adviserData.email}</div>
           </div>
-          <div>
-            <div className="text-gray-500">Department</div>
-            <div className="text-[#001A4D] font-semibold">{adviserDeptLabel}</div>
-          </div>
+          {adviserData.employeeId && (
+            <div>
+              <div className="text-gray-500">Employee ID</div>
+              <div className="text-gray-700 font-medium">{adviserData.employeeId}</div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Officers Review */}
-      <div className="border border-[#E0E0E0] rounded-2xl p-5 space-y-3 bg-white">
-        <div className="flex items-center justify-between">
-          <h4 className="text-[#001A4D] font-bold text-sm">Executive Officers</h4>
-          <span className="text-xs text-gray-500 font-semibold">{assignedOfficers.length} Assigned</span>
+      {/* Officer Policy Notice */}
+      <div className="border border-emerald-200 bg-emerald-50/50 rounded-2xl p-4 flex items-start gap-3">
+        <Users className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
+        <div className="text-xs text-emerald-900 leading-relaxed">
+          <strong>Officer Appointment via Member Directory:</strong> Officers are appointed strictly from active members in the Officer Portal. Students must first join the club as members before being appointed as officers by the Adviser.
         </div>
-
-        {assignedOfficers.length > 0 ? (
-          <div className="space-y-2">
-            {assignedOfficers.map((officer) => (
-              <div key={officer.roleId} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0 text-xs">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-7 h-7 bg-[#001A4D] text-white rounded-full flex items-center justify-center font-bold text-[10px]">
-                    {officer.avatar}
-                  </div>
-                  <div>
-                    <div className="font-bold text-[#001A4D]">{officer.studentName}</div>
-                    <div className="text-gray-400 text-[10px]">{officer.studentId} • {officer.email}</div>
-                  </div>
-                </div>
-                <span className="px-2.5 py-0.5 bg-[#0E4EBD] text-white rounded-full text-[10px] font-bold">
-                  {officer.roleName}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-xs text-gray-500 italic">No officers appointed at creation. The Club Adviser will appoint officers later.</p>
-        )}
       </div>
 
       {/* Email Dispatch Notice */}
@@ -999,7 +653,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
         <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
         <div className="text-xs text-amber-900 leading-relaxed">
           <strong>Automated Credential Dispatch:</strong> An onboarding email containing login instructions and temporary credentials will be sent to the Adviser (<span className="font-semibold">{adviserData.email}</span>).
-          {assignedOfficers.length > 0 && ' Appointed officers will receive an appointment notice and can log in using their student credentials.'}
         </div>
       </div>
 
@@ -1032,7 +685,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
         <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between">
           <div>
             <h2 className="text-white font-bold text-base">Create Student Organization</h2>
-            <p className="text-white/60 text-xs">Step {currentStep} of 4</p>
+            <p className="text-white/60 text-xs">Step {currentStep} of 3</p>
           </div>
           <button
             onClick={onClose}
@@ -1051,7 +704,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           {currentStep === 1 && renderStep1()}
           {currentStep === 2 && renderStep2()}
           {currentStep === 3 && renderStep3()}
-          {currentStep === 4 && renderStep4()}
         </div>
 
         {/* Footer */}
@@ -1079,28 +731,18 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           </div>
 
           <div className="flex items-center gap-3">
-            {currentStep < 4 ? (
+            {currentStep < 3 ? (
               <button
                 type="button"
                 disabled={isCheckingAdviser}
-                onClick={
-                  currentStep === 1
-                    ? handleNextFromStep1
-                    : currentStep === 2
-                    ? handleNextFromStep2
-                    : handleNextFromStep3
-                }
+                onClick={currentStep === 1 ? handleNextFromStep1 : handleNextFromStep2}
                 className="px-5 py-2.5 bg-[#001A4D] text-white font-bold text-xs rounded-xl hover:bg-[#001A4D]/90 flex items-center gap-2 shadow-xs transition-all disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isCheckingAdviser ? (
                   <><Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFC107]" /> Validating Adviser...</>
                 ) : (
                   <>
-                    {currentStep === 1
-                      ? 'Next: Assign Adviser'
-                      : currentStep === 2
-                      ? 'Next: Assign Officers'
-                      : 'Next: Review & Confirm'}
+                    {currentStep === 1 ? 'Next: Assign Adviser' : 'Next: Review & Confirm'}
                     <ArrowRight className="w-3.5 h-3.5 text-[#FFC107]" />
                   </>
                 )}

@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Search, Loader2, Building2 } from 'lucide-react';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
-import { useDepartments, useCourses, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { addMember } from '../../modules/organizations/services/member.service';
@@ -18,8 +18,6 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
   const { data: allStudents = [], loading: loadingStudents } = useStudents();
   const { members: existingOrgMembers = [], loading: loadingMembers } = useOrgMembers(organizationId);
   const { data: orgs = [] } = useOrganizationStream();
-  const { data: departments = [] } = useDepartments();
-  const { data: courses = [] } = useCourses();
   const { isStudentPendingReEnrollment } = useActiveAcademicPeriods();
 
   const activeOrg = orgs.find((o) => o.id === organizationId);
@@ -56,128 +54,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     }
   }, [isOpen]);
 
-  // Evaluate if organization is cross-departmental or department-specific
-  const isCrossDepartmental = useMemo(() => {
-    if (!activeOrg) return true;
-    const rawDeptId = (activeOrg.departmentId || '').trim().toLowerCase();
-    const rawDeptName = (activeOrg.department || (activeOrg as any).departmentName || '').trim().toLowerCase();
-
-    return (
-      !rawDeptId ||
-      rawDeptId === 'cross-departmental' ||
-      rawDeptId === 'cross-department' ||
-      rawDeptId === 'all' ||
-      rawDeptId === 'all departments' ||
-      rawDeptId === 'general' ||
-      rawDeptName === 'cross-departmental' ||
-      rawDeptName === 'cross-department' ||
-      rawDeptName === 'all departments' ||
-      rawDeptName === 'general' ||
-      rawDeptName === 'college-wide' ||
-      rawDeptName === 'campus-wide' ||
-      (activeOrg as any).isCrossDepartmental === true
-    );
-  }, [activeOrg]);
-
-  // Check if a student is eligible based on org department/program restriction
-  const isStudentProgramEligible = (student: any): boolean => {
+  // Check if a student is eligible (active + enrolled, all orgs are open to all students)
+  const isStudentEligible = (student: any): boolean => {
     if (!student) return false;
-
-    // 1. Must be an ACTIVE student
     if (student.status !== 'ACTIVE') return false;
-
-    // 2. Must be actively enrolled for current term
     if (isStudentPendingReEnrollment(student)) return false;
-
-    // 3. Cross-departmental orgs allow all active enrolled students
-    if (isCrossDepartmental) return true;
-
-    if (!activeOrg) return true;
-
-    const rawDeptId = (activeOrg.departmentId || '').trim().toLowerCase();
-    const rawDeptName = (activeOrg.department || (activeOrg as any).departmentName || '').trim().toLowerCase();
-
-    // Look up department in database
-    const matchedDept = departments.find(
-      (d) =>
-        d.id.toLowerCase() === rawDeptId ||
-        d.code?.toLowerCase() === rawDeptId ||
-        d.name?.toLowerCase() === rawDeptName ||
-        (d.code && rawDeptName.includes(d.code.toLowerCase())) ||
-        (d.name && rawDeptName.includes(d.name.toLowerCase()))
-    );
-
-    // Valid department identifiers
-    const validDeptIdentifiers = new Set<string>();
-    if (rawDeptId) validDeptIdentifiers.add(rawDeptId);
-    if (rawDeptName) validDeptIdentifiers.add(rawDeptName);
-    if (matchedDept) {
-      validDeptIdentifiers.add(matchedDept.id.toLowerCase());
-      if (matchedDept.code) validDeptIdentifiers.add(matchedDept.code.toLowerCase());
-      if (matchedDept.name) validDeptIdentifiers.add(matchedDept.name.toLowerCase());
-    }
-
-    // Valid course/program identifiers under this department
-    const validCourseIdentifiers = new Set<string>();
-    if (matchedDept) {
-      courses
-        .filter((c) => c.departmentId === matchedDept.id || c.departmentCode === matchedDept.code)
-        .forEach((c) => {
-          validCourseIdentifiers.add(c.id.toLowerCase());
-          if (c.code) validCourseIdentifiers.add(c.code.toLowerCase());
-          if (c.name) validCourseIdentifiers.add(c.name.toLowerCase());
-        });
-    }
-
-    // Check student's department
-    const sDeptId = (student.departmentId || '').trim().toLowerCase();
-    const sDeptCode = (student.departmentCode || '').trim().toLowerCase();
-    const sDeptName = (student.department || student.departmentName || '').trim().toLowerCase();
-
-    if (
-      (sDeptId && validDeptIdentifiers.has(sDeptId)) ||
-      (sDeptCode && validDeptIdentifiers.has(sDeptCode)) ||
-      (sDeptName && validDeptIdentifiers.has(sDeptName))
-    ) {
-      return true;
-    }
-
-    // Check student's course / program
-    const sCourseId = (student.courseId || '').trim().toLowerCase();
-    const sCourseCode = (student.courseCode || '').trim().toLowerCase();
-    const sCourseName = (student.courseName || '').trim().toLowerCase();
-
-    if (
-      (sCourseId && validCourseIdentifiers.has(sCourseId)) ||
-      (sCourseCode && validCourseIdentifiers.has(sCourseCode)) ||
-      (sCourseName && validCourseIdentifiers.has(sCourseName))
-    ) {
-      return true;
-    }
-
-    // Program heuristics by name
-    if (rawDeptName.includes('information technology') || rawDeptId === 'it' || rawDeptId === 'dict') {
-      if (sCourseCode === 'bsit' || sCourseCode === 'bscs' || sCourseName.includes('information technology') || sCourseName.includes('computer science')) {
-        return true;
-      }
-    }
-    if (rawDeptName.includes('business') || rawDeptId === 'ba' || rawDeptId === 'dba') {
-      if (sCourseCode === 'bsba' || sCourseCode === 'bsa' || sCourseName.includes('business')) {
-        return true;
-      }
-    }
-    if (rawDeptName.includes('hospitality') || rawDeptId === 'hm' || rawDeptId === 'dhm') {
-      if (sCourseCode === 'bshm' || sCourseCode === 'bstm' || sCourseName.includes('hospitality') || sCourseName.includes('tourism')) {
-        return true;
-      }
-    }
-    if (rawDeptName.includes('senior high') || rawDeptId === 'shs') {
-      if (student.academicLevel === 'SHS' || String(student.yearLevel).toLowerCase().includes('grade')) {
-        return true;
-      }
-    }
-
-    return false;
+    return true;
   };
 
   if (!isOpen) return null;
@@ -239,7 +121,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <p className="text-blue-200 text-xs flex items-center gap-1.5 mt-0.5">
                 <Building2 className="w-3.5 h-3.5" />
                 <span>{activeOrg.name}</span>
-                <span className="text-blue-300">• {isCrossDepartmental ? 'Campus-wide / All Programs' : (activeOrg.department || 'Specific Department')}</span>
+                <span className="text-blue-300">• Open to All Students</span>
               </p>
             )}
           </div>
@@ -257,9 +139,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <input
                 type="text"
                 placeholder={
-                  !isCrossDepartmental && activeOrg?.department
-                    ? `Search eligible ${activeOrg.department} students...`
-                    : "Search active student by name, ID, or email..."
+                  "Search active student by name, ID, or email..."
                 }
                 value={searchQuery}
                 onChange={(e) => {
@@ -271,9 +151,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               />
             </div>
             <p className="text-[11px] text-gray-500 mt-1">
-              {!isCrossDepartmental && activeOrg?.department
-                ? `Showing active, enrolled students from ${activeOrg.department} not yet in this organization.`
-                : 'Showing active, enrolled students not yet members of this organization.'}
+              Showing active, enrolled students not yet members of this organization.
             </p>
 
             {/* Dropdown */}
@@ -297,7 +175,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                         if (!s) return false;
 
                         // 1. Program and enrollment eligibility check
-                        if (!isStudentProgramEligible(s)) return false;
+                        if (!isStudentEligible(s)) return false;
 
                         // 2. Exclude students already registered in this org
                         const sDocId = (s.id || '').toLowerCase().trim();
@@ -321,7 +199,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                     if (matches.length === 0) {
                       return (
                         <div className="p-3 text-xs text-gray-500 text-center">
-                          No eligible {!isCrossDepartmental && activeOrg?.department ? `${activeOrg.department} ` : ''}students found matching "{searchQuery}".
+                           No eligible students found matching "{searchQuery}".
                         </div>
                       );
                     }

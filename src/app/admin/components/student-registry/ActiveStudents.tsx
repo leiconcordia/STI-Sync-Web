@@ -1,18 +1,19 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter } from 'lucide-react';
+import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
+import BulkImportRegistrarModal from './BulkImportRegistrarModal';
+import ExportStudentsModal from './ExportStudentsModal';
 import StudentDetailModal from '../../../modules/students/components/StudentDetailModal';
 import ArchiveStudentModal from '../../../modules/students/components/ArchiveStudentModal';
 import { StudentDocument } from '../../../modules/students/types/student.types';
 import { formatTimestampDate } from '../../../modules/students/utils/date.utils';
-import { exportStudentsToCSV } from '../../../modules/students/utils/export.utils';
 import { useCourses, useSections } from '../../../modules/academic/hooks/useAcademicStream';
-import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile';
 import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { OrganizationMemberDocument } from '../../../modules/organizations/types/member.types';
 import type { PayableDocument } from '../../../modules/finance/types/payable.types';
 import { TablePagination } from '../../../components/common/TablePagination';
+import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile';
 
 interface ActiveStudentsProps {
   students: StudentDocument[];
@@ -38,6 +39,8 @@ const NUM_TO_YEAR_STR: Record<number, string> = {
 
 export default function ActiveStudents({ students: activeStudents }: ActiveStudentsProps) {
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
   const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<StudentDocument | null>(null);
   const [selectedStudentForArchive, setSelectedStudentForArchive] = useState<StudentDocument | null>(null);
   const [activeMenuStudentId, setActiveMenuStudentId] = useState<string | null>(null);
@@ -197,6 +200,9 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
     }
   };
 
+  // Available programs
+  const availableCourses = courses;
+
   // Available unique sections cascade-filtered by selected Program & Year Level
   const availableSections = useMemo(() => {
     let secList = [...sections];
@@ -315,7 +321,7 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
   }, [activeStudents, studentPayablesMap]);
 
   const handleExport = () => {
-    exportStudentsToCSV(filteredStudents, 'Active_Students_Filtered');
+    setShowExportModal(true);
   };
 
   return (
@@ -327,6 +333,13 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
         </div>
         <div className="flex items-center gap-3">
           <button
+            onClick={() => setShowBulkImportModal(true)}
+            className="px-5 py-2.5 bg-gradient-to-r from-blue-700 to-indigo-600 text-white rounded-lg font-bold hover:opacity-90 flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-yellow-300" />
+            Bulk Import (Registrar)
+          </button>
+          <button
             onClick={() => setShowAddModal(true)}
             className="px-5 py-2.5 bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] text-white rounded-lg font-bold hover:opacity-90 flex items-center gap-2 shadow-sm transition-all cursor-pointer"
           >
@@ -335,11 +348,11 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
           </button>
           <button
             onClick={handleExport}
-            className="px-5 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 shadow-sm transition-all"
-            title="Export current filtered list to CSV"
+            className="px-5 py-2.5 bg-[#001A4D] text-white rounded-lg font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 shadow-sm transition-all cursor-pointer"
+            title="Export official rosters or credentials list by section"
           >
             <Download className="w-4 h-4" />
-            Export Directory
+            Export Roster / Credentials
           </button>
         </div>
       </div>
@@ -366,8 +379,8 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
 
       {/* Search and Filter Bar */}
       <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 shadow-sm">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-          <div className="relative md:col-span-1">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="relative sm:col-span-2 lg:col-span-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               type="search"
@@ -384,7 +397,7 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
             className="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none bg-white text-gray-700"
           >
             <option value="All Programs">All Programs</option>
-            {courses.map((c) => (
+            {availableCourses.map((c) => (
               <option key={c.id} value={c.code}>{c.code} — {c.name}</option>
             ))}
           </select>
@@ -600,6 +613,26 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
         <AddStudentManuallyModal
           onClose={() => setShowAddModal(false)}
           onSuccess={() => setShowAddModal(false)}
+        />
+      )}
+
+      {/* Bulk Import from Registrar Modal */}
+      {showBulkImportModal && (
+        <BulkImportRegistrarModal
+          existingStudents={activeStudents}
+          adminUid={adminUid}
+          onClose={() => setShowBulkImportModal(false)}
+          onSuccess={() => setShowBulkImportModal(false)}
+        />
+      )}
+
+      {/* Dynamic Export Modal (Section rosters / Credentials) */}
+      {showExportModal && (
+        <ExportStudentsModal
+          students={activeStudents}
+          currentSectionFilter={selectedSection}
+          currentCourseFilter={selectedCourse}
+          onClose={() => setShowExportModal(false)}
         />
       )}
 
