@@ -397,16 +397,16 @@ export const createEvent = async (
 
     // If resubmitting a returned proposal, record version history & history log
     if (isResubmission) {
-      await updateDoc(docRef, {
+      await setDoc(docRef, {
         ...eventPayload,
         proposalHistory: arrayUnion(historyEntry),
         versionHistory: arrayUnion(versionSnapshot),
-      });
+      }, { merge: true });
     } else {
-      await updateDoc(docRef, {
+      await setDoc(docRef, {
         ...eventPayload,
         proposalHistory: arrayUnion(historyEntry),
-      });
+      }, { merge: true });
     }
   } else {
     eventPayload.createdAt = serverTimestamp() as any;
@@ -479,7 +479,7 @@ export const saveEventDraft = async (
 
   if (existingId) {
     const docRef = doc(db, EVENTS_COLLECTION, existingId);
-    await updateDoc(docRef, eventPayload);
+    await setDoc(docRef, eventPayload, { merge: true });
     return existingId;
   } else {
     eventPayload.createdAt = serverTimestamp() as any;
@@ -606,7 +606,21 @@ export const rejectEvent = async (
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   const snap = await getDoc(ref);
-  const currentData = snap.exists() ? snap.data() : null;
+  let currentData = snap.exists() ? snap.data() : null;
+
+  if (!currentData) {
+    const fallbackCollections = ['events', 'proposals', 'activity_proposals'];
+    for (const col of fallbackCollections) {
+      try {
+        const fallbackSnap = await getDoc(doc(db, col, eventId));
+        if (fallbackSnap.exists()) {
+          currentData = fallbackSnap.data();
+          break;
+        }
+      } catch {}
+    }
+  }
+
   const returnedSnapshot = buildEventSnapshot(currentData);
 
   const historyEntry: EventProposalHistoryLog = cleanUndefined({
@@ -618,8 +632,10 @@ export const rejectEvent = async (
     remarks: remarks?.trim() || undefined,
   });
 
-  await updateDoc(ref, {
+  const payload: any = cleanUndefined({
     proposalStatus: 'rejected',
+    status: 'rejected',
+    lifecycleStatus: 'rejected',
     rejectedBy: adminUserId,
     rejectedAt: serverTimestamp(),
     rejectionReason: reason,
@@ -629,6 +645,24 @@ export const rejectEvent = async (
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
   });
+
+  if (!snap.exists() && currentData) {
+    await setDoc(ref, { ...currentData, ...payload }, { merge: true });
+  } else {
+    await setDoc(ref, payload, { merge: true });
+  }
+
+  // Mirror sync to proposals, events, and activity_proposals
+  const syncCollections = ['proposals', 'events', 'activity_proposals'];
+  for (const col of syncCollections) {
+    try {
+      const colRef = doc(db, col, eventId);
+      const colSnap = await getDoc(colRef);
+      if (colSnap.exists()) {
+        await setDoc(colRef, payload, { merge: true });
+      }
+    } catch {}
+  }
 };
 
 export const returnEvent = async (
@@ -642,7 +676,21 @@ export const returnEvent = async (
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   const snap = await getDoc(ref);
-  const currentData = snap.exists() ? snap.data() : null;
+  let currentData = snap.exists() ? snap.data() : null;
+
+  if (!currentData) {
+    const fallbackCollections = ['events', 'proposals', 'activity_proposals'];
+    for (const col of fallbackCollections) {
+      try {
+        const fallbackSnap = await getDoc(doc(db, col, eventId));
+        if (fallbackSnap.exists()) {
+          currentData = fallbackSnap.data();
+          break;
+        }
+      } catch {}
+    }
+  }
+
   const returnedSnapshot = buildEventSnapshot(currentData);
 
   const historyEntry: EventProposalHistoryLog = cleanUndefined({
@@ -656,9 +704,29 @@ export const returnEvent = async (
     stepRemarks: stepRevisionRemarks || {},
   });
 
+  let updatedChain = currentData?.approvalChain;
+  if (Array.isArray(updatedChain) && updatedChain.length > 0) {
+    const currentStepIdx = (currentData as any).currentStepIndex ?? 0;
+    const currentStageIdx = (currentData as any).currentStageIndex ?? 1;
+    updatedChain = updatedChain.map((step: any, idx: number) => {
+      const isTarget = step.stageIndex ? step.stageIndex === currentStageIdx : idx === currentStepIdx;
+      if (isTarget) {
+        return cleanUndefined({
+          ...step,
+          status: 'returned',
+          remarks: remarks?.trim() || step.remarks,
+        });
+      }
+      return step;
+    });
+  }
+
+  // Returned proposal stays in 'returned' status for revision (returned only, not draft)
   const updatePayload: any = cleanUndefined({
     proposalStatus: 'returned',
     status: 'returned',
+    lifecycleStatus: 'returned',
+    isReturned: true,
     returnedBy: adminUserId,
     returnedByName: adminUserName || null,
     returnedAt: serverTimestamp(),
@@ -667,30 +735,29 @@ export const returnEvent = async (
     adviserRemarks: remarks?.trim() || null,
     stepRevisionRemarks: stepRevisionRemarks || {},
     returnedSnapshot,
+    approvalChain: updatedChain || undefined,
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
   });
 
-  await updateDoc(ref, updatePayload);
+  if (!snap.exists() && currentData) {
+    await setDoc(ref, { ...currentData, ...updatePayload }, { merge: true });
+  } else {
+    await setDoc(ref, updatePayload, { merge: true });
+  }
 
-  // Sync to proposals collection if exists
-  try {
-    const propRef = doc(db, 'proposals', eventId);
-    const propSnap = await getDoc(propRef);
-    if (propSnap.exists()) {
-      await updateDoc(propRef, {
-        status: 'returned',
-        proposalStatus: 'returned',
-        returnFlags: flags || [],
-        returnDeadline: deadline || null,
-        adviserRemarks: remarks?.trim() || null,
-        stepRevisionRemarks: stepRevisionRemarks || {},
-        proposalHistory: arrayUnion(historyEntry),
-        updatedAt: serverTimestamp(),
-      });
+  // Sync to proposals, events, and activity_proposals collections
+  const syncCollections = ['proposals', 'events', 'activity_proposals'];
+  for (const col of syncCollections) {
+    try {
+      const colRef = doc(db, col, eventId);
+      const colSnap = await getDoc(colRef);
+      if (colSnap.exists()) {
+        await setDoc(colRef, updatePayload, { merge: true });
+      }
+    } catch (err) {
+      console.warn(`Could not sync to ${col} collection:`, err);
     }
-  } catch (err) {
-    console.warn('Could not sync to proposals collection:', err);
   }
 };
 
@@ -699,10 +766,14 @@ export const updateAdviserRemarks = async (
   remarks: string
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
-  await updateDoc(ref, {
-    adviserRemarks: remarks || null,
-    updatedAt: serverTimestamp(),
-  });
+  await setDoc(
+    ref,
+    {
+      adviserRemarks: remarks || null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 };
 
 export const deleteEvent = async (eventId: string): Promise<void> => {
@@ -711,8 +782,8 @@ export const deleteEvent = async (eventId: string): Promise<void> => {
 };
 
 /**
- * Allows an officer to withdraw an event proposal that is currently in 'pending_review'
- * back to 'draft' status so that revisions can be made safely before SAO approves/rejects it.
+ * Allows an officer or admin to withdraw an event proposal that is currently under review
+ * back to 'draft' status so that revisions can be made safely before further evaluations.
  */
 export const withdrawProposal = async (
   eventId: string,
@@ -721,12 +792,26 @@ export const withdrawProposal = async (
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   const snap = await getDoc(ref);
-  if (!snap.exists()) {
+  let data = snap.exists() ? snap.data() : null;
+
+  if (!data) {
+    for (const col of ['events', 'proposals', 'activity_proposals']) {
+      try {
+        const fbSnap = await getDoc(doc(db, col, eventId));
+        if (fbSnap.exists()) {
+          data = fbSnap.data();
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  if (!data) {
     throw new Error('Event not found.');
   }
 
-  const data = snap.data();
-  if (data.proposalStatus !== 'pending_review' && data.proposalStatus !== 'pending') {
+  const currentStatus = (data.proposalStatus || data.status || '').toLowerCase();
+  if (currentStatus !== 'pending_review' && currentStatus !== 'pending') {
     throw new Error('Only proposals under review can be withdrawn.');
   }
 
@@ -734,16 +819,35 @@ export const withdrawProposal = async (
     id: `log-${Date.now()}`,
     action: 'edited',
     performedBy: userId,
-    performedByName: userName || 'Officer',
+    performedByName: userName || 'User',
     performedAt: Timestamp.now(),
-    remarks: 'Proposal withdrawn back to draft by officer for revisions.',
+    remarks: `Proposal withdrawn back to draft by ${userName || 'proponent'} for revisions.`,
   });
 
-  await updateDoc(ref, {
+  const payload: any = {
     proposalStatus: 'draft',
+    status: 'draft',
+    lifecycleStatus: 'draft',
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
-  });
+  };
+
+  if (!snap.exists()) {
+    await setDoc(ref, { ...data, ...payload }, { merge: true });
+  } else {
+    await setDoc(ref, payload, { merge: true });
+  }
+
+  // Sync to proposals, events, and activity_proposals mirrors
+  for (const col of ['proposals', 'events', 'activity_proposals']) {
+    try {
+      const colRef = doc(db, col, eventId);
+      const colSnap = await getDoc(colRef);
+      if (colSnap.exists()) {
+        await setDoc(colRef, payload, { merge: true });
+      }
+    } catch (err) {}
+  }
 };
 
 /**

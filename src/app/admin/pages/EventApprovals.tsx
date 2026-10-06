@@ -5,13 +5,13 @@ import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
   Filter, ChevronDown, RotateCcw, MapPin, Download,
   Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2,
-  FileText, SlidersHorizontal, Lock
+  FileText, SlidersHorizontal, Lock, Edit
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import EventProposalReview from "../components/EventProposalReview";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
-
+import { getProposalById } from "../../modules/activity-proposals/services/proposal.service";
 
 import { useAllEvents, useDraftEvents } from "../../modules/events/hooks/useEventStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
@@ -25,6 +25,11 @@ import {
   DeleteArchivedEventModal,
   restoreArchivedEvent,
   isProposalFullySigned,
+  canWithdrawProposal,
+  canEditProposal,
+  isOfficerProposal,
+  withdrawProposal,
+  deleteEvent,
 } from "../../modules/events";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import type { EventDocument } from "../../modules/events/types/event.types";
@@ -273,6 +278,12 @@ export function EventApprovals() {
           if (event.isArchived) return false;
         }
 
+        // Draft isolation: Drafts do not appear in active approval tables
+        if (event.proposalStatus === "draft" || event.status === "draft" || (event as any).lifecycleStatus === "draft") return false;
+
+        // Returned student org proposals belong to the student organization for revision in draft status
+        if (isOfficerProposal(event) && (Boolean((event as any).isReturned) || event.proposalStatus === "returned")) return false;
+
         // Tab filter
         const isCancelled = event.status === "cancelled" || event.proposalStatus === "cancelled";
         if (activeTab === "cancelled") {
@@ -287,7 +298,10 @@ export function EventApprovals() {
         const isApprovedStatus = hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved");
 
         if (activeTab === "pending" && (isApprovedStatus || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
-        if (activeTab === "returned" && event.proposalStatus !== "returned") return false;
+        if (activeTab === "returned") {
+          if (isOfficerProposal(event)) return false;
+          if (event.proposalStatus !== "returned" && !Boolean((event as any).isReturned)) return false;
+        }
         if (activeTab === "approved") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || isEventPast(event);
           if (!isApprovedStatus || isDone) return false;
@@ -341,6 +355,9 @@ export function EventApprovals() {
   const filteredDrafts = useMemo(() => {
     return drafts
       .filter((draft) => {
+        // Admin only manages SAS / institutional drafts; student org drafts belong to officers
+        if (isOfficerProposal(draft)) return false;
+
         if (draft.id && nonDraftRefs.has(draft.id)) return false;
         if (draft.referenceId && nonDraftRefs.has(draft.referenceId)) return false;
         if (draft.title && nonDraftRefs.has(draft.title.trim().toLowerCase())) return false;
@@ -369,10 +386,10 @@ export function EventApprovals() {
   }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSemester, searchQuery, semesters]);
 
   // Counts (excluding archived & soft-deleted from active tallies)
-  const allCount = events.filter((e) => !e.isArchived && !e.isDeleted).length;
+  const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
   const pendingCount = events.filter((e) => (e.proposalStatus === "pending" || e.proposalStatus === "pending_review") && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const approvedCount = events.filter((e) => e.proposalStatus === "approved" && e.status !== "completed" && !isEventPast(e) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const returnedCount = events.filter((e) => e.proposalStatus === "returned" && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
+  const returnedCount = events.filter((e) => !isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const completedCount = events.filter((e) => (e.status === "completed" || e.proposalStatus === "completed" || (e.proposalStatus === "approved" && isEventPast(e))) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const archivedCount = events.filter((e) => e.isArchived === true && !e.isDeleted).length;
   const rejectedCount = events.filter((e) => e.proposalStatus === "rejected" && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
@@ -391,9 +408,91 @@ export function EventApprovals() {
     return activeList.slice(start, start + ITEMS_PER_PAGE);
   }, [activeList, currentPage]);
 
+  const [withdrawingId, setWithdrawingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
   const handleResumeDraft = (draft: EventDocument) => {
+    const editCheck = canEditProposal(draft, 'admin', adviserProfile?.uid);
+    if (!editCheck.canEdit) {
+      toast.error('Unauthorized', {
+        description: editCheck.reason || 'You do not have permission to edit this draft.',
+      });
+      return;
+    }
     setResumeDraft(draft);
     setIsProposalModalOpen(true);
+  };
+
+  const handleWithdraw = async (event: EventDocument) => {
+    const withdrawCheck = canWithdrawProposal(event, 'admin', adviserProfile?.uid);
+    if (!withdrawCheck.canWithdraw) {
+      toast.error('Cannot withdraw proposal', {
+        description: withdrawCheck.reason || 'You do not have permission to withdraw this proposal.',
+      });
+      return;
+    }
+
+    const confirmWithdraw = window.confirm(
+      `Are you sure you want to withdraw "${event.title}"? The proposal will return to Draft status so you can make revisions before evaluations proceed.`
+    );
+    if (!confirmWithdraw) return;
+
+    setWithdrawingId(event.id);
+    try {
+      await withdrawProposal(
+        event.id,
+        adviserProfile?.uid || 'admin-user',
+        adviserProfile?.displayName || 'SAO Admin'
+      );
+      toast.success('Proposal Withdrawn', {
+        description: `"${event.title}" has been returned to Draft status. Opening editor...`,
+      });
+      try {
+        const fullProp = await getProposalById(event.id);
+        setResumeDraft(fullProp || { ...event, proposalStatus: 'draft', status: 'draft' });
+      } catch {
+        setResumeDraft({ ...event, proposalStatus: 'draft', status: 'draft' });
+      }
+      setIsProposalModalOpen(true);
+    } catch (err: any) {
+      toast.error('Failed to withdraw proposal', {
+        description: err.message || 'Please try again.',
+      });
+    } finally {
+      setWithdrawingId(null);
+    }
+  };
+
+  const handleEditProposal = async (event: EventDocument) => {
+    const editCheck = canEditProposal(event, 'admin', adviserProfile?.uid);
+    if (!editCheck.canEdit) {
+      toast.error('Cannot edit proposal', {
+        description: editCheck.reason || 'Only the proponent organization has permission to edit and revise this proposal.',
+      });
+      return;
+    }
+
+    try {
+      const fullProp = await getProposalById(event.id);
+      setResumeDraft(fullProp || event);
+    } catch {
+      setResumeDraft(event);
+    }
+    setIsProposalModalOpen(true);
+  };
+
+  const handleDeleteProposal = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this event proposal?')) return;
+    setDeletingId(id);
+    try {
+      await deleteEvent(id);
+      toast.success('Event proposal deleted.');
+    } catch (e: any) {
+      console.error(e);
+      toast.error('Failed to delete event proposal.');
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const handleExportCSV = () => {
@@ -959,13 +1058,24 @@ export function EventApprovals() {
                           {renderStatusBadge("draft", draft)}
                         </td>
                         <td className="py-3.5 px-4 text-right">
-                          <Button
-                            size="sm"
-                            onClick={() => handleResumeDraft(draft)}
-                            className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xs cursor-pointer"
-                          >
-                            Resume Draft
-                          </Button>
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Button
+                              size="sm"
+                              onClick={() => handleResumeDraft(draft)}
+                              className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-xs cursor-pointer inline-flex items-center gap-1"
+                            >
+                              <Edit className="w-3.5 h-3.5" />
+                              <span>Resume Draft</span>
+                            </Button>
+                            <button
+                              onClick={() => handleDeleteProposal(draft.id)}
+                              disabled={deletingId === draft.id}
+                              className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                              title="Delete Draft"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1118,6 +1228,7 @@ export function EventApprovals() {
                         {/* Actions */}
                         <td className="py-3.5 px-4 text-right whitespace-nowrap">
                           <div className="flex items-center justify-end gap-1.5">
+                            {/* Always View */}
                             <button
                               onClick={() => setSelectedEvent(event)}
                               className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1127,24 +1238,40 @@ export function EventApprovals() {
                               <span>View</span>
                             </button>
 
-                            {/* Operational Setup / Utils button */}
-                            {isApproved ? (
+                            {/* Freshly created / Pending Review: View + Withdraw */}
+                            {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'admin', adviserProfile?.uid).canWithdraw && (
                               <button
-                                onClick={() => setSelectedEvent(event)}
-                                className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="Configure Activity: Promotional Banner, Student Publishing, Attendance Scanners & Budget Custodians"
+                                onClick={() => handleWithdraw(event)}
+                                disabled={withdrawingId === event.id}
+                                className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title="Withdraw Proposal to Draft for Revisions"
                               >
-                                <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
-                                <span>Configure</span>
+                                <RotateCcw className="w-3.5 h-3.5" />
+                                <span>{withdrawingId === event.id ? '...' : 'Withdraw'}</span>
                               </button>
-                            ) : (
+                            )}
+
+                            {/* Returned for Revision: View + Edit (ONLY for SAS Admin's own proposals) */}
+                            {isReturned && canEditProposal(event, 'admin', adviserProfile?.uid).canEdit && (
                               <button
-                                disabled
-                                className="px-2.5 py-1.5 bg-gray-50 text-gray-400 border border-gray-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-not-allowed opacity-60"
-                                title="Operational controls unlock after approval"
+                                onClick={() => handleEditProposal(event)}
+                                className="px-2.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                title="Revise and Resubmit Proposal"
                               >
-                                <Lock className="w-3.5 h-3.5 text-gray-400" />
-                                <span>Locked</span>
+                                <Edit className="w-3.5 h-3.5" />
+                                <span>Edit</span>
+                              </button>
+                            )}
+
+                            {/* Rejected: View + Delete */}
+                            {isRejected && (
+                              <button
+                                onClick={() => handleDeleteProposal(event.id)}
+                                disabled={deletingId === event.id}
+                                className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                title="Delete Proposal"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
 
@@ -1189,17 +1316,6 @@ export function EventApprovals() {
                                   >
                                     <FolderArchive className="w-3.5 h-3.5" />
                                     <span>Archive</span>
-                                  </button>
-                                )}
-
-                                {canCancelEvent(event, 'admin').canCancel && (
-                                  <button
-                                    onClick={() => setCancellingEvent(event)}
-                                    className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title="Cancel Event & Waive Liabilities"
-                                  >
-                                    <XCircle className="w-3.5 h-3.5" />
-                                    <span>Cancel</span>
                                   </button>
                                 )}
                               </>

@@ -30,7 +30,7 @@ import {
 } from '../../modules/events/hooks/useEventConfigStream';
 import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
-import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../../modules/events/utils/event-lifecycle.utils';
+import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
 import {
   OfficerEventDetailView,
@@ -233,15 +233,21 @@ export default function EventManagement() {
   };
 
 
+  const isItemReturnedCheck = (e: any) =>
+    e.proposalStatus === 'returned' ||
+    e.status === 'returned' ||
+    Boolean(e.isReturned) ||
+    Boolean(e.stepRevisionRemarks && Object.keys(e.stepRevisionRemarks).length > 0);
+
   const statusCounts = {
     all: events.filter((e) => !e.isArchived && !e.isDeleted).length,
-    draft: events.filter((e) => e.proposalStatus === 'draft' && !e.isDeleted).length,
+    draft: events.filter((e) => (e.proposalStatus === 'draft' || e.status === 'draft') && !isItemReturnedCheck(e) && !e.isDeleted).length,
     pending: events.filter((e) => (e.proposalStatus === 'pending' || e.proposalStatus === 'pending_review') && !e.isArchived && !e.isDeleted).length,
     approved: events.filter((e) => isEventApprovedUpcoming(e)).length,
     completed: events.filter((e) => isEventCompleted(e)).length,
     archived: events.filter((e) => e.isArchived === true && !e.isDeleted).length,
     rejected: events.filter((e) => e.proposalStatus === 'rejected' && !e.isArchived && !e.isDeleted).length,
-    returned: events.filter((e) => e.proposalStatus === 'returned' && !e.isArchived && !e.isDeleted).length,
+    returned: events.filter((e) => isItemReturnedCheck(e) && !e.isArchived && !e.isDeleted).length,
     cancelled: events.filter((e) => (e.proposalStatus === 'cancelled' || e.status === 'cancelled') && !e.isArchived && !e.isDeleted).length,
   };
 
@@ -260,15 +266,16 @@ export default function EventManagement() {
         }
 
         let statusMatch = true;
-        const currentStatus = (event.proposalStatus || 'draft').toLowerCase();
+        const currentStatus = (event.proposalStatus || event.status || 'draft').toLowerCase();
 
-        if (activeStatus === 'draft') statusMatch = currentStatus === 'draft';
+        const isItemReturned = currentStatus === 'returned' || event.status === 'returned' || Boolean((event as any).isReturned) || Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
+        if (activeStatus === 'draft') statusMatch = (currentStatus === 'draft' || event.status === 'draft') && !isItemReturned;
         else if (activeStatus === 'pending') statusMatch = currentStatus === 'pending' || currentStatus === 'pending_review';
         else if (activeStatus === 'approved') statusMatch = isEventApprovedUpcoming(event);
         else if (activeStatus === 'completed') statusMatch = isEventCompleted(event);
         else if (activeStatus === 'archived') statusMatch = event.isArchived === true;
         else if (activeStatus === 'rejected') statusMatch = currentStatus === 'rejected';
-        else if (activeStatus === 'returned') statusMatch = currentStatus === 'returned';
+        else if (activeStatus === 'returned') statusMatch = isItemReturned;
         else if (activeStatus === 'cancelled') statusMatch = currentStatus === 'cancelled' || event.status === 'cancelled';
 
         const q = (searchQuery || '').toLowerCase().trim();
@@ -330,6 +337,14 @@ export default function EventManagement() {
 
   const handleWithdraw = async (event: EventDocument) => {
     if (!profile) return;
+    const withdrawCheck = canWithdrawProposal(event, 'officer', profile.uid, activeOrgId);
+    if (!withdrawCheck.canWithdraw) {
+      toast.error('Cannot withdraw proposal', {
+        description: withdrawCheck.reason || 'You do not have permission to withdraw this proposal.',
+      });
+      return;
+    }
+
     const confirmWithdraw = window.confirm(
       `Are you sure you want to withdraw "${event.title}"? The proposal will return to Draft status so you can make revisions before SAO reviews it.`
     );
@@ -341,8 +356,13 @@ export default function EventManagement() {
       toast.success('Proposal Withdrawn', {
         description: `"${event.title}" has been returned to Draft status. Opening editor...`,
       });
-      setEditingEvent({ ...event, proposalStatus: 'draft' });
-      setShowCreateModal(true);
+      try {
+        const prop = await getProposalById(event.id);
+        setApInitialData(prop || { ...event, proposalStatus: 'draft', status: 'draft' });
+      } catch {
+        setApInitialData({ ...event, proposalStatus: 'draft', status: 'draft' });
+      }
+      setIsApModalOpen(true);
     } catch (err: any) {
       toast.error('Failed to withdraw proposal', {
         description: err.message || 'Please try again.',
@@ -792,8 +812,8 @@ export default function EventManagement() {
                   const eventDateRange = formatEventDateRange(event.sessions);
 
                   const isRejected = event.proposalStatus === 'rejected';
-                  const isReturned = event.proposalStatus === 'returned';
-                  const isDraft = event.proposalStatus === 'draft';
+                  const isReturned = event.proposalStatus === 'returned' || event.status === 'returned' || Boolean((event as any).isReturned) || Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
+                  const isDraft = (event.proposalStatus === 'draft' || event.status === 'draft') && !isReturned;
                   const isApproved = isEventApproved(event);
                   const isAP = Boolean((event as any).isActivityProposal || (event as any).referenceId?.startsWith('AP-'));
 
@@ -938,6 +958,7 @@ export default function EventManagement() {
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* Always View */}
                           <button
                             onClick={() => setSelectedEventId(event.id)}
                             className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -946,27 +967,6 @@ export default function EventManagement() {
                             <Eye className="w-3.5 h-3.5" />
                             <span>View</span>
                           </button>
-
-                          {/* Operational Setup / Utils button */}
-                          {isApproved ? (
-                            <button
-                              onClick={() => setConfiguringEvent(event)}
-                              className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                              title="Operational Setup: Promotional Banner, Student Publishing, Attendance Scanners & Budget Custodians"
-                            >
-                              <Sparkles className="w-3.5 h-3.5 text-blue-600" />
-                              <span>Utils</span>
-                            </button>
-                          ) : (
-                            <button
-                              disabled
-                              className="px-2.5 py-1.5 bg-gray-50 text-gray-400 border border-gray-200 rounded-lg text-xs font-bold inline-flex items-center gap-1 cursor-not-allowed opacity-60"
-                              title="Operational controls unlock after approval"
-                            >
-                              <Lock className="w-3.5 h-3.5 text-gray-400" />
-                              <span>Utils</span>
-                            </button>
-                          )}
 
                           {/* Lifecycle Actions */}
                           {event.isArchived ? (
@@ -990,6 +990,82 @@ export default function EventManagement() {
                             </>
                           ) : (
                             <>
+                              {/* Freshly created / Pending Review: View + Withdraw */}
+                              {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'officer', profile?.uid, activeOrgId).canWithdraw && (
+                                <button
+                                  onClick={() => handleWithdraw(event)}
+                                  disabled={withdrawingId === event.id}
+                                  className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                  title="Withdraw Proposal to Draft"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  <span>{withdrawingId === event.id ? '...' : 'Withdraw'}</span>
+                                </button>
+                              )}
+
+                              {/* Returned for Revision: View + Edit */}
+                              {isReturned && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
+                                <button
+                                  onClick={async () => {
+                                    try {
+                                      const prop = await getProposalById(event.id);
+                                      setApInitialData(prop || event);
+                                    } catch {
+                                      setApInitialData(event);
+                                    }
+                                    setIsApModalOpen(true);
+                                  }}
+                                  className="px-2.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                  title="Revise and Resubmit Activity Proposal"
+                                >
+                                  <Edit className="w-3.5 h-3.5" />
+                                  <span>Edit</span>
+                                </button>
+                              )}
+
+                              {/* Draft: Edit + Delete */}
+                              {isDraft && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
+                                <>
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        const prop = await getProposalById(event.id);
+                                        setApInitialData(prop || event);
+                                      } catch {
+                                        setApInitialData(event);
+                                      }
+                                      setIsApModalOpen(true);
+                                    }}
+                                    className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title="Edit Draft Proposal"
+                                  >
+                                    <Edit className="w-3.5 h-3.5" />
+                                    <span>Edit</span>
+                                  </button>
+                                  <button
+                                    onClick={() => handleDelete(event.id)}
+                                    disabled={deletingId === event.id}
+                                    className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                    title="Delete Proposal"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                              )}
+
+                              {/* Rejected: View + Delete */}
+                              {isRejected && (
+                                <button
+                                  onClick={() => handleDelete(event.id)}
+                                  disabled={deletingId === event.id}
+                                  className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                  title="Delete Proposal"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+
+                              {/* Approved Lifecycle: Conclude & Archive */}
                               {isApproved && event.status !== 'completed' && (
                                 <button
                                   onClick={() => setConcludingEvent(event)}
@@ -1009,64 +1085,6 @@ export default function EventManagement() {
                                 >
                                   <FolderArchive className="w-3.5 h-3.5" />
                                   <span>Archive</span>
-                                </button>
-                              )}
-
-                              {canWithdrawProposal(event, 'officer').canWithdraw && (
-                                <button
-                                  onClick={() => handleWithdraw(event)}
-                                  disabled={withdrawingId === event.id}
-                                  className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                  title="Withdraw Proposal to Draft"
-                                >
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                  <span>{withdrawingId === event.id ? '...' : 'Withdraw'}</span>
-                                </button>
-                              )}
-
-                              {canCancelEvent(event, 'officer', activeOrgId).canCancel && (
-                                <button
-                                  onClick={() => setCancellingEvent(event)}
-                                  className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                  title="Cancel Event Proposal"
-                                >
-                                  <XCircle className="w-3.5 h-3.5" />
-                                  <span>Cancel</span>
-                                </button>
-                              )}
-
-                              {/* Edit or Revise & Resubmit Button */}
-                              {(isEventEditable(event, 'officer').editable || isReturned || isDraft) && (
-                                <button
-                                  onClick={async () => {
-                                    try {
-                                      const prop = await getProposalById(event.id);
-                                      setApInitialData(prop || event);
-                                    } catch {
-                                      setApInitialData(event);
-                                    }
-                                    setIsApModalOpen(true);
-                                  }}
-                                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer ${
-                                    isReturned
-                                      ? 'bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 shadow-xs'
-                                      : 'bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200'
-                                  }`}
-                                  title={isReturned ? 'Revise and Resubmit Activity Proposal' : event.proposalStatus === 'approved' ? 'Edit Minor Details' : 'Edit Proposal'}
-                                >
-                                  <Edit className="w-3.5 h-3.5" />
-                                  <span>{isReturned ? 'Revise & Resubmit' : 'Edit'}</span>
-                                </button>
-                              )}
-
-                              {(isDraft || isRejected) && (
-                                <button
-                                  onClick={() => handleDelete(event.id)}
-                                  disabled={deletingId === event.id}
-                                  className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-                                  title="Delete Proposal"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               )}
                             </>

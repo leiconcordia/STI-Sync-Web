@@ -4,7 +4,7 @@ import { db } from '../../../../services/firebase';
 import type { EventDocument } from '../types/event.types';
 import { ACTIVITIES_COLLECTION, EVENTS_COLLECTION } from '../services/event.service';
 
-import { isProposalFullySigned } from '../utils/event-lifecycle.utils';
+import { isProposalFullySigned, isOfficerProposal } from '../utils/event-lifecycle.utils';
 
 export function useAllEvents() {
   const [events, setEvents] = useState<EventDocument[]>([]);
@@ -86,7 +86,16 @@ export function useAllEvents() {
       });
 
 
-      const combined = Array.from(map.values()).filter((e) => e.proposalStatus !== 'draft');
+      const combined = Array.from(map.values()).filter((e) => {
+        const isDraft =
+          e.proposalStatus === 'draft' ||
+          e.status === 'draft' ||
+          (e as any).lifecycleStatus === 'draft';
+        const isReturnedOrgProp =
+          isOfficerProposal(e) &&
+          (Boolean((e as any).isReturned) || e.proposalStatus === 'returned' || e.status === 'returned');
+        return !isDraft && !isReturnedOrgProp;
+      });
       combined.sort((a, b) => {
         const aTime = (a.createdAt as any)?.seconds ?? (a.updatedAt as any)?.seconds ?? 0;
         const bTime = (b.createdAt as any)?.seconds ?? (b.updatedAt as any)?.seconds ?? 0;

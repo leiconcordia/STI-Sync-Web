@@ -10,14 +10,36 @@
 
 import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
 import type { ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
+import type { SasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 
 export function buildDynamicApprovalChain(
   targetAudience: ProposalTargetAudience,
   activeSignatories: InstitutionalSignatory[],
-  sasAdminName = 'Student Affairs & Services',
-  sasAdminEmail = 'sao@ormoc.sti.edu.ph',
-  isSasCreator = false
+  sasConfigOrName?:
+    | SasSignatoryConfig
+    | { name?: string; roleTitle?: string; email?: string; department?: string; employeeId?: string }
+    | string,
+  sasAdminEmailOrIsSasCreator?: string | boolean,
+  isSasCreatorParam = false
 ): ProposalApprovalStep[] {
+  let sasConfig: Partial<SasSignatoryConfig> = {};
+  let isSasCreator = false;
+
+  if (typeof sasConfigOrName === 'string') {
+    sasConfig = {
+      name: sasConfigOrName,
+      email: typeof sasAdminEmailOrIsSasCreator === 'string' ? sasAdminEmailOrIsSasCreator : 'sao@ormoc.sti.edu.ph',
+      roleTitle: 'Student Affairs & Services Head',
+      department: 'Student Affairs & Services',
+    };
+    isSasCreator = typeof sasAdminEmailOrIsSasCreator === 'boolean' ? sasAdminEmailOrIsSasCreator : Boolean(isSasCreatorParam);
+  } else if (sasConfigOrName && typeof sasConfigOrName === 'object') {
+    sasConfig = sasConfigOrName;
+    isSasCreator = typeof sasAdminEmailOrIsSasCreator === 'boolean' ? sasAdminEmailOrIsSasCreator : Boolean(isSasCreatorParam);
+  } else {
+    isSasCreator = typeof sasAdminEmailOrIsSasCreator === 'boolean' ? sasAdminEmailOrIsSasCreator : Boolean(isSasCreatorParam);
+  }
+
   const chain: ProposalApprovalStep[] = [];
   let stepIndex = 1;
 
@@ -42,67 +64,59 @@ export function buildDynamicApprovalChain(
   //   Stage 3: Executive Administration & Approval
   const deptStageIndex = isSasCreator ? 1 : 2;
   const deptStageName = isSasCreator
-    ? 'Department & Program Endorsements'
+    ? 'Stage 1: Department & Program Endorsements'
     : 'Stage 2: Department & Program Endorsements';
   const deptStatus = isSasCreator ? 'current' : 'waiting';
 
   const acadStageIndex = isSasCreator ? 2 : 3;
   const acadStageName = isSasCreator
-    ? 'Institutional Review & Endorsements'
+    ? 'Stage 2: Institutional Review & Endorsements'
     : 'Stage 3: Institutional Review & Endorsements';
 
   const execStageIndex = isSasCreator ? 3 : 4;
   const execStageName = isSasCreator
-    ? 'Executive Administration & Approval'
+    ? 'Stage 3: Executive Administration & Approval'
     : 'Stage 4: Executive Administration & Approval';
 
   const usedSignatoryIds = new Set<string>();
 
   // ── Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory First Gate for Org Proposals) ──
   if (!isSasCreator) {
-    const sasSignatory = signatories.find(
+    const resolvedName = sasConfig.name?.trim() || 'Riselle Mae B. Lucanas';
+    const resolvedRoleTitle = sasConfig.roleTitle?.trim() || 'Student Affairs & Services Head';
+    const resolvedEmail = sasConfig.email?.trim().toLowerCase() || 'sao@ormoc.sti.edu.ph';
+    const resolvedDept = sasConfig.department?.trim() || 'Student Affairs & Services';
+    const resolvedUid = sasConfig.employeeId || 'sas_admin';
+
+    // Check if an institutional signatory in the database matches this email or role
+    const matchedSasSig = signatories.find(
       (s) =>
+        (resolvedEmail && s.email?.trim().toLowerCase() === resolvedEmail) ||
         s.role === 'sas_coordinator' ||
         s.role === 'sas_head' ||
-        s.department?.toLowerCase().includes('student affairs') ||
-        s.department?.toLowerCase().includes('sas') ||
         s.roleTitle?.toLowerCase().includes('student affairs') ||
         s.roleTitle?.toLowerCase().includes('sas')
     );
 
-    if (sasSignatory) {
-      usedSignatoryIds.add(sasSignatory.id);
-      chain.push({
-        id: `step_${stepIndex}`,
-        step: stepIndex++,
-        stageIndex: 1,
-        stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
-        role: sasSignatory.role || 'sas_coordinator',
-        roleTitle: sasSignatory.roleTitle || 'SAS Coordinator',
-        actionType: 'endorse',
-        signatoryUid: sasSignatory.id,
-        signatoryName: sasSignatory.name,
-        signatoryEmail: sasSignatory.email,
-        department: sasSignatory.department || 'Student Affairs & Services',
-        departmentId: sasSignatory.departmentId,
-        status: 'current',
-      });
-    } else if (sasAdminEmail) {
-      // Fallback to SAS configuration settings if no individual user mapped yet
-      chain.push({
-        id: `step_${stepIndex}`,
-        step: stepIndex++,
-        stageIndex: 1,
-        stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
-        role: 'sas_coordinator',
-        roleTitle: 'SAS Coordinator',
-        actionType: 'endorse',
-        signatoryName: sasAdminName,
-        signatoryEmail: sasAdminEmail,
-        department: 'Student Affairs & Services',
-        status: 'current',
-      });
+    if (matchedSasSig) {
+      usedSignatoryIds.add(matchedSasSig.id);
     }
+
+    chain.push({
+      id: `step_${stepIndex}`,
+      step: stepIndex++,
+      stageIndex: 1,
+      stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+      role: 'sas_head',
+      roleTitle: resolvedRoleTitle,
+      actionType: 'endorse',
+      signatoryUid: matchedSasSig?.id || resolvedUid,
+      signatoryName: resolvedName,
+      signatoryEmail: resolvedEmail,
+      department: resolvedDept,
+      departmentId: matchedSasSig?.departmentId,
+      status: 'current', // Mandatory first gate, active immediately upon submission!
+    });
   }
 
   // ── Stage 2: Department-Level Signatories ──

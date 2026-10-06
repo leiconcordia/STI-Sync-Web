@@ -29,6 +29,7 @@ import {
   Filter,
 } from 'lucide-react';
 import { useTargetAudienceStructure, type DynamicProgram } from '../../../academic';
+import { useStudents } from '../../../students/hooks/useStudentStream';
 import type { ProposalFormData, ProposalTargetAudience } from '../../types/proposal.types';
 
 interface Step3Props {
@@ -51,6 +52,7 @@ const COMMON_MATERIALS_PRESETS = [
 export default function Step3LogisticsMarketing({ formData, onChange, errors = {} }: Step3Props) {
   // Fetch real programs / strands, sections, and departments dynamically from Firestore database
   const audienceStructure = useTargetAudienceStructure();
+  const { data: allStudentsData = [] } = useStudents();
   const {
     courses: activeCourses,
     sections: activeSections,
@@ -95,12 +97,14 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
   const [sectionSearch, setSectionSearch] = useState('');
 
   const targetAudience: ProposalTargetAudience = formData.targetAudience || {
+    scope: 'all',
     academicLevels: ['College', 'SHS'],
     departments: ['All Academic Departments'],
-    yearLevels: allYearLevels,
-    courses: allPrograms.map((p) => p.id),
-    courseCodes: allCourseCodes,
-    sections: activeSections.map((s) => s.name),
+    departmentIds: activeDepartments.map((d) => d.id),
+    yearLevels: [],
+    courses: [],
+    courseCodes: [],
+    sections: [],
     allStudents: true,
   };
 
@@ -128,12 +132,170 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     return allYearLevels;
   }, [currentMode, shsYearLevels, collegeYearLevels, allYearLevels]);
 
-  // Dynamic filter for visible courses based on active mode
+  // Dynamic filter for visible courses based on active mode and selected years
+  // If specific year levels (e.g. G11) are picked, only show strands that have sections for those years
   const visibleCourses = useMemo(() => {
-    if (currentMode === 'shs') return shsPrograms;
-    if (currentMode === 'college') return collegePrograms;
-    return allPrograms;
-  }, [shsPrograms, collegePrograms, allPrograms, currentMode]);
+    let list = allPrograms;
+    if (currentMode === 'shs') list = shsPrograms;
+    else if (currentMode === 'college') list = collegePrograms;
+
+    if (selectedYears.length > 0) {
+      const matchingSectionCourseIds = new Set<string>();
+      const matchingSectionCourseCodes = new Set<string>();
+
+      activeSections.forEach((sec) => {
+        const secName = sec.name.toUpperCase();
+        const yNum = Number(sec.yearLevel);
+        const matchesAnyYear = selectedYears.some((yearStr) => {
+          const yrDigits = yearStr.replace(/\D/g, '');
+          if (yrDigits && (yNum === Number(yrDigits) || secName.includes(yrDigits))) return true;
+          if (yearStr.toLowerCase().includes('grade 11') && (yNum === 11 || secName.includes('11'))) return true;
+          if (yearStr.toLowerCase().includes('grade 12') && (yNum === 12 || secName.includes('12'))) return true;
+          if (yearStr.toLowerCase().includes('1st') && (yNum === 1 || secName.includes('1101'))) return true;
+          if (yearStr.toLowerCase().includes('2nd') && (yNum === 2 || secName.includes('1102'))) return true;
+          if (yearStr.toLowerCase().includes('3rd') && (yNum === 3 || secName.includes('1103'))) return true;
+          if (yearStr.toLowerCase().includes('4th') && (yNum === 4 || secName.includes('1104') || secName.includes('4101'))) return true;
+          return false;
+        });
+
+        if (matchesAnyYear) {
+          if (sec.courseId) matchingSectionCourseIds.add(sec.courseId);
+          list.forEach((c) => {
+            if (secName.includes(c.code.toUpperCase())) {
+              matchingSectionCourseCodes.add(c.code.toUpperCase());
+            }
+          });
+        }
+      });
+
+      if (matchingSectionCourseIds.size > 0 || matchingSectionCourseCodes.size > 0) {
+        const filtered = list.filter(
+          (c) => matchingSectionCourseIds.has(c.id) || matchingSectionCourseCodes.has(c.code.toUpperCase())
+        );
+        if (filtered.length > 0) return filtered;
+      }
+    }
+
+    return list;
+  }, [shsPrograms, collegePrograms, allPrograms, currentMode, selectedYears, activeSections]);
+
+  // Real-time calculation of actual eligible student reach from database
+  const calculatedReach = useMemo(() => {
+    if (!allStudentsData || allStudentsData.length === 0) return 0;
+    return allStudentsData.filter((s) => {
+      // 1. Only Active students
+      const sStatus = (s.status || 'ACTIVE').toUpperCase();
+      if (
+        (s as any).archived ||
+        sStatus === 'INACTIVE' ||
+        sStatus === 'ARCHIVED' ||
+        sStatus === 'RETURNED' ||
+        sStatus === 'DROPPED'
+      ) {
+        return false;
+      }
+
+      // Level 1: All Students (Campus-Wide)
+      if (targetAudience.allStudents || currentMode === 'all') {
+        return true;
+      }
+
+      // Level 2: Academic Division
+      const isShs = ((): boolean => {
+        const y = String(s.yearLevel || '').toUpperCase();
+        const c = String(s.courseCode || '').toUpperCase();
+        const lvl = String(s.academicLevel || '').toUpperCase();
+        if (lvl === 'SHS') return true;
+        if (lvl === 'COLLEGE') return false;
+        if (
+          y.includes('11') ||
+          y.includes('12') ||
+          y.includes('GRADE 11') ||
+          y.includes('GRADE 12') ||
+          y.includes('G11') ||
+          y.includes('G12')
+        )
+          return true;
+        if (
+          c.includes('SHS') ||
+          c.includes('STEM') ||
+          c.includes('ABM') ||
+          c.includes('HUMSS') ||
+          c.includes('GAS') ||
+          c.includes('TVL')
+        )
+          return true;
+        return false;
+      })();
+
+      const levels = targetAudience.academicLevels || [];
+      if (levels.length === 1) {
+        if (levels[0] === 'SHS' && !isShs) return false;
+        if (levels[0] === 'College' && isShs) return false;
+      }
+
+      // Level 3: Year Levels (if empty -> wildcard)
+      const targetYears = (targetAudience.yearLevels || []).map(String).filter(Boolean);
+      if (targetYears.length > 0) {
+        const sYear = String(s.yearLevel || '').trim().toLowerCase();
+        const sYearDigits = sYear.replace(/\D/g, '');
+        const matchesYear = targetYears.some((tYear) => {
+          const t = tYear.trim().toLowerCase();
+          if (t === sYear) return true;
+          const tDigits = t.replace(/\D/g, '');
+          if (sYearDigits && tDigits && sYearDigits === tDigits) return true;
+          if ((t.includes('11') || t.includes('g11')) && (sYear.includes('11') || sYear.includes('g11'))) return true;
+          if ((t.includes('12') || t.includes('g12')) && (sYear.includes('12') || sYear.includes('g12'))) return true;
+          if (t.includes('1st') && (sYear.includes('1st') || sYear === '1')) return true;
+          if (t.includes('2nd') && (sYear.includes('2nd') || sYear === '2')) return true;
+          if (t.includes('3rd') && (sYear.includes('3rd') || sYear === '3')) return true;
+          if (t.includes('4th') && (sYear.includes('4th') || sYear === '4')) return true;
+          return false;
+        });
+        if (!matchesYear) return false;
+      }
+
+      // Level 4: Courses / Strands (if empty -> wildcard)
+      const targetCourseCodesList = (targetAudience.courseCodes || []).map(String).filter(Boolean);
+      const targetCourseIdsList = (targetAudience.courses || []).map(String).filter(Boolean);
+      if (targetCourseCodesList.length > 0 || targetCourseIdsList.length > 0) {
+        const sCourseId = String(s.courseId || '').trim().toLowerCase();
+        const sCourseCode = String(s.courseCode || '').trim().toLowerCase();
+        const sCourseName = String(s.courseName || '').trim().toLowerCase();
+
+        const matchesCourse =
+          targetCourseCodesList.some((c) => {
+            const tc = c.trim().toLowerCase();
+            return (
+              tc === sCourseCode ||
+              tc === sCourseId ||
+              tc === sCourseName ||
+              (sCourseCode && tc.includes(sCourseCode)) ||
+              (sCourseName && (tc.includes(sCourseName) || sCourseName.includes(tc)))
+            );
+          }) || targetCourseIdsList.some((id) => id.toLowerCase() === sCourseId);
+
+        if (!matchesCourse) return false;
+      }
+
+      // Level 5: Sections (if empty -> wildcard)
+      const targetSectionsList = (targetAudience.sections || []).map(String).filter(Boolean);
+      if (targetSectionsList.length > 0) {
+        const sSec = String(s.section || '').trim().toLowerCase();
+        const sSecClean = sSec.replace(/[^a-z0-9]/g, '');
+        const matchesSection = targetSectionsList.some((tSec) => {
+          const ts = tSec.trim().toLowerCase();
+          if (ts === sSec) return true;
+          const tsClean = ts.replace(/[^a-z0-9]/g, '');
+          if (sSecClean && tsClean && sSecClean === tsClean) return true;
+          return sSec.includes(ts) || ts.includes(sSec);
+        });
+        if (!matchesSection) return false;
+      }
+
+      return true;
+    }).length;
+  }, [allStudentsData, targetAudience, currentMode]);
 
   // Dynamic filter for visible sections based on active mode, selected courses, selected years, and search
   const visibleSections = useMemo(() => {
@@ -235,6 +397,16 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
       }
     }
 
+    // If College level is involved and no specific department captured, include all college departments
+    if (academicLevels.includes('College') && deptIds.size === 0) {
+      activeDepartments.forEach((d) => {
+        if (d.code?.toUpperCase() !== 'SHS' && !(d as any).academicLevel?.includes('SHS')) {
+          deptIds.add(d.id);
+          deptNames.add(d.name || d.code);
+        }
+      });
+    }
+
     return {
       departmentIds: Array.from(deptIds),
       departments: Array.from(deptNames),
@@ -249,18 +421,17 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           allStudents: true,
           academicLevels: ['College', 'SHS'],
           departmentIds: activeDepartments.map((d) => d.id),
-          departments: activeDepartments.map((d) => d.name || d.code),
-          courses: allPrograms.map((p) => p.id),
-          courseCodes: allCourseCodes,
-          sections: activeSections.map((s) => s.name),
-          yearLevels: allYearLevels,
+          departments: ['All Academic Departments'],
+          courses: [],
+          courseCodes: [],
+          sections: [],
+          yearLevels: [],
         },
       });
       return;
     }
 
     if (newMode === 'shs') {
-      const shsSections = activeSections.filter(isShsSection);
       const shsDeptIds = new Set<string>();
       const shsDeptNames = new Set<string>();
 
@@ -289,17 +460,16 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           academicLevels: ['SHS'],
           departmentIds: Array.from(shsDeptIds),
           departments: Array.from(shsDeptNames).length > 0 ? Array.from(shsDeptNames) : ['Senior High School'],
-          courses: shsPrograms.map((c) => c.id),
-          courseCodes: shsCourseCodes,
-          sections: shsSections.map((s) => s.name),
-          yearLevels: shsYearLevels,
+          courses: [],
+          courseCodes: [],
+          sections: [],
+          yearLevels: [],
         },
       });
       return;
     }
 
     if (newMode === 'college') {
-      const collegeSections = activeSections.filter((s) => !isShsSection(s));
       const collegeDeptIds = new Set<string>();
       const collegeDeptNames = new Set<string>();
 
@@ -318,10 +488,10 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           academicLevels: ['College'],
           departmentIds: Array.from(collegeDeptIds),
           departments: Array.from(collegeDeptNames),
-          courses: collegePrograms.map((c) => c.id),
-          courseCodes: collegeCourseCodes,
-          sections: collegeSections.map((s) => s.name),
-          yearLevels: collegeYearLevels,
+          courses: [],
+          courseCodes: [],
+          sections: [],
+          yearLevels: [],
         },
       });
       return;
@@ -485,23 +655,37 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
   const [targetMarketInput, setTargetMarketInput] = useState('');
 
   const targetMarkets: string[] = useMemo(() => {
-    if (targetAudience.allStudents) {
+    if (targetAudience.allStudents || currentMode === 'all') {
       return ['All Students (Campus-Wide)'];
     }
     const list: string[] = [];
+    if (
+      currentMode === 'shs' &&
+      (!targetAudience.yearLevels || targetAudience.yearLevels.length === 0) &&
+      (!targetAudience.courseCodes || targetAudience.courseCodes.length === 0) &&
+      (!targetAudience.sections || targetAudience.sections.length === 0)
+    ) {
+      list.push('All Senior High Students');
+    } else if (
+      currentMode === 'college' &&
+      (!targetAudience.yearLevels || targetAudience.yearLevels.length === 0) &&
+      (!targetAudience.courseCodes || targetAudience.courseCodes.length === 0) &&
+      (!targetAudience.sections || targetAudience.sections.length === 0)
+    ) {
+      list.push('All College Students');
+    }
+
+    if (targetAudience.yearLevels && targetAudience.yearLevels.length > 0) {
+      targetAudience.yearLevels.forEach((y) => list.push(String(y)));
+    }
     if (targetAudience.courseCodes && targetAudience.courseCodes.length > 0) {
-      list.push(...targetAudience.courseCodes);
+      targetAudience.courseCodes.forEach((c) => list.push(c));
     }
     if (targetAudience.sections && targetAudience.sections.length > 0) {
-      list.push(...targetAudience.sections);
-    }
-    if (targetAudience.departments && targetAudience.departments.length > 0) {
-      targetAudience.departments.forEach((d) => {
-        if (!list.includes(d)) list.push(d);
-      });
+      targetAudience.sections.forEach((s) => list.push(s));
     }
     return list;
-  }, [targetAudience]);
+  }, [targetAudience, currentMode]);
 
   const handleAddTargetMarket = (val: string) => {
     const trimmed = val.trim();
@@ -807,12 +991,17 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Layers className="w-4 h-4 text-[#0E4EBD]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-                    Target Year Levels (
-                    {selectedYears.length === 0
-                      ? 'All Levels'
-                      : `${selectedYears.length} of ${currentAvailableYearLevels.length} Selected`}
-                    )
+                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                    <span>Target Year Levels</span>
+                    {selectedYears.length === 0 ? (
+                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        All Year Levels (Default)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                        {selectedYears.length} of {currentAvailableYearLevels.length} Selected
+                      </span>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
@@ -861,18 +1050,26 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <BookOpen className="w-4 h-4 text-[#001A4D]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-                    {currentMode === 'shs'
-                      ? 'Senior High School Tracks & Strands'
-                      : currentMode === 'college'
-                      ? 'College Academic Programs'
-                      : 'All Academic Programs & Strands'}
+                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                    <span>
+                      {currentMode === 'shs'
+                        ? 'Senior High School Tracks & Strands'
+                        : currentMode === 'college'
+                        ? 'College Academic Programs'
+                        : 'All Academic Programs & Strands'}
+                    </span>
+                    {selectedCourseCodes.length === 0 ? (
+                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        All Strands / Programs (Default)
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                        {selectedCourseCodes.length} of {visibleCourses.length} Selected
+                      </span>
+                    )}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-gray-500 mr-1">
-                    {selectedCourseCodes.length} of {visibleCourses.length} Selected
-                  </span>
                   <button
                     type="button"
                     onClick={selectAllPrograms}
@@ -919,15 +1116,23 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <Layers className="w-4 h-4 text-[#001A4D]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-                    {currentMode === 'shs'
-                      ? 'Senior High School Sections'
-                      : currentMode === 'college'
-                      ? 'College Sections'
-                      : 'Academic Sections'}
-                  </span>
-                  <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                    {selectedSections.length} Selected
+                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                    <span>
+                      {currentMode === 'shs'
+                        ? 'Senior High School Sections'
+                        : currentMode === 'college'
+                        ? 'College Sections'
+                        : 'Academic Sections'}
+                    </span>
+                    {selectedSections.length === 0 ? (
+                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        All Sections (Default)
+                      </span>
+                    ) : (
+                      <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                        {selectedSections.length} Selected
+                      </span>
+                    )}
                   </span>
                 </div>
 
@@ -1059,6 +1264,77 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           <span className="text-[11px] text-gray-400">
             Preview: <strong className="text-gray-700">{formData.estimatedAttendance || '—'}</strong>
           </span>
+        </div>
+
+        {/* Calculated Actual Eligible Student Reach Card */}
+        <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 to-indigo-50/70 border border-blue-200/80 shadow-2xs space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs">
+                <Users className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                    Actual Eligible Reach
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-200/60 text-[#001A4D]">
+                    Live DB
+                  </span>
+                </div>
+                <div className="text-base sm:text-lg font-black text-[#001A4D]">
+                  {calculatedReach.toLocaleString()} <span className="text-xs font-semibold text-gray-500">eligible students enrolled</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Turnout Presets */}
+            {calculatedReach > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-[11px] font-medium text-gray-500 mr-1">Quick Presets:</span>
+                {[
+                  { label: '25%', ratio: 0.25 },
+                  { label: '50%', ratio: 0.5 },
+                  { label: '75%', ratio: 0.75 },
+                  { label: '100%', ratio: 1.0 },
+                ].map((preset) => {
+                  const estCount = Math.max(1, Math.round(calculatedReach * preset.ratio));
+                  return (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setAttendanceCount(estCount);
+                        updateAttendance(estCount, attendanceQualifier);
+                      }}
+                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-[#001A4D] border border-blue-200 hover:bg-[#001A4D] hover:text-[#FFD41C] hover:border-[#001A4D] transition-all shadow-2xs cursor-pointer"
+                      title={`Set estimated attendance to ${estCount} (${preset.label} of eligible pool)`}
+                    >
+                      {preset.label} (~{estCount})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Turnout Percentage and Validation Hint */}
+          {Number(attendanceCount) > 0 && calculatedReach > 0 && (
+            <div className="pt-2 border-t border-blue-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+              <span className="text-gray-600 font-medium">
+                Turnout projection: <strong className="text-[#001A4D]">{attendanceCount}</strong> of <strong className="text-[#001A4D]">{calculatedReach}</strong> eligible students (
+                <strong className={Number(attendanceCount) > calculatedReach ? 'text-amber-600 font-bold' : 'text-emerald-700 font-bold'}>
+                  {Math.round((Number(attendanceCount) / calculatedReach) * 100)}%
+                </strong> turnout rate)
+              </span>
+              {Number(attendanceCount) > calculatedReach && (
+                <span className="text-amber-700 font-medium text-[11px] flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  Count exceeds student pool (make sure qualifier includes external/guest attendees)
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">

@@ -19,6 +19,68 @@ export interface ProposalWithdrawalCheck {
   reason?: string;
 }
 
+export interface ProposalEditCheck {
+  canEdit: boolean;
+  reason?: string;
+  isOwner?: boolean;
+}
+
+/**
+ * Determines whether a proposal or event was authored/submitted by a student organization / officer.
+ */
+export function isOfficerProposal(event?: Partial<EventDocument> | any | null): boolean {
+  if (!event) return false;
+
+  // 1. Explicit boolean flag
+  if (event.isOfficerProposal === true) return true;
+  if (event.isOfficerProposal === false) return false;
+
+  // 2. Creator role
+  const role = (event.creatorRole || event.createdByRole || '').toLowerCase().trim();
+  if (role === 'officer' || role === 'student_officer') return true;
+  if (role === 'admin' || role === 'sas_admin' || role === 'sao_admin' || role === 'sas') return false;
+
+  // 3. Explicit SAS direct flag
+  if (event.isSasDirect === true || event.isDirectPublished === true) return false;
+
+  // 4. Hosting organization ID or organizationId
+  const orgId = (event.organizationId || event.hostingOrgId || event.orgId || '').toLowerCase().trim();
+  const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sti', 'sti_college', 'institutional'];
+  if (orgId && !SAS_ORGS.includes(orgId)) {
+    return true; // Belongs to a student organization (e.g. 'jpcs', 'ssc', 'org_123')
+  }
+  if (orgId && SAS_ORGS.includes(orgId)) {
+    return false; // Belongs to institutional SAS
+  }
+
+  // 5. Reference number / ID prefix check (e.g. AP-2026-SAS-001 vs AP-2026-JPCS-001 or AP-2026-ORG-001)
+  const ref = (event.referenceId || event.referenceNo || '').toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) return false;
+  if (ref.includes('-ORG-') || (ref.startsWith('AP-') && !ref.includes('-SAS-'))) return true;
+
+  // 6. Creator email or name fallback
+  const email = (event.createdByEmail || '').toLowerCase().trim();
+  if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) return false;
+
+  const createdByName = (event.createdByName || '').toLowerCase().trim();
+  if (createdByName.includes('student affairs & services') || createdByName === 'sao admin' || createdByName === 'sas admin') return false;
+
+  // 7. Organizers check
+  const organizers = Array.isArray(event.organizers) ? event.organizers : [];
+  if (organizers.some((o: string) => typeof o === 'string' && o.toLowerCase().includes('student affairs & services'))) {
+    return false;
+  }
+
+  return false;
+}
+
+/**
+ * Determines whether a proposal or event was authored/submitted by SAS / SAO administration.
+ */
+export function isInstitutionalProposal(event?: Partial<EventDocument> | any | null): boolean {
+  return !isOfficerProposal(event);
+}
+
 /**
  * List of major event fields that cannot be changed directly once an event is approved.
  * Modifying these after approval alters student commitments, fees, venues, or financial approvals.
@@ -93,7 +155,9 @@ export function isEventArchived(event?: Partial<EventDocument> | null): boolean 
  */
 export function isEventEditable(
   event?: Partial<EventDocument> | null,
-  userRole: 'admin' | 'officer' | string = 'officer'
+  userRole: 'admin' | 'officer' | string = 'officer',
+  userId?: string,
+  userOrgId?: string
 ): EventEditabilityCheck {
   if (!event) {
     return {
@@ -126,7 +190,35 @@ export function isEventEditable(
     };
   }
 
-  // 3. Drafts are always fully editable
+  // Ownership Guard:
+  // Admin cannot edit Student Org proposals. Officers cannot edit SAS institutional events.
+  const officerProp = isOfficerProposal(event);
+  if (userRole === 'admin' && officerProp) {
+    return {
+      editable: false,
+      lockLevel: 'locked',
+      reason: 'Student organization proposals can only be edited by the proponent organization.',
+      allowedFieldTypes: 'none',
+    };
+  }
+  if (userRole === 'officer' && !officerProp) {
+    return {
+      editable: false,
+      lockLevel: 'locked',
+      reason: 'Institutional SAS events cannot be edited by student officers.',
+      allowedFieldTypes: 'none',
+    };
+  }
+  if (userRole === 'officer' && userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+    return {
+      editable: false,
+      lockLevel: 'locked',
+      reason: "Officers can only edit their own organization's proposals.",
+      allowedFieldTypes: 'none',
+    };
+  }
+
+  // 3. Drafts are always fully editable by their owner
   const isDraft = event.proposalStatus === 'draft' || event.status === 'draft' || !event.proposalStatus;
   if (isDraft) {
     return {
@@ -537,13 +629,7 @@ export function canCancelEvent(
 
   if (userRole === 'officer') {
     // Institutional SAO events cannot be cancelled by officers
-    const isInstitutional =
-      !event.hostingOrgId ||
-      event.hostingOrgId.toLowerCase() === 'sas' ||
-      event.hostingOrgId.toLowerCase() === 'sas_admin' ||
-      event.hostingOrgId.toLowerCase() === 'sao' ||
-      event.hostingOrgId.toLowerCase() === 'sao_admin' ||
-      event.isOfficerProposal === false;
+    const isInstitutional = isInstitutionalProposal(event);
 
     if (isInstitutional) {
       return {
@@ -566,12 +652,13 @@ export function canCancelEvent(
 }
 
 /**
- * Checks whether an officer can withdraw a submitted proposal back to 'draft' state.
+ * Checks whether an officer or admin can withdraw a submitted proposal back to 'draft' state.
  */
 export function canWithdrawProposal(
   event?: Partial<EventDocument> | null,
   userRole: 'admin' | 'officer' | string = 'officer',
-  userId?: string
+  userId?: string,
+  userOrgId?: string
 ): ProposalWithdrawalCheck {
   if (!event) {
     return { canWithdraw: false, reason: 'Event not found.' };
@@ -581,18 +668,107 @@ export function canWithdrawProposal(
   if (status !== 'pending_review' && status !== 'pending') {
     return {
       canWithdraw: false,
-      reason: 'Only proposals currently in pending review can be withdrawn.',
+      reason: 'Only proposals currently under review can be withdrawn.',
     };
   }
 
-  if (event.hostingOrgId === 'sas') {
+  const officerProp = isOfficerProposal(event);
+
+  // Creator-only withdrawal rule:
+  // Admin can ONLY withdraw proposals authored/managed by SAS, NEVER student organization proposals.
+  if (userRole === 'admin') {
+    if (officerProp) {
+      return {
+        canWithdraw: false,
+        reason: 'Administrators cannot withdraw student organization proposals. Only the creating organization / owner can withdraw their proposal.',
+      };
+    }
+    return { canWithdraw: true };
+  }
+
+  // Officers can ONLY withdraw their own organization proposals, NEVER institutional SAS proposals.
+  if (userRole === 'officer') {
+    if (!officerProp) {
+      return {
+        canWithdraw: false,
+        reason: 'Institutional SAS events cannot be withdrawn by student officers.',
+      };
+    }
+
+    if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+      return {
+        canWithdraw: false,
+        reason: "Officers can only withdraw their own organization's proposals.",
+      };
+    }
+
+    return { canWithdraw: true };
+  }
+
+  return { canWithdraw: false, reason: 'Unauthorized to withdraw this proposal.' };
+}
+
+/**
+ * Checks whether a user has authority to edit/revise a proposal.
+ * Rule: Only the owner (proponent organization that created the proposal)
+ * has the ability to edit or revise their proposal when in draft or returned status.
+ * Administrators CANNOT edit student organization proposals.
+ */
+export function canEditProposal(
+  event?: Partial<EventDocument> | null,
+  userRole: 'admin' | 'officer' | string = 'officer',
+  userId?: string,
+  userOrgId?: string
+): ProposalEditCheck {
+  if (!event) {
+    return { canEdit: false, reason: 'Proposal not found.' };
+  }
+
+  const status = (event.proposalStatus || (event as any).status || 'draft').toLowerCase();
+  const isReturned = status === 'returned';
+  const isDraft = status === 'draft';
+
+  if (!isDraft && !isReturned) {
     return {
-      canWithdraw: false,
-      reason: 'Institutional SAO events cannot be withdrawn.',
+      canEdit: false,
+      reason: `Proposals in "${status}" state cannot be revised.`,
     };
   }
 
-  return { canWithdraw: true };
+  const officerProp = isOfficerProposal(event);
+
+  if (userRole === 'admin') {
+    if (officerProp) {
+      return {
+        canEdit: false,
+        isOwner: false,
+        reason: 'Administrators cannot edit student organization proposals. Only the submitting organization has the ability to revise and resubmit.',
+      };
+    }
+    return { canEdit: true, isOwner: true };
+  }
+
+  if (userRole === 'officer') {
+    if (!officerProp) {
+      return {
+        canEdit: false,
+        isOwner: false,
+        reason: 'Student officers cannot edit institutional SAS proposals.',
+      };
+    }
+
+    if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+      return {
+        canEdit: false,
+        isOwner: false,
+        reason: "You can only edit proposals submitted by your organization.",
+      };
+    }
+
+    return { canEdit: true, isOwner: true };
+  }
+
+  return { canEdit: false, reason: 'Unauthorized to edit this proposal.' };
 }
 
 /**

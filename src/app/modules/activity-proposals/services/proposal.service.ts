@@ -116,94 +116,116 @@ export async function syncProposalToEventsCollection(
         ? 'pending_review'
         : mappedStatus;
 
-    const eventPayload: Record<string, any> = {
-      id: proposal.id,
-      referenceId: proposal.referenceNo || `AP-${currentYear}-SAS-001`,
-      title: proposal.title || 'Untitled Activity',
-      tagline: (proposal as any).tagline || existingData.tagline || null,
-      description: proposal.description || '',
-      objectives: proposal.objectives || [],
-      bannerImageUrl:
-        (proposal as any).bannerImageUrl !== undefined
-          ? (proposal as any).bannerImageUrl
-          : existingData.bannerImageUrl || null,
-      budgetCustodians:
-        (proposal as any).budgetCustodians || existingData.budgetCustodians || [],
-      totalAllocatedBudget:
-        (proposal as any).totalAllocatedBudget ?? existingData.totalAllocatedBudget ?? 0,
-      scannerPinCode: (proposal as any).scannerPinCode || existingData.scannerPinCode || null,
-      scannerUserIds: (proposal as any).scannerUserIds || existingData.scannerUserIds || [],
-      isVisible:
-        (proposal as any).isVisible !== undefined
-          ? Boolean((proposal as any).isVisible)
-          : existingData.isVisible !== undefined
-          ? Boolean(existingData.isVisible)
-          : false,
-      visibleToStudents:
-        (proposal as any).visibleToStudents !== undefined
-          ? Boolean((proposal as any).visibleToStudents)
-          : existingData.visibleToStudents !== undefined
-          ? Boolean(existingData.visibleToStudents)
-          : false,
-      isPublished:
-        (proposal as any).isPublished !== undefined
-          ? Boolean((proposal as any).isPublished)
-          : existingData.isPublished !== undefined
-          ? Boolean(existingData.isPublished)
-          : false,
-      visibilityStart: (proposal as any).visibilityStart || existingData.visibilityStart || null,
-      eventTypeId: 'activity',
-      customEventTypeName: 'Activity Proposal (Form AP-01)',
-      eventCategoryId: 'campus_activity',
-      customEventCategoryName: 'Official Campus Activity',
-      hostingOrgId:
+      const isOfficerProposalVal =
+        (proposal as any).isOfficerProposal !== undefined
+          ? Boolean((proposal as any).isOfficerProposal)
+          : existingData.isOfficerProposal !== undefined
+          ? Boolean(existingData.isOfficerProposal)
+          : proposal.creatorRole === 'officer' || proposal.creatorRole === 'student_officer';
+
+      const resolvedOrgId =
         (proposal as any).hostingOrgId ||
         (proposal as any).organizationId ||
         existingData.hostingOrgId ||
-        (proposal.creatorRole === 'officer' ? (proposal as any).orgId || 'student_org' : 'sao_admin'),
-      semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
-      schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
-      targetAcademicLevel,
-      targetCourses: proposal.targetAudience?.courseCodes || depts,
-      targetYearLevels: (proposal.targetAudience?.yearLevels || []).map(String),
-      targetAudience: proposal.targetAudience || null,
-      targetSections: proposal.targetAudience?.sections || [],
-      date: proposal.date || existingData.date || '',
-      startTime: proposal.startTime || existingData.startTime || '08:00',
-      endTime: proposal.endTime || existingData.endTime || '12:00',
-      venueName: proposal.venueName || existingData.venueName || 'STI Campus',
-      venueId: proposal.venueId || existingData.venueId || 'campus_venue',
-      customVenueName: proposal.venueName || existingData.customVenueName || 'STI Campus',
-      sessions,
-      eventFormat: 'On-Campus',
-      expectedParticipantCount: (proposal.targetAudience as any)?.estimatedAttendance || 100,
-      budgetItems,
-      totalApprovedBudget: totalBudget,
-      status,
-      lifecycleStatus,
-      proposalStatus: mappedStatus,
-      isActivityProposal: true,
-      proposalId: proposal.id,
-      proponents: (proposal as any).proponents || existingData.proponents || [],
-      organizers: (proposal as any).organizers || existingData.organizers || [],
-      successIndicators: (proposal as any).successIndicators || existingData.successIndicators || [],
-      mechanics: (proposal as any).mechanics || existingData.mechanics || [],
-      materials: (proposal as any).materials || existingData.materials || [],
-      tasks: (proposal as any).tasks || existingData.tasks || [],
-      marketingPlan: (proposal as any).marketingPlan || existingData.marketingPlan || [],
-      documentationPlan: (proposal as any).documentationPlan || existingData.documentationPlan || [],
-      financialProjections: (proposal as any).financialProjections || existingData.financialProjections || null,
-      approvalChain: (proposal as any).approvalChain || existingData.approvalChain || [],
-      currentStepIndex: (proposal as any).currentStepIndex ?? existingData.currentStepIndex ?? 0,
-      currentStageIndex: (proposal as any).currentStageIndex ?? existingData.currentStageIndex ?? 1,
-      submissionDate: (proposal as any).submissionDate || existingData.submissionDate || null,
-      createdBy: proposal.createdByUid || 'creator',
-      createdByName: proposal.createdByName || '',
-      createdByEmail: proposal.createdByEmail || '',
-      creatorRole: proposal.creatorRole || 'sas_admin',
-      updatedAt: serverTimestamp(),
-      ...extraUpdates,
-    };
+        existingData.organizationId ||
+        (isOfficerProposalVal ? (proposal as any).orgId || 'student_org' : 'sas');
+
+      const resolvedCreatorRole =
+        proposal.creatorRole ||
+        existingData.creatorRole ||
+        (isOfficerProposalVal ? 'officer' : 'sas_admin');
+
+      const eventPayload: Record<string, any> = {
+        id: proposal.id,
+        referenceId: proposal.referenceNo || `AP-${currentYear}-SAS-001`,
+        title: proposal.title || 'Untitled Activity',
+        tagline: (proposal as any).tagline || existingData.tagline || null,
+        description: proposal.description || '',
+        objectives: proposal.objectives || [],
+        bannerImageUrl:
+          (proposal as any).bannerImageUrl !== undefined
+            ? (proposal as any).bannerImageUrl
+            : existingData.bannerImageUrl || null,
+        budgetCustodians:
+          (proposal as any).budgetCustodians || existingData.budgetCustodians || [],
+        totalAllocatedBudget:
+          (proposal as any).totalAllocatedBudget ?? existingData.totalAllocatedBudget ?? 0,
+        scannerPinCode: (proposal as any).scannerPinCode || existingData.scannerPinCode || null,
+        scannerUserIds: (proposal as any).scannerUserIds || existingData.scannerUserIds || [],
+        isVisible:
+          (proposal as any).isVisible !== undefined
+            ? Boolean((proposal as any).isVisible)
+            : existingData.isVisible !== undefined
+            ? Boolean(existingData.isVisible)
+            : false,
+        visibleToStudents:
+          (proposal as any).visibleToStudents !== undefined
+            ? Boolean((proposal as any).visibleToStudents)
+            : existingData.visibleToStudents !== undefined
+            ? Boolean(existingData.visibleToStudents)
+            : false,
+        isPublished:
+          (proposal as any).isPublished !== undefined
+            ? Boolean((proposal as any).isPublished)
+            : existingData.isPublished !== undefined
+            ? Boolean(existingData.isPublished)
+            : false,
+        visibilityStart: (proposal as any).visibilityStart || existingData.visibilityStart || null,
+        eventTypeId: 'activity',
+        customEventTypeName: 'Activity Proposal (Form AP-01)',
+        eventCategoryId: 'campus_activity',
+        customEventCategoryName: 'Official Campus Activity',
+        isOfficerProposal: isOfficerProposalVal,
+        hostingOrgId: resolvedOrgId,
+        organizationId: (proposal as any).organizationId || existingData.organizationId || resolvedOrgId,
+        semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
+        schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
+        targetAcademicLevel,
+        allStudents:
+          proposal.targetAudience?.allStudents === true ||
+          proposal.targetAudience?.scope === 'all' ||
+          (targetAcademicLevel === 'BOTH' && (proposal.targetAudience?.courseCodes || []).length === 0),
+        targetAudienceScope: proposal.targetAudience?.scope || (proposal.targetAudience?.allStudents ? 'all' : 'specific'),
+        targetCourses: proposal.targetAudience?.courseCodes || [],
+        targetYearLevels: (proposal.targetAudience?.yearLevels || []).map(String),
+        targetAudience: proposal.targetAudience || null,
+        targetSections: proposal.targetAudience?.sections || [],
+        date: proposal.date || existingData.date || '',
+        startTime: proposal.startTime || existingData.startTime || '08:00',
+        endTime: proposal.endTime || existingData.endTime || '12:00',
+        venueName: proposal.venueName || existingData.venueName || 'STI Campus',
+        venueId: proposal.venueId || existingData.venueId || 'campus_venue',
+        customVenueName: proposal.venueName || existingData.customVenueName || 'STI Campus',
+        sessions,
+        eventFormat: 'On-Campus',
+        expectedParticipantCount: (proposal.targetAudience as any)?.estimatedAttendance || 100,
+        budgetItems,
+        totalApprovedBudget: totalBudget,
+        status,
+        lifecycleStatus,
+        proposalStatus: mappedStatus,
+        isActivityProposal: true,
+        proposalId: proposal.id,
+        proponents: (proposal as any).proponents || existingData.proponents || [],
+        organizers: (proposal as any).organizers || existingData.organizers || [],
+        successIndicators: (proposal as any).successIndicators || existingData.successIndicators || [],
+        mechanics: (proposal as any).mechanics || existingData.mechanics || [],
+        materials: (proposal as any).materials || existingData.materials || [],
+        tasks: (proposal as any).tasks || existingData.tasks || [],
+        marketingPlan: (proposal as any).marketingPlan || existingData.marketingPlan || [],
+        documentationPlan: (proposal as any).documentationPlan || existingData.documentationPlan || [],
+        financialProjections: (proposal as any).financialProjections || existingData.financialProjections || null,
+        approvalChain: (proposal as any).approvalChain || existingData.approvalChain || [],
+        currentStepIndex: (proposal as any).currentStepIndex ?? existingData.currentStepIndex ?? 0,
+        currentStageIndex: (proposal as any).currentStageIndex ?? existingData.currentStageIndex ?? 1,
+        submissionDate: (proposal as any).submissionDate || existingData.submissionDate || null,
+        createdBy: proposal.createdByUid || 'creator',
+        createdByName: proposal.createdByName || '',
+        createdByEmail: proposal.createdByEmail || '',
+        creatorRole: resolvedCreatorRole,
+        updatedAt: serverTimestamp(),
+        ...extraUpdates,
+      };
 
     if (!existingSnap.exists()) {
       eventPayload.createdAt = (proposal as any).createdAt || serverTimestamp();
@@ -249,15 +271,21 @@ export async function generateProposalReferenceNumber(prefix = 'SAS'): Promise<s
  */
 export async function saveProposalDraft(
   formData: ProposalFormData,
-  user: { uid: string; name: string; email: string; role?: string },
+  user: { uid: string; name: string; email: string; role?: string; organizationId?: string },
   existingId?: string
 ): Promise<{ success: boolean; id: string; referenceNo: string }> {
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
+  const isOfficer =
+    formData.isOfficerProposal === true ||
+    user.role === 'officer' ||
+    formData.creatorRole === 'officer' ||
+    formData.creatorRole === 'student_officer';
+
   const referenceNo =
     formData.referenceNo ||
-    (await generateProposalReferenceNumber(user.role === 'officer' ? 'ORG' : 'SAS'));
+    (await generateProposalReferenceNumber(isOfficer ? 'ORG' : 'SAS'));
 
   const payload: any = {
     ...formData,
@@ -268,7 +296,10 @@ export async function saveProposalDraft(
     createdByUid: formData.createdByUid || user.uid,
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
-    creatorRole: formData.creatorRole || (user.role as any) || 'sas_admin',
+    creatorRole: formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin'),
+    isOfficerProposal: formData.isOfficerProposal !== undefined ? formData.isOfficerProposal : isOfficer,
+    organizationId: formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || (isOfficer ? 'student_org' : 'sas'),
+    hostingOrgId: formData.hostingOrgId || formData.organizationId || (user as any).organizationId || (isOfficer ? 'student_org' : 'sas'),
     updatedAt: serverTimestamp(),
   };
 
@@ -293,37 +324,65 @@ export async function saveProposalDraft(
  */
 export async function submitProposalForReview(
   formData: ProposalFormData,
-  user: { uid: string; name: string; email: string; role?: string },
+  user: { uid: string; name: string; email: string; role?: string; organizationId?: string },
   existingId?: string
 ): Promise<{ success: boolean; id: string; referenceNo: string }> {
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
+  const isOfficer =
+    formData.isOfficerProposal === true ||
+    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'officer' ||
+    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'student_officer';
+
+  const isSasAdmin = !isOfficer && ['sas_admin', 'admin', 'sao_admin', 'sas'].includes(
+    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim()
+  );
+
   const referenceNo =
     formData.referenceNo ||
-    (await generateProposalReferenceNumber(user.role === 'officer' ? 'ORG' : 'SAS'));
+    (await generateProposalReferenceNumber(isOfficer ? 'ORG' : 'SAS'));
+
+  const isResubmission =
+    formData.status === 'returned' ||
+    (formData as any).proposalStatus === 'returned' ||
+    (formData as any).isReturned === true ||
+    Boolean((formData as any).stepRevisionRemarks && Object.keys((formData as any).stepRevisionRemarks).length > 0) ||
+    Boolean((formData as any).returnFlags && (formData as any).returnFlags.length > 0);
+
+  let currentVersion = Number((formData as any).version || 1);
+  if (isResubmission) {
+    currentVersion += 1;
+  }
 
   // Initialize or reset approval chain statuses for multi-stage execution
   const chain = [...(formData.approvalChain || [])];
   const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
   if (hasStages) {
     chain.forEach((step, idx) => {
+      const cleanStep: any = { ...step };
+      if (isResubmission) {
+        delete cleanStep.signatureUrl;
+        delete cleanStep.signedAt;
+        delete cleanStep.remarks;
+      }
       if ((step.stageIndex ?? 1) === 1) {
-        chain[idx] = { ...step, status: 'current' };
+        chain[idx] = { ...cleanStep, status: 'current' };
       } else {
-        chain[idx] = { ...step, status: 'waiting' };
+        chain[idx] = { ...cleanStep, status: 'waiting' };
       }
     });
   } else if (chain.length > 0) {
-    chain[0] = { ...chain[0], status: 'current' };
-    for (let i = 1; i < chain.length; i++) {
-      chain[i] = { ...chain[i], status: 'waiting' };
-    }
+    chain.forEach((step, idx) => {
+      const cleanStep: any = { ...step };
+      if (isResubmission) {
+        delete cleanStep.signatureUrl;
+        delete cleanStep.signedAt;
+        delete cleanStep.remarks;
+      }
+      chain[idx] = { ...cleanStep, status: idx === 0 ? 'current' : 'waiting' };
+    });
   }
-
-  const isSasAdmin = ['sas_admin', 'admin', 'sao_admin', 'sas'].includes(
-    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim()
-  );
 
   const payload: any = {
     ...formData,
@@ -332,11 +391,15 @@ export async function submitProposalForReview(
     status: 'under_review' as ProposalStatus,
     proposalStatus: 'pending',
     lifecycleStatus: 'pending_review',
-    isOfficerProposal: !isSasAdmin,
-    isSasDirect: false,
+    isOfficerProposal: isOfficer,
+    isSasDirect: isSasAdmin,
+    organizationId: formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || (isOfficer ? 'student_org' : 'sas'),
+    hostingOrgId: formData.hostingOrgId || formData.organizationId || (user as any).organizationId || (isOfficer ? 'student_org' : 'sas'),
     approvalChain: chain,
     currentStepIndex: 0,
     currentStageIndex: 1,
+    version: currentVersion,
+    versionLabel: `v${currentVersion}.0`,
     submissionDate:
       formData.submissionDate ||
       new Intl.DateTimeFormat('en-US', {
@@ -347,26 +410,35 @@ export async function submitProposalForReview(
     createdByUid: formData.createdByUid || user.uid,
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
-    creatorRole: formData.creatorRole || (user.role as any) || (isSasAdmin ? 'sas_admin' : 'officer'),
+    creatorRole: formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin'),
     updatedAt: serverTimestamp(),
   };
 
-  const isResubmission =
-    formData.status === 'returned' ||
-    (formData as any).proposalStatus === 'returned' ||
-    Boolean((formData as any).stepRevisionRemarks);
-
   if (isResubmission) {
+    const versionSnapshot = {
+      version: currentVersion - 1,
+      versionLabel: `v${currentVersion - 1}.0`,
+      archivedAt: new Date().toISOString(),
+      approvalChainSnapshot: (formData.approvalChain || []).map((s) => ({ ...s })),
+      returnFlags: formData.returnFlags || [],
+      stepRevisionRemarks: formData.stepRevisionRemarks || {},
+      resubmittedBy: user.name,
+      resubmittedByUid: user.uid,
+    };
+
+    payload.versionHistory = arrayUnion(versionSnapshot);
     payload.stepRevisionRemarks = null;
     payload.returnFlags = [];
+    payload.isReturned = false;
+    payload.adviserRemarks = null;
     payload.proposalHistory = arrayUnion({
       id: `hist_resubmit_${Date.now()}`,
       action: 'resubmitted',
-      version: 2,
+      version: currentVersion,
       performedBy: user.uid,
       performedByName: user.name,
       performedAt: new Date().toISOString(),
-      remarks: 'Proposal revised to address step directives and resubmitted for review.',
+      remarks: `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
     });
   }
 
@@ -401,6 +473,12 @@ export async function getProposalById(id: string): Promise<ActivityProposal | nu
     const legacyEvSnap = await getDoc(doc(db, 'events', id));
     if (legacyEvSnap.exists()) {
       return { id: legacyEvSnap.id, ...legacyEvSnap.data() } as ActivityProposal;
+    }
+  } catch (e) {}
+  try {
+    const propSnap = await getDoc(doc(db, 'proposals', id));
+    if (propSnap.exists()) {
+      return { id: propSnap.id, ...propSnap.data() } as ActivityProposal;
     }
   } catch (e) {}
   return null;
@@ -683,10 +761,21 @@ export async function returnProposalForRevision(
   remarks: string
 ): Promise<{ success: boolean }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) throw new Error('Proposal not found');
+  let snap = await getDoc(docRef);
+  let data: ActivityProposal | null = snap.exists() ? (snap.data() as ActivityProposal) : null;
+  if (!data) {
+    for (const col of ['events', 'activity_proposals', 'proposals']) {
+      try {
+        const fbSnap = await getDoc(doc(db, col, proposalId));
+        if (fbSnap.exists()) {
+          data = fbSnap.data() as ActivityProposal;
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!data) throw new Error('Proposal not found');
 
-  const data = snap.data() as ActivityProposal;
   const chain = [...(data.approvalChain || [])];
   const signerUid = signatory.id || signatory.uid || '';
   const signerEmail = (signatory.email || '').toLowerCase();
@@ -731,18 +820,24 @@ export async function returnProposalForRevision(
   });
 
   const rawUpdates = {
-    status: 'returned_for_revision',
+    status: 'returned' as ProposalStatus,
+    proposalStatus: 'returned',
+    lifecycleStatus: 'returned',
+    isReturned: true,
+    returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    adviserRemarks: remarks || null,
     approvalChain: sanitizedChain,
     updatedAt: serverTimestamp(),
   };
 
-  await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
+  await setDoc(docRef, sanitizeFirestorePayload(rawUpdates), { merge: true });
 
-  // Sync to events collection as 'returned'
+  // Sync to events and activities collection as 'returned' with isReturned: true
   await syncProposalToEventsCollection(
     { ...data, approvalChain: sanitizedChain },
     'returned',
     {
+      isReturned: true,
       adviserRemarks: remarks,
       returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     }
@@ -760,20 +855,32 @@ export async function rejectProposal(
   reason: string
 ): Promise<{ success: boolean }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) throw new Error('Proposal not found');
-
-  const data = snap.data() as ActivityProposal;
+  let snap = await getDoc(docRef);
+  let data: ActivityProposal | null = snap.exists() ? (snap.data() as ActivityProposal) : null;
+  if (!data) {
+    for (const col of ['events', 'activity_proposals', 'proposals']) {
+      try {
+        const fbSnap = await getDoc(doc(db, col, proposalId));
+        if (fbSnap.exists()) {
+          data = fbSnap.data() as ActivityProposal;
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!data) throw new Error('Proposal not found');
 
   const rawUpdates = {
     status: 'rejected' as ProposalStatus,
+    proposalStatus: 'rejected',
+    lifecycleStatus: 'rejected',
     rejectionReason: reason,
     rejectedAt: serverTimestamp(),
     rejectedByName: signatory.name,
     updatedAt: serverTimestamp(),
   };
 
-  await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
+  await setDoc(docRef, sanitizeFirestorePayload(rawUpdates), { merge: true });
 
   // Sync to events collection as 'rejected'
   await syncProposalToEventsCollection(data, 'rejected', {

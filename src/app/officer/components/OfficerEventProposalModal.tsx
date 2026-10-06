@@ -233,10 +233,10 @@ export default function OfficerEventProposalModal({ isOpen, onClose, initialDraf
   const { events: allEvents } = useAllEvents();
 
   // Lifecycle & Editability Guards
-  const editCheck = isEventEditable(initialDraft, 'officer');
+  const editCheck = isEventEditable(initialDraft, 'officer', profile?.uid, activeOrgId);
   const isLocked = Boolean(initialDraft && !editCheck.editable);
   const isRestricted = Boolean(initialDraft && editCheck.lockLevel === 'restricted');
-  const canWithdraw = Boolean(initialDraft && canWithdrawProposal(initialDraft, 'officer').canWithdraw);
+  const canWithdraw = Boolean(initialDraft && canWithdrawProposal(initialDraft, 'officer', profile?.uid, activeOrgId).canWithdraw);
   const [withdrawing, setWithdrawing] = useState(false);
 
   const handleWithdraw = async () => {

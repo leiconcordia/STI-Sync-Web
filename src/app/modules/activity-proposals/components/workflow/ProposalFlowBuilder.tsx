@@ -29,6 +29,7 @@ import {
   RotateCcw,
   UserPlus,
   X,
+  Lock,
 } from 'lucide-react';
 import type { ProposalApprovalStep, ProposalTargetAudience } from '../../types/proposal.types';
 import type { InstitutionalSignatory, SignatoryActionType } from '../../../signatories/types/signatory.types';
@@ -120,14 +121,22 @@ export default function ProposalFlowBuilder({
     );
   }, [activeSignatories]);
 
-  // Auto-initialize default dynamic chain based on target audience if chain is empty
+  // Auto-initialize default dynamic chain based on target audience if chain is empty or incomplete for officer
   const hasInitializedRef = React.useRef(false);
   useEffect(() => {
-    if (!hasInitializedRef.current && (!approvalChain || approvalChain.length === 0) && activeSignatories.length > 0) {
-      hasInitializedRef.current = true;
-      handleAutoSuggest();
+    if (!hasInitializedRef.current && activeSignatories.length > 0) {
+      const needsInit =
+        !approvalChain ||
+        approvalChain.length === 0 ||
+        (isOfficerProposal &&
+          approvalChain.length === 1 &&
+          (approvalChain[0].stageIndex === 1 || approvalChain[0].role === 'sas_head'));
+      if (needsInit) {
+        hasInitializedRef.current = true;
+        handleAutoSuggest();
+      }
     }
-  }, [activeSignatories.length]);
+  }, [activeSignatories.length, approvalChain?.length, sasConfig.name, sasConfig.roleTitle]);
 
   // Synchronize custom stage names or indices from approvalChain into stageConfigs
   React.useEffect(() => {
@@ -229,8 +238,7 @@ export default function ProposalFlowBuilder({
     const suggested = buildDynamicApprovalChain(
       defaultAudience,
       activeSignatories,
-      sasSignatory?.name || 'Student Affairs & Services',
-      sasSignatory?.email || 'sao@ormoc.sti.edu.ph',
+      sasConfig,
       isSasCreator
     );
     onChange(suggested);
@@ -255,12 +263,17 @@ export default function ProposalFlowBuilder({
   // 3. Delete Stage
   const handleDeleteStage = (stageIdx: number) => {
     if (stages.length <= 1) return;
+    if (isOfficerProposal && stageIdx === 1) {
+      alert('Stage 1 (SAS Endorsement) is mandatory for Student Organization proposals and cannot be deleted.');
+      return;
+    }
     const filtered = stages.filter((s) => s.stageIndex !== stageIdx);
     reindexChain(filtered);
   };
 
   // 4. Move Stage Up
   const handleMoveStageUp = (stageIndex: number) => {
+    if (isOfficerProposal && (stageIndex === 1 || stageIndex === 2)) return;
     const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
     if (pos <= 0) return;
     const reordered = [...stages];
@@ -272,6 +285,7 @@ export default function ProposalFlowBuilder({
 
   // 5. Move Stage Down
   const handleMoveStageDown = (stageIndex: number) => {
+    if (isOfficerProposal && stageIndex === 1) return;
     const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
     if (pos < 0 || pos >= stages.length - 1) return;
     const reordered = [...stages];
@@ -399,6 +413,14 @@ export default function ProposalFlowBuilder({
 
   // 9. Remove Signatory from Stage
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
+    const stepToRemove = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (
+      isOfficerProposal &&
+      (stepToRemove?.stageIndex === 1 || stepToRemove?.role === 'sas_head' || stepToRemove?.role === 'sas_coordinator')
+    ) {
+      alert('Stage 1 SAS Gatekeeper endorsement is mandatory for Student Organization proposals and cannot be removed.');
+      return;
+    }
     const filtered = approvalChain.filter((s) => (s.id ? s.id !== stepIdOrIndex : s.step !== stepIdOrIndex));
     let globalStep = 1;
     const flattened: ProposalApprovalStep[] = filtered.map((step) => ({
@@ -410,12 +432,37 @@ export default function ProposalFlowBuilder({
 
   // 10. Reset Stages to Clean Pipeline
   const handleResetToEmpty = () => {
+    if (isOfficerProposal) {
+      const defaultAudience: ProposalTargetAudience = targetAudience || {
+        academicLevels: ['College'],
+        departments: ['BSIT'],
+        yearLevels: [1, 2, 3, 4],
+      };
+      const suggested = buildDynamicApprovalChain(
+        defaultAudience,
+        activeSignatories,
+        sasConfig,
+        false
+      );
+      const stage1Only = suggested.filter((s) => (s.stageIndex ?? 1) === 1);
+      setStageConfigs([{ stageIndex: 1, stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement' }]);
+      onChange(stage1Only);
+      return;
+    }
     setStageConfigs(INITIAL_STAGE_CONFIGS);
     onChange([]);
   };
 
   // 11. Toggle Action Type for a specific Step
   const handleToggleActionType = (stepIdOrIndex: string | number) => {
+    const stepTarget = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (
+      isOfficerProposal &&
+      (stepTarget?.stageIndex === 1 || stepTarget?.role === 'sas_head' || stepTarget?.role === 'sas_coordinator')
+    ) {
+      alert('Stage 1 SAS review is strictly an Endorsement action. Final executive approval occurs in Stage 4.');
+      return;
+    }
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
@@ -533,7 +580,9 @@ export default function ProposalFlowBuilder({
                 {/* Stage Header */}
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                   <div className="flex items-center gap-3">
-                    <div className="w-7 h-7 rounded-lg text-white font-black text-xs flex items-center justify-center shadow-xs bg-blue-600">
+                    <div className={`w-7 h-7 rounded-lg text-white font-black text-xs flex items-center justify-center shadow-xs ${
+                      isOfficerProposal && stage.stageIndex === 1 ? 'bg-amber-600' : 'bg-blue-600'
+                    }`}>
                       {stage.stageIndex}
                     </div>
                     <div className="flex-1">
@@ -543,14 +592,27 @@ export default function ProposalFlowBuilder({
                           value={stage.stageName}
                           onChange={(e) => handleStageNameChange(stage.stageIndex, e.target.value)}
                           placeholder={`Stage ${stage.stageIndex} Title...`}
-                          className="font-bold text-slate-800 text-sm bg-transparent px-2 py-0.5 rounded border border-transparent outline-none transition-all max-w-[340px] hover:bg-slate-50 focus:bg-white hover:border-slate-200 focus:border-blue-400"
+                          disabled={isOfficerProposal && stage.stageIndex === 1}
+                          className={`font-bold text-slate-800 text-sm bg-transparent px-2 py-0.5 rounded border outline-none transition-all max-w-[340px] ${
+                            isOfficerProposal && stage.stageIndex === 1
+                              ? 'border-transparent cursor-default'
+                              : 'border-transparent hover:bg-slate-50 focus:bg-white hover:border-slate-200 focus:border-blue-400'
+                          }`}
                         />
                         <span className="text-[11px] font-semibold text-slate-400">
                           ({stage.steps.length} {stage.steps.length === 1 ? 'Signer' : 'Signers'})
                         </span>
+                        {isOfficerProposal && stage.stageIndex === 1 && (
+                          <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                            <Lock className="w-3 h-3 text-amber-700" />
+                            <span>Mandatory Institutional Gatekeeper</span>
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-500 px-2 mt-0.5">
-                        {isFirstStage
+                        {isOfficerProposal && stage.stageIndex === 1
+                          ? 'Mandatory Stage 1: Voluntarily routes to SAS Admin for official initial vetting and digital endorsement.'
+                          : isFirstStage
                           ? 'Initial Stage: Active immediately upon proposal submission.'
                           : `Stage ${stage.stageIndex}: Unlocks after all Stage ${stage.stageIndex - 1} signatories have signed.`}
                       </div>
@@ -559,33 +621,42 @@ export default function ProposalFlowBuilder({
 
                   {/* Stage Order & Delete Controls */}
                   <div className="flex items-center gap-1 self-end sm:self-auto">
-                    <button
-                      type="button"
-                      disabled={isFirstStage}
-                      onClick={() => handleMoveStageUp(stage.stageIndex)}
-                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-                      title="Move stage up"
-                    >
-                      <ChevronUp className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isLastStage}
-                      onClick={() => handleMoveStageDown(stage.stageIndex)}
-                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-                      title="Move stage down"
-                    >
-                      <ChevronDown className="w-3.5 h-3.5" />
-                    </button>
-                    {stages.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteStage(stage.stageIndex)}
-                        className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 ml-1 cursor-pointer"
-                        title="Delete stage"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                    {isOfficerProposal && stage.stageIndex === 1 ? (
+                      <span className="px-2.5 py-1 text-[11px] font-bold text-amber-800 bg-amber-50 rounded-lg border border-amber-200 flex items-center gap-1.5 shadow-2xs">
+                        <Lock className="w-3 h-3 text-amber-600" />
+                        <span>Stage 1 Locked</span>
+                      </span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={isFirstStage || (isOfficerProposal && stage.stageIndex === 2)}
+                          onClick={() => handleMoveStageUp(stage.stageIndex)}
+                          className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                          title="Move stage up"
+                        >
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLastStage}
+                          onClick={() => handleMoveStageDown(stage.stageIndex)}
+                          className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
+                          title="Move stage down"
+                        >
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        </button>
+                        {stages.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteStage(stage.stageIndex)}
+                            className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 ml-1 cursor-pointer"
+                            title="Delete stage"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -604,11 +675,18 @@ export default function ProposalFlowBuilder({
                   ) : (
                     stage.steps.map((step, stepIdx) => {
                       const isApprover = step.actionType === 'approve' || step.role === 'school_president';
+                      const isLockedSasSigner =
+                        isOfficerProposal &&
+                        (stage.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator');
 
                       return (
                         <div
                           key={step.id || `${stage.stageIndex}_${stepIdx}`}
-                          className="p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors bg-slate-50/80 border-slate-200/90 hover:bg-slate-50"
+                          className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+                            isLockedSasSigner
+                              ? 'bg-amber-50/50 border-amber-200 hover:bg-amber-50/80'
+                              : 'bg-slate-50/80 border-slate-200/90 hover:bg-slate-50'
+                          }`}
                         >
                           <div className="flex items-center gap-3">
                             <div className="w-8 h-8 rounded-full bg-[#001A4D] text-[#FFD41C] font-bold text-xs flex items-center justify-center flex-shrink-0 shadow-xs">
@@ -622,6 +700,12 @@ export default function ProposalFlowBuilder({
                                 {step.signatoryEmail && (
                                   <span className="text-[11px] text-slate-500 font-normal">
                                     ({step.signatoryEmail})
+                                  </span>
+                                )}
+                                {isLockedSasSigner && (
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                                    <Lock className="w-2.5 h-2.5 text-amber-700" />
+                                    Mandatory SAS Gatekeeper
                                   </span>
                                 )}
                               </div>
@@ -638,42 +722,51 @@ export default function ProposalFlowBuilder({
                           </div>
 
                           <div className="flex items-center gap-2 self-end sm:self-auto">
-                            {/* Role Capability Switch Button */}
-                            <button
-                              type="button"
-                              onClick={() => handleToggleActionType(step.id || step.step)}
-                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
-                                isApprover
-                                  ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                                  : 'bg-sky-50 hover:bg-sky-100 text-sky-800 border-sky-300'
-                              }`}
-                              title="Click to switch between Endorser and Approver"
-                            >
-                              {isApprover ? (
-                                <>
-                                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                  <span>Approver</span>
-                                </>
-                              ) : (
-                                <>
-                                  <FileSignature className="w-3.5 h-3.5 text-sky-600" />
-                                  <span>Endorser</span>
-                                </>
-                              )}
-                              <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold bg-white/70 px-1 py-0.5 rounded ml-0.5">
-                                Switch
-                              </span>
-                            </button>
+                            {isLockedSasSigner ? (
+                              <div className="px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 bg-blue-50 text-blue-900 border-blue-200 shadow-2xs">
+                                <FileSignature className="w-3.5 h-3.5 text-blue-700" />
+                                <span>Stage 1 Endorser</span>
+                              </div>
+                            ) : (
+                              <>
+                                {/* Role Capability Switch Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleActionType(step.id || step.step)}
+                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
+                                    isApprover
+                                      ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                                      : 'bg-sky-50 hover:bg-sky-100 text-sky-800 border-sky-300'
+                                  }`}
+                                  title="Click to switch between Endorser and Approver"
+                                >
+                                  {isApprover ? (
+                                    <>
+                                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                                      <span>Approver</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <FileSignature className="w-3.5 h-3.5 text-sky-600" />
+                                      <span>Endorser</span>
+                                    </>
+                                  )}
+                                  <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold bg-white/70 px-1 py-0.5 rounded ml-0.5">
+                                    Switch
+                                  </span>
+                                </button>
 
-                            {/* Remove Signatory Button */}
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveSignatory(step.id || step.step)}
-                              className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                              title="Remove signatory from this stage"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                                {/* Remove Signatory Button */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSignatory(step.id || step.step)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Remove signatory from this stage"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </>
+                            )}
                           </div>
                         </div>
                       );
@@ -681,7 +774,16 @@ export default function ProposalFlowBuilder({
                   )}
 
                   {/* Add Signatory Controls */}
-                  {addingCustomToStage === stage.stageIndex ? (
+                  {isOfficerProposal && stage.stageIndex === 1 ? (
+                    <div className="pt-2">
+                      <div className="p-3 rounded-xl border border-amber-200/90 bg-amber-50/60 flex items-center gap-2.5 text-xs text-amber-900">
+                        <Lock className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                        <span>
+                          <strong>Stage 1 Locked:</strong> Reserved exclusively for Student Affairs & Services (SAS) Gatekeeper endorsement before subsequent academic stages unlock.
+                        </span>
+                      </div>
+                    </div>
+                  ) : addingCustomToStage === stage.stageIndex ? (
                     <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 space-y-3">
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">

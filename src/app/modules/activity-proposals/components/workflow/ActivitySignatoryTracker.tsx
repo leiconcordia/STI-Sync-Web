@@ -22,6 +22,9 @@ interface ActivitySignatoryTrackerProps {
   approvalChain?: ProposalApprovalStep[];
   currentStageIndex?: number;
   proposalStatus?: string;
+  version?: number;
+  versionLabel?: string;
+  versionHistory?: any[];
   className?: string;
 }
 
@@ -29,6 +32,9 @@ export default function ActivitySignatoryTracker({
   approvalChain = [],
   currentStageIndex = 1,
   proposalStatus,
+  version,
+  versionLabel,
+  versionHistory,
   className = '',
 }: ActivitySignatoryTrackerProps) {
 
@@ -76,6 +82,11 @@ export default function ActivitySignatoryTracker({
               <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
                 Institutional Approval Pipeline
               </span>
+              {version && version > 1 && (
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  {versionLabel || `Revision v${version}.0`}
+                </span>
+              )}
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                   isFullyApproved
@@ -117,6 +128,18 @@ export default function ActivitySignatoryTracker({
           </div>
         </div>
       </div>
+
+      {/* ── Version Archival Notice ── */}
+      {versionHistory && versionHistory.length > 0 && (
+        <div className="p-3 bg-slate-50 border border-slate-200/90 rounded-xl text-xs text-slate-600 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <RotateCcw className="w-4 h-4 text-slate-500 flex-shrink-0" />
+            <span>
+              Previous version endorsements ({versionHistory.length} archived revision{versionHistory.length > 1 ? 's' : ''}) are preserved in audit history. Active routing restarts at Stage 1 to endorse revised terms.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* ── Stages & Signatories List ── */}
       <div className="space-y-3">

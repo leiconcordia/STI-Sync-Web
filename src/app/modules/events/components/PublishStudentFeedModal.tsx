@@ -7,7 +7,7 @@
  * - Target academic tracks, programs, and year levels
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Smartphone,
@@ -31,6 +31,7 @@ import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument } from '../types/event.types';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { useTargetAudienceStructure, type DynamicProgram } from '../../academic';
+import { useStudents } from '../../students/hooks/useStudentStream';
 import { toast } from 'sonner';
 
 interface PublishStudentFeedModalProps {
@@ -53,6 +54,7 @@ export default function PublishStudentFeedModal({
 
   // Fetch real programs / strands and year levels dynamically from database
   const audienceStructure = useTargetAudienceStructure();
+  const { data: allStudentsData = [] } = useStudents();
 
   // State
   const [bannerUrl, setBannerUrl] = useState<string>(activity.bannerImageUrl || '');
@@ -78,14 +80,14 @@ export default function PublishStudentFeedModal({
       }
       setTargetAcademicLevel(inheritedLevel);
 
-      // Inherit courses / strands
+      // Inherit courses / strands (empty array = wildcard)
       const inheritedCourses: string[] =
         activity.targetCourses && activity.targetCourses.length > 0
           ? activity.targetCourses
           : (activity as any).targetAudience?.courseCodes || [];
       setTargetCourses(inheritedCourses);
 
-      // Inherit year levels
+      // Inherit year levels (empty array = wildcard)
       const inheritedYears: string[] =
         activity.targetYearLevels && activity.targetYearLevels.length > 0
           ? activity.targetYearLevels
@@ -93,6 +95,91 @@ export default function PublishStudentFeedModal({
       setTargetYearLevels(inheritedYears);
     }
   }, [activity]);
+
+  // Real-time calculation of eligible student reach from database
+  const calculatedReach = useMemo(() => {
+    if (!allStudentsData || allStudentsData.length === 0) return 0;
+    return allStudentsData.filter((s) => {
+      const sStatus = (s.status || 'ACTIVE').toUpperCase();
+      if (
+        (s as any).archived ||
+        sStatus === 'INACTIVE' ||
+        sStatus === 'ARCHIVED' ||
+        sStatus === 'RETURNED' ||
+        sStatus === 'DROPPED'
+      ) {
+        return false;
+      }
+
+      // Campus-Wide / All Students
+      if (targetAcademicLevel === 'BOTH' && targetCourses.length === 0 && targetYearLevels.length === 0) {
+        return true;
+      }
+
+      // Check SHS vs College
+      const y = String(s.yearLevel || '').toUpperCase();
+      const c = String(s.courseCode || '').toUpperCase();
+      const lvl = String(s.academicLevel || '').toUpperCase();
+      const isShs =
+        lvl === 'SHS' ||
+        (lvl !== 'COLLEGE' &&
+          (y.includes('11') ||
+            y.includes('12') ||
+            y.includes('GRADE 11') ||
+            y.includes('GRADE 12') ||
+            y.includes('G11') ||
+            y.includes('G12') ||
+            c.includes('SHS') ||
+            c.includes('STEM') ||
+            c.includes('ABM') ||
+            c.includes('HUMSS') ||
+            c.includes('GAS') ||
+            c.includes('TVL')));
+
+      if (targetAcademicLevel === 'SHS' && !isShs) return false;
+      if (targetAcademicLevel === 'COLLEGE' && isShs) return false;
+
+      // Year level filter (if empty -> wildcard)
+      if (targetYearLevels.length > 0) {
+        const sYear = String(s.yearLevel || '').trim().toLowerCase();
+        const sYearDigits = sYear.replace(/\D/g, '');
+        const matchesYear = targetYearLevels.some((tYear) => {
+          const t = tYear.trim().toLowerCase();
+          if (t === sYear) return true;
+          const tDigits = t.replace(/\D/g, '');
+          if (sYearDigits && tDigits && sYearDigits === tDigits) return true;
+          if ((t.includes('11') || t.includes('g11')) && (sYear.includes('11') || sYear.includes('g11'))) return true;
+          if ((t.includes('12') || t.includes('g12')) && (sYear.includes('12') || sYear.includes('g12'))) return true;
+          if (t.includes('1st') && (sYear.includes('1st') || sYear === '1')) return true;
+          if (t.includes('2nd') && (sYear.includes('2nd') || sYear === '2')) return true;
+          if (t.includes('3rd') && (sYear.includes('3rd') || sYear === '3')) return true;
+          if (t.includes('4th') && (sYear.includes('4th') || sYear === '4')) return true;
+          return false;
+        });
+        if (!matchesYear) return false;
+      }
+
+      // Course filter (if empty -> wildcard)
+      if (targetCourses.length > 0) {
+        const sCourseId = String(s.courseId || '').trim().toLowerCase();
+        const sCourseCode = String(s.courseCode || '').trim().toLowerCase();
+        const sCourseName = String(s.courseName || '').trim().toLowerCase();
+        const matchesCourse = targetCourses.some((code) => {
+          const tc = code.trim().toLowerCase();
+          return (
+            tc === sCourseCode ||
+            tc === sCourseId ||
+            tc === sCourseName ||
+            (sCourseCode && tc.includes(sCourseCode)) ||
+            (sCourseName && (tc.includes(sCourseName) || sCourseName.includes(tc)))
+          );
+        });
+        if (!matchesCourse) return false;
+      }
+
+      return true;
+    }).length;
+  }, [allStudentsData, targetAcademicLevel, targetCourses, targetYearLevels]);
 
   if (!isOpen) return null;
 
@@ -114,19 +201,11 @@ export default function PublishStudentFeedModal({
     }
   };
 
-  // Academic Division Change with automatic cascading default selection
+  // Academic Division Change starts with empty arrays so all students in that level qualify by default
   const handleAcademicLevelChange = (lvl: 'COLLEGE' | 'SHS' | 'BOTH') => {
     setTargetAcademicLevel(lvl);
-    if (lvl === 'SHS') {
-      setTargetCourses(audienceStructure.shsCourseCodes);
-      setTargetYearLevels(audienceStructure.shsYearLevels);
-    } else if (lvl === 'COLLEGE') {
-      setTargetCourses(audienceStructure.collegeCourseCodes);
-      setTargetYearLevels(audienceStructure.collegeYearLevels);
-    } else {
-      setTargetCourses(audienceStructure.allCourseCodes);
-      setTargetYearLevels(audienceStructure.allYearLevels);
-    }
+    setTargetCourses([]);
+    setTargetYearLevels([]);
   };
 
   // Course Toggle
@@ -171,9 +250,15 @@ export default function PublishStudentFeedModal({
   const handleSave = async () => {
     setIsSaving(true);
     try {
+      const isAllStudents =
+        targetAcademicLevel === 'BOTH' &&
+        targetCourses.length === 0 &&
+        targetYearLevels.length === 0;
+
       const targetAudienceUpdated = {
         ...((activity as any).targetAudience || {}),
-        allStudents: targetAcademicLevel === 'BOTH' && targetCourses.length === 0,
+        allStudents: isAllStudents,
+        scope: isAllStudents ? 'all' : 'specific',
         academicLevels:
           targetAcademicLevel === 'BOTH'
             ? ['College', 'SHS']
@@ -181,6 +266,7 @@ export default function PublishStudentFeedModal({
             ? ['SHS']
             : ['College'],
         courseCodes: targetCourses,
+        courses: targetCourses,
         yearLevels: targetYearLevels,
       };
 
@@ -191,7 +277,9 @@ export default function PublishStudentFeedModal({
         isPublished: true,
         lifecycleStatus: 'published',
         visibilityStart: null,
+        allStudents: isAllStudents,
         targetAcademicLevel,
+        targetAudienceScope: isAllStudents ? 'all' : 'specific',
         targetCourses,
         targetYearLevels,
         targetAudience: targetAudienceUpdated,
@@ -210,7 +298,12 @@ export default function PublishStudentFeedModal({
           referenceId: activity.referenceId || (activity as any).referenceNo || '',
           title: activity.title || '',
           description: activity.description || '',
-          targetAudienceScope: (activity as any).targetAudienceScope || 'all',
+          allStudents: isAllStudents,
+          targetAudienceScope: isAllStudents ? 'all' : 'specific',
+          targetCourses,
+          targetYearLevels,
+          targetAcademicLevel,
+          targetAudience: targetAudienceUpdated,
           date: activity.date || (activity as any).startDate || '',
           startDate: (activity as any).startDate || activity.date || '',
           startTime: (activity as any).startTime || '08:00',
@@ -416,6 +509,33 @@ export default function PublishStudentFeedModal({
                   {showCustomAudience ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                 </button>
               )}
+            </div>
+
+            {/* Live Student Reach Pool Card */}
+            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 flex items-center justify-between shadow-2xs">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold">
+                  <Users className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-900">
+                      Actual Eligible Reach
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-blue-200/60 text-[#001A4D]">
+                      Live DB
+                    </span>
+                  </div>
+                  <div className="text-sm font-black text-[#001A4D]">
+                    {calculatedReach.toLocaleString()} <span className="text-xs font-semibold text-gray-500">students will see this in their mobile feed</span>
+                  </div>
+                </div>
+              </div>
+              <span className="text-[11px] font-bold text-blue-900 bg-white/90 px-2.5 py-1 rounded-lg border border-blue-200 shadow-2xs">
+                {targetAcademicLevel === 'BOTH' && targetCourses.length === 0 && targetYearLevels.length === 0
+                  ? 'Campus-Wide (All Students)'
+                  : `${targetAcademicLevel} Cohort`}
+              </span>
             </div>
 
             {/* Pre-Configured Audience Summary Cards */}

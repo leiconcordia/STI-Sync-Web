@@ -22,7 +22,7 @@ import AttendanceScannersModal from './AttendanceScannersModal';
 import CashCustodiansModal from './CashCustodiansModal';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
-import { canWithdrawProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../utils/event-lifecycle.utils';
+import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../utils/event-lifecycle.utils';
 import { CancelEventModal } from './CancelEventModal';
 import { ConcludeEventModal } from './ConcludeEventModal';
 import { ArchiveEventModal } from './ArchiveEventModal';
@@ -207,8 +207,8 @@ export default function OfficerEventDetailView({
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isCashModalOpen, setIsCashModalOpen] = useState(false);
 
-  const editCheck = isEventEditable(event, 'officer');
-  const isEditable = editCheck.editable;
+  const editCheck = canEditProposal(event, 'officer', profile?.uid, profile?.activeOrganizationId);
+  const isEditable = editCheck.canEdit;
 
   const isSas = !event.hostingOrgId || event.hostingOrgId === 'sas';
   const orgObj = orgs.find((o) => o.id === event.hostingOrgId);
@@ -226,7 +226,7 @@ export default function OfficerEventDetailView({
   const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
-  const withdrawCheck = canWithdrawProposal(event, 'officer');
+  const withdrawCheck = canWithdrawProposal(event, 'officer', profile?.uid, profile?.activeOrganizationId);
   const isCancelled = event.isCancelled || event.lifecycleStatus === 'cancelled' || event.status === 'cancelled' || event.proposalStatus === 'cancelled';
   const cancelCheck = canCancelEvent(event, 'officer', profile?.activeOrganizationId || undefined);
 
@@ -322,6 +322,12 @@ export default function OfficerEventDetailView({
 
   const handleWithdraw = async () => {
     if (!profile) return;
+    if (!withdrawCheck.canWithdraw) {
+      toast.error('Cannot withdraw proposal', {
+        description: withdrawCheck.reason || 'You do not have permission to withdraw this proposal.',
+      });
+      return;
+    }
     const confirmWithdraw = window.confirm(
       `Are you sure you want to withdraw "${event.title}"? The proposal will return to Draft status so you can make revisions before SAS reviews it.`
     );
@@ -1902,6 +1908,9 @@ export default function OfficerEventDetailView({
               approvalChain={displayApprovalChain}
               currentStageIndex={fullProposal?.currentStageIndex || (activeEvent as any).currentStageIndex || (event as any).currentStageIndex || 1}
               proposalStatus={activeEvent.proposalStatus || event.proposalStatus}
+              version={fullProposal?.version || (activeEvent as any).version || (event as any).version}
+              versionLabel={fullProposal?.versionLabel || (activeEvent as any).versionLabel || (event as any).versionLabel}
+              versionHistory={fullProposal?.versionHistory || (activeEvent as any).versionHistory || (event as any).versionHistory}
             />
           </section>
 

@@ -37,6 +37,8 @@ import {
   submitProposalForReview,
   generateProposalReferenceNumber,
 } from '../services/proposal.service';
+import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { canEditProposal } from '../../events/utils/event-lifecycle.utils';
 
 import Step1GeneralInfo from './wizard/Step1GeneralInfo';
 import Step2ObjectivesMechanics from './wizard/Step2ObjectivesMechanics';
@@ -304,25 +306,49 @@ export default function CreateProposalModal({
   // Sync initial data or set default reference number
   useEffect(() => {
     const isOfficer = currentUser.role === 'officer';
+    const sasCfg = getCachedSasSignatoryConfig();
 
-    // Start approval pipeline from scratch with no predefined persons for both admin and officer
-    const defaultChain: ProposalApprovalStep[] = [];
+    // For Student Org proposals, Stage 1 is mandatory SAS Review Gatekeeper (Ma'am Riselle)
+    const defaultChain: ProposalApprovalStep[] = isOfficer
+      ? [
+          {
+            id: 'step_sas_gatekeeper',
+            step: 1,
+            stageIndex: 1,
+            stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+            role: 'sas_head',
+            roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+            actionType: 'endorse',
+            signatoryUid: sasCfg.employeeId || 'sas_admin',
+            signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+            signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+            department: sasCfg.department || 'Student Affairs & Services',
+            status: 'current',
+          },
+        ]
+      : [];
 
 
       if (initialData) {
+        const isOfficerInitial =
+          (initialData as any).isOfficerProposal !== undefined
+            ? Boolean((initialData as any).isOfficerProposal)
+            : initialData.creatorRole === 'officer' || initialData.creatorRole === 'student_officer';
+
         setFormData((prev) => ({
           ...prev,
           ...initialData,
           createdByName: initialData.createdByName || currentUser.name,
           createdByEmail: initialData.createdByEmail || currentUser.email,
-          creatorRole: initialData.creatorRole || currentUser.role,
-          organizationId: initialData.organizationId || currentUser.organizationId,
+          creatorRole: initialData.creatorRole || (isOfficerInitial ? 'officer' : currentUser.role),
+          isOfficerProposal: isOfficerInitial,
+          organizationId: initialData.organizationId || (isOfficerInitial ? (initialData as any).hostingOrgId : currentUser.organizationId),
           hostingOrgId: (initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId,
           organizationName: initialData.organizationName || currentUser.organizationName,
           organizers:
             initialData.organizers && initialData.organizers.length > 0
               ? initialData.organizers
-              : [currentUser.organizationName || (currentUser.role === 'officer' ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
+              : [currentUser.organizationName || (isOfficerInitial ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
           proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || 'Student Affairs & Services'],
           approvalChain:
             initialData.approvalChain && initialData.approvalChain.length > 0
@@ -338,6 +364,7 @@ export default function CreateProposalModal({
             createdByName: currentUser.name,
             createdByEmail: currentUser.email,
             creatorRole: currentUser.role,
+            isOfficerProposal: isOfficer,
             organizationId: currentUser.organizationId,
             hostingOrgId: currentUser.organizationId,
             organizationName: currentUser.organizationName,
@@ -354,6 +381,17 @@ export default function CreateProposalModal({
   const updateFormData = (updates: Partial<ProposalFormData>) => {
     setFormData((prev) => ({ ...prev, ...updates }));
   };
+
+  // Ownership Guard: Only proposal owner can revise/edit this proposal
+  const editPermission = useMemo(() => {
+    if (!initialData) return { canEdit: true };
+    return canEditProposal(
+      initialData as any,
+      currentUser.role || 'officer',
+      currentUser.uid,
+      currentUser.organizationId
+    );
+  }, [initialData, currentUser.role, currentUser.uid, currentUser.organizationId]);
 
   // Revision Tracking & Per-Step Enforcement
   const isReturnedProposal = useMemo(() => {
@@ -524,6 +562,13 @@ export default function CreateProposalModal({
 
   // Save as Draft
   const handleSaveDraft = async () => {
+    if (!editPermission.canEdit) {
+      toast.error('Permission Denied', {
+        description: editPermission.reason || 'You do not have permission to modify this proposal.',
+      });
+      return;
+    }
+
     setIsSavingDraft(true);
     try {
       const result = await saveProposalDraft(
@@ -543,6 +588,13 @@ export default function CreateProposalModal({
 
   // Submit Proposal
   const handleSubmitProposal = async () => {
+    if (!editPermission.canEdit) {
+      toast.error('Permission Denied', {
+        description: editPermission.reason || 'Only the proponent organization has permission to edit and revise this proposal.',
+      });
+      return;
+    }
+
     if (!validateStep(7)) {
       toast.error('Please resolve the required items before submission.');
       return;
@@ -611,7 +663,7 @@ export default function CreateProposalModal({
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={isSavingDraft || isSubmitting || !!submittedReferenceNo}
+              disabled={isSavingDraft || isSubmitting || !!submittedReferenceNo || !editPermission.canEdit}
               className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-semibold transition-all disabled:opacity-50"
             >
               <Save className="w-3.5 h-3.5 text-slate-500" />
@@ -626,6 +678,16 @@ export default function CreateProposalModal({
             </button>
           </div>
         </div>
+
+        {/* ── OWNERSHIP WARNING BANNER ── */}
+        {!editPermission.canEdit && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center gap-2.5 text-amber-900 text-xs font-semibold flex-shrink-0">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span>
+              {editPermission.reason || 'View-Only Mode: Only the proponent organization that submitted this proposal has the ability to edit, revise, and resubmit it.'}
+            </span>
+          </div>
+        )}
 
         {/* ── STEPPER PROGRESS BAR ── */}
         {!submittedReferenceNo && (
@@ -943,6 +1005,10 @@ export default function CreateProposalModal({
                 <span>Next Step</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
+            ) : !editPermission.canEdit ? (
+              <div className="px-4 py-2 rounded-xl bg-slate-100 text-slate-500 text-xs font-semibold border border-slate-200">
+                Read-Only (Non-Owner)
+              </div>
             ) : (
               <button
                 type="button"

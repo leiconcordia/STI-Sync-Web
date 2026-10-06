@@ -434,11 +434,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const sasStep = useMemo(() => {
     return displayApprovalChain.find(
       (s: any) =>
+        s.role === 'sas_head' ||
         s.role === 'sas_coordinator' ||
         s.role === 'adviser' ||
         s.role === 'sao_head' ||
+        s.id === 'step_sas_gatekeeper' ||
         s.id === 'step_sas_mandatory' ||
-        (s.stageIndex === 1 && s.stepNumber === 1 && (!s.role || s.role === 'sas_coordinator' || s.roleTitle?.toLowerCase().includes('sas') || s.roleTitle?.toLowerCase().includes('adviser'))) ||
+        (s.stageIndex === 1 && (s.stepNumber === 1 || s.step === 1) && (!s.role || s.role === 'sas_head' || s.role === 'sas_coordinator' || s.roleTitle?.toLowerCase().includes('sas') || s.roleTitle?.toLowerCase().includes('adviser'))) ||
         s.roleTitle?.toLowerCase().includes('sas') ||
         s.roleTitle?.toLowerCase().includes('student affairs') ||
         s.roleTitle?.toLowerCase().includes('adviser') ||
@@ -696,7 +698,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     }
     setSubmitting(true);
     try {
-      const currentSasConfig = getSasSignatoryConfig();
+      const currentSasConfig = await getSasSignatoryConfig();
       const effectiveSig = modalSignatureDataUrl || currentSasConfig.signatureUrl || undefined;
 
       // If user drew a new signature in the modal, persist it to SAS Signatory Maintenance
@@ -717,10 +719,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           {
             uid: profile.uid,
             id: profile.uid,
-            name: currentSasConfig.name || profile.displayName || 'SAS Head / Coordinator',
-            email: currentSasConfig.email || profile.email || 'sas@ormoc.sti.edu.ph',
-            roleTitle: currentSasConfig.roleTitle || 'SAS Coordinator',
-            role: 'sas_coordinator',
+            name: currentSasConfig.name || sasConfig.name || profile.displayName || 'Riselle Mae B. Lucanas',
+            email: currentSasConfig.email || sasConfig.email || profile.email || 'sao@ormoc.sti.edu.ph',
+            roleTitle: currentSasConfig.roleTitle || sasConfig.roleTitle || 'Student Affairs & Services Head',
+            role: 'sas_head',
             actionType: hasSubsequentStages ? 'endorse' : 'approve',
             signatureUrl: effectiveSig,
           },
@@ -2314,6 +2316,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               approvalChain={displayApprovalChain}
               currentStageIndex={fullProposal?.currentStageIndex || (activeEvent as any).currentStageIndex || (event as any).currentStageIndex || 1}
               proposalStatus={activeEvent.proposalStatus || event.proposalStatus}
+              version={fullProposal?.version || (activeEvent as any).version || (event as any).version}
+              versionLabel={fullProposal?.versionLabel || (activeEvent as any).versionLabel || (event as any).versionLabel}
+              versionHistory={fullProposal?.versionHistory || (activeEvent as any).versionHistory || (event as any).versionHistory}
             />
           </section>
 

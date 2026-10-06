@@ -35,8 +35,8 @@ export interface SasSignatoryConfig {
 }
 
 export const DEFAULT_SAS_SIGNATORY_CONFIG: SasSignatoryConfig = {
-  name: 'Student Affairs & Services',
-  roleTitle: 'SAS Coordinator / Reviewer',
+  name: 'Riselle Mae B. Lucanas',
+  roleTitle: 'Student Affairs & Services Head',
   email: 'sao@ormoc.sti.edu.ph',
   department: 'Student Affairs & Services',
   employeeId: 'SAS-001',
