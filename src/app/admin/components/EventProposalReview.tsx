@@ -552,6 +552,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     fullProposal,
   ]);
 
+  const isAlreadyPublished = Boolean(
+    (activeEvent as any)?.isPublished === true ||
+    activeEvent?.status === 'published' ||
+    activeEvent?.lifecycleStatus === 'published' ||
+    (activeEvent as any)?.isDirectPublished === true
+  );
+
   // Adviser Decision panel should ONLY show if and only if the proposal is coming from an Org AND SAS needs to review it
   const showAdviserDecision = useMemo(() => {
     if (isCancelled || isApproved || isCompleted) return false;
@@ -1076,21 +1083,30 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           {/* 1. Publish to Student App */}
           <button
             type="button"
-            disabled={!isApproved}
+            disabled={!isApproved || isAlreadyPublished}
             onClick={() => {
               if (!isApproved) {
                 toast.error('Locked: Proposal must be approved before configuring student mobile feed.');
                 return;
               }
+              if (isAlreadyPublished) {
+                toast.info('Lockout: This activity has already been published to the student mobile app.');
+                return;
+              }
               setIsPublishModalOpen(true);
             }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${isApproved
-                ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer active:scale-95'
-                : 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-              }`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+              !isApproved
+                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                : isAlreadyPublished
+                ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 cursor-not-allowed select-none opacity-90'
+                : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer active:scale-95'
+            }`}
             title={
               !isApproved
                 ? "Locked: Activity must achieve official approval first"
+                : isAlreadyPublished
+                ? "Already Published: Activity is published and live on the student mobile app"
                 : isOrgManagedEvent
                 ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
                 : "Configure mobile app feed visibility, promotional banner, and target audience"
@@ -1102,6 +1118,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <span>Publish to App</span>
                 <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
                   Locked
+                </span>
+              </>
+            ) : isAlreadyPublished ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Published to App</span>
+                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Published
                 </span>
               </>
             ) : isOrgManagedEvent ? (
@@ -1123,21 +1147,28 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           {/* 2. Attendance & Scanners */}
           <button
             type="button"
-            disabled={!isApproved}
+            disabled={!isApproved || !isAlreadyPublished}
             onClick={() => {
               if (!isApproved) {
                 toast.error('Locked: Proposal must be approved before configuring attendance and scanners.');
                 return;
               }
+              if (!isAlreadyPublished) {
+                toast.error('Locked: Activity must be published to the mobile app first before configuring attendance and scanners.');
+                return;
+              }
               setIsAttendanceModalOpen(true);
             }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${isApproved
-                ? 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
-                : 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-              }`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+              !isApproved || !isAlreadyPublished
+                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
+            }`}
             title={
               !isApproved
                 ? "Locked: Activity must achieve official approval first"
+                : !isAlreadyPublished
+                ? "Locked: Activity must be published to the mobile app first before configuring attendance & scanners"
                 : isOrgManagedEvent
                 ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
                 : "Manage QR tickets, multi-session scanning windows, and designated officers"
@@ -1149,6 +1180,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <span>Attendance & Scanners</span>
                 <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
                   Locked
+                </span>
+              </>
+            ) : !isAlreadyPublished ? (
+              <>
+                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+                <span>Attendance & Scanners</span>
+                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
+                  Unpublished
                 </span>
               </>
             ) : isOrgManagedEvent ? (
@@ -1633,25 +1672,65 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {isAlreadyPublished ? (
+                      <button
+                        type="button"
+                        disabled
+                        className="px-3 py-2 bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-not-allowed select-none"
+                        title="Activity is already published and live on the student mobile app"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Already Published</span>
+                        <span className="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Live
+                        </span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setIsPublishModalOpen(true)}
+                        className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer ${
+                          isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900' : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                      >
+                        {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-sky-300" /> : <Smartphone className="w-3.5 h-3.5 text-sky-200" />}
+                        <span>{isOrgManagedEvent ? 'View Publishing & Banner' : 'Publishing & Banner'}</span>
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => setIsPublishModalOpen(true)}
-                      className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer ${
-                        isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900' : 'bg-blue-600 hover:bg-blue-700'
+                      disabled={!isAlreadyPublished}
+                      onClick={() => {
+                        if (!isAlreadyPublished) {
+                          toast.error('Locked: Activity must be published to the mobile app first before configuring attendance & scanners.');
+                          return;
+                        }
+                        setIsAttendanceModalOpen(true);
+                      }}
+                      className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
+                        !isAlreadyPublished
+                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed select-none'
+                          : isOrgManagedEvent
+                          ? 'bg-slate-800 hover:bg-slate-900 cursor-pointer'
+                          : 'bg-indigo-600 hover:bg-indigo-700 cursor-pointer'
                       }`}
                     >
-                      {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-sky-300" /> : <Smartphone className="w-3.5 h-3.5 text-sky-200" />}
-                      <span>{isOrgManagedEvent ? 'View Publishing & Banner' : 'Publishing & Banner'}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsAttendanceModalOpen(true)}
-                      className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer ${
-                        isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900' : 'bg-indigo-600 hover:bg-indigo-700'
-                      }`}
-                    >
-                      {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-indigo-300" /> : <QrCode className="w-3.5 h-3.5 text-indigo-200" />}
-                      <span>{isOrgManagedEvent ? 'View Attendance & Scanners' : 'Attendance & Scanners'}</span>
+                      {!isAlreadyPublished ? (
+                        <>
+                          <Lock className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Attendance & Scanners (Locked)</span>
+                        </>
+                      ) : isOrgManagedEvent ? (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-indigo-300" />
+                          <span>View Attendance & Scanners</span>
+                        </>
+                      ) : (
+                        <>
+                          <QrCode className="w-3.5 h-3.5 text-indigo-200" />
+                          <span>Attendance & Scanners</span>
+                        </>
+                      )}
                     </button>
                     <button
                       type="button"
@@ -1679,26 +1758,48 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
                   {budgetCustodians.length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {budgetCustodians.map((c, i) => (
-                        <div key={c.id || i} className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs font-bold text-slate-900 truncate">
-                              {c.personName || 'Unassigned Custodian'}
-                            </span>
-                            <span className="text-xs font-black text-emerald-700 font-mono">
-                              {formatPHP(c.allocatedAmount || 0)}
-                            </span>
+                      {budgetCustodians.map((c, i) => {
+                        const isContingency = c.isContingencyFund === true;
+                        return (
+                          <div
+                            key={c.id || i}
+                            className={`p-3.5 rounded-xl space-y-1.5 border transition-all ${
+                              isContingency
+                                ? 'bg-amber-50/70 border-amber-300 shadow-2xs'
+                                : 'bg-slate-50 border-slate-200'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-slate-900 truncate">
+                                {c.personName || 'Unassigned Custodian'}
+                              </span>
+                              <span
+                                className={`text-xs font-black font-mono ${
+                                  isContingency ? 'text-amber-800' : 'text-emerald-700'
+                                }`}
+                              >
+                                {formatPHP(c.allocatedAmount || 0)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="text-[11px] text-slate-700 font-medium truncate">
+                                {c.purpose || 'Expense Category'}
+                              </p>
+                              {isContingency && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-900 border border-amber-300">
+                                  <Shield className="w-2.5 h-2.5 text-amber-700" />
+                                  Contingency
+                                </span>
+                              )}
+                            </div>
+                            {c.personRole && (
+                              <p className="text-[10px] text-slate-400 truncate">
+                                Role: {c.personRole}
+                              </p>
+                            )}
                           </div>
-                          <p className="text-[11px] text-slate-600 font-medium truncate">
-                            {c.purpose || 'Expense Category'}
-                          </p>
-                          {c.personRole && (
-                            <p className="text-[10px] text-slate-400 truncate">
-                              Role: {c.personRole}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-center">
@@ -2466,14 +2567,25 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsAttendanceModalOpen(true)}
-                    className="w-full py-2 px-3 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 rounded-xl text-xs font-bold flex items-center justify-between transition-colors cursor-pointer"
+                    disabled={!isAlreadyPublished}
+                    onClick={() => {
+                      if (!isAlreadyPublished) {
+                        toast.error('Locked: Activity must be published to the mobile app first before configuring attendance & scanners.');
+                        return;
+                      }
+                      setIsAttendanceModalOpen(true);
+                    }}
+                    className={`w-full py-2 px-3 border rounded-xl text-xs font-bold flex items-center justify-between transition-colors ${
+                      !isAlreadyPublished
+                        ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed select-none'
+                        : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200 cursor-pointer'
+                    }`}
                   >
                     <span className="flex items-center gap-2">
-                      <QrCode className="w-3.5 h-3.5 text-indigo-700" />
-                      <span>Attendance & Scanners</span>
+                      {!isAlreadyPublished ? <Lock className="w-3.5 h-3.5 text-gray-400" /> : <QrCode className="w-3.5 h-3.5 text-indigo-700" />}
+                      <span>Attendance & Scanners {!isAlreadyPublished ? '(Locked)' : ''}</span>
                     </span>
-                    <ChevronRight className="w-3.5 h-3.5 text-indigo-400" />
+                    <ChevronRight className={`w-3.5 h-3.5 ${!isAlreadyPublished ? 'text-gray-300' : 'text-indigo-400'}`} />
                   </button>
                   <button
                     type="button"
@@ -3353,7 +3465,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           isOpen={isCashModalOpen}
           onClose={() => setIsCashModalOpen(false)}
           activity={event}
-          proposalTasks={fullProposal?.tasks || []}
+          financialProjections={fullProposal?.financialProjections || (event as any).financialProjections}
           readOnly={isOrgManagedEvent}
         />
       )}

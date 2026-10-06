@@ -81,23 +81,13 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
     updatedVId: string,
     updatedVName: string
   ) => {
-    const sessionObj: ProposalSession = {
-      id: 'main-session',
-      title: formData.title || 'Main Program',
-      date: updatedDate,
-      startTime: updatedStart || '08:00',
-      endTime: updatedEnd || '17:00',
-      venueId: updatedVId,
-      venueName: updatedVName,
-    };
-
     onChange({
       date: updatedDate,
       startTime: updatedStart,
       endTime: updatedEnd,
       venueId: updatedVId,
       venueName: updatedVName,
-      sessions: [sessionObj],
+      sessions: [],
     });
   };
 
@@ -181,7 +171,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
               Date & time (and Venue) <span className="text-red-500">*</span>
             </label>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              Official event start schedule and campus location. Basis for event launch and subsequent attendance sessions.
+              Activity proposal schedule and campus location (Form AP-01 Section 12).
             </p>
           </div>
         </div>
@@ -192,10 +182,10 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
         <Info className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
         <div className="text-xs text-blue-950 space-y-1">
           <p className="font-bold">
-            Event Starting Schedule & Venue Anchor
+            Activity Target Schedule & Campus Venue (Reports & Form AP-01)
           </p>
           <p className="text-blue-800 leading-relaxed font-normal">
-            This marks where and when the event is initiated. If you create attendance sessions later on, sessions will be wired up to start on or after this event date.
+            This records the target date, operational hours, and designated campus venue for official proposal vetting and administrative reports. Attendance sessions and scanners are configured separately after approval under Attendance & Scanners.
           </p>
         </div>
       </div>
@@ -211,11 +201,11 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
       {/* Schedule & Venue Card */}
       <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-xs space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-          {/* Event Start Date */}
+          {/* Target Implementation Date */}
           <div className="md:col-span-12">
             <label className="block text-xs font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-blue-600" />
-              <span>Event Start Date <span className="text-red-500">*</span></span>
+              <span>Target Implementation Date <span className="text-red-500">*</span></span>
             </label>
             <input
               type="date"
@@ -224,7 +214,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
               className="w-full px-3.5 py-2.5 bg-gray-50/50 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900 font-semibold"
             />
             <p className="text-[11px] text-gray-500 mt-1">
-              The official date the event takes place. All attendance sessions must be scheduled on or after this date.
+              The proposed calendar date the activity is scheduled to take place, recorded for institutional activity reporting.
             </p>
           </div>
 

@@ -16,6 +16,7 @@ import {
   Paperclip,
   ExternalLink,
   Lock,
+  Shield,
   ShieldCheck,
   Layers,
 } from 'lucide-react';
@@ -355,10 +356,19 @@ export default function OfficerLiquidationModal({
         if ((event as any).budgetCustodians && (event as any).budgetCustodians.length > 0) {
           const fetchedItems: ExpenseLineItem[] = (event as any).budgetCustodians.map((c: any, i: number) => {
             const allocatedCost = Number(c.allocatedAmount || 0);
+            const isContingency = c.isContingencyFund === true || (c.purpose || '').toLowerCase().includes('contingency');
+            const rawDesc = c.purpose || 'Expense';
+            const formattedDesc = isContingency
+              ? (rawDesc.toLowerCase().includes('contingency') ? rawDesc : `[Contingency Fund] ${rawDesc}`)
+              : rawDesc;
+            const custodianSuffix = c.personName ? ` (Custodian: ${c.personName})` : '';
+
             return {
               id: `item-${i}-${Date.now()}`,
-              description: `${c.purpose || 'Expense'}${c.personName ? ` (Custodian: ${c.personName})` : ''}`,
-              category: c.purpose?.toLowerCase().includes('food') || c.purpose?.toLowerCase().includes('snack')
+              description: `${formattedDesc}${custodianSuffix}`,
+              category: isContingency
+                ? 'Miscellaneous'
+                : c.purpose?.toLowerCase().includes('food') || c.purpose?.toLowerCase().includes('snack')
                 ? 'Food & Catering'
                 : c.purpose?.toLowerCase().includes('venue') || c.purpose?.toLowerCase().includes('sound')
                 ? 'Venue & Facilities'
@@ -369,6 +379,7 @@ export default function OfficerLiquidationModal({
               proposedQuantity: 1,
               proposedUnitCost: allocatedCost,
               isPreFilled: true,
+              isContingency: isContingency,
               quantity: 1,
               unitCost: 0,
               totalCost: 0,
@@ -837,11 +848,16 @@ export default function OfficerLiquidationModal({
                           <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
                             Item #{index + 1}
                           </span>
-                          {item.isPreFilled && (
+                          {item.isContingency ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 rounded border border-amber-300 uppercase flex items-center gap-1">
+                              <Shield className="w-2.5 h-2.5 text-amber-700" />
+                              Contingency Reserve
+                            </span>
+                          ) : item.isPreFilled ? (
                             <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#0E4EBD] rounded border border-blue-200 uppercase">
                               Allocated Item
                             </span>
-                          )}
+                          ) : null}
                           {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
                             <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
                               Allocated: {formatCurrency(item.allocatedCost)}

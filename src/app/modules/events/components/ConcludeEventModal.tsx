@@ -271,6 +271,24 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
             </p>
           </div>
 
+          {/* Scanner Duty Gate Lock & Sync Safeguard */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Lock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                <span className="text-xs font-bold text-slate-900 dark:text-white">
+                  Scanner Duty Gate Lock & Sync Safeguard
+                </span>
+              </div>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200">
+                {(event.scanners || []).length} Scanner(s) Assigned
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+              Upon conclusion, camera scanning gates will be locked immediately. Any assigned officer with unsynced offline attendance will be prompted with "Upload your attendance: Event has been concluded" before local scanner caches are cleaned up.
+            </p>
+          </div>
+
           {/* Action Impact List */}
           <div className="space-y-2 pt-1">
             <p className="text-xs font-semibold text-slate-700 dark:text-slate-300 uppercase tracking-wider">
@@ -286,7 +304,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <span>
-                  <strong>Post-Event Readiness:</strong> Live scanners are locked and completion audit trail is written.
+                  <strong>Scanner Duty Locked & Synced:</strong> Live scanners are locked and offline attendance sync guards are enforced before scanner cache cleanup.
                 </span>
               </li>
             </ul>

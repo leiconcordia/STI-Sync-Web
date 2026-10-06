@@ -141,15 +141,14 @@ const matchingSections = sections.filter(sec => {
 
 ---
 
-## 3. Mandatory Password Change Workflow (`requiresChangePassword`)
+## 3. Mandatory Password Change Workflow (`requiresPasswordChange`)
 
 When an administrator manually creates a student account on the Web Portal, the student is given a temporary password and flagged for mandatory password change.
 
 ### Firestore Document Flags:
 ```json
 {
-  "requiresPasswordChange": true,
-  "requiresChangePassword": true
+  "requiresPasswordChange": true
 }
 ```
 
@@ -186,7 +185,6 @@ When an administrator manually creates a student account on the Web Portal, the 
 │ 3. Execute updatePassword()     │
 │ 4. Update Firestore flags:      │
 │    requiresPasswordChange: false│
-│    requiresChangePassword: false│
 └───────────────┬─────────────────┘
                 │
                 ▼
@@ -205,7 +203,7 @@ useEffect(() => {
       const studentSnap = await getDoc(doc(db, "students", user.uid));
       if (studentSnap.exists()) {
         const student = studentSnap.data();
-        if (student.requiresPasswordChange === true || student.requiresChangePassword === true) {
+        if (student.requiresPasswordChange === true) {
           // Force navigate to password change screen
           navigation.reset({
             index: 0,
@@ -229,7 +227,6 @@ useEffect(() => {
    ```typescript
    await updateDoc(doc(db, "students", user.uid), {
      requiresPasswordChange: false,
-     requiresChangePassword: false,
      updatedAt: serverTimestamp(),
    });
    ```
@@ -290,7 +287,6 @@ export interface StudentDocument {
 
   // Security Flags
   requiresPasswordChange?: boolean;
-  requiresChangePassword?: boolean;
 
   // Timestamps
   createdAt: Timestamp;
@@ -309,5 +305,5 @@ export interface StudentDocument {
 - [ ] **Academic Track**: Correctly toggles between College (Semesters) and SHS (Trimesters).
 - [ ] **Section Gating**: Section dropdown is disabled until Year Level is selected.
 - [ ] **School ID Capture**: Preview and camera container enforce **Portrait aspect ratio (3:4)**.
-- [ ] **Mandatory Password Change**: Users with `requiresPasswordChange: true` or `requiresChangePassword: true` cannot access home screens until they update their password.
+- [ ] **Mandatory Password Change**: Users with `requiresPasswordChange: true` cannot access home screens until they update their password.
 - [ ] **Re-enrollment**: Student is evaluated against their track's specific active semester/trimester.

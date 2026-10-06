@@ -24,7 +24,7 @@ interface CourseDepartmentProps {
   onUnsavedChange: () => void;
 }
 
-type SubTab = 'courses' | 'sections';
+type SubTab = 'departments' | 'courses' | 'sections';
 
 type ModalState =
   | { type: 'none' }
@@ -110,7 +110,7 @@ function ConfirmModal({ type, name, onConfirm, onClose, deleteText, onDeleteText
 }
 
 export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentProps) {
-  const [subTab, setSubTab] = useState<SubTab>('courses');
+  const [subTab, setSubTab] = useState<SubTab>('departments');
   
   const { data: departments, loading: loadingDepts } = useDepartments();
   const { data: courses, loading: loadingCourses } = useCourses();
@@ -366,18 +366,106 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
   return (
     <div className="space-y-6 max-w-5xl">
       <div>
-        <h2 className="text-2xl font-bold text-[#001A4D]">Academic Programs & Sections Registry</h2>
-        <p className="text-sm text-gray-500 mt-1">Manage College & Senior High School academic programs, strands, and class sections</p>
+        <h2 className="text-2xl font-bold text-[#001A4D]">Academic Departments, Programs & Sections</h2>
+        <p className="text-sm text-gray-500 mt-1">Manage College & Senior High School academic departments, programs, strands, and class sections</p>
       </div>
 
       <div className="flex items-center gap-2 border-b border-gray-200">
-        {([['courses', 'Courses / Programs'], ['sections', 'Sections']] as [SubTab, string][]).map(([tab, label]) => (
+        {([['departments', 'Departments'], ['courses', 'Courses / Programs'], ['sections', 'Sections']] as [SubTab, string][]).map(([tab, label]) => (
           <button key={tab} onClick={() => setSubTab(tab)}
             className={`px-5 py-2.5 text-sm font-semibold transition-colors border-b-2 -mb-px ${subTab === tab ? 'border-[#001A4D] text-[#001A4D]' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
             {label}
           </button>
         ))}
       </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════
+          DEPARTMENTS
+         ═══════════════════════════════════════════════════════════════════════ */}
+      {subTab === 'departments' && (
+        <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+            <div className="flex items-center gap-3">
+              <h3 className="font-bold text-[#001A4D]">Academic Departments</h3>
+              <ActiveArchivedTabs active={deptArchivedView} onChange={setDeptArchivedView} />
+            </div>
+            <button onClick={() => {
+              setDeptForm({ name: '', code: '', academicLevel: 'COLLEGE' });
+              setModal({ type: 'add-dept' });
+            }}
+              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer">
+              <Plus className="w-4 h-4" /> Add Department
+            </button>
+          </div>
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Department Name</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Code</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Track</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Associated Programs</th>
+                <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {(deptArchivedView ? archivedDepts : activeDepts).map(dept => {
+                const isShs = dept.academicLevel === 'SHS';
+                const associatedCount = courses.filter(c => c.departmentId === dept.id && !c.archived).length;
+                return (
+                  <tr key={dept.id} className="hover:bg-gray-50 transition-colors"
+                    onMouseEnter={() => setHoveredRow(dept.id)} onMouseLeave={() => setHoveredRow(null)}>
+                    <td className="px-4 py-3 text-sm font-semibold text-gray-900">{dept.name}</td>
+                    <td className="px-4 py-3 text-sm font-mono text-gray-600 font-bold">{dept.code}</td>
+                    <td className="px-4 py-3 text-sm">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold ${
+                        isShs ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-[#0E4EBD]'
+                      }`}>
+                        {isShs ? 'SHS' : 'College'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-600">
+                      {associatedCount} active program{associatedCount !== 1 ? 's' : ''}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === dept.id ? 'opacity-100' : 'opacity-0'}`}>
+                        {!dept.archived ? (
+                          <>
+                            <button onClick={() => {
+                              setDeptForm({
+                                name: dept.name,
+                                code: dept.code,
+                                academicLevel: dept.academicLevel || (isShs ? 'SHS' : 'COLLEGE'),
+                              });
+                              setModal({ type: 'edit-dept', item: dept });
+                            }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer" title="Edit Department">
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => setModal({ type: 'archive-dept', item: dept })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500 cursor-pointer" title="Archive Department">
+                              <Archive className="w-4 h-4" />
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button onClick={() => setModal({ type: 'restore-dept', item: dept })} className="p-1.5 rounded hover:bg-green-50 text-green-600 cursor-pointer" title="Restore Department">
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => setModal({ type: 'delete-dept', item: dept })} className="p-1.5 rounded hover:bg-red-50 text-red-600 cursor-pointer" title="Permanently Delete">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {(deptArchivedView ? archivedDepts : activeDepts).length === 0 && (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400">No {deptArchivedView ? 'archived' : 'active'} departments.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* ═══════════════════════════════════════════════════════════════════════
           COURSES / PROGRAMS
@@ -393,7 +481,7 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
               setCourseForm({ name: '', code: '', departmentId: '', academicLevel: 'COLLEGE', yearLevels: 4 });
               setModal({ type: 'add-course' });
             }}
-              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2">
+              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer">
               <Plus className="w-4 h-4" /> Add Program
             </button>
           </div>
@@ -403,6 +491,7 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Program / Strand Name</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Code</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Track</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Department</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Duration</th>
                 <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
               </tr>
@@ -420,6 +509,11 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                         isShs ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-[#0E4EBD]'
                       }`}>
                         {isShs ? 'SHS' : 'College'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-gray-100 text-gray-700">
+                        {getDeptName(course.departmentId)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">
@@ -540,6 +634,76 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" onClick={close} />
 
+          {/* ADD / EDIT DEPARTMENT */}
+          {(modal.type === 'add-dept' || modal.type === 'edit-dept') && (
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+              <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-white font-bold text-lg">
+                    {modal.type === 'add-dept' ? 'Add Department' : 'Edit Department'}
+                  </h3>
+                  {modal.type === 'edit-dept' && (
+                    <span className="px-2 py-0.5 bg-[#1E70E8] text-white text-xs rounded-full">Editing: {modal.item.code}</span>
+                  )}
+                </div>
+                <button onClick={close} disabled={isSaving} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 disabled:opacity-50"><X className="w-5 h-5" /></button>
+              </div>
+              <div className="p-6 space-y-4 text-left">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">Academic Track <span className="text-red-500">*</span></label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDeptForm({ ...deptForm, academicLevel: 'COLLEGE' })}
+                      className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                        deptForm.academicLevel !== 'SHS'
+                          ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
+                          : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      College Department
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDeptForm({ ...deptForm, academicLevel: 'SHS' })}
+                      className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                        deptForm.academicLevel === 'SHS'
+                          ? 'bg-amber-600 text-white border-amber-600 shadow-xs'
+                          : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      Senior High Track
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Department Name <span className="text-red-500">*</span></label>
+                  <input type="text" value={deptForm.name} onChange={e => setDeptForm({ ...deptForm, name: e.target.value })} disabled={isSaving}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent disabled:opacity-50"
+                    placeholder="e.g. Information Technology Department" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Department Code <span className="text-red-500">*</span></label>
+                  <input type="text" value={deptForm.code} onChange={e => setDeptForm({ ...deptForm, code: e.target.value.toUpperCase() })} disabled={isSaving}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-[#001A4D] focus:border-transparent disabled:opacity-50"
+                    placeholder="e.g. CITE or SHS" maxLength={10} />
+                </div>
+                <div className="flex gap-3 pt-2">
+                  <button onClick={close} disabled={isSaving} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">Cancel</button>
+                  <button onClick={handleSaveDept} disabled={!deptForm.name || !deptForm.code || isSaving}
+                    className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#001A4D]/90 disabled:opacity-40 cursor-pointer">
+                    {isSaving ? 'Saving...' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* DEPARTMENT CONFIRMS */}
+          {modal.type === 'archive-dept' && <ConfirmModal type="archive" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateDepartment(modal.item.id, { archived: true }))} onClose={close} />}
+          {modal.type === 'restore-dept' && <ConfirmModal type="restore" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateDepartment(modal.item.id, { archived: false }))} onClose={close} />}
+          {modal.type === 'delete-dept' && <ConfirmModal type="delete" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => deleteDepartment(modal.item.id))} onClose={close} deleteText={deleteText} onDeleteTextChange={setDeleteText} />}
+
           {/* ADD / EDIT COURSE */}
           {(modal.type === 'add-course' || modal.type === 'edit-course') && (
             <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
@@ -603,6 +767,26 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                     placeholder={courseForm.academicLevel === 'SHS' ? "e.g. STEM" : "e.g. BSIT"} maxLength={10} />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Department <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={courseForm.departmentId}
+                    onChange={(e) => setCourseForm({ ...courseForm, departmentId: e.target.value })}
+                    disabled={isSaving}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent disabled:opacity-50"
+                  >
+                    <option value="">Select department...</option>
+                    {activeDepts
+                      .filter((d) => !d.academicLevel || d.academicLevel === courseForm.academicLevel)
+                      .map((d) => (
+                        <option key={d.id} value={d.id}>
+                          [{d.academicLevel || 'College'}] {d.code} — {d.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Duration (Year Levels)</label>
                   {courseForm.academicLevel === 'SHS' ? (
                     <div className="px-3 py-2 border border-gray-200 bg-gray-50 rounded-lg text-sm text-gray-600 font-medium">
@@ -617,8 +801,8 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                 </div>
                 <div className="flex gap-3 pt-2">
                   <button onClick={close} disabled={isSaving} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-50">Cancel</button>
-                  <button onClick={handleSaveCourse} disabled={!courseForm.name || !courseForm.code || isSaving}
-                    className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#001A4D]/90 disabled:opacity-40">
+                  <button onClick={handleSaveCourse} disabled={!courseForm.name || !courseForm.code || !courseForm.departmentId || isSaving}
+                    className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#001A4D]/90 disabled:opacity-40 cursor-pointer">
                     {isSaving ? 'Saving...' : 'Save'}
                   </button>
                 </div>

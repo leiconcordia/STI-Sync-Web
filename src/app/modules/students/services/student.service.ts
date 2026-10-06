@@ -165,7 +165,6 @@ export async function createLateEnrolleeStudent(
     email: '', // Student uploads/provides their email directly on mobile app during first login
     authUid: '',
     requiresPasswordChange: true,
-    requiresChangePassword: true,
     isProfileComplete: false,
     defaultPassword,
     profilePhotoUrl: '',
@@ -335,7 +334,6 @@ export async function createStudentManually(
     email:           payload.email.trim().toLowerCase(),
     authUid,
     requiresPasswordChange: true,
-    requiresChangePassword: true,
 
     profilePhotoUrl:  payload.profilePhotoUrl,
     schoolIdPhotoUrl: payload.schoolIdPhotoUrl,

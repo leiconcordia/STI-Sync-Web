@@ -54,12 +54,33 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     }
   }, [isOpen]);
 
-  // Check if a student is eligible (active + enrolled, all orgs are open to all students)
+  const isCrossDept =
+    !activeOrg?.departmentId ||
+    activeOrg?.departmentId === 'cross-departmental' ||
+    activeOrg?.scope === 'cross-departmental' ||
+    activeOrg?.isCrossDepartmental === true;
+
+  // Check if a student is eligible (active + enrolled, and department match if org is departmental)
   const isStudentEligible = (student: any): boolean => {
     if (!student) return false;
     if (student.status !== 'ACTIVE') return false;
     if (isStudentPendingReEnrollment(student)) return false;
-    return true;
+
+    // Cross-departmental organizations are open to all students
+    if (isCrossDept) return true;
+
+    // Department-specific organizations: check student department match
+    const sDeptId = student.departmentId;
+    const sDeptName = (student.department || student.departmentName || '').toLowerCase().trim();
+    const orgDeptId = activeOrg?.departmentId;
+    const orgDeptName = (activeOrg?.departmentName || '').toLowerCase().trim();
+    const orgDeptCode = (activeOrg?.departmentCode || '').toLowerCase().trim();
+
+    if (sDeptId && orgDeptId && sDeptId === orgDeptId) return true;
+    if (sDeptName && orgDeptName && (sDeptName.includes(orgDeptName) || orgDeptName.includes(sDeptName))) return true;
+    if (sDeptName && orgDeptCode && (sDeptName.includes(orgDeptCode) || orgDeptCode.includes(sDeptName))) return true;
+
+    return false;
   };
 
   if (!isOpen) return null;
@@ -84,6 +105,20 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     if (!formData.studentId || !formData.studentName) {
       alert('Student ID and Name are required.');
       return;
+    }
+
+    if (!isCrossDept) {
+      const studentObj = allStudents.find(
+        (s) =>
+          (s.studentId && s.studentId.trim().toLowerCase() === formData.studentId.trim().toLowerCase()) ||
+          (s.id && s.id.trim().toLowerCase() === formData.studentId.trim().toLowerCase())
+      );
+      if (studentObj && !isStudentEligible(studentObj)) {
+        alert(
+          `Cannot add member: This organization is restricted to ${activeOrg?.departmentName || activeOrg?.departmentCode || 'departmental'} students.`
+        );
+        return;
+      }
     }
     
     setIsSubmitting(true);
@@ -121,7 +156,13 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <p className="text-blue-200 text-xs flex items-center gap-1.5 mt-0.5">
                 <Building2 className="w-3.5 h-3.5" />
                 <span>{activeOrg.name}</span>
-                <span className="text-blue-300">• Open to All Students</span>
+                {isCrossDept ? (
+                  <span className="text-emerald-300 font-semibold">• Open to All Students</span>
+                ) : (
+                  <span className="text-amber-300 font-semibold">
+                    • Exclusive to {activeOrg.departmentName || activeOrg.departmentCode || 'Department'} Students
+                  </span>
+                )}
               </p>
             )}
           </div>
@@ -139,7 +180,9 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               <input
                 type="text"
                 placeholder={
-                  "Search active student by name, ID, or email..."
+                  isCrossDept
+                    ? "Search active student by name, ID, or email..."
+                    : `Search ${activeOrg?.departmentCode || activeOrg?.departmentName || 'department'} student by name, ID, or email...`
                 }
                 value={searchQuery}
                 onChange={(e) => {
@@ -151,7 +194,9 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
               />
             </div>
             <p className="text-[11px] text-gray-500 mt-1">
-              Showing active, enrolled students not yet members of this organization.
+              {isCrossDept
+                ? "Showing active, enrolled students from any department."
+                : `Showing active students strictly belonging to ${activeOrg?.departmentName || activeOrg?.departmentCode || 'this department'}.`}
             </p>
 
             {/* Dropdown */}
@@ -199,7 +244,9 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                     if (matches.length === 0) {
                       return (
                         <div className="p-3 text-xs text-gray-500 text-center">
-                           No eligible students found matching "{searchQuery}".
+                          {isCrossDept
+                            ? `No eligible students found matching "${searchQuery}".`
+                            : `No eligible ${activeOrg?.departmentName || activeOrg?.departmentCode || 'departmental'} students found matching "${searchQuery}".`}
                         </div>
                       );
                     }
@@ -211,10 +258,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                         className="px-4 py-2.5 hover:bg-blue-50/60 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
                       >
                         <div className="font-medium text-[#001A4D] text-sm">{s.firstName} {s.lastName}</div>
-                        <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5">
+                        <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
                           <span className="font-mono">{s.studentId}</span>
                           <span>•</span>
                           <span className="text-[#0E4EBD] font-semibold">{s.courseCode || s.courseName || 'Student'}</span>
+                          <span>•</span>
+                          <span className="text-gray-600 font-medium">{s.departmentName || s.department || 'Department'}</span>
                           <span>•</span>
                           <span className="text-green-600 font-semibold">Active</span>
                         </div>

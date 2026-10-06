@@ -9,7 +9,7 @@ import { db } from '../../../../services/firebase';
 import { useOrganizationTypes } from '../hooks/useOrganizationTypes';
 import { useOrganizationMutations } from '../hooks/useOrganizationMutations';
 import { useOrganizationStream } from '../hooks/useOrganizationStream';
-import { useSemesters, useActiveAcademicPeriods } from '../../academic';
+import { useSemesters, useActiveAcademicPeriods, useDepartments } from '../../academic';
 import { useStudents } from '../../students/hooks/useStudentStream';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
 
@@ -134,6 +134,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
   // ─── Live data ───────────────────────────────────────────────────────────────
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
+  const { data: departments = [], loading: loadingDepts } = useDepartments();
   const { data: semesters } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
   const { data: allStudents } = useStudents();
@@ -141,6 +142,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const { create, isSaving } = useOrganizationMutations();
 
   const activeOrgTypes = orgTypes.filter(t => !t.archived);
+  const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
   const activeSemester = useMemo(() => semesters.find(s => s.status === 'ACTIVE') ?? null, [semesters]);
 
   // Active period display string
@@ -283,17 +285,26 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const handleCreate = async () => {
     setSubmitError(null);
     const activePeriod = activeCollegePeriod || activeShsPeriod || activeSemester;
+    const isCross = !formData.department || formData.department === 'cross-departmental';
+    const selectedDept = departments.find(d => d.id === formData.department);
+
     const payload: CreateOrganizationPayload = {
       name: formData.name.trim(),
       acronym: formData.acronym.trim(),
       typeId: formData.typeId,
-      departmentId: formData.department || 'cross-departmental',
+      departmentId: isCross ? 'cross-departmental' : formData.department,
+      departmentName: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
+      departmentCode: isCross ? 'ALL' : (selectedDept?.code || ''),
+      department: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
+      scope: isCross ? 'cross-departmental' : 'departmental',
+      isCrossDepartmental: isCross,
       description: formData.description.trim(),
       academicYear: activePeriod?.academicYear || '',
       semester: activePeriod?.semester || '',
       logoUrl: null,
       adviser: {
         ...adviserData,
+        departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : formData.department),
         title: 'Club Adviser',
         requiresPasswordChange: true,
       },
@@ -392,6 +403,46 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             />
             <FieldError msg={step1Errors.acronym} />
           </div>
+        </div>
+
+        {/* Academic Department & Audience Scope */}
+        <div>
+          <label className="block text-sm font-semibold text-[#001A4D] mb-1.5 flex items-center justify-between">
+            <span className="flex items-center gap-1.5">
+              <Building className="w-4 h-4 text-[#0E4EBD]" />
+              Academic Department & Eligibility Scope <span className="text-red-500">*</span>
+            </span>
+            <span className="text-[11px] text-gray-500 font-normal">Controls student eligibility to join</span>
+          </label>
+          {loadingDepts ? (
+            <div className="flex items-center gap-2 px-4 py-2.5 border border-[#E0E0E0] rounded-xl text-sm text-gray-400">
+              <Loader2 className="w-4 h-4 animate-spin" /> Loading departments...
+            </div>
+          ) : (
+            <select
+              value={formData.department}
+              onChange={(e) => {
+                setFormData({ ...formData, department: e.target.value });
+              }}
+              className="w-full px-4 py-2.5 border border-[#E0E0E0] rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent bg-white cursor-pointer"
+            >
+              <option value="cross-departmental">🌐 Cross-Departmental (Open to All Students / Campus-Wide)</option>
+              {activeDepartments.length > 0 && (
+                <optgroup label="Academic Departments (Department-Exclusive)">
+                  {activeDepartments.map(d => (
+                    <option key={d.id} value={d.id}>
+                      🏛️ {d.code} — {d.name} ({d.academicLevel || 'COLLEGE'})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          )}
+          <p className="text-[11px] text-gray-500 mt-1">
+            {formData.department === 'cross-departmental'
+              ? 'Any enrolled student can discover, apply, and join this organization on the mobile and web apps.'
+              : 'Membership applications and manual officer additions are restricted strictly to students enrolled in this department.'}
+          </p>
         </div>
 
         {/* Description */}
@@ -604,6 +655,20 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <div>
             <div className="text-gray-400 font-medium">Academic Period</div>
             <div className="text-[#001A4D] font-semibold">{currentAcademicPeriodLabel}</div>
+          </div>
+          <div>
+            <div className="text-gray-400 font-medium">Audience Eligibility Scope</div>
+            <div className="mt-0.5">
+              {!formData.department || formData.department === 'cross-departmental' ? (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
+                  🌐 Open to All Students
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 font-bold border border-blue-200">
+                  🏛️ {departments.find(d => d.id === formData.department)?.name || 'Department Specific'}
+                </span>
+              )}
+            </div>
           </div>
           <div className="col-span-2">
             <div className="text-gray-400 font-medium">Description</div>

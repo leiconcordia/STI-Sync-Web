@@ -191,6 +191,8 @@ export async function concludeEvent(
     completedByName: adminName || 'Administrator',
     attendanceLocked: true,
     attendanceFinalized: options.finalizeAttendance !== false,
+    scannerStatus: 'concluded',
+    scannerAssignmentStatus: 'concluded',
     cashAllocationsLocked: true,
     liquidationRequired: isLiquidationRequired,
     liquidationStatus: isLiquidationRequired ? 'pending' : 'none_required',

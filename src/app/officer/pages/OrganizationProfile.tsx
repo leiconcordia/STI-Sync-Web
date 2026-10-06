@@ -281,6 +281,20 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                 <span className="text-sm text-gray-600">Semester</span>
                 <span className="text-sm font-medium text-[#001A4D]">{activeOrg.semester}</span>
               </div>
+              <div className="flex justify-between items-center py-2 border-b border-gray-100">
+                <span className="text-sm text-gray-600">Department Scope</span>
+                <span className="text-xs font-semibold">
+                  {activeOrg.isCrossDepartmental || activeOrg.departmentId === 'cross-departmental' || !activeOrg.departmentId ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
+                      🌐 Open to All Students
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 font-bold border border-blue-200">
+                      🏛️ {activeOrg.departmentName || activeOrg.department || 'Department Specific'}
+                    </span>
+                  )}
+                </span>
+              </div>
               <div className="flex justify-between items-center py-2">
                 <span className="text-sm text-gray-600">Date Established</span>
                 <span className="text-sm font-medium text-[#001A4D]">{establishedDate}</span>

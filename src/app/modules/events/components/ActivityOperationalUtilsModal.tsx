@@ -36,7 +36,7 @@ import {
   RotateCcw,
   BookOpen,
 } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument, BudgetCustodianAllocation, EventSession } from '../types/event.types';
@@ -184,16 +184,35 @@ export default function ActivityOperationalUtilsModal({
       // 5. Custodians
       if (activity.budgetCustodians && activity.budgetCustodians.length > 0) {
         setCustodians(activity.budgetCustodians);
+      } else if ((activity as any).financialProjections?.expenses && (activity as any).financialProjections.expenses.length > 0) {
+        const prefill = (activity as any).financialProjections.expenses.map((item: any, idx: number) => {
+          const isContingency = (item.description || '').toLowerCase().includes('contingency');
+          return {
+            id: `cust_${Date.now()}_${idx}`,
+            expenseItemId: item.id,
+            personName: '',
+            personRole: isContingency ? 'Contingency Custodian' : 'Committee Lead',
+            purpose: item.description || `Expense ${idx + 1}`,
+            allocatedAmount: Number(item.totalAmount ?? item.thisYearProposed ?? item.approvedAmount ?? 0),
+            notes: item.remarks || '',
+            isContingencyFund: isContingency,
+          };
+        });
+        setCustodians(prefill);
       } else if (activity.budgetItems && activity.budgetItems.length > 0) {
-        const prefill = activity.budgetItems.map((item, idx) => ({
-          id: `cust_${Date.now()}_${idx}`,
-          expenseItemId: item.id,
-          personName: '',
-          personRole: 'Committee Lead',
-          purpose: item.item || item.description || 'Approved Expense',
-          allocatedAmount: Number(item.approvedAmount || item.unitCost || 0),
-          notes: item.description || '',
-        }));
+        const prefill = activity.budgetItems.map((item, idx) => {
+          const isContingency = (item.item || item.description || '').toLowerCase().includes('contingency');
+          return {
+            id: `cust_${Date.now()}_${idx}`,
+            expenseItemId: item.id,
+            personName: '',
+            personRole: isContingency ? 'Contingency Custodian' : 'Committee Lead',
+            purpose: item.item || item.description || 'Approved Expense',
+            allocatedAmount: Number(item.approvedAmount || item.unitCost || 0),
+            notes: item.description || '',
+            isContingencyFund: isContingency,
+          };
+        });
         setCustodians(prefill);
       } else {
         setCustodians([]);
@@ -206,10 +225,17 @@ export default function ActivityOperationalUtilsModal({
   const totalApprovedBudget = Number(activity.totalApprovedBudget || 0);
 
   // Calculations for budget
+  const contingencyAllocated = useMemo(() => {
+    return custodians
+      .filter((c) => c.isContingencyFund === true)
+      .reduce((sum, c) => sum + (Number(c.allocatedAmount) || 0), 0);
+  }, [custodians]);
+
   const totalAllocated = custodians.reduce(
     (sum, c) => sum + (Number(c.allocatedAmount) || 0),
     0
   );
+  const baseOperationalAllocated = totalAllocated - contingencyAllocated;
   const remainingBudget = totalApprovedBudget - totalAllocated;
   const isOverBudget = remainingBudget < -0.01;
   const isFullyAllocated = Math.abs(remainingBudget) < 0.01;
@@ -221,10 +247,27 @@ export default function ActivityOperationalUtilsModal({
       personName: '',
       personRole: '',
       purpose: '',
+      isCustomItem: true,
+      isContingencyFund: false,
       allocatedAmount: remainingBudget > 0 ? remainingBudget : 0,
       notes: '',
     };
     setCustodians([...custodians, newRow]);
+  };
+
+  const handleAddContingencyFund = () => {
+    const newRow: BudgetCustodianAllocation = {
+      id: `contingency_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      isCustomItem: true,
+      isContingencyFund: true,
+      personName: '',
+      personRole: 'Contingency Custodian',
+      purpose: 'Contingency Fund Distribution',
+      allocatedAmount: remainingBudget > 0 ? remainingBudget : 0,
+      notes: 'Emergency buffer for unforeseen operational expenses',
+    };
+    setCustodians([...custodians, newRow]);
+    toast.success('Added Contingency Fund allocation row.');
   };
 
   const handleUpdateCustodian = (id: string, updates: Partial<BudgetCustodianAllocation>) => {
@@ -238,16 +281,37 @@ export default function ActivityOperationalUtilsModal({
   };
 
   const handlePrefillFromProjections = () => {
-    if (activity.budgetItems && activity.budgetItems.length > 0) {
-      const prefill = activity.budgetItems.map((item, idx) => ({
-        id: `cust_${Date.now()}_${idx}`,
-        expenseItemId: item.id,
-        personName: '',
-        personRole: 'Committee Lead',
-        purpose: item.item || item.description || 'Approved Expense',
-        allocatedAmount: Number(item.approvedAmount || item.unitCost || 0),
-        notes: item.description || '',
-      }));
+    const actFP = (activity as any)?.financialProjections?.expenses;
+    if (actFP && actFP.length > 0) {
+      const prefill = actFP.map((item: any, idx: number) => {
+        const isContingency = (item.description || '').toLowerCase().includes('contingency');
+        return {
+          id: `cust_${Date.now()}_${idx}`,
+          expenseItemId: item.id,
+          personName: '',
+          personRole: isContingency ? 'Contingency Custodian' : 'Committee Lead',
+          purpose: item.description || `Expense ${idx + 1}`,
+          allocatedAmount: Number(item.totalAmount ?? item.thisYearProposed ?? item.approvedAmount ?? 0),
+          notes: item.remarks || '',
+          isContingencyFund: isContingency,
+        };
+      });
+      setCustodians(prefill);
+      toast.success(`Loaded ${prefill.length} items from proposal financial projections.`);
+    } else if (activity.budgetItems && activity.budgetItems.length > 0) {
+      const prefill = activity.budgetItems.map((item, idx) => {
+        const isContingency = (item.item || item.description || '').toLowerCase().includes('contingency');
+        return {
+          id: `cust_${Date.now()}_${idx}`,
+          expenseItemId: item.id,
+          personName: '',
+          personRole: isContingency ? 'Contingency Custodian' : 'Committee Lead',
+          purpose: item.item || item.description || 'Approved Expense',
+          allocatedAmount: Number(item.approvedAmount || item.unitCost || 0),
+          notes: item.description || '',
+          isContingencyFund: isContingency,
+        };
+      });
       setCustodians(prefill);
       toast.success(`Loaded ${prefill.length} items from approved financial projections.`);
     } else {
@@ -328,13 +392,17 @@ export default function ActivityOperationalUtilsModal({
     try {
       const cleanCustodians = custodians.map((c) => ({
         ...c,
+        isContingencyFund: Boolean(c.isContingencyFund),
+        isCustomItem: Boolean(c.isCustomItem),
         personName: (c.personName || '').trim(),
+        personRole: (c.personRole || '').trim(),
         purpose: (c.purpose || '').trim(),
         allocatedAmount: Number(c.allocatedAmount) || 0,
+        notes: (c.notes || '').trim(),
       }));
 
       const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
-      await updateDoc(docRef, {
+      const updatesPayload = {
         // Attendance & QR Tickets
         enableQRTickets,
         attendanceEnabled: enableQRTickets,
@@ -365,7 +433,16 @@ export default function ActivityOperationalUtilsModal({
         totalAllocatedBudget: totalAllocated,
 
         updatedAt: serverTimestamp(),
-      });
+      };
+      await updateDoc(docRef, updatesPayload);
+
+      // Dual-sync to events collection for mobile app compatibility
+      try {
+        const mirrorRef = doc(db, 'events', activity.id);
+        await setDoc(mirrorRef, updatesPayload, { merge: true });
+      } catch (evtErr) {
+        console.warn('[ActivityOperationalUtilsModal] Failed to mirror to events collection:', evtErr);
+      }
 
       toast.success('Activity operational configurations updated successfully!');
       if (onUpdated) onUpdated();
@@ -968,12 +1045,12 @@ export default function ActivityOperationalUtilsModal({
           {activeTab === 'custodians' && (
             <div className="space-y-5">
               {/* Top KPI Summary Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
                     Total Approved Budget
                   </span>
-                  <div className="text-xl font-black text-slate-900 mt-1">
+                  <div className="text-xl font-black text-slate-900 mt-1 font-mono">
                     {formatPHP(totalApprovedBudget)}
                   </div>
                   <p className="text-[10px] text-slate-400 mt-0.5">Officially endorsed ceiling</p>
@@ -981,20 +1058,27 @@ export default function ActivityOperationalUtilsModal({
 
                 <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
                   <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    Total Disbursed / Allocated
+                    Itemized Line Advances
                   </span>
-                  <div
-                    className={`text-xl font-black mt-1 ${
-                      isOverBudget
-                        ? 'text-rose-600'
-                        : isFullyAllocated
-                        ? 'text-emerald-600'
-                        : 'text-blue-600'
-                    }`}
-                  >
-                    {formatPHP(totalAllocated)}
+                  <div className="text-xl font-black text-slate-800 mt-1 font-mono">
+                    {formatPHP(baseOperationalAllocated)}
                   </div>
-                  <p className="text-[10px] text-slate-400 mt-0.5">Entrusted to designated committee leads</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Entrusted to committee leads</p>
+                </div>
+
+                <div className="bg-amber-50/70 p-4 rounded-2xl border border-amber-200/90 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider block">
+                      Contingency Fund
+                    </span>
+                    <Shield className="w-3.5 h-3.5 text-amber-600" />
+                  </div>
+                  <div className="text-xl font-black text-amber-950 mt-1 font-mono">
+                    {formatPHP(contingencyAllocated)}
+                  </div>
+                  <p className="text-[10px] text-amber-800/80 mt-0.5">
+                    {contingencyAllocated > 0 ? 'Allocated emergency reserve' : 'Unallocated reserve'}
+                  </p>
                 </div>
 
                 <div
@@ -1009,7 +1093,7 @@ export default function ActivityOperationalUtilsModal({
                   <span className="text-[11px] font-bold uppercase tracking-wider">
                     {isOverBudget ? 'Budget Deficit / Over' : 'Remaining to Disburse'}
                   </span>
-                  <div className="text-xl font-black mt-1">
+                  <div className="text-xl font-black mt-1 font-mono">
                     {formatPHP(Math.abs(remainingBudget))}
                   </div>
                   <p className="text-[10px] mt-0.5 opacity-80">
@@ -1036,7 +1120,7 @@ export default function ActivityOperationalUtilsModal({
                   Designated Cash Custodians & Committee Allocations
                 </h3>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={handlePrefillFromProjections}
@@ -1044,6 +1128,15 @@ export default function ActivityOperationalUtilsModal({
                   >
                     <FileText className="w-3.5 h-3.5 text-blue-600" />
                     <span>Pre-fill from Proposal Items</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleAddContingencyFund}
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all shadow-xs cursor-pointer border border-amber-600/30"
+                  >
+                    <Shield className="w-3.5 h-3.5 text-slate-950" />
+                    <span>+ Add Contingency Fund</span>
                   </button>
 
                   <button
@@ -1064,7 +1157,7 @@ export default function ActivityOperationalUtilsModal({
                     <Users className="w-8 h-8 mx-auto mb-2 text-slate-400 opacity-50" />
                     <p className="font-bold text-slate-700">No cash custodians allocated yet.</p>
                     <p className="text-slate-400 text-[11px] mt-1">
-                      Click "Add Person Allocation" or "Pre-fill from Proposal Items" to assign money to committee leads.
+                      Click "Add Person Allocation", "+ Add Contingency Fund", or "Pre-fill from Proposal Items" to assign money to committee leads.
                     </p>
                   </div>
                 ) : (
@@ -1081,95 +1174,113 @@ export default function ActivityOperationalUtilsModal({
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {custodians.map((c, idx) => (
-                          <tr key={c.id || idx} className="hover:bg-slate-50/50">
-                            {/* Person Name */}
-                            <td className="py-2.5 px-4">
-                              <input
-                                type="text"
-                                value={c.personName}
-                                onChange={(e) =>
-                                  handleUpdateCustodian(c.id, { personName: e.target.value })
-                                }
-                                placeholder="e.g. Juan Dela Cruz"
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
-
-                            {/* Role / Committee */}
-                            <td className="py-2.5 px-3">
-                              <input
-                                type="text"
-                                value={c.personRole || ''}
-                                onChange={(e) =>
-                                  handleUpdateCustodian(c.id, { personRole: e.target.value })
-                                }
-                                placeholder="e.g. Logistics Head"
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
-
-                            {/* Purpose / Item */}
-                            <td className="py-2.5 px-3">
-                              <input
-                                type="text"
-                                value={c.purpose}
-                                onChange={(e) =>
-                                  handleUpdateCustodian(c.id, { purpose: e.target.value })
-                                }
-                                placeholder="e.g. Refreshments & Water"
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
-
-                            {/* Allocated Cash Amount */}
-                            <td className="py-2.5 px-3">
-                              <div className="relative">
-                                <span className="absolute left-2.5 top-1.5 text-slate-400 font-bold">
-                                  ₱
-                                </span>
+                        {custodians.map((c, idx) => {
+                          const isContingency = c.isContingencyFund === true;
+                          return (
+                            <tr
+                              key={c.id || idx}
+                              className={`transition-colors ${
+                                isContingency ? 'bg-amber-50/40 hover:bg-amber-50/70' : 'hover:bg-slate-50/50'
+                              }`}
+                            >
+                              {/* Person Name */}
+                              <td className="py-2.5 px-4">
                                 <input
-                                  type="number"
-                                  min={0}
-                                  step="any"
-                                  value={c.allocatedAmount || ''}
+                                  type="text"
+                                  value={c.personName}
                                   onChange={(e) =>
-                                    handleUpdateCustodian(c.id, {
-                                      allocatedAmount: parseFloat(e.target.value) || 0,
-                                    })
+                                    handleUpdateCustodian(c.id, { personName: e.target.value })
                                   }
-                                  placeholder="0.00"
-                                  className="w-full pl-6 pr-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-bold text-slate-900 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                  placeholder={isContingency ? 'e.g. Maria Santos (Treasurer)' : 'e.g. Juan Dela Cruz'}
+                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
                                 />
-                              </div>
-                            </td>
+                              </td>
 
-                            {/* Notes */}
-                            <td className="py-2.5 px-3">
-                              <input
-                                type="text"
-                                value={c.notes || ''}
-                                onChange={(e) =>
-                                  handleUpdateCustodian(c.id, { notes: e.target.value })
-                                }
-                                placeholder="e.g. Keep official receipts"
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-500 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
-                              />
-                            </td>
+                              {/* Role / Committee */}
+                              <td className="py-2.5 px-3">
+                                <input
+                                  type="text"
+                                  value={c.personRole || ''}
+                                  onChange={(e) =>
+                                    handleUpdateCustodian(c.id, { personRole: e.target.value })
+                                  }
+                                  placeholder={isContingency ? 'Contingency Custodian' : 'e.g. Logistics Head'}
+                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                />
+                              </td>
 
-                            {/* Delete */}
-                            <td className="py-2.5 px-3 text-right">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteCustodian(c.id)}
-                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                                title="Remove row"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                              {/* Purpose / Item */}
+                              <td className="py-2.5 px-3">
+                                <input
+                                  type="text"
+                                  value={c.purpose}
+                                  onChange={(e) =>
+                                    handleUpdateCustodian(c.id, { purpose: e.target.value })
+                                  }
+                                  placeholder={isContingency ? 'Contingency Fund Distribution' : 'e.g. Refreshments & Water'}
+                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                />
+                                {isContingency && (
+                                  <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-900 border border-amber-300">
+                                    <Shield className="w-2.5 h-2.5 text-amber-700" />
+                                    Contingency Fund
+                                  </span>
+                                )}
+                              </td>
+
+                              {/* Allocated Cash Amount */}
+                              <td className="py-2.5 px-3">
+                                <div className="relative">
+                                  <span className="absolute left-2.5 top-1.5 text-slate-400 font-bold">
+                                    ₱
+                                  </span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step="any"
+                                    value={c.allocatedAmount || ''}
+                                    onChange={(e) =>
+                                      handleUpdateCustodian(c.id, {
+                                        allocatedAmount: parseFloat(e.target.value) || 0,
+                                      })
+                                    }
+                                    placeholder="0.00"
+                                    className={`w-full pl-6 pr-2.5 py-1.5 border rounded-lg text-xs font-bold outline-none ${
+                                      isContingency
+                                        ? 'bg-amber-50/50 border-amber-300 text-amber-950 font-mono'
+                                        : 'bg-slate-50 border-slate-200 text-slate-900 focus:bg-white focus:ring-2 focus:ring-blue-500/20'
+                                    }`}
+                                  />
+                                </div>
+                              </td>
+
+                              {/* Notes */}
+                              <td className="py-2.5 px-3">
+                                <input
+                                  type="text"
+                                  value={c.notes || ''}
+                                  onChange={(e) =>
+                                    handleUpdateCustodian(c.id, { notes: e.target.value })
+                                  }
+                                  placeholder={isContingency ? 'Buffer for emergency price increases' : 'e.g. Keep official receipts'}
+                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-500 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none"
+                                />
+                              </td>
+
+                              {/* Delete */}
+                              <td className="py-2.5 px-3 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteCustodian(c.id)}
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                                  title="Remove row"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>

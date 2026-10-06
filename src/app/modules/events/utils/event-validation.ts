@@ -288,12 +288,6 @@ export function validateStep2(
       if (!s.date) {
         errors.push(`Session ${sNum}: Date is required.`);
         fieldErrors[`session_${idx}_date`] = 'Date is required.';
-      } else {
-        const eventStartDate = (data as any).startDate || (data as any).date;
-        if (eventStartDate && s.date < eventStartDate) {
-          errors.push(`Session ${sNum}: Session date (${s.date}) cannot be before the event start date (${eventStartDate}).`);
-          fieldErrors[`session_${idx}_date`] = `Cannot be before event start date (${eventStartDate}).`;
-        }
       }
       if (!s.startTime) {
         errors.push(`Session ${sNum}: Start Time is required.`);

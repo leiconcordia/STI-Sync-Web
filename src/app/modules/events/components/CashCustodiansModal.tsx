@@ -3,8 +3,9 @@
  *
  * Official Cash Custodian Allocations & Liquidation Bridge Modal.
  * Directly implements the STI institutional cash advance workflow from LIQUIDATION-FORMAT_v1.xlsx:
- * - Divides the approved budget per proposal task (e.g. Task 1: ₱300, Task 2: ₱0, Task 3: ₱300)
- * - Allows adding custom cash advance items outside the task list
+ * - Divides approved budget from Proposal Financial Projections (expense line items)
+ * - Supports dedicated Contingency Fund Distribution (emergency cash reserves)
+ * - Allows adding custom cash advance items outside the projection list
  * - Real-time budget deduction: Remaining Budget = Approved Budget - Total Allocated
  * - Persists structured advances to activities.budgetCustodians for post-event receipt liquidation
  */
@@ -22,15 +23,17 @@ import {
   CheckCircle2,
   AlertTriangle,
   RotateCcw,
-  Tag,
   Coins,
   Receipt,
   Lock,
+  Shield,
+  Tag,
 } from 'lucide-react';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument, BudgetCustodianAllocation } from '../types/event.types';
+import type { FinancialProjections, FinancialLineItem } from '../../activity-proposals/types/proposal.types';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
 import { toast } from 'sonner';
 
@@ -38,6 +41,8 @@ interface CashCustodiansModalProps {
   isOpen: boolean;
   onClose: () => void;
   activity: EventDocument;
+  financialProjections?: FinancialProjections | null;
+  /** @deprecated Retained for backward-compatibility if caller still passes tasks */
   proposalTasks?: any[];
   onUpdated?: () => void;
   readOnly?: boolean;
@@ -47,7 +52,8 @@ export default function CashCustodiansModal({
   isOpen,
   onClose,
   activity,
-  proposalTasks = [],
+  financialProjections,
+  proposalTasks,
   onUpdated,
   readOnly = false,
 }: CashCustodiansModalProps) {
@@ -67,15 +73,35 @@ export default function CashCustodiansModal({
       0
     );
     if (fromItems > 0) return fromItems;
+    if (financialProjections?.totalExpenses && Number(financialProjections.totalExpenses) > 0) {
+      return Number(financialProjections.totalExpenses);
+    }
     return Number((activity as any).financialProjections?.totalExpenses || 0);
-  }, [activity]);
+  }, [activity, financialProjections]);
 
-  // Unified task matrix
-  const effectiveTasks = useMemo(() => {
-    if (proposalTasks && proposalTasks.length > 0) return proposalTasks;
-    if ((activity as any).tasks && (activity as any).tasks.length > 0) return (activity as any).tasks;
+  // Extract effective expense projection items from proposal or activity
+  const effectiveExpenseItems = useMemo<any[]>(() => {
+    // 1. Passed explicitly via props
+    if (financialProjections?.expenses && financialProjections.expenses.length > 0) {
+      return financialProjections.expenses;
+    }
+    // 2. Saved on activity document
+    const actFP = (activity as any)?.financialProjections;
+    if (actFP?.expenses && Array.isArray(actFP.expenses) && actFP.expenses.length > 0) {
+      return actFP.expenses;
+    }
+    // 3. Fallback to activity.budgetItems (which was mapped from proposal expenses)
+    if (activity.budgetItems && activity.budgetItems.length > 0) {
+      return activity.budgetItems.map((bi) => ({
+        id: bi.id,
+        description: bi.item || bi.description || 'Expense Item',
+        totalAmount: Number(bi.approvedAmount || (bi.unitCost || 0) * (bi.quantity || 1)),
+        thisYearProposed: Number(bi.approvedAmount || (bi.unitCost || 0) * (bi.quantity || 1)),
+        remarks: bi.description || '',
+      }));
+    }
     return [];
-  }, [proposalTasks, activity]);
+  }, [financialProjections, activity]);
 
   // Initialize data
   useEffect(() => {
@@ -84,13 +110,33 @@ export default function CashCustodiansModal({
     if (activity.budgetCustodians && activity.budgetCustodians.length > 0) {
       // Existing allocations saved in activity document
       setCustodians(activity.budgetCustodians);
-    } else if (effectiveTasks.length > 0) {
-      // Auto-populate from proposal tasks with 0 initial budget so officer can allocate
-      const taskRows: BudgetCustodianAllocation[] = effectiveTasks.map((t, idx) => ({
+    } else if (effectiveExpenseItems.length > 0) {
+      // Pre-fill directly from Proposal Financial Projections (with approved amounts intact)
+      const projectionRows: BudgetCustodianAllocation[] = effectiveExpenseItems.map((item, idx) => {
+        const isContingency = (item.description || '').toLowerCase().includes('contingency');
+        const approvedCost = Number(item.totalAmount ?? item.thisYearProposed ?? item.approvedAmount ?? 0);
+        return {
+          id: `ca_exp_${item.id || idx}`,
+          expenseItemId: item.id,
+          expenseTitle: item.description || `Expense ${idx + 1}`,
+          purpose: item.description || `Expense ${idx + 1}`,
+          isCustomItem: false,
+          isContingencyFund: isContingency,
+          personName: '',
+          personRole: isContingency ? 'Contingency Custodian' : 'Expense Custodian',
+          allocatedAmount: approvedCost,
+          notes: item.remarks || '',
+        };
+      });
+      setCustodians(projectionRows);
+    } else if (proposalTasks && proposalTasks.length > 0) {
+      // Fallback if no financial projections exist but legacy tasks do
+      const taskRows: BudgetCustodianAllocation[] = proposalTasks.map((t, idx) => ({
         id: `task_ca_${t.id || idx}`,
         taskId: t.id || `task_${idx + 1}`,
         taskName: t.taskName || `Task ${idx + 1}`,
         isCustomItem: false,
+        isContingencyFund: false,
         personName: t.assignedPerson || '',
         personRole: 'Committee Lead',
         purpose: t.taskName || 'Committee Task',
@@ -98,47 +144,38 @@ export default function CashCustodiansModal({
         notes: '',
       }));
       setCustodians(taskRows);
-    } else if (activity.budgetItems && activity.budgetItems.length > 0) {
-      // Fallback from budget items if no tasks defined
-      const itemRows: BudgetCustodianAllocation[] = activity.budgetItems.map((item, idx) => ({
-        id: `item_ca_${item.id || idx}`,
-        isCustomItem: true,
-        expenseItemId: item.id,
-        personName: '',
-        personRole: 'Committee Lead',
-        purpose: item.item || item.description || 'Expense Item',
-        allocatedAmount: Number(item.approvedAmount || item.unitCost || 0),
-        notes: item.description || '',
-      }));
-      setCustodians(itemRows);
     } else {
       setCustodians([]);
     }
-  }, [activity, effectiveTasks]);
+  }, [activity, effectiveExpenseItems, proposalTasks]);
 
   if (!isOpen) return null;
 
-  // Real-time calculation: Total Allocated & Remaining
+  // Real-time calculation: Total Allocated, Contingency, Base, and Remaining
+  const contingencyAllocated = custodians
+    .filter((c) => c.isContingencyFund === true)
+    .reduce((sum, c) => sum + (Number(c.allocatedAmount) || 0), 0);
+
   const totalAllocated = custodians.reduce(
     (sum, c) => sum + (Number(c.allocatedAmount) || 0),
     0
   );
+
+  const baseOperationalAllocated = totalAllocated - contingencyAllocated;
   const remainingBudget = totalApprovedBudget - totalAllocated;
   const isOverBudget = remainingBudget < -0.01;
   const isFullyAllocated = Math.abs(remainingBudget) < 0.01 && totalApprovedBudget > 0;
 
   // Check if allocations are sealed / read-only for completed event or admin view
-  const isLocked = useMemo(() => {
-    return Boolean(
-      readOnly ||
-      activity.status === 'completed' ||
-      activity.proposalStatus === 'completed' ||
-      (activity as any).cashAllocationsLocked === true ||
-      activity.isArchived === true
-    );
-  }, [activity, readOnly]);
+  const isLocked = Boolean(
+    readOnly ||
+    activity.status === 'completed' ||
+    activity.proposalStatus === 'completed' ||
+    (activity as any).cashAllocationsLocked === true ||
+    activity.isArchived === true
+  );
 
-  // Add custom row (not in task list)
+  // Add custom row (outside original projection list)
   const handleAddCustomItem = () => {
     if (isLocked) {
       toast.error('Cash allocations are locked and read-only for concluded events.');
@@ -147,13 +184,35 @@ export default function CashCustodiansModal({
     const newRow: BudgetCustodianAllocation = {
       id: `custom_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       isCustomItem: true,
+      isContingencyFund: false,
       personName: '',
       personRole: 'Committee Lead',
       purpose: '',
       allocatedAmount: remainingBudget > 0 ? remainingBudget : 0,
       notes: '',
     };
-    setCustodians([...custodians, newRow]);
+    setCustodians((prev) => [...prev, newRow]);
+  };
+
+  // Add designated Contingency Fund Distribution
+  const handleAddContingencyFund = () => {
+    if (isLocked) {
+      toast.error('Cash allocations are locked and read-only for concluded events.');
+      return;
+    }
+    const defaultAmount = remainingBudget > 0 ? remainingBudget : 0;
+    const newContingencyRow: BudgetCustodianAllocation = {
+      id: `contingency_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      isCustomItem: true,
+      isContingencyFund: true,
+      personName: '',
+      personRole: 'Contingency Custodian',
+      purpose: 'Contingency Fund Distribution',
+      allocatedAmount: defaultAmount,
+      notes: 'Emergency buffer for unforeseen event operational expenses',
+    };
+    setCustodians((prev) => [...prev, newContingencyRow]);
+    toast.success('Added Contingency Fund allocation row.');
   };
 
   // Update allocation row
@@ -164,43 +223,48 @@ export default function CashCustodiansModal({
     );
   };
 
-  // Delete row (allowed for custom items, or resets task row to 0)
-  const handleDeleteRow = (id: string, isCustom?: boolean) => {
+  // Delete row (allowed for custom/contingency items, or resets projection row to 0)
+  const handleDeleteRow = (id: string, isCustomOrContingency?: boolean) => {
     if (isLocked) {
       toast.error('Cash allocations cannot be modified for concluded events.');
       return;
     }
-    if (isCustom) {
+    if (isCustomOrContingency) {
       setCustodians((prev) => prev.filter((c) => c.id !== id));
     } else {
       handleUpdateRow(id, { allocatedAmount: 0 });
-      toast.info('Task budget set to ₱0.00 (No budget)');
+      toast.info('Item budget set to ₱0.00 (No advance requested)');
     }
   };
 
-  // Reset to Tasks
-  const handleReloadTasks = () => {
+  // Reload from Proposal Financial Projections
+  const handleReloadProjections = () => {
     if (isLocked) {
-      toast.error('Cannot reload tasks: Cash allocations are locked.');
+      toast.error('Cannot reload projections: Cash allocations are locked.');
       return;
     }
-    if (effectiveTasks.length === 0) {
-      toast.info('No proposal tasks available to load.');
+    if (effectiveExpenseItems.length === 0) {
+      toast.info('No proposal financial projections available to load.');
       return;
     }
-    const taskRows: BudgetCustodianAllocation[] = effectiveTasks.map((t, idx) => ({
-      id: `task_ca_${t.id || idx}`,
-      taskId: t.id || `task_${idx + 1}`,
-      taskName: t.taskName || `Task ${idx + 1}`,
-      isCustomItem: false,
-      personName: t.assignedPerson || '',
-      personRole: 'Committee Lead',
-      purpose: t.taskName || 'Committee Task',
-      allocatedAmount: 0,
-      notes: '',
-    }));
-    setCustodians(taskRows);
-    toast.success(`Loaded ${taskRows.length} tasks from proposal committee matrix.`);
+    const projectionRows: BudgetCustodianAllocation[] = effectiveExpenseItems.map((item, idx) => {
+      const isContingency = (item.description || '').toLowerCase().includes('contingency');
+      const approvedCost = Number(item.totalAmount ?? item.thisYearProposed ?? item.approvedAmount ?? 0);
+      return {
+        id: `ca_exp_${item.id || idx}_${Date.now()}`,
+        expenseItemId: item.id,
+        expenseTitle: item.description || `Expense ${idx + 1}`,
+        purpose: item.description || `Expense ${idx + 1}`,
+        isCustomItem: false,
+        isContingencyFund: isContingency,
+        personName: '',
+        personRole: isContingency ? 'Contingency Custodian' : 'Expense Custodian',
+        allocatedAmount: approvedCost,
+        notes: item.remarks || '',
+      };
+    });
+    setCustodians(projectionRows);
+    toast.success(`Loaded ${projectionRows.length} items from proposal financial projections.`);
   };
 
   // Save allocations
@@ -218,10 +282,13 @@ export default function CashCustodiansModal({
 
     setIsSaving(true);
     try {
-      const cleanCustodians = custodians.map((c) => ({
+      const cleanCustodians: BudgetCustodianAllocation[] = custodians.map((c) => ({
         ...c,
+        isContingencyFund: Boolean(c.isContingencyFund),
+        isCustomItem: Boolean(c.isCustomItem),
         personName: (c.personName || '').trim(),
-        purpose: (c.purpose || c.taskName || '').trim(),
+        personRole: (c.personRole || '').trim(),
+        purpose: (c.purpose || c.expenseTitle || c.taskName || '').trim(),
         allocatedAmount: Number(c.allocatedAmount) || 0,
         notes: (c.notes || '').trim(),
       }));
@@ -265,7 +332,7 @@ export default function CashCustodiansModal({
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5 truncate max-w-md">
-                {activity.title} • Subdivide budget per task for official receipt liquidation
+                {activity.title} • Sourced from approved proposal financial projections & contingency fund
               </p>
             </div>
           </div>
@@ -297,8 +364,8 @@ export default function CashCustodiansModal({
           )}
 
           {/* Top KPI Summary Dashboard */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {/* Approved Budget */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* 1. Approved Budget */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                 Total Approved Budget
@@ -306,31 +373,41 @@ export default function CashCustodiansModal({
               <div className="text-xl font-black text-slate-900 mt-1 font-mono">
                 {formatPHP(totalApprovedBudget)}
               </div>
-              <p className="text-[10px] text-slate-400 mt-0.5">Official endorsed financial ceiling</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Endorsed financial ceiling</p>
             </div>
 
-            {/* Total Allocated */}
+            {/* 2. Base Operational Advances */}
             <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                Total Cash Allocated
+                Itemized Line Advances
               </span>
-              <div
-                className={`text-xl font-black mt-1 font-mono ${
-                  isOverBudget
-                    ? 'text-rose-600'
-                    : isFullyAllocated
-                    ? 'text-emerald-600'
-                    : 'text-[#0E4EBD]'
-                }`}
-              >
-                {formatPHP(totalAllocated)}
+              <div className="text-xl font-black text-slate-800 mt-1 font-mono">
+                {formatPHP(baseOperationalAllocated)}
               </div>
               <p className="text-[10px] text-slate-400 mt-0.5">
-                Subdivided to {custodians.filter((c) => (c.allocatedAmount || 0) > 0).length} custodian advances
+                {custodians.filter((c) => !c.isContingencyFund && (c.allocatedAmount || 0) > 0).length} projected expense advances
               </p>
             </div>
 
-            {/* Remaining to Disburse */}
+            {/* 3. Contingency Fund Allocated */}
+            <div className="bg-amber-50/70 p-4 rounded-2xl border border-amber-200/90 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-amber-900 uppercase tracking-wider block">
+                  Contingency Fund
+                </span>
+                <Shield className="w-3.5 h-3.5 text-amber-600" />
+              </div>
+              <div className="text-xl font-black text-amber-950 mt-1 font-mono">
+                {formatPHP(contingencyAllocated)}
+              </div>
+              <p className="text-[10px] text-amber-800/80 mt-0.5">
+                {custodians.filter((c) => c.isContingencyFund && (c.allocatedAmount || 0) > 0).length > 0
+                  ? 'Allocated emergency reserve'
+                  : 'Unallocated emergency buffer'}
+              </p>
+            </div>
+
+            {/* 4. Remaining to Disburse */}
             <div
               className={`p-4 rounded-2xl border shadow-xs ${
                 isOverBudget
@@ -351,7 +428,7 @@ export default function CashCustodiansModal({
                   ? 'Exceeds approved budget! Please adjust amounts.'
                   : isFullyAllocated
                   ? '✓ 100% Subdivided perfectly'
-                  : 'Available for remaining committee tasks'}
+                  : 'Available for remaining allocations'}
               </p>
             </div>
           </div>
@@ -379,7 +456,7 @@ export default function CashCustodiansModal({
                 Institutional Liquidation Bridge (LIQUIDATION-FORMAT_v1.xlsx)
               </p>
               <p className="text-[11px] text-blue-800 mt-0.5 leading-relaxed">
-                Assign cash advances directly to committee tasks or custom expenditures. When the activity concludes, the official <strong>Liquidation Report</strong> will automatically load these exact custodians and cash amounts for attaching physical receipts (ORs) and computing variances.
+                Assign cash advances directly to approved financial projection line items or contingency reserves. When the activity concludes, the official <strong>Liquidation Report</strong> will automatically load these exact custodians and cash amounts for attaching physical receipts (ORs) and computing variances.
               </p>
             </div>
           </div>
@@ -388,25 +465,35 @@ export default function CashCustodiansModal({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div>
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Task Allocations & Cash Custodians ({custodians.length})
+                Financial Projection Advances & Custodians ({custodians.length})
               </h3>
               <p className="text-[11px] text-slate-500">
                 {isLocked
                   ? 'Allocations are read-only and preserved for financial liquidation.'
-                  : 'Enter an amount for each task (e.g., ₱300), leave 0 for tasks without budget, or add additional items.'}
+                  : 'Assign each proposed expense line item to a custodian, allocate contingency funds, or add extra advances.'}
               </p>
             </div>
 
             {!isLocked && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={handleReloadTasks}
+                  onClick={handleReloadProjections}
                   className="px-3 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
-                  title="Reload tasks from proposal committee task matrix"
+                  title="Reload line items from proposal financial projections"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
-                  <span>Reload Proposal Tasks</span>
+                  <span>Reload Financial Projections</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleAddContingencyFund}
+                  className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all shadow-xs cursor-pointer border border-amber-600/30"
+                  title="Allocate remaining budget or buffer to a designated contingency custodian"
+                >
+                  <Shield className="w-3.5 h-3.5 text-slate-950" />
+                  <span>+ Add Contingency Fund Distribution</span>
                 </button>
 
                 <button
@@ -415,7 +502,7 @@ export default function CashCustodiansModal({
                   className="px-3.5 py-1.5 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>+ Add Additional Item (Not in Task List)</span>
+                  <span>+ Add Additional Item</span>
                 </button>
               </div>
             )}
@@ -426,9 +513,9 @@ export default function CashCustodiansModal({
             {custodians.length === 0 ? (
               <div className="p-8 text-center text-slate-500 text-xs">
                 <Users className="w-8 h-8 mx-auto mb-2 text-slate-400 opacity-50" />
-                <p className="font-bold text-slate-700">No tasks or cash allocations listed.</p>
+                <p className="font-bold text-slate-700">No financial projections or cash allocations listed.</p>
                 <p className="text-slate-400 text-[11px] mt-1">
-                  Click "+ Add Additional Item" or "Reload Proposal Tasks" to divide the activity budget.
+                  Click "Reload Financial Projections" or "+ Add Contingency Fund Distribution" to allocate advances.
                 </p>
               </div>
             ) : (
@@ -436,26 +523,31 @@ export default function CashCustodiansModal({
                 <table className="w-full text-left text-xs">
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-bold uppercase text-[10px] tracking-wider">
                     <tr>
-                      <th className="py-3 px-3 w-52">Task / Particular Description</th>
+                      <th className="py-3 px-3 w-56">Expense Particular / Description</th>
                       <th className="py-3 px-3 w-44">Designated Custodian (Holds Money)</th>
                       <th className="py-3 px-3 w-36">Role / Committee</th>
                       <th className="py-3 px-3 w-36">Allocated Budget (₱)</th>
-                      <th className="py-3 px-3">Notes / Purpose</th>
+                      <th className="py-3 px-3">Notes / Instructions</th>
                       <th className="py-3 px-3 text-right w-16">{isLocked ? 'Status' : 'Action'}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {custodians.map((c, idx) => {
-                      const isCustom = c.isCustomItem === true || !c.taskId;
+                      const isCustom = c.isCustomItem === true || !c.expenseItemId;
+                      const isContingency = c.isContingencyFund === true;
 
                       return (
                         <tr
                           key={c.id || idx}
                           className={`hover:bg-slate-50/70 transition-colors ${
-                            (c.allocatedAmount || 0) > 0 ? 'bg-blue-50/20' : ''
+                            isContingency
+                              ? 'bg-amber-50/30'
+                              : (c.allocatedAmount || 0) > 0
+                              ? 'bg-blue-50/20'
+                              : ''
                           }`}
                         >
-                          {/* Task / Description */}
+                          {/* Expense / Particular Description */}
                           <td className="py-2.5 px-3">
                             <div className="space-y-1">
                               {isCustom ? (
@@ -466,25 +558,32 @@ export default function CashCustodiansModal({
                                   onChange={(e) =>
                                     handleUpdateRow(c.id, { purpose: e.target.value })
                                   }
-                                  placeholder="e.g. Emergency fare, speaker honorarium"
+                                  placeholder={isContingency ? 'Contingency Fund Distribution' : 'e.g. Extra logistics, emergency transport'}
                                   className="w-full px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-blue-500/20 outline-none disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
                                 />
                               ) : (
                                 <div className="space-y-0.5">
                                   <span className="font-bold text-[#001A4D] block text-xs">
-                                    {c.taskName || c.purpose}
+                                    {c.purpose || c.expenseTitle || 'Expense Item'}
                                   </span>
                                 </div>
                               )}
-                              <span
-                                className={`inline-block px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider ${
-                                  isCustom
-                                    ? 'bg-amber-100 text-amber-800'
-                                    : 'bg-blue-100 text-blue-800'
-                                }`}
-                              >
-                                {isCustom ? 'Additional Item' : 'Proposal Task'}
-                              </span>
+                              <div>
+                                {isContingency ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300">
+                                    <Shield className="w-2.5 h-2.5 text-amber-600" />
+                                    Contingency Fund
+                                  </span>
+                                ) : isCustom ? (
+                                  <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-slate-100 text-slate-700">
+                                    Additional Advance
+                                  </span>
+                                ) : (
+                                  <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-blue-100 text-[#0E4EBD]">
+                                    Proposal Projection
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </td>
 
@@ -497,7 +596,7 @@ export default function CashCustodiansModal({
                               onChange={(e) =>
                                 handleUpdateRow(c.id, { personName: e.target.value })
                               }
-                              placeholder="Name of person holding cash"
+                              placeholder={isContingency ? 'e.g. Maria Santos (Treasurer)' : 'Name of person holding cash'}
                               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
                             />
                           </td>
@@ -511,7 +610,7 @@ export default function CashCustodiansModal({
                               onChange={(e) =>
                                 handleUpdateRow(c.id, { personRole: e.target.value })
                               }
-                              placeholder="e.g. Committee Lead"
+                              placeholder={isContingency ? 'Contingency Custodian' : 'e.g. Committee Lead'}
                               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
                             />
                           </td>
@@ -536,7 +635,9 @@ export default function CashCustodiansModal({
                                 }}
                                 placeholder="0"
                                 className={`w-full pl-6 pr-2.5 py-1.5 rounded-lg text-xs font-bold font-mono outline-none border transition-colors disabled:bg-slate-100 disabled:cursor-not-allowed ${
-                                  (c.allocatedAmount || 0) > 0
+                                  isContingency
+                                    ? 'bg-amber-50/50 border-amber-400 text-amber-950 font-bold shadow-2xs'
+                                    : (c.allocatedAmount || 0) > 0
                                     ? 'bg-white border-[#0E4EBD] text-[#001A4D] shadow-2xs'
                                     : 'bg-slate-50 border-slate-200 text-slate-400'
                                 }`}
@@ -558,7 +659,7 @@ export default function CashCustodiansModal({
                               onChange={(e) =>
                                 handleUpdateRow(c.id, { notes: e.target.value })
                               }
-                              placeholder="e.g. Collect official receipt / invoice"
+                              placeholder={isContingency ? 'Reserve for emergency price increases or transport' : 'e.g. Collect official receipt / invoice'}
                               className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[11px] text-slate-600 focus:bg-white focus:ring-2 focus:ring-blue-500/20 outline-none disabled:bg-slate-100 disabled:text-slate-600 disabled:cursor-not-allowed"
                             />
                           </td>
@@ -572,9 +673,9 @@ export default function CashCustodiansModal({
                             ) : (
                               <button
                                 type="button"
-                                onClick={() => handleDeleteRow(c.id, isCustom)}
+                                onClick={() => handleDeleteRow(c.id, isCustom || isContingency)}
                                 className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                                title={isCustom ? 'Delete custom item' : 'Set task budget to ₱0'}
+                                title={isCustom || isContingency ? 'Delete item' : 'Set budget to ₱0'}
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -595,6 +696,11 @@ export default function CashCustodiansModal({
           <div className="text-xs text-slate-600">
             Total Allocated: <strong className="text-[#001A4D] font-mono">{formatPHP(totalAllocated)}</strong> of{' '}
             <strong className="font-mono">{formatPHP(totalApprovedBudget)}</strong>
+            {contingencyAllocated > 0 && (
+              <span className="text-amber-800 font-semibold ml-2">
+                (incl. {formatPHP(contingencyAllocated)} Contingency)
+              </span>
+            )}
             {isOverBudget && (
               <span className="text-rose-600 font-bold ml-2">
                 (Exceeds ceiling by {formatPHP(Math.abs(remainingBudget))})

@@ -120,6 +120,15 @@ export default function ProposalFlowBuilder({
     );
   }, [activeSignatories]);
 
+  // Auto-initialize default dynamic chain based on target audience if chain is empty
+  const hasInitializedRef = React.useRef(false);
+  useEffect(() => {
+    if (!hasInitializedRef.current && (!approvalChain || approvalChain.length === 0) && activeSignatories.length > 0) {
+      hasInitializedRef.current = true;
+      handleAutoSuggest();
+    }
+  }, [activeSignatories.length]);
+
   // Synchronize custom stage names or indices from approvalChain into stageConfigs
   React.useEffect(() => {
     if (!approvalChain || approvalChain.length === 0) return;
@@ -457,10 +466,10 @@ export default function ProposalFlowBuilder({
               type="button"
               onClick={handleAutoSuggest}
               className="px-3 py-1.5 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Pre-fills standard signers from your Signatory Directory as an optional starting point"
+              title="Automatically generates the 4-stage approval pipeline according to the proposal target audience and database signatories"
             >
               <Sparkles className="w-3.5 h-3.5 text-[#FFD41C]" />
-              <span>Pre-fill Registered Signatories</span>
+              <span>Auto-generate Flow from Audience</span>
             </button>
 
             <button

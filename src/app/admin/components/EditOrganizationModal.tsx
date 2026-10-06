@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
-import { X, Upload, Loader2, Edit3, Image as ImageIcon } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { X, Upload, Loader2, Edit3, Image as ImageIcon, Building } from 'lucide-react';
 import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
+import { useDepartments } from '../../modules/academic';
 
 import { updateOrganization } from '../../modules/organizations/services/organization.service';
 import { toast } from 'sonner';
@@ -15,11 +16,15 @@ interface EditOrganizationModalProps {
 
 export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess }: EditOrganizationModalProps) {
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
+  const { data: departments = [], loading: loadingDepts } = useDepartments();
+
+  const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
 
   const [formData, setFormData] = useState({
     name: '',
     acronym: '',
     typeId: '',
+    department: 'cross-departmental',
     description: '',
   });
 
@@ -33,6 +38,7 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
         name: organization.name || '',
         acronym: organization.acronym || '',
         typeId: organization.typeId || '',
+        department: organization.departmentId || (organization.isCrossDepartmental ? 'cross-departmental' : 'cross-departmental'),
         description: organization.description || '',
       });
       setLogoPreview(organization.logoUrl || null);
@@ -66,6 +72,9 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
       return;
     }
 
+    const isCross = !formData.department || formData.department === 'cross-departmental';
+    const selectedDept = departments.find(d => d.id === formData.department);
+
     setIsSaving(true);
     try {
       await updateOrganization(
@@ -74,6 +83,12 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
           name: formData.name.trim(),
           acronym: formData.acronym.trim().toUpperCase(),
           typeId: formData.typeId,
+          departmentId: isCross ? 'cross-departmental' : formData.department,
+          departmentName: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
+          departmentCode: isCross ? 'ALL' : (selectedDept?.code || ''),
+          department: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
+          scope: isCross ? 'cross-departmental' : 'departmental',
+          isCrossDepartmental: isCross,
           description: formData.description.trim(),
         },
         logoFile
@@ -165,7 +180,7 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">Organization Type *</label>
               <select
@@ -182,7 +197,31 @@ export function EditOrganizationModal({ organization, isOpen, onClose, onSuccess
                 ))}
               </select>
             </div>
-        </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">
+                <Building className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>Department / Audience Scope *</span>
+              </label>
+              <select
+                value={formData.department}
+                onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                disabled={loadingDepts}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none disabled:opacity-50"
+              >
+                <option value="cross-departmental">🌐 Cross-Departmental (Open to All)</option>
+                {activeDepartments.length > 0 && (
+                  <optgroup label="Academic Departments (Department-Exclusive)">
+                    {activeDepartments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        🏛️ {d.code} — {d.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          </div>
 
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>

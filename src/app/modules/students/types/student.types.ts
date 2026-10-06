@@ -39,7 +39,6 @@ export interface StudentDocument {
    *  We keep the email here; Auth is created separately via createUserWithEmailAndPassword. */
   authUid:      string;       // Firebase Auth UID, filled after account creation
   requiresPasswordChange?: boolean; // Set true when admin creates temporary credentials
-  requiresChangePassword?: boolean; // Alias for mobile app compatibility
   isProfileComplete?: boolean;      // False for bulk-imported students until they complete their profile on mobile
   defaultPassword?: string;         // Temporary initial password (e.g. Ablen496332) for mobile first login
 

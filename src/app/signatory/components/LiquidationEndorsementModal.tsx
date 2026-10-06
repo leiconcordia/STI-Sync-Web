@@ -99,22 +99,28 @@ export default function LiquidationEndorsementModal({
   }, [signatorySession?.signatureUrl, signatorySession?.signatureDataUrl]);
 
   const hasSignature = Boolean(activeSignatureUrl);
-  const isFinalApprover =
-    currentStep?.actionType === 'approve' ||
-    currentStep?.role === 'school_president' ||
+  const isSchoolAdmin =
     currentStep?.role === 'school_administrator' ||
-    signatorySession?.actionType === 'approve' ||
-    signatorySession?.role === 'school_president' ||
     signatorySession?.role === 'school_administrator';
+  const isPresident =
+    currentStep?.role === 'school_president' ||
+    signatorySession?.role === 'school_president';
+  const isFinalApprover =
+    isPresident ||
+    isSchoolAdmin ||
+    currentStep?.actionType === 'approve' ||
+    signatorySession?.actionType === 'approve';
 
   const isChecker = currentStep?.actionType === 'check' || currentStep?.role === 'accountant';
 
-  const handleEndorse = async () => {
+  const handleEndorse = async (overrideActionType?: 'endorse' | 'approve' | 'check') => {
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this liquidation.');
       onOpenSignaturePad();
       return;
     }
+
+    const action = overrideActionType || (isFinalApprover ? 'approve' : (isChecker ? 'check' : 'endorse'));
 
     setIsSubmitting(true);
     try {
@@ -127,7 +133,7 @@ export default function LiquidationEndorsementModal({
           email: signatorySession?.email || '',
           roleTitle: signatorySession?.roleTitle || '',
           role: signatorySession?.role || '',
-          actionType: isFinalApprover ? 'approve' : (isChecker ? 'check' : 'endorse'),
+          actionType: action,
           signatureUrl: activeSignatureUrl || undefined,
         },
         remarks
@@ -537,31 +543,59 @@ export default function LiquidationEndorsementModal({
               Close
             </button>
 
-            <button
-              type="button"
-              onClick={handleEndorse}
-              disabled={isSubmitting || !hasSignature}
-              className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                isFinalApprover
-                  ? 'bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-              }`}
-            >
-              {isFinalApprover ? (
+            {isSchoolAdmin ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleEndorse('endorse')}
+                  disabled={isSubmitting || !hasSignature}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to President'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleEndorse('approve')}
+                  disabled={isSubmitting || !hasSignature}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                  <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Final)'}</span>
+                </button>
+              </>
+            ) : isPresident ? (
+              <button
+                type="button"
+                onClick={() => handleEndorse('approve')}
+                disabled={isSubmitting || !hasSignature}
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+              >
                 <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-              ) : (
+                <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation (Presidential Final)'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleEndorse(isChecker ? 'check' : 'endorse')}
+                disabled={isSubmitting || !hasSignature}
+                className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
+                  isChecker
+                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                }`}
+              >
                 <Send className="w-4 h-4" />
-              )}
-              <span>
-                {isSubmitting
-                  ? 'Processing...'
-                  : isFinalApprover
-                  ? 'Authorize & Approve Financial Liquidation'
-                  : isChecker
-                  ? 'Audit & Endorse Liquidation'
-                  : 'Stamp E-Signature & Endorse Liquidation'}
-              </span>
-            </button>
+                <span>
+                  {isSubmitting
+                    ? 'Processing...'
+                    : isChecker
+                    ? 'Audit & Endorse Liquidation'
+                    : 'Stamp E-Signature & Endorse Liquidation'}
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </div>

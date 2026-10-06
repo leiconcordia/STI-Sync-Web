@@ -28,6 +28,7 @@ import { OrganizationDetailModal } from '../components/OrganizationDetailModal';
 import { EditOrganizationModal } from '../components/EditOrganizationModal';
 import { OrganizationStatusModal } from '../components/OrganizationStatusModal';
 import { TablePagination } from '../../components/common/TablePagination';
+import { useDepartments } from '../../modules/academic';
 
 export function Organizations() {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -37,6 +38,7 @@ export function Organizations() {
   const [activeTab, setActiveTab] = useState<'all' | 'active' | 'archived'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('All');
+  const [filterDepartment, setFilterDepartment] = useState('All');
   const [currentPage, setCurrentPage] = useState(1);
   const PER_PAGE = 8;
 
@@ -46,7 +48,10 @@ export function Organizations() {
   const { data: rawOrganizations = [], loading: loadingOrgs } = useOrganizationStream();
   const { countsMap = {}, loading: loadingCounts } = useOrgMemberCountsStream();
   const { data: orgTypes = [] } = useOrganizationTypes();
+  const { data: departments = [] } = useDepartments();
   const { events = [], loading: loadingEvents } = useAllEvents();
+
+  const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
 
   // Real-time Pending Member Applications Stream across all organizations
   const [pendingApplicationsCount, setPendingApplicationsCount] = useState<number>(0);
@@ -142,6 +147,13 @@ export function Organizations() {
 
       const matchesType = filterType === 'All' || org.typeId === filterType;
       
+      const isCross = org.isCrossDepartmental || org.departmentId === 'cross-departmental' || !org.departmentId;
+      const matchesDept =
+        filterDepartment === 'All' ||
+        (filterDepartment === 'cross-departmental'
+          ? isCross
+          : (!isCross && (org.departmentId === filterDepartment || org.department === filterDepartment)));
+
       let matchesTab = true;
       if (activeTab === 'active') {
         matchesTab = org.status === 'active';
@@ -149,14 +161,14 @@ export function Organizations() {
         matchesTab = org.status === 'archived';
       }
 
-      return matchesSearch && matchesType && matchesTab;
+      return matchesSearch && matchesType && matchesDept && matchesTab;
     });
-  }, [organizations, searchQuery, filterType, activeTab]);
+  }, [organizations, searchQuery, filterType, filterDepartment, activeTab]);
 
   // Reset pagination on filter change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterType, activeTab]);
+  }, [searchQuery, filterType, filterDepartment, activeTab]);
 
   const totalPages = Math.max(1, Math.ceil(filteredOrganizations.length / PER_PAGE));
   const paginatedOrganizations = useMemo(() => {
@@ -378,6 +390,24 @@ export function Organizations() {
                 </option>
               ))}
             </select>
+
+            <select
+              value={filterDepartment}
+              onChange={(e) => setFilterDepartment(e.target.value)}
+              className="px-3 py-1.5 border border-[#E0E0E0] rounded-lg text-xs text-[#001A4D] bg-white outline-none cursor-pointer"
+            >
+              <option value="All">All Departments & Scopes</option>
+              <option value="cross-departmental">🌐 Cross-Departmental (Open to All)</option>
+              {activeDepartments.length > 0 && (
+                <optgroup label="Academic Departments">
+                  {activeDepartments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      🏛️ {d.code} — {d.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
           </div>
         </div>
 
@@ -467,9 +497,20 @@ export function Organizations() {
                         </Badge>
                       </td>
 
-                      {/* Department */}
-                      <td className="px-4 py-3.5 text-xs text-gray-700 font-medium whitespace-nowrap">
-                        {org.department || '—'}
+                      {/* Department / Scope */}
+                      <td className="px-4 py-3.5 whitespace-nowrap">
+                        {org.isCrossDepartmental || org.departmentId === 'cross-departmental' || !org.departmentId ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            🌐 Cross-Departmental
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200"
+                            title={org.departmentName || org.department || 'Departmental'}
+                          >
+                            🏛️ {org.departmentCode || org.departmentName || org.department || 'Departmental'}
+                          </span>
+                        )}
                       </td>
 
                       {/* Adviser */}

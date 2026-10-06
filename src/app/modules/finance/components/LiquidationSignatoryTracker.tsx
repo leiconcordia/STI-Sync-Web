@@ -60,7 +60,7 @@ export default function LiquidationSignatoryTracker({
   // Calculate statistics
   const totalSteps = approvalChain.length;
   const completedSteps = approvalChain.filter(
-    (s) => s.status === 'endorsed' || s.status === 'approved'
+    (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
   ).length;
   const percentComplete = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
@@ -118,7 +118,7 @@ export default function LiquidationSignatoryTracker({
         {stages.map(([stageNumber, steps]) => {
           const isCurrentStage = stageNumber === currentStageIndex && !isFullyApproved;
           const isPassedStage = stageNumber < currentStageIndex || isFullyApproved;
-          const isStageFinished = steps.every((s) => s.status === 'endorsed' || s.status === 'approved');
+          const isStageFinished = steps.every((s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived');
 
           const defaultStageNames: Record<number, string> = {
             1: 'Financial Checking & Audit',
@@ -162,13 +162,14 @@ export default function LiquidationSignatoryTracker({
                 </div>
 
                 <span className="text-[11px] font-semibold text-slate-500">
-                  {steps.filter((s) => s.status === 'endorsed' || s.status === 'approved').length} / {steps.length} Signed
+                  {steps.filter((s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived').length} / {steps.length} Resolved
                 </span>
               </div>
 
               {/* Signatories in this stage */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                 {steps.map((step, idx) => {
+                  const isWaived = step.status === 'waived';
                   const isDone = step.status === 'endorsed' || step.status === 'approved';
                   const isCurrent = step.status === 'current';
                   const isReturnedStep = step.status === 'returned';
@@ -179,6 +180,8 @@ export default function LiquidationSignatoryTracker({
                       className={`p-3 rounded-xl border flex flex-col justify-between transition-colors ${
                         isDone
                           ? 'bg-white border-emerald-200 shadow-xs'
+                          : isWaived
+                          ? 'bg-slate-50/80 border-slate-200 text-slate-500'
                           : isCurrent
                           ? 'bg-white border-blue-300 ring-2 ring-blue-500/20 shadow-xs'
                           : isReturnedStep
@@ -189,7 +192,7 @@ export default function LiquidationSignatoryTracker({
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className="text-xs font-bold text-slate-900 truncate">
+                            <span className={`text-xs font-bold truncate ${isWaived ? 'text-slate-600 line-through' : 'text-slate-900'}`}>
                               {step.signatoryName || 'Designated Signatory'}
                             </span>
                             {step.actionType === 'approve' && (
@@ -215,7 +218,12 @@ export default function LiquidationSignatoryTracker({
 
                         {/* Status Badge */}
                         <div className="flex-shrink-0">
-                          {isDone ? (
+                          {isWaived ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700 border border-slate-300">
+                              <CheckCircle2 className="w-3 h-3 text-slate-500" />
+                              <span>Waived</span>
+                            </span>
+                          ) : isDone ? (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                               <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                               <span>{step.actionType === 'approve' ? 'Approved' : step.actionType === 'check' ? 'Audited' : 'Endorsed'}</span>
@@ -237,6 +245,13 @@ export default function LiquidationSignatoryTracker({
                           )}
                         </div>
                       </div>
+
+                      {/* Waived Remarks Notice */}
+                      {isWaived && step.remarks && (
+                        <div className="mt-2 p-1.5 bg-slate-100/70 border border-slate-200 rounded-lg text-[10px] text-slate-600 italic">
+                          {step.remarks}
+                        </div>
+                      )}
 
                       {/* E-Signature Stamp & Timestamp (when signed) */}
                       {isDone && (

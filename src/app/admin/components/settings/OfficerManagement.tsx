@@ -154,7 +154,6 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
             await updateDoc(doc(db, 'students', sDoc.id), {
               temporaryPassword: generatedPassword,
               requiresPasswordChange: true,
-              requiresChangePassword: true,
               updatedAt: serverTimestamp(),
             });
           }

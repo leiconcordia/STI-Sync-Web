@@ -82,6 +82,7 @@ export async function changeOfficerOrAdviserPassword(
       for (const d of studentSnap.docs) {
         await updateDoc(doc(db, 'students', d.id), {
           requiresPasswordChange: false,
+          requiresChangePassword: deleteField(),
           temporaryPassword: null,
           defaultPassword: deleteField(),
           updatedAt: serverTimestamp(),

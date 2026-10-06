@@ -73,41 +73,12 @@ export async function syncProposalToEventsCollection(
   try {
     const eventDocRef = doc(db, EVENTS_COLLECTION, proposal.id);
     const existingSnap = await getDoc(eventDocRef);
+    const existingData = existingSnap.exists() ? existingSnap.data() : {};
 
-    // Map sessions
+    // Sessions are only created when an activity is approved and attendance scanners are configured
     let sessions: any[] = [];
-    if (proposal.sessions && proposal.sessions.length > 0) {
-      sessions = proposal.sessions.map((s, idx) => ({
-        id: s.id || `sess_${idx + 1}`,
-        title: s.title || proposal.title || 'Main Program',
-        date: s.date || proposal.date || '',
-        startTime: s.startTime || proposal.startTime || '08:00',
-        endTime: s.endTime || proposal.endTime || '12:00',
-        venueId: s.venueId || 'campus_venue',
-        customVenueName: s.venueName || proposal.venueName || 'STI Campus',
-        timeInOpen: '',
-        timeInClose: '',
-        hasTimeOut: false,
-        timeOutOpen: '',
-        timeOutClose: '',
-      }));
-    } else if (proposal.date) {
-      sessions = [
-        {
-          id: 'sess_1',
-          title: proposal.title || 'Main Program',
-          date: proposal.date,
-          startTime: proposal.startTime || '08:00',
-          endTime: proposal.endTime || '12:00',
-          venueId: 'campus_venue',
-          customVenueName: proposal.venueName || 'STI Campus',
-          timeInOpen: '',
-          timeInClose: '',
-          hasTimeOut: false,
-          timeOutOpen: '',
-          timeOutClose: '',
-        },
-      ];
+    if (existingSnap.exists() && Array.isArray(existingData.sessions) && existingData.sessions.length > 0) {
+      sessions = existingData.sessions;
     }
 
     // Map budget items
@@ -135,9 +106,6 @@ export async function syncProposalToEventsCollection(
         : 'COLLEGE';
 
     const currentYear = new Date().getFullYear();
-
-    const existingData = existingSnap.exists() ? existingSnap.data() : {};
-
     const status = mappedStatus === 'approved' ? 'approved' : mappedStatus === 'completed' ? 'completed' : mappedStatus;
     const lifecycleStatus =
       mappedStatus === 'approved'
@@ -165,13 +133,24 @@ export async function syncProposalToEventsCollection(
         (proposal as any).totalAllocatedBudget ?? existingData.totalAllocatedBudget ?? 0,
       scannerPinCode: (proposal as any).scannerPinCode || existingData.scannerPinCode || null,
       scannerUserIds: (proposal as any).scannerUserIds || existingData.scannerUserIds || [],
-      isVisible: existingData.isVisible !== undefined ? existingData.isVisible : true,
+      isVisible:
+        (proposal as any).isVisible !== undefined
+          ? Boolean((proposal as any).isVisible)
+          : existingData.isVisible !== undefined
+          ? Boolean(existingData.isVisible)
+          : false,
       visibleToStudents:
         (proposal as any).visibleToStudents !== undefined
-          ? (proposal as any).visibleToStudents
+          ? Boolean((proposal as any).visibleToStudents)
           : existingData.visibleToStudents !== undefined
-          ? existingData.visibleToStudents
-          : mappedStatus === 'approved',
+          ? Boolean(existingData.visibleToStudents)
+          : false,
+      isPublished:
+        (proposal as any).isPublished !== undefined
+          ? Boolean((proposal as any).isPublished)
+          : existingData.isPublished !== undefined
+          ? Boolean(existingData.isPublished)
+          : false,
       visibilityStart: (proposal as any).visibilityStart || existingData.visibilityStart || null,
       eventTypeId: 'activity',
       customEventTypeName: 'Activity Proposal (Form AP-01)',
@@ -187,9 +166,15 @@ export async function syncProposalToEventsCollection(
       targetAcademicLevel,
       targetCourses: proposal.targetAudience?.courseCodes || depts,
       targetYearLevels: (proposal.targetAudience?.yearLevels || []).map(String),
+      targetAudience: proposal.targetAudience || null,
+      targetSections: proposal.targetAudience?.sections || [],
+      date: proposal.date || existingData.date || '',
+      startTime: proposal.startTime || existingData.startTime || '08:00',
+      endTime: proposal.endTime || existingData.endTime || '12:00',
+      venueName: proposal.venueName || existingData.venueName || 'STI Campus',
+      venueId: proposal.venueId || existingData.venueId || 'campus_venue',
+      customVenueName: proposal.venueName || existingData.customVenueName || 'STI Campus',
       sessions,
-      venueId: proposal.venueId || 'campus_venue',
-      customVenueName: proposal.venueName || (sessions[0]?.customVenueName) || 'STI Campus',
       eventFormat: 'On-Campus',
       expectedParticipantCount: (proposal.targetAudience as any)?.estimatedAttendance || 100,
       budgetItems,
@@ -225,6 +210,14 @@ export async function syncProposalToEventsCollection(
     }
 
     await setDoc(eventDocRef, sanitizeFirestorePayload(eventPayload), { merge: true });
+
+    // Dual-sync to 'events' collection for mobile app
+    try {
+      const mirrorRef = doc(db, 'events', proposal.id);
+      await setDoc(mirrorRef, sanitizeFirestorePayload(eventPayload), { merge: true });
+    } catch (mirrorErr) {
+      console.warn('[syncProposalToEventsCollection] Failed to mirror to events collection:', mirrorErr);
+    }
   } catch (err) {
     console.error('[syncProposalToEventsCollection] Failed to sync proposal to events table:', err);
   }
@@ -513,13 +506,18 @@ export async function endorseProposal(
   }
 
   const targetStep = chain[targetStepIdx];
-  const isApproverAction =
-    targetStep.actionType === 'approve' ||
-    targetStep.role === 'school_president' ||
-    signatory.actionType === 'approve' ||
-    signatory.role === 'school_president';
+  const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
+  const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
 
-  const newStatus = isApproverAction ? 'approved' : 'endorsed';
+  // Determine whether this action is an approval or an endorsement
+  let newStatus: 'endorsed' | 'approved' = 'endorsed';
+  if (isPresident) {
+    newStatus = 'approved';
+  } else if (isSchoolAdmin) {
+    newStatus = signatory.actionType === 'approve' ? 'approved' : 'endorsed';
+  } else if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
+    newStatus = 'approved';
+  }
 
   // 2. Mark this signatory's step as endorsed/approved
   const effectiveSigUrl = signatory.signatureUrl || targetStep.signatureUrl || '';
@@ -548,6 +546,39 @@ export async function endorseProposal(
 
   chain[targetStepIdx] = updatedStep as any;
 
+  // Dual-Approver Resolution within the Executive Stage:
+  if (isSchoolAdmin && newStatus === 'approved') {
+    // Administrator chose to fully authorize & approve: waive remaining approver steps in this stage
+    chain.forEach((s, idx) => {
+      if (
+        (s.stageIndex ?? 1) === currentStage &&
+        idx !== targetStepIdx &&
+        (s.status === 'waiting' || s.status === 'current') &&
+        (s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+      ) {
+        chain[idx] = {
+          ...s,
+          status: 'waived',
+          remarks: `Step waived — Activity proposal authorized and fully approved by School Administrator (${signatory.name || targetStep.signatoryName})`,
+        };
+      }
+    });
+  } else if (isSchoolAdmin && newStatus === 'endorsed') {
+    // Administrator chose to endorse and forward to President: activate the President's step
+    chain.forEach((s, idx) => {
+      if (
+        (s.stageIndex ?? 1) === currentStage &&
+        idx !== targetStepIdx &&
+        s.status === 'waiting'
+      ) {
+        chain[idx] = {
+          ...s,
+          status: 'current',
+        };
+      }
+    });
+  }
+
   // Clean the entire chain array of any undefined properties
   const sanitizedChain = chain.map((step) => {
     const s: Record<string, any> = { ...step };
@@ -569,7 +600,7 @@ export async function endorseProposal(
     // Check all steps belonging to currentStage
     const currentStageSteps = sanitizedChain.filter((s) => (s.stageIndex ?? 1) === currentStage);
     const allStageStepsCompleted = currentStageSteps.every(
-      (s) => s.status === 'endorsed' || s.status === 'approved'
+      (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
     );
 
     if (allStageStepsCompleted) {

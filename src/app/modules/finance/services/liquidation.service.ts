@@ -60,10 +60,28 @@ export async function generateDefaultLiquidationChain(
     (s) => (s.role === 'academic_head' || s.roleTitle.toLowerCase().includes('academic head') || s.roleTitle.toLowerCase().includes('dean') || s.roleTitle.toLowerCase().includes('principal')) && s.id !== accountant?.id && s.id !== programHead?.id
   ) || activeSignatories.find((s) => s.id !== accountant?.id && s.id !== programHead?.id);
 
-  // 4. Administrator / School President (Stage 4: Executive Approval)
-  const president = activeSignatories.find(
-    (s) => (s.role === 'school_president' || s.role === 'school_administrator' || s.roleTitle.toLowerCase().includes('president') || s.roleTitle.toLowerCase().includes('administrator')) && s.id !== accountant?.id && s.id !== programHead?.id && s.id !== academicHead?.id
-  ) || activeSignatories.find((s) => s.id !== accountant?.id && s.id !== programHead?.id && s.id !== academicHead?.id);
+  // 4. Executive Approvers (Stage 4: Executive Administration & Presidential Approval)
+  const executiveApprovers = activeSignatories.filter(
+    (s) =>
+      (s.role === 'school_president' ||
+        s.role === 'school_administrator' ||
+        s.actionType === 'approver' ||
+        s.actionType === 'both' ||
+        s.roleTitle.toLowerCase().includes('president') ||
+        s.roleTitle.toLowerCase().includes('administrator')) &&
+      s.id !== accountant?.id &&
+      s.id !== programHead?.id &&
+      s.id !== academicHead?.id
+  );
+
+  // Sort so School Administrator comes before School President
+  executiveApprovers.sort((a, b) => {
+    if (a.role === 'school_administrator' && b.role !== 'school_administrator') return -1;
+    if (b.role === 'school_administrator' && a.role !== 'school_administrator') return 1;
+    if (a.role === 'school_president' && b.role !== 'school_president') return 1;
+    if (b.role === 'school_president' && a.role !== 'school_president') return -1;
+    return 0;
+  });
 
   const steps: LiquidationApprovalStep[] = [
     {
@@ -108,21 +126,42 @@ export async function generateDefaultLiquidationChain(
       department: academicHead?.department || 'Academic Affairs',
       status: 'waiting',
     },
-    {
+  ];
+
+  let nextStepNumber = 4;
+  if (executiveApprovers.length > 0) {
+    executiveApprovers.forEach((appr, idx) => {
+      steps.push({
+        id: `liq_step_4_${idx + 1}_${Date.now()}`,
+        step: nextStepNumber++,
+        stageIndex: 4,
+        stageName: 'Executive Presidential Approval',
+        role: appr.role || 'school_president',
+        roleTitle: appr.roleTitle || (appr.role === 'school_president' ? 'School President' : 'School Administrator'),
+        actionType: appr.role === 'school_president' ? 'approve' : (appr.actionType === 'approver' || appr.actionType === 'both' ? 'approve' : 'endorse'),
+        signatoryUid: appr.id || '',
+        signatoryName: appr.name || 'School Administrator / President',
+        signatoryEmail: appr.email || '',
+        department: appr.department || (appr.role === 'school_president' ? 'Office of the President' : 'School Administration'),
+        status: 'waiting',
+      });
+    });
+  } else {
+    steps.push({
       id: `liq_step_4_${Date.now()}`,
       step: 4,
       stageIndex: 4,
       stageName: 'Executive Presidential Approval',
-      role: president?.role || 'school_president',
-      roleTitle: president?.roleTitle || 'School Administrator / President',
+      role: 'school_president',
+      roleTitle: 'School Administrator / President',
       actionType: 'approve',
-      signatoryUid: president?.id || '',
-      signatoryName: president?.name || 'School Administrator / President',
-      signatoryEmail: president?.email || '',
-      department: president?.department || 'Office of the President',
+      signatoryUid: '',
+      signatoryName: 'School Administrator / President',
+      signatoryEmail: '',
+      department: 'Office of the President',
       status: 'waiting',
-    },
-  ];
+    });
+  }
 
   return steps;
 }
@@ -456,15 +495,21 @@ export async function endorseLiquidationStep(
   }
 
   const targetStep = chain[targetStepIdx];
-  const isApproverAction =
-    targetStep.actionType === 'approve' ||
-    targetStep.role === 'school_president' ||
-    targetStep.role === 'school_administrator' ||
-    signatory.actionType === 'approve' ||
-    signatory.role === 'school_president' ||
-    signatory.role === 'school_administrator';
+  const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
+  const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
 
-  const newStatus = isApproverAction ? 'approved' : 'endorsed';
+  let newStatus: 'endorsed' | 'approved' = 'endorsed';
+  if (isPresident) {
+    newStatus = 'approved';
+  } else if (isSchoolAdmin) {
+    newStatus = signatory.actionType === 'approve' ? 'approved' : 'endorsed';
+  } else if (
+    targetStep.actionType === 'approve' ||
+    signatory.actionType === 'approve'
+  ) {
+    newStatus = 'approved';
+  }
+
   const effectiveSigUrl = signatory.signatureUrl || targetStep.signatureUrl || '';
   const effectiveRemarks = remarks || targetStep.remarks || '';
   const signedAt = new Date().toISOString();
@@ -485,6 +530,37 @@ export async function endorseLiquidationStep(
 
   chain[targetStepIdx] = updatedStep as any;
 
+  // Dual-Approver Resolution within Executive Stage
+  if (isSchoolAdmin && newStatus === 'approved') {
+    chain.forEach((s, idx) => {
+      if (
+        (s.stageIndex ?? 1) === currentStage &&
+        idx !== targetStepIdx &&
+        (s.status === 'waiting' || s.status === 'current') &&
+        (s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+      ) {
+        chain[idx] = {
+          ...s,
+          status: 'waived',
+          remarks: `Step waived — Liquidation authorized and fully approved by School Administrator (${signatory.name || targetStep.signatoryName})`,
+        };
+      }
+    });
+  } else if (isSchoolAdmin && newStatus === 'endorsed') {
+    chain.forEach((s, idx) => {
+      if (
+        (s.stageIndex ?? 1) === currentStage &&
+        idx !== targetStepIdx &&
+        s.status === 'waiting'
+      ) {
+        chain[idx] = {
+          ...s,
+          status: 'current',
+        };
+      }
+    });
+  }
+
   // Clean chain
   const sanitizedChain = chain.map((step) => {
     const s: Record<string, any> = { ...step };
@@ -502,7 +578,7 @@ export async function endorseLiquidationStep(
   if (hasStages) {
     const currentStageSteps = sanitizedChain.filter((s) => (s.stageIndex ?? 1) === currentStage);
     const allStageStepsCompleted = currentStageSteps.every(
-      (s) => s.status === 'endorsed' || s.status === 'approved'
+      (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
     );
 
     if (allStageStepsCompleted) {

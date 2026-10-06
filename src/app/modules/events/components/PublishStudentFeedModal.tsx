@@ -19,13 +19,18 @@ import {
   Trash2,
   Users,
   Lock,
+  ChevronDown,
+  ChevronUp,
+  CheckCircle2,
+  SlidersHorizontal,
+  CheckSquare,
 } from 'lucide-react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument } from '../types/event.types';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
-import { useCourses } from '../../academic/hooks/useAcademicStream';
+import { useTargetAudienceStructure, type DynamicProgram } from '../../academic';
 import { toast } from 'sonner';
 
 interface PublishStudentFeedModalProps {
@@ -35,13 +40,6 @@ interface PublishStudentFeedModalProps {
   onUpdated?: () => void;
   readOnly?: boolean;
 }
-
-const SHS_STRANDS = ['STEM', 'ABM', 'HUMSS', 'GAS', 'TVL-ICT', 'TVL-HE', 'TVL-IA', 'ICT'];
-const COLLEGE_COURSES = ['BSIT', 'BSCS', 'BSCPE', 'BSHM', 'BSTM', 'BSA', 'BSAIS', 'BSBA'];
-
-const SHS_YEAR_LEVELS = ['Grade 11', 'Grade 12'];
-const COLLEGE_YEAR_LEVELS = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
-const ALL_YEAR_LEVELS = [...SHS_YEAR_LEVELS, ...COLLEGE_YEAR_LEVELS];
 
 export default function PublishStudentFeedModal({
   isOpen,
@@ -53,26 +51,46 @@ export default function PublishStudentFeedModal({
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingBanner, setIsUploadingBanner] = useState(false);
 
-  const { data: fetchedCourses = [] } = useCourses();
+  // Fetch real programs / strands and year levels dynamically from database
+  const audienceStructure = useTargetAudienceStructure();
 
   // State
   const [bannerUrl, setBannerUrl] = useState<string>(activity.bannerImageUrl || '');
-  const [targetAcademicLevel, setTargetAcademicLevel] = useState<'COLLEGE' | 'SHS' | 'BOTH'>(
-    activity.targetAcademicLevel || 'BOTH'
-  );
-  const [targetCourses, setTargetCourses] = useState<string[]>(
-    activity.targetCourses || []
-  );
-  const [targetYearLevels, setTargetYearLevels] = useState<string[]>(
-    activity.targetYearLevels || []
-  );
+  const [targetAcademicLevel, setTargetAcademicLevel] = useState<'COLLEGE' | 'SHS' | 'BOTH'>('BOTH');
+  const [targetCourses, setTargetCourses] = useState<string[]>([]);
+  const [targetYearLevels, setTargetYearLevels] = useState<string[]>([]);
+  const [showCustomAudience, setShowCustomAudience] = useState<boolean>(false);
 
+  // Pre-load / inherit settings directly from proposal (Zero re-selection required)
   useEffect(() => {
     if (activity) {
       setBannerUrl(activity.bannerImageUrl || '');
-      setTargetAcademicLevel(activity.targetAcademicLevel || 'BOTH');
-      setTargetCourses(activity.targetCourses || []);
-      setTargetYearLevels(activity.targetYearLevels || []);
+
+      // Inherit academic division
+      let inheritedLevel: 'COLLEGE' | 'SHS' | 'BOTH' = 'BOTH';
+      if (activity.targetAcademicLevel) {
+        inheritedLevel = activity.targetAcademicLevel as any;
+      } else if ((activity as any).targetAudience?.academicLevels) {
+        const lvls: string[] = (activity as any).targetAudience.academicLevels;
+        if (lvls.includes('SHS') && lvls.includes('College')) inheritedLevel = 'BOTH';
+        else if (lvls.includes('SHS')) inheritedLevel = 'SHS';
+        else if (lvls.includes('College')) inheritedLevel = 'COLLEGE';
+      }
+      setTargetAcademicLevel(inheritedLevel);
+
+      // Inherit courses / strands
+      const inheritedCourses: string[] =
+        activity.targetCourses && activity.targetCourses.length > 0
+          ? activity.targetCourses
+          : (activity as any).targetAudience?.courseCodes || [];
+      setTargetCourses(inheritedCourses);
+
+      // Inherit year levels
+      const inheritedYears: string[] =
+        activity.targetYearLevels && activity.targetYearLevels.length > 0
+          ? activity.targetYearLevels
+          : ((activity as any).targetAudience?.yearLevels || []).map(String);
+      setTargetYearLevels(inheritedYears);
     }
   }, [activity]);
 
@@ -96,38 +114,28 @@ export default function PublishStudentFeedModal({
     }
   };
 
-  // Academic Division Change with automatic pruning
+  // Academic Division Change with automatic cascading default selection
   const handleAcademicLevelChange = (lvl: 'COLLEGE' | 'SHS' | 'BOTH') => {
     setTargetAcademicLevel(lvl);
     if (lvl === 'SHS') {
-      setTargetCourses((prev) => prev.filter((c) => SHS_STRANDS.includes(c)));
-      setTargetYearLevels((prev) => prev.filter((y) => SHS_YEAR_LEVELS.includes(y)));
+      setTargetCourses(audienceStructure.shsCourseCodes);
+      setTargetYearLevels(audienceStructure.shsYearLevels);
     } else if (lvl === 'COLLEGE') {
-      setTargetCourses((prev) => prev.filter((c) => COLLEGE_COURSES.includes(c)));
-      setTargetYearLevels((prev) => prev.filter((y) => COLLEGE_YEAR_LEVELS.includes(y)));
+      setTargetCourses(audienceStructure.collegeCourseCodes);
+      setTargetYearLevels(audienceStructure.collegeYearLevels);
+    } else {
+      setTargetCourses(audienceStructure.allCourseCodes);
+      setTargetYearLevels(audienceStructure.allYearLevels);
     }
   };
 
-  // Course Toggle with automatic year level pruning
+  // Course Toggle
   const handleToggleCourse = (courseCode: string) => {
-    setTargetCourses((prev) => {
-      const nextCourses = prev.includes(courseCode)
+    setTargetCourses((prev) =>
+      prev.includes(courseCode)
         ? prev.filter((c) => c !== courseCode)
-        : [...prev, courseCode];
-
-      if (nextCourses.length > 0) {
-        const hasCollegeOnly = nextCourses.every((c) => COLLEGE_COURSES.includes(c));
-        const hasShsOnly = nextCourses.every((c) => SHS_STRANDS.includes(c));
-
-        if (hasCollegeOnly) {
-          setTargetYearLevels((prevYears) => prevYears.filter((y) => !SHS_YEAR_LEVELS.includes(y)));
-        } else if (hasShsOnly) {
-          setTargetYearLevels((prevYears) => prevYears.filter((y) => !COLLEGE_YEAR_LEVELS.includes(y)));
-        }
-      }
-
-      return nextCourses;
-    });
+        : [...prev, courseCode]
+    );
   };
 
   // Year Level Toggle
@@ -139,21 +147,90 @@ export default function PublishStudentFeedModal({
     );
   };
 
+  // Dynamic lists from database based on selected academic division
+  const availablePrograms = audienceStructure.getProgramsForAcademicLevel(targetAcademicLevel);
+  const availableYearLevels = audienceStructure.getYearLevelsForAcademicLevel(targetAcademicLevel);
+
+  const selectAllPrograms = () => {
+    setTargetCourses(availablePrograms.map((p) => p.code));
+  };
+
+  const clearAllPrograms = () => {
+    setTargetCourses([]);
+  };
+
+  const selectAllYearLevels = () => {
+    setTargetYearLevels(availableYearLevels);
+  };
+
+  const clearAllYearLevels = () => {
+    setTargetYearLevels([]);
+  };
+
   // Save Settings (Automatically publishes approved activity on save)
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
-      await updateDoc(docRef, {
+      const targetAudienceUpdated = {
+        ...((activity as any).targetAudience || {}),
+        allStudents: targetAcademicLevel === 'BOTH' && targetCourses.length === 0,
+        academicLevels:
+          targetAcademicLevel === 'BOTH'
+            ? ['College', 'SHS']
+            : targetAcademicLevel === 'SHS'
+            ? ['SHS']
+            : ['College'],
+        courseCodes: targetCourses,
+        yearLevels: targetYearLevels,
+      };
+
+      const payload = {
         bannerImageUrl: bannerUrl || null,
         visibleToStudents: true,
         isVisible: true,
+        isPublished: true,
+        lifecycleStatus: 'published',
         visibilityStart: null,
         targetAcademicLevel,
         targetCourses,
         targetYearLevels,
+        targetAudience: targetAudienceUpdated,
         updatedAt: serverTimestamp(),
-      });
+      };
+
+      const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
+      await updateDoc(docRef, payload);
+
+      // Dual-sync complete activity metadata to events collection for mobile app
+      try {
+        const eventDocRef = doc(db, 'events', activity.id);
+        const eventPayload: Record<string, any> = {
+          ...payload,
+          id: activity.id,
+          referenceId: activity.referenceId || (activity as any).referenceNo || '',
+          title: activity.title || '',
+          description: activity.description || '',
+          targetAudienceScope: (activity as any).targetAudienceScope || 'all',
+          date: activity.date || (activity as any).startDate || '',
+          startDate: (activity as any).startDate || activity.date || '',
+          startTime: (activity as any).startTime || '08:00',
+          endTime: (activity as any).endTime || '12:00',
+          venueName: (activity as any).venueName || (activity as any).customVenueName || 'STI Campus',
+          customVenueName: (activity as any).customVenueName || (activity as any).venueName || 'STI Campus',
+          venueId: (activity as any).venueId || 'campus_venue',
+          eventFormat: (activity as any).eventFormat || 'On-Campus',
+          hostingOrgId: (activity as any).hostingOrgId || (activity as any).organizationId || '',
+          sessions: activity.sessions || [],
+          scanners: (activity as any).scanners || [],
+          scannerUserIds: (activity as any).scannerUserIds || [],
+          status: activity.status || 'approved',
+          proposalStatus: activity.proposalStatus || 'approved',
+          isActivityProposal: true,
+        };
+        await setDoc(eventDocRef, eventPayload, { merge: true });
+      } catch (evtErr) {
+        console.warn('[PublishStudentFeedModal] Failed to mirror to events collection:', evtErr);
+      }
 
       toast.success('Activity published & feed settings updated successfully!');
       if (onUpdated) onUpdated();
@@ -166,27 +243,6 @@ export default function PublishStudentFeedModal({
     }
   };
 
-  // Available courses/strands based on targetAcademicLevel
-  const availableCourses =
-    targetAcademicLevel === 'SHS'
-      ? SHS_STRANDS
-      : targetAcademicLevel === 'COLLEGE'
-      ? COLLEGE_COURSES
-      : [...COLLEGE_COURSES, ...SHS_STRANDS];
-
-  // Check if selected courses prune year levels
-  const selectedAreCollegeOnly =
-    targetCourses.length > 0 && targetCourses.every((c) => COLLEGE_COURSES.includes(c));
-  const selectedAreShsOnly =
-    targetCourses.length > 0 && targetCourses.every((c) => SHS_STRANDS.includes(c));
-
-  // Available year levels based on targetAcademicLevel & selected courses
-  const availableYearLevels =
-    targetAcademicLevel === 'SHS' || selectedAreShsOnly
-      ? SHS_YEAR_LEVELS
-      : targetAcademicLevel === 'COLLEGE' || selectedAreCollegeOnly
-      ? COLLEGE_YEAR_LEVELS
-      : ALL_YEAR_LEVELS;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs overflow-y-auto animate-in fade-in duration-200">
@@ -327,116 +383,248 @@ export default function PublishStudentFeedModal({
             )}
           </div>
 
-          {/* Section 3: Target Audience Scope & Academic Filters */}
+          {/* Section 3: Target Audience Scope & Academic Filters (Pre-configured from Form AP-01 Proposal) */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-            <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-              Target Audience Scope & Academic Filters
-            </h4>
-
-            {/* Academic Division */}
-            <div>
-              <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1.5">
-                Academic Division
-              </label>
-              <div className="grid grid-cols-3 gap-2.5">
-                {(['COLLEGE', 'SHS', 'BOTH'] as const).map((lvl) => (
-                  <button
-                    key={lvl}
-                    type="button"
-                    disabled={readOnly}
-                    onClick={() => handleAcademicLevelChange(lvl)}
-                    className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all text-center ${
-                      readOnly ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
-                    } ${
-                      targetAcademicLevel === lvl
-                        ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                        : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                    }`}
-                  >
-                    {lvl === 'BOTH' ? 'SHS & College' : lvl === 'SHS' ? 'Senior High (SHS)' : 'College Only'}
-                  </button>
-                ))}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
+              <div className="flex items-start gap-2.5">
+                <div className="w-7 h-7 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
+                      Target Audience Scope & Academic Filters
+                    </h4>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      Pre-Configured in Proposal
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Target scope and academic eligibility criteria were established during proposal submission (Form AP-01). No manual selection required.
+                  </p>
+                </div>
               </div>
+
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => setShowCustomAudience((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer self-start sm:self-auto"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span>{showCustomAudience ? 'Hide Advanced Filters' : 'Adjust Filters (Optional)'}</span>
+                  {showCustomAudience ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                </button>
+              )}
             </div>
 
-            {/* Programs / Strands */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">
-                  Eligible Academic Programs / Strands ({targetAcademicLevel})
-                </label>
-                <span className="text-[11px] text-slate-400">
-                  {targetCourses.length === 0 ? 'All programs in division eligible' : `${targetCourses.length} selected`}
-                </span>
+            {/* Pre-Configured Audience Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Academic Division */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Academic Division</p>
+                <p className="text-xs font-bold text-slate-900 mt-1">
+                  {targetAcademicLevel === 'BOTH'
+                    ? 'Senior High & College'
+                    : targetAcademicLevel === 'SHS'
+                    ? 'Senior High School (SHS)'
+                    : 'College Division Only'}
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5">
+                  {targetAcademicLevel === 'BOTH'
+                    ? 'Open to both collegiate and basic ed tracks'
+                    : `Restricted to ${targetAcademicLevel} students`}
+                </p>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {availableCourses.map((code) => {
-                  const isSelected = targetCourses.includes(code);
-                  const isShs = SHS_STRANDS.includes(code);
-                  return (
-                    <button
-                      key={code}
-                      type="button"
-                      disabled={readOnly}
-                      onClick={() => handleToggleCourse(code)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                        readOnly ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
-                      } ${
-                        isSelected
-                          ? isShs
-                            ? 'bg-amber-600 text-white shadow-2xs'
-                            : 'bg-[#0E4EBD] text-white shadow-2xs'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      {isSelected && <Check className="w-3 h-3" />}
-                      <span>{code}</span>
-                      <span className="text-[9px] opacity-75 font-normal">
-                        ({isShs ? 'SHS' : 'College'})
+
+              {/* Eligible Programs / Strands */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Programs / Strands</p>
+                  <span className="text-[10px] font-mono text-slate-500">
+                    {targetCourses.length === 0 ? 'All' : `${targetCourses.length} selected`}
+                  </span>
+                </div>
+                {targetCourses.length === 0 ? (
+                  <p className="text-xs font-bold text-slate-900 mt-1">
+                    All Academic Programs & Strands
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
+                    {targetCourses.map((c) => (
+                      <span
+                        key={c}
+                        className="px-2 py-0.5 rounded-md bg-blue-100 text-[#001A4D] font-bold text-[10px]"
+                      >
+                        {c}
                       </span>
-                    </button>
-                  );
-                })}
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {targetCourses.length === 0 ? 'Campus-wide audience scope' : 'Restricted to selected academic programs'}
+                </p>
+              </div>
+
+              {/* Target Year Levels */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Target Year Levels</p>
+                  <span className="text-[10px] font-mono text-slate-500">
+                    {targetYearLevels.length === 0 ? 'All' : `${targetYearLevels.length} selected`}
+                  </span>
+                </div>
+                {targetYearLevels.length === 0 ? (
+                  <p className="text-xs font-bold text-slate-900 mt-1">
+                    All Year Levels In Scope
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
+                    {targetYearLevels.map((y) => (
+                      <span
+                        key={y}
+                        className="px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-900 font-bold text-[10px]"
+                      >
+                        {y}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <p className="text-[10px] text-slate-500 mt-1">
+                  {targetYearLevels.length === 0 ? 'Open across all academic year levels' : 'Designated cohort levels'}
+                </p>
               </div>
             </div>
 
-            {/* Year Levels */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[11px] font-bold text-slate-500 uppercase">
-                  Target Year Levels
-                </label>
-                <span className="text-[11px] text-slate-400">
-                  {targetYearLevels.length === 0 ? 'All year levels in scope' : `${targetYearLevels.length} selected`}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {availableYearLevels.map((year) => {
-                  const isSelected = targetYearLevels.includes(year);
-                  return (
-                    <label
-                      key={year}
-                      className={`p-2 rounded-xl border flex items-center gap-2 transition-colors ${
-                        readOnly ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'
-                      } ${
-                        isSelected
-                          ? 'bg-blue-50 border-blue-200 text-[#001A4D] font-bold'
-                          : 'bg-slate-50 border-slate-200 text-slate-700'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        disabled={readOnly}
-                        checked={isSelected}
-                        onChange={() => handleToggleYearLevel(year)}
-                        className="accent-[#001A4D] w-4 h-4 rounded"
-                      />
-                      <span className="text-xs">{year}</span>
+            {/* Optional Collapsible Filter Adjuster */}
+            {showCustomAudience && !readOnly && (
+              <div className="pt-4 border-t border-slate-200/70 space-y-4 animate-in fade-in duration-200">
+                <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-3 text-xs text-blue-900 flex items-center justify-between">
+                  <span className="text-[11px] font-medium">
+                    You can override the proposal's targeting filters below if specific adjustments are required before publishing.
+                  </span>
+                </div>
+
+                {/* Academic Division */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1.5">
+                    Override Academic Division
+                  </label>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    {(['COLLEGE', 'SHS', 'BOTH'] as const).map((lvl) => (
+                      <button
+                        key={lvl}
+                        type="button"
+                        onClick={() => handleAcademicLevelChange(lvl)}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all text-center cursor-pointer ${
+                          targetAcademicLevel === lvl
+                            ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
+                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {lvl === 'BOTH' ? 'SHS & College' : lvl === 'SHS' ? 'Senior High (SHS)' : 'College Only'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 1. Target Year Levels */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[11px] font-bold text-slate-500 uppercase">
+                      Target Year Levels ({targetYearLevels.length === 0 ? 'All year levels in scope' : `${targetYearLevels.length} of ${availableYearLevels.length} selected`})
                     </label>
-                  );
-                })}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={selectAllYearLevels}
+                        className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5" /> Select All ({availableYearLevels.length})
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button
+                        type="button"
+                        onClick={clearAllYearLevels}
+                        className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {availableYearLevels.map((year) => {
+                      const isSelected = targetYearLevels.includes(year);
+                      return (
+                        <button
+                          key={year}
+                          type="button"
+                          onClick={() => handleToggleYearLevel(year)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
+                            isSelected
+                              ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-[#001A4D] hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>{year}</span>
+                          {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* 2. Eligible Programs / Strands */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[11px] font-bold text-slate-500 uppercase">
+                      Eligible Academic Programs / Strands ({targetCourses.length === 0 ? 'All programs in division eligible' : `${targetCourses.length} of ${availablePrograms.length} selected`})
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={selectAllPrograms}
+                        className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5" /> Select All ({availablePrograms.length})
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button
+                        type="button"
+                        onClick={clearAllPrograms}
+                        className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {availablePrograms.map((p) => {
+                      const isSelected = targetCourses.includes(p.code);
+                      const isShs = p.academicLevel === 'SHS';
+                      return (
+                        <button
+                          key={p.id || p.code}
+                          type="button"
+                          onClick={() => handleToggleCourse(p.code)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all flex items-center gap-1.5 cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
+                              : 'bg-slate-100 text-slate-700 border-slate-200 hover:border-[#001A4D] hover:bg-slate-200'
+                          }`}
+                        >
+                          <span>{p.code}</span>
+                          <span className="text-[10px] opacity-75 font-normal">
+                            ({isShs ? 'SHS' : 'College'}: {p.name})
+                          </span>
+                          {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
 

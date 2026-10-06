@@ -128,6 +128,37 @@ export async function ensureMembershipPayable(
 
 export const addMember = async (payload: AddMemberPayload, addedBy: string): Promise<string> => {
   try {
+    // Enforce organization department eligibility
+    if (payload.organizationId) {
+      const orgRef = doc(db, 'organizations', payload.organizationId);
+      const orgSnap = await getDoc(orgRef);
+      if (orgSnap.exists()) {
+        const orgData = orgSnap.data();
+        const isCross =
+          !orgData.departmentId ||
+          orgData.departmentId === 'cross-departmental' ||
+          orgData.scope === 'cross-departmental' ||
+          orgData.isCrossDepartmental === true;
+
+        if (!isCross) {
+          const sDept = (payload.department || '').toLowerCase().trim();
+          const orgDeptName = (orgData.departmentName || orgData.department || '').toLowerCase().trim();
+          const orgDeptCode = (orgData.departmentCode || '').toLowerCase().trim();
+
+          const matches =
+            !sDept ||
+            (orgDeptName && (sDept.includes(orgDeptName) || orgDeptName.includes(sDept))) ||
+            (orgDeptCode && (sDept.includes(orgDeptCode) || orgDeptCode.includes(sDept)));
+
+          if (!matches) {
+            throw new Error(
+              `Cannot add member: This organization is restricted to ${orgData.departmentName || orgData.departmentCode || 'departmental'} students.`
+            );
+          }
+        }
+      }
+    }
+
     const addPromise = addDoc(collection(db, COLLECTION), {
       ...payload,
       isOfficer: false,

@@ -56,6 +56,7 @@ export interface ProposalTargetAudience {
   courseCodes?: string[]; // e.g. ['BSIT', 'BSHM', 'STEM']
   departmentIds?: string[]; // Department IDs from Firestore collection 'departments'
   departments: string[]; // e.g. ['BSIT', 'BSHM', 'STEM']
+  sections?: string[]; // Section names or IDs (e.g., ['BSIT 3101', 'STEM 11-A'])
   yearLevels: (string | number)[]; // e.g. ['G11', 'G12', '1st Year', '2nd Year', '3rd Year', '4th Year']
   allStudents?: boolean;
 }
@@ -72,7 +73,8 @@ export interface ProposalApprovalStep {
   signatoryName: string;
   signatoryEmail: string;
   department?: string;
-  status: 'waiting' | 'current' | 'endorsed' | 'approved' | 'returned';
+  departmentId?: string;
+  status: 'waiting' | 'current' | 'endorsed' | 'approved' | 'returned' | 'waived';
   signatureUrl?: string;
   signedAt?: any;
   remarks?: string;

@@ -4,6 +4,8 @@
  * Assembles the dynamic sequence of institutional signatories based on
  * the Activity Proposal's target market, academic programs, and school governance policy.
  * Groups signatories into sequential multi-signatory stages with 'endorse' vs 'approve' actions.
+ *
+ * ZERO HARDCODED DATA - All signatories are queried dynamically from the Firestore database.
  */
 
 import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
@@ -19,35 +21,24 @@ export function buildDynamicApprovalChain(
   const chain: ProposalApprovalStep[] = [];
   let stepIndex = 1;
 
+  // Filter only active signatories from database
+  const signatories = activeSignatories.filter((s) => s.isActive !== false);
+
   const resolveActionType = (raw?: string, fallback: 'endorse' | 'approve' = 'endorse'): 'endorse' | 'approve' => {
     if (raw === 'approver' || raw === 'approve') return 'approve';
     if (raw === 'endorser' || raw === 'endorse') return 'endorse';
     return fallback;
   };
 
-  // Helper to find signatory by role and optional department
-  const findSignatory = (role: string, deptKeyword?: string) => {
-    return activeSignatories.find((s) => {
-      if (s.role !== role) return false;
-      if (deptKeyword) {
-        return (
-          s.department?.toLowerCase().includes(deptKeyword.toLowerCase()) ||
-          s.roleTitle?.toLowerCase().includes(deptKeyword.toLowerCase())
-        );
-      }
-      return true;
-    });
-  };
-
   // Stage numbering helpers based on creator:
   // If Officer / Non-SAS creator:
   //   Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory First Gate)
   //   Stage 2: Department & Program Endorsements
-  //   Stage 3: Academic Affairs Review
+  //   Stage 3: Institutional Review & Endorsements
   //   Stage 4: Executive Administration & Approval
   // If SAS Creator:
   //   Stage 1: Department & Program Endorsements
-  //   Stage 2: Academic Affairs Review
+  //   Stage 2: Institutional Review & Endorsements
   //   Stage 3: Executive Administration & Approval
   const deptStageIndex = isSasCreator ? 1 : 2;
   const deptStageName = isSasCreator
@@ -57,271 +48,236 @@ export function buildDynamicApprovalChain(
 
   const acadStageIndex = isSasCreator ? 2 : 3;
   const acadStageName = isSasCreator
-    ? 'Academic Affairs Review'
-    : 'Stage 3: Academic Affairs Review';
+    ? 'Institutional Review & Endorsements'
+    : 'Stage 3: Institutional Review & Endorsements';
 
   const execStageIndex = isSasCreator ? 3 : 4;
   const execStageName = isSasCreator
     ? 'Executive Administration & Approval'
     : 'Stage 4: Executive Administration & Approval';
 
-  // ── Stage 1: SAS Coordinator / Reviewer Endorsement ──
-  // Mandatory first gate when submitted by student organization officers
+  const usedSignatoryIds = new Set<string>();
+
+  // ── Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory First Gate for Org Proposals) ──
   if (!isSasCreator) {
-    const sasSignatory =
-      findSignatory('sas_coordinator') ||
-      findSignatory('sas_head') ||
-      activeSignatories.find(
-        (s) =>
-          s.department?.toLowerCase().includes('student affairs') ||
-          s.department?.toLowerCase().includes('sas') ||
-          s.roleTitle?.toLowerCase().includes('student affairs') ||
-          s.roleTitle?.toLowerCase().includes('sas')
-      );
+    const sasSignatory = signatories.find(
+      (s) =>
+        s.role === 'sas_coordinator' ||
+        s.role === 'sas_head' ||
+        s.department?.toLowerCase().includes('student affairs') ||
+        s.department?.toLowerCase().includes('sas') ||
+        s.roleTitle?.toLowerCase().includes('student affairs') ||
+        s.roleTitle?.toLowerCase().includes('sas')
+    );
 
-    chain.push({
-      id: 'step_sas_mandatory',
-      step: stepIndex++,
-      stageIndex: 1,
-      stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
-      role: sasSignatory?.role || 'sas_coordinator',
-      roleTitle: sasSignatory?.roleTitle || 'SAS Coordinator / Reviewer',
-      actionType: 'endorse',
-      signatoryUid: sasSignatory?.id,
-      signatoryName: sasSignatory?.name || sasAdminName,
-      signatoryEmail: sasSignatory?.email || sasAdminEmail,
-      department: sasSignatory?.department || 'Student Affairs & Services',
-      status: 'current',
-    });
-  }
-
-  // ── Department & Program Endorsements (Parallel Signers) ──
-  const depts = targetAudience.departments || [];
-  const levels = targetAudience.academicLevels || [];
-  const touchedDeptIds = targetAudience.departmentIds || [];
-  const addedSignatoryIds = new Set<string>();
-
-  // Resolution 1: match signatories linked directly to touched departmentIds
-  if (touchedDeptIds.length > 0) {
-    touchedDeptIds.forEach((deptId) => {
-      const match = activeSignatories.find(
-        (s) =>
-          (s.role === 'program_head' || s.role === 'shs_principal') &&
-          s.departmentId === deptId &&
-          !addedSignatoryIds.has(s.id)
-      );
-      if (match) {
-        addedSignatoryIds.add(match.id);
-        chain.push({
-          id: `step_${stepIndex}`,
-          step: stepIndex++,
-          stageIndex: deptStageIndex,
-          stageName: deptStageName,
-          role: match.role,
-          roleTitle: match.roleTitle || 'Department Head',
-          actionType: resolveActionType(match.actionType, 'endorse'),
-          signatoryUid: match.id,
-          signatoryName: match.name,
-          signatoryEmail: match.email,
-          department: match.department,
-          status: deptStatus,
-        });
-      }
-    });
-  }
-
-  // Resolution 2: fallback if no signatories matched by departmentId
-  if (addedSignatoryIds.size === 0) {
-    const touchedSHS = levels.includes('SHS') || depts.some((d) => ['STEM', 'ABM', 'HUMSS', 'TVL', 'GAS', 'ICT-SHS'].includes(d.toUpperCase()));
-    const touchedIT = depts.some((d) => ['BSIT', 'ACT', 'CS', 'IT'].includes(d.toUpperCase()));
-    const touchedHM = depts.some((d) => ['BSHM', 'BSTM', 'HRT'].includes(d.toUpperCase()));
-    const touchedBA = depts.some((d) => ['BSBA', 'BSA', 'BSMA'].includes(d.toUpperCase()));
-
-    // SHS Principal if Senior High students are involved
-    if (touchedSHS) {
-      const shsSignatory = findSignatory('shs_principal') || findSignatory('program_head', 'Senior High');
-      if (shsSignatory && !addedSignatoryIds.has(shsSignatory.id)) {
-        addedSignatoryIds.add(shsSignatory.id);
-        chain.push({
-          id: `step_${stepIndex}`,
-          step: stepIndex++,
-          stageIndex: deptStageIndex,
-          stageName: deptStageName,
-          role: 'shs_principal',
-          roleTitle: shsSignatory.roleTitle || 'SHS Assistant Principal',
-          actionType: resolveActionType(shsSignatory.actionType, 'endorse'),
-          signatoryUid: shsSignatory.id,
-          signatoryName: shsSignatory.name,
-          signatoryEmail: shsSignatory.email,
-          department: shsSignatory.department || 'Senior High School',
-          status: deptStatus,
-        });
-      }
-    }
-
-    // IT Program Head if BSIT/ACT is involved
-    if (touchedIT) {
-      const itSignatory = findSignatory('program_head', 'Information Technology') || findSignatory('program_head', 'IT');
-      if (itSignatory && !addedSignatoryIds.has(itSignatory.id)) {
-        addedSignatoryIds.add(itSignatory.id);
-        chain.push({
-          id: `step_${stepIndex}`,
-          step: stepIndex++,
-          stageIndex: deptStageIndex,
-          stageName: deptStageName,
-          role: 'program_head',
-          roleTitle: itSignatory.roleTitle || 'IT Program Head',
-          actionType: resolveActionType(itSignatory.actionType, 'endorse'),
-          signatoryUid: itSignatory.id,
-          signatoryName: itSignatory.name,
-          signatoryEmail: itSignatory.email,
-          department: itSignatory.department || 'Information Technology Department',
-          status: deptStatus,
-        });
-      }
-    }
-
-    // Hospitality Program Head if BSHM/BSTM is involved
-    if (touchedHM) {
-      const hmSignatory = findSignatory('program_head', 'Hospitality') || findSignatory('program_head', 'Tourism');
-      if (hmSignatory && !addedSignatoryIds.has(hmSignatory.id)) {
-        addedSignatoryIds.add(hmSignatory.id);
-        chain.push({
-          id: `step_${stepIndex}`,
-          step: stepIndex++,
-          stageIndex: deptStageIndex,
-          stageName: deptStageName,
-          role: 'program_head',
-          roleTitle: hmSignatory.roleTitle || 'Hospitality Management Program Head',
-          actionType: resolveActionType(hmSignatory.actionType, 'endorse'),
-          signatoryUid: hmSignatory.id,
-          signatoryName: hmSignatory.name,
-          signatoryEmail: hmSignatory.email,
-          department: hmSignatory.department || 'Hospitality Department',
-          status: deptStatus,
-        });
-      }
-    }
-
-    // Business Program Head if BSBA is involved
-    if (touchedBA) {
-      const baSignatory = findSignatory('program_head', 'Business') || findSignatory('program_head', 'Accountancy');
-      if (baSignatory && !addedSignatoryIds.has(baSignatory.id)) {
-        addedSignatoryIds.add(baSignatory.id);
-        chain.push({
-          id: `step_${stepIndex}`,
-          step: stepIndex++,
-          stageIndex: deptStageIndex,
-          stageName: deptStageName,
-          role: 'program_head',
-          roleTitle: baSignatory.roleTitle || 'Business Administration Program Head',
-          actionType: resolveActionType(baSignatory.actionType, 'endorse'),
-          signatoryUid: baSignatory.id,
-          signatoryName: baSignatory.name,
-          signatoryEmail: baSignatory.email,
-          department: baSignatory.department || 'Business Management Department',
-          status: deptStatus,
-        });
-      }
-    }
-
-    // If general college or no department matched, include general Program Head
-    if (addedSignatoryIds.size === 0) {
-      const generalHead = findSignatory('program_head') || {
-        id: 'sig_program_head_default',
-        name: 'Program Head',
-        email: 'programs@ormoc.sti.edu.ph',
-        role: 'program_head' as const,
-        roleTitle: 'Program Head',
-        department: 'Academic Department',
-        actionType: 'endorse' as const,
-      };
-      addedSignatoryIds.add(generalHead.id);
+    if (sasSignatory) {
+      usedSignatoryIds.add(sasSignatory.id);
       chain.push({
         id: `step_${stepIndex}`,
         step: stepIndex++,
-        stageIndex: deptStageIndex,
-        stageName: deptStageName,
-        role: 'program_head',
-        roleTitle: generalHead.roleTitle || 'Department Head',
-        actionType: resolveActionType(generalHead.actionType, 'endorse'),
-        signatoryUid: generalHead.id,
-        signatoryName: generalHead.name,
-        signatoryEmail: generalHead.email,
-        department: generalHead.department || 'Academic Department',
-        status: deptStatus,
+        stageIndex: 1,
+        stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+        role: sasSignatory.role || 'sas_coordinator',
+        roleTitle: sasSignatory.roleTitle || 'SAS Coordinator',
+        actionType: 'endorse',
+        signatoryUid: sasSignatory.id,
+        signatoryName: sasSignatory.name,
+        signatoryEmail: sasSignatory.email,
+        department: sasSignatory.department || 'Student Affairs & Services',
+        departmentId: sasSignatory.departmentId,
+        status: 'current',
+      });
+    } else if (sasAdminEmail) {
+      // Fallback to SAS configuration settings if no individual user mapped yet
+      chain.push({
+        id: `step_${stepIndex}`,
+        step: stepIndex++,
+        stageIndex: 1,
+        stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+        role: 'sas_coordinator',
+        roleTitle: 'SAS Coordinator',
+        actionType: 'endorse',
+        signatoryName: sasAdminName,
+        signatoryEmail: sasAdminEmail,
+        department: 'Student Affairs & Services',
+        status: 'current',
       });
     }
   }
 
-  // ── Stage 3 (or 2 for SAS Creator): Academic Affairs Review ──
-  const effectiveAcadHead = findSignatory('academic_head') || {
-    id: 'sig_acad_head_default',
-    name: 'Academic Affairs Head',
-    email: 'academics@ormoc.sti.edu.ph',
-    role: 'academic_head' as const,
-    roleTitle: 'Academic Head',
-    department: 'Academic Affairs',
-    actionType: 'endorse' as const,
-  };
-  chain.push({
-    id: `step_${stepIndex}`,
-    step: stepIndex++,
-    stageIndex: acadStageIndex,
-    stageName: acadStageName,
-    role: 'academic_head',
-    roleTitle: effectiveAcadHead.roleTitle || 'Academic Head',
-    actionType: resolveActionType(effectiveAcadHead.actionType, 'endorse'),
-    signatoryUid: effectiveAcadHead.id,
-    signatoryName: effectiveAcadHead.name,
-    signatoryEmail: effectiveAcadHead.email,
-    department: effectiveAcadHead.department || 'Academic Affairs',
-    status: 'waiting',
+  // ── Stage 2: Department-Level Signatories ──
+  // User Rule:
+  // "If all students all signatories with department are required to sign it."
+  // "stage 2 if our signatories belong to (IT DEPARTMENT) and the audience involve IT students then he/she will need to sign."
+  // "All should be from database"
+  const isAllStudents =
+    targetAudience.allStudents === true ||
+    targetAudience.scope === 'all' ||
+    (targetAudience.departments || []).some(
+      (d) =>
+        d.toLowerCase().includes('all students') ||
+        d.toLowerCase().includes('campus-wide') ||
+        d.toLowerCase().includes('all campus')
+    );
+
+  const targetDeptIds = new Set((targetAudience.departmentIds || []).filter(Boolean));
+  const targetDeptNames = (targetAudience.departments || []).map((d) => d.toLowerCase().trim());
+  const targetCourseCodes = (targetAudience.courseCodes || []).map((c) => c.toLowerCase().trim());
+  const targetLevels = targetAudience.academicLevels || [];
+
+  // Exclude executive approvers from Stage 2
+  const executiveRoles = ['school_president', 'school_administrator'];
+
+  const departmentSignatories = signatories.filter((s) => {
+    if (usedSignatoryIds.has(s.id)) return false;
+    if (executiveRoles.includes(s.role)) return false;
+
+    // Must have a department assignment or department role
+    const hasDeptId = Boolean(s.departmentId);
+    const deptName = (s.department || '').toLowerCase().trim();
+    const isDeptScope =
+      hasDeptId ||
+      (deptName &&
+        !['institutional', 'campus-wide', 'campus wide', 'administration', 'academic affairs', 'office of the president'].includes(deptName));
+
+    if (!isDeptScope && s.role !== 'program_head' && s.role !== 'shs_principal') {
+      return false;
+    }
+
+    // If All Students: ALL signatories with an academic department are required!
+    if (isAllStudents) {
+      return true;
+    }
+
+    // Specific Audience: Match by departmentId
+    if (s.departmentId && targetDeptIds.has(s.departmentId)) {
+      return true;
+    }
+
+    // Match by department name
+    if (deptName && targetDeptNames.some((td) => deptName.includes(td) || td.includes(deptName))) {
+      return true;
+    }
+
+    // Match SHS
+    if (targetLevels.includes('SHS')) {
+      if (
+        s.role === 'shs_principal' ||
+        deptName.includes('shs') ||
+        deptName.includes('senior high') ||
+        s.roleTitle.toLowerCase().includes('principal') ||
+        s.roleTitle.toLowerCase().includes('senior high')
+      ) {
+        return true;
+      }
+    }
+
+    // Match course codes (e.g. IT, BSIT)
+    if (targetCourseCodes.some((cc) => deptName.includes(cc) || s.roleTitle.toLowerCase().includes(cc))) {
+      return true;
+    }
+
+    return false;
   });
 
-  // ── Stage 4 (or 3 for SAS Creator): Executive Administration & Presidential Approval ──
-  // A. School Administrator Endorsement (if configured)
-  const adminHead = findSignatory('school_administrator');
-  if (adminHead) {
+  departmentSignatories.forEach((sig) => {
+    usedSignatoryIds.add(sig.id);
+    chain.push({
+      id: `step_${stepIndex}`,
+      step: stepIndex++,
+      stageIndex: deptStageIndex,
+      stageName: deptStageName,
+      role: sig.role,
+      roleTitle: sig.roleTitle || 'Department Head',
+      actionType: resolveActionType(sig.actionType, 'endorse'),
+      signatoryUid: sig.id,
+      signatoryName: sig.name,
+      signatoryEmail: sig.email,
+      department: sig.department || 'Academic Department',
+      departmentId: sig.departmentId,
+      status: deptStatus,
+    });
+  });
+
+  // ── Stage 3: Institutional Review & Endorsements ──
+  // Institutional signatories from database who don't belong to a single department (e.g., Academic Head, Dean)
+  // and are not executive final approvers.
+  const institutionalEndorsers = signatories.filter((s) => {
+    if (usedSignatoryIds.has(s.id)) return false;
+    if (executiveRoles.includes(s.role)) return false;
+    if (s.actionType === 'approver') return false;
+
+    // Academic head or campus-wide institutional endorsers
+    return (
+      s.role === 'academic_head' ||
+      s.roleTitle.toLowerCase().includes('academic head') ||
+      s.roleTitle.toLowerCase().includes('dean') ||
+      !s.departmentId ||
+      ['institutional', 'campus-wide', 'campus wide', 'academic affairs'].includes(
+        (s.department || '').toLowerCase().trim()
+      )
+    );
+  });
+
+  institutionalEndorsers.forEach((sig) => {
+    usedSignatoryIds.add(sig.id);
+    chain.push({
+      id: `step_${stepIndex}`,
+      step: stepIndex++,
+      stageIndex: acadStageIndex,
+      stageName: acadStageName,
+      role: sig.role,
+      roleTitle: sig.roleTitle || 'Academic Head',
+      actionType: resolveActionType(sig.actionType, 'endorse'),
+      signatoryUid: sig.id,
+      signatoryName: sig.name,
+      signatoryEmail: sig.email,
+      department: sig.department || 'Academic Affairs',
+      departmentId: sig.departmentId,
+      status: 'waiting',
+    });
+  });
+
+  // ── Stage 4: Executive Administration & Approval ──
+  // User Rule:
+  // "compulsory last step is approver (school_administrator, school_president)"
+  // "last step is approver then all approver should be there"
+  const executiveApprovers = signatories.filter((s) => {
+    if (usedSignatoryIds.has(s.id)) return false;
+    return (
+      s.role === 'school_president' ||
+      s.role === 'school_administrator' ||
+      s.actionType === 'approver' ||
+      s.actionType === 'both'
+    );
+  });
+
+  // Sort so School Administrator is placed before School President
+  executiveApprovers.sort((a, b) => {
+    if (a.role === 'school_administrator' && b.role !== 'school_administrator') return -1;
+    if (b.role === 'school_administrator' && a.role !== 'school_administrator') return 1;
+    if (a.role === 'school_president' && b.role !== 'school_president') return 1;
+    if (b.role === 'school_president' && a.role !== 'school_president') return -1;
+    return 0;
+  });
+
+  executiveApprovers.forEach((sig) => {
+    usedSignatoryIds.add(sig.id);
     chain.push({
       id: `step_${stepIndex}`,
       step: stepIndex++,
       stageIndex: execStageIndex,
       stageName: execStageName,
-      role: 'school_administrator',
-      roleTitle: adminHead.roleTitle || 'School Administrator',
-      actionType: resolveActionType(adminHead.actionType, 'endorse'),
-      signatoryUid: adminHead.id,
-      signatoryName: adminHead.name,
-      signatoryEmail: adminHead.email,
-      department: adminHead.department || 'Administration & Operations',
+      role: sig.role,
+      roleTitle: sig.roleTitle || (sig.role === 'school_president' ? 'School President' : 'School Administrator'),
+      actionType: sig.role === 'school_president' ? 'approve' : resolveActionType(sig.actionType, 'approve'),
+      signatoryUid: sig.id,
+      signatoryName: sig.name,
+      signatoryEmail: sig.email,
+      department: sig.department || (sig.role === 'school_president' ? 'Office of the President' : 'School Administration'),
+      departmentId: sig.departmentId,
       status: 'waiting',
     });
-  }
-
-  // B. Final School President Approval
-  const effectivePresident = findSignatory('school_president') || {
-    id: 'sig_school_president_default',
-    name: 'School President',
-    email: 'president@ormoc.sti.edu.ph',
-    role: 'school_president' as const,
-    roleTitle: 'School President',
-    department: 'Office of the President',
-    actionType: 'approve' as const,
-  };
-  chain.push({
-    id: `step_${stepIndex}`,
-    step: stepIndex++,
-    stageIndex: execStageIndex,
-    stageName: execStageName,
-    role: 'school_president',
-    roleTitle: effectivePresident.roleTitle || 'School President',
-    actionType: resolveActionType(effectivePresident.actionType, 'approve'),
-    signatoryUid: effectivePresident.id,
-    signatoryName: effectivePresident.name,
-    signatoryEmail: effectivePresident.email,
-    department: effectivePresident.department || 'Office of the President',
-    status: 'waiting',
   });
 
   return chain;

@@ -77,6 +77,16 @@ export interface MissingStudentItem {
   decision: MissingStudentDecision;
 }
 
+export interface DetectedProgramAlignment {
+  code: string;
+  name: string;
+  academicLevel: AcademicLevel;
+  departmentId: string;
+  departmentName: string;
+  isUnaligned: boolean;
+  studentCount: number;
+}
+
 export interface ImportReconciliationAnalysis {
   fileSummary: ParsedRegistrarFile;
   newStudents: ParsedRegistrarStudent[];
@@ -86,6 +96,7 @@ export interface ImportReconciliationAnalysis {
   existingCourses: Map<string, CourseDocument>;
   missingCourses: Array<{ code: string; name: string; academicLevel: AcademicLevel }>;
   existingDepartments: Map<string, DepartmentDocument>;
+  detectedPrograms: DetectedProgramAlignment[];
   isSemesterProvisionNeeded: boolean;
 }
 
@@ -412,6 +423,56 @@ export async function analyzeRegistrarImport(
     if (data.code) existingDepartments.set(data.code.trim().toUpperCase(), data);
   });
 
+  // Build program-to-department alignments for all programs detected in this file
+  const deptsArray = Array.from(new Set(Array.from(existingDepartments.values())));
+  const detectedPrograms: DetectedProgramAlignment[] = fileSummary.programsDetected.map((prog) => {
+    const cleanCode = prog.code.trim().toUpperCase();
+    const existingCourse = existingCourses.get(cleanCode);
+    let resolvedDeptId = existingCourse?.departmentId || '';
+    let resolvedDept = resolvedDeptId ? existingDepartments.get(resolvedDeptId) : undefined;
+
+    // If not aligned, auto-suggest from active departments matching code or track
+    if (!resolvedDept && !resolvedDeptId) {
+      if (fileSummary.academicLevel === 'SHS') {
+        const shsDept = deptsArray.find((d) => d.academicLevel === 'SHS' || d.code?.toUpperCase() === 'SHS' || d.name?.toLowerCase().includes('senior high'));
+        if (shsDept) {
+          resolvedDeptId = shsDept.id;
+          resolvedDept = shsDept;
+        }
+      } else {
+        if (cleanCode.includes('IT') || cleanCode.includes('CS') || cleanCode.includes('ACT')) {
+          const itDept = deptsArray.find((d) => d.code?.toUpperCase() === 'CITE' || d.code?.toUpperCase() === 'IT' || d.name?.toLowerCase().includes('information'));
+          if (itDept) {
+            resolvedDeptId = itDept.id;
+            resolvedDept = itDept;
+          }
+        } else if (cleanCode.includes('HM') || cleanCode.includes('TM')) {
+          const hmDept = deptsArray.find((d) => d.code?.toUpperCase() === 'THM' || d.name?.toLowerCase().includes('hospitality') || d.name?.toLowerCase().includes('tourism'));
+          if (hmDept) {
+            resolvedDeptId = hmDept.id;
+            resolvedDept = hmDept;
+          }
+        } else if (cleanCode.includes('BA') || cleanCode.includes('BM') || cleanCode.includes('ACC') || cleanCode.includes('MA')) {
+          const baDept = deptsArray.find((d) => d.code?.toUpperCase() === 'BA' || d.code?.toUpperCase() === 'CBA' || d.name?.toLowerCase().includes('business'));
+          if (baDept) {
+            resolvedDeptId = baDept.id;
+            resolvedDept = baDept;
+          }
+        }
+      }
+    }
+
+    return {
+      code: cleanCode,
+      name: existingCourse?.name || prog.name,
+      academicLevel: existingCourse?.academicLevel || fileSummary.academicLevel,
+      departmentId: resolvedDeptId,
+      departmentName: resolvedDept?.name || '',
+      isUnaligned: !resolvedDeptId,
+      studentCount: prog.studentCount || 0,
+    };
+  });
+
   return {
     fileSummary,
     newStudents,
@@ -421,6 +482,7 @@ export async function analyzeRegistrarImport(
     existingCourses,
     missingCourses,
     existingDepartments,
+    detectedPrograms,
     isSemesterProvisionNeeded,
   };
 }
@@ -432,6 +494,7 @@ export interface BulkImportExecutionOptions {
   matchedPromotions: MatchedPromotionItem[];
   nameConflicts: NameConflictItem[];
   missingStudents: MissingStudentItem[];
+  programDepartmentMap?: Record<string, string>; // courseCode -> departmentId
   autoProvisionCourses: boolean;
   autoProvisionSemester: boolean;
   adminUid: string;
@@ -446,6 +509,7 @@ export async function executeRegistrarBulkImport(
     matchedPromotions,
     nameConflicts,
     missingStudents,
+    programDepartmentMap = {},
     autoProvisionCourses,
     autoProvisionSemester,
     adminUid,
@@ -461,17 +525,23 @@ export async function executeRegistrarBulkImport(
 
   const auditLog: ImportExecutionResult['auditLog'] = [];
 
-  // Step 1: Auto-provision missing courses if requested
+  // Step 1: Auto-provision missing courses and align existing courses with assigned departments
   const courseIdMap = new Map<string, { id: string; name: string; code: string; departmentId: string }>();
 
   // Helper to resolve department for a course/program
   const resolveDepartmentForProgram = (code: string, academicLevel: AcademicLevel): { id: string; name: string } => {
+    const cleanCode = code.toUpperCase();
+    const mappedDeptId = programDepartmentMap[cleanCode];
+    if (mappedDeptId) {
+      const mappedDept = analysis.existingDepartments.get(mappedDeptId);
+      if (mappedDept) return { id: mappedDept.id, name: mappedDept.name };
+    }
+
     const allDepts = Array.from(analysis.existingDepartments.values());
     if (academicLevel === 'SHS') {
       const shsDept = allDepts.find((d) => d.academicLevel === 'SHS' || d.code?.toUpperCase() === 'SHS');
       return { id: shsDept?.id || 'dept_shs', name: shsDept?.name || 'Senior High School' };
     }
-    const cleanCode = code.toUpperCase();
     if (cleanCode.includes('IT') || cleanCode.includes('CS') || cleanCode.includes('ACT')) {
       const citeDept = allDepts.find((d) => d.code?.toUpperCase() === 'CITE' || d.code?.toUpperCase() === 'IT' || d.name?.toLowerCase().includes('information'));
       return { id: citeDept?.id || 'dept_it', name: citeDept?.name || 'Information Technology' };
@@ -488,15 +558,30 @@ export async function executeRegistrarBulkImport(
     return { id: fallbackCollege?.id || '', name: fallbackCollege?.name || '' };
   };
 
-  // Populate from existing
-  analysis.existingCourses.forEach((c) => {
-    courseIdMap.set(c.code.trim().toUpperCase(), {
+  // Populate from existing and synchronize department alignment
+  for (const c of Array.from(analysis.existingCourses.values())) {
+    const cleanCode = c.code.trim().toUpperCase();
+    const assignedDeptId = programDepartmentMap[cleanCode] || c.departmentId || '';
+
+    // If an alignment was chosen by user and differs from existing Firestore course, update course
+    if (programDepartmentMap[cleanCode] && programDepartmentMap[cleanCode] !== c.departmentId) {
+      try {
+        await updateDoc(doc(db, COURSES_COLLECTION, c.id), {
+          departmentId: programDepartmentMap[cleanCode],
+          updatedAt: Timestamp.now(),
+        });
+      } catch (updErr) {
+        console.warn(`[executeRegistrarBulkImport] Could not update department for course ${c.code}:`, updErr);
+      }
+    }
+
+    courseIdMap.set(cleanCode, {
       id: c.id,
       name: c.name,
       code: c.code,
-      departmentId: c.departmentId || '',
+      departmentId: assignedDeptId,
     });
-  });
+  }
 
   if (autoProvisionCourses && analysis.missingCourses.length > 0) {
     onProgress?.(0, 100, `Provisioning ${analysis.missingCourses.length} new academic programs...`);
@@ -663,7 +748,6 @@ export async function executeRegistrarBulkImport(
           email: '', // Student uploads/provides their email directly on mobile app during first login
           authUid: '',
           requiresPasswordChange: true,
-          requiresChangePassword: true,
           isProfileComplete: false,
           defaultPassword,
           profilePhotoUrl: '',

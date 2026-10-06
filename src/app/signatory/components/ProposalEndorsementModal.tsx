@@ -108,18 +108,24 @@ export default function ProposalEndorsementModal({
   }, [signatorySession?.signatureUrl, signatorySession?.signatureDataUrl]);
 
   const hasSignature = Boolean(activeSignatureUrl);
-  const isFinalApprover =
-    currentStep?.actionType === 'approve' ||
+  const isSchoolAdmin =
+    currentStep?.role === 'school_administrator' ||
+    signatorySession?.role === 'school_administrator';
+
+  const isPresident =
     currentStep?.role === 'school_president' ||
-    signatorySession?.actionType === 'approve' ||
     signatorySession?.role === 'school_president';
 
-  const handleEndorse = async () => {
+  const isFinalApprover = isPresident || isSchoolAdmin || currentStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+
+  const handleEndorse = async (overrideActionType?: 'endorse' | 'approve') => {
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this proposal.');
       onOpenSignaturePad();
       return;
     }
+
+    const action = overrideActionType || (isFinalApprover ? 'approve' : 'endorse');
 
     setIsSubmitting(true);
     try {
@@ -132,18 +138,18 @@ export default function ProposalEndorsementModal({
           email: signatorySession?.email || '',
           roleTitle: signatorySession?.roleTitle || '',
           role: signatorySession?.role || '',
-          actionType: isFinalApprover ? 'approve' : 'endorse',
+          actionType: action,
           signatureUrl: activeSignatureUrl || undefined,
         },
         remarks
       );
 
       if (result.isFullyApproved) {
-        toast.success(`Proposal fully approved! Final presidential authorization recorded for ${proposal.referenceNo}`);
+        toast.success(`Proposal fully approved! Final authorization recorded for ${proposal.referenceNo}`);
       } else if (result.stageAdvanced) {
         toast.success(`Stage ${currentStage} completed! Proposal forwarded to the next approval stage.`);
       } else {
-        toast.success(`Endorsement recorded successfully! Awaiting remaining signatures for this stage.`);
+        toast.success(`Endorsement recorded successfully! Forwarded to the next signatory.`);
       }
 
       if (onProposalUpdated) onProposalUpdated();
@@ -846,29 +852,49 @@ export default function ProposalEndorsementModal({
               Close
             </button>
 
-            <button
-              type="button"
-              onClick={handleEndorse}
-              disabled={isSubmitting || !hasSignature}
-              className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                isFinalApprover
-                  ? 'bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30'
-                  : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-              }`}
-            >
-              {isFinalApprover ? (
+            {isSchoolAdmin ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => handleEndorse('endorse')}
+                  disabled={isSubmitting || !hasSignature}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to President'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleEndorse('approve')}
+                  disabled={isSubmitting || !hasSignature}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                  <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Final)'}</span>
+                </button>
+              </>
+            ) : isPresident ? (
+              <button
+                type="button"
+                onClick={() => handleEndorse('approve')}
+                disabled={isSubmitting || !hasSignature}
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+              >
                 <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-              ) : (
+                <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Presidential Final)'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => handleEndorse('endorse')}
+                disabled={isSubmitting || !hasSignature}
+                className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-50 cursor-pointer"
+              >
                 <Send className="w-4 h-4" />
-              )}
-              <span>
-                {isSubmitting
-                  ? 'Processing...'
-                  : isFinalApprover
-                  ? 'Authorize & Approve Activity Proposal'
-                  : 'Stamp E-Signature & Endorse Proposal'}
-              </span>
-            </button>
+                <span>{isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse Proposal'}</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

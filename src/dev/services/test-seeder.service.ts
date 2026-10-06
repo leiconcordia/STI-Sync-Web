@@ -563,7 +563,6 @@ export async function seedSampleStudents(options: SeedStudentOptions): Promise<S
       email: `${firstName.toLowerCase().replace(/\s+/g, '')}.${lastName.toLowerCase().replace(/\s+/g, '')}${Math.floor(Math.random() * 999)}@ormoc.sti.edu.ph`,
       authUid: `auth_${docId}`,
       requiresPasswordChange: false,
-      requiresChangePassword: false,
       profilePhotoUrl: '',
       schoolIdPhotoUrl: '',
       status: 'ACTIVE',

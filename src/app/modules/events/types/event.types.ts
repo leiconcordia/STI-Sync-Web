@@ -182,16 +182,19 @@ export interface EventVersionSnapshot {
 }
 
 export interface EventSession {
-  id: string; // Will use timestamp strings for unique IDs
+  id: string;
   title: string;
+  name?: string;
   date: string;                            // ISO YYYY-MM-DD
   startTime: string;                       // HH:mm
   endTime: string;                         // HH:mm
   timeInOpen: string;
   timeInClose: string;
+  isLateEnabled?: boolean;                 // If true, scans after markLateAfter are tagged Late
+  markLateAfter?: string | null;           // HH:mm timestamp for late marking
   hasTimeOut: boolean;
-  timeOutOpen: string;                     // Using empty string if disabled
-  timeOutClose: string;
+  timeOutOpen?: string;                    // Optional HH:mm
+  timeOutClose?: string;                   // Optional HH:mm
 }
 
 export interface EventScanner {
@@ -229,8 +232,10 @@ export interface BudgetCustodianAllocation {
   id: string;                      // unique row ID (e.g. "ca_1")
   taskId?: string;                 // optional linkage to proposal task
   taskName?: string;               // description of the task
-  isCustomItem?: boolean;          // true if added outside original proposal task list
+  isCustomItem?: boolean;          // true if added outside original proposal projection items
   expenseItemId?: string;          // optional linkage to proposal expense line item
+  expenseTitle?: string;           // title of expense item from projections
+  isContingencyFund?: boolean;     // true if designated as Contingency Fund distribution
   personName: string;              // Name of designated custodian/person (e.g. "Juan Dela Cruz")
   personUid?: string;              // optional UID if member of system
   personRole?: string;             // committee / title (e.g. "Logistics Committee Lead")

@@ -32,7 +32,9 @@ import {
   Check,
   AlertCircle,
   Eye,
+  Building,
 } from 'lucide-react';
+import { useDepartments } from '../../../modules/academic';
 import {
   parseRegistrarExcelFile,
   analyzeRegistrarImport,
@@ -77,6 +79,14 @@ export default function BulkImportRegistrarModal({
   const [analysis, setAnalysis] = useState<ImportReconciliationAnalysis | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('promote');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Department stream for program-to-department alignment
+  const { data: departments = [] } = useDepartments();
+  const activeDepartments = useMemo(
+    () => departments.filter((d) => d.status !== 'archived'),
+    [departments]
+  );
+  const [programDepartmentMap, setProgramDepartmentMap] = useState<Record<string, string>>({});
 
   // Editable Decisions State in Step 2
   const [promotions, setPromotions] = useState<MatchedPromotionItem[]>([]);
@@ -132,6 +142,16 @@ export default function BulkImportRegistrarModal({
       setPromotions(analysisResult.matchedPromotions);
       setConflicts(analysisResult.nameConflicts);
       setMissing(analysisResult.missingStudents);
+
+      // Initialize program-department alignment map from analysis
+      const initialMap: Record<string, string> = {};
+      analysisResult.detectedPrograms.forEach((p) => {
+        if (p.departmentId) {
+          initialMap[p.code] = p.departmentId;
+        }
+      });
+      setProgramDepartmentMap(initialMap);
+
       setIsAnalyzing(false);
 
       // Auto-set starting tab based on content
@@ -182,6 +202,7 @@ export default function BulkImportRegistrarModal({
         missingStudents: missing,
         autoProvisionCourses,
         autoProvisionSemester,
+        programDepartmentMap,
         adminUid,
         onProgress: (current, total, text) => {
           const pct = Math.round((current / (total || 1)) * 100);
@@ -766,6 +787,92 @@ export default function BulkImportRegistrarModal({
                 )}
 
               </div>
+
+              {/* Academic Program & Department Alignment */}
+              {analysis.detectedPrograms && analysis.detectedPrograms.length > 0 && (
+                <div className="bg-white rounded-xl p-5 border border-gray-200 shadow-sm space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-lg bg-blue-50 text-[#001A4D]">
+                        <Building className="w-5 h-5 text-[#001A4D]" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-gray-900">
+                          Academic Program & Department Alignment
+                        </h4>
+                        <p className="text-xs text-gray-500">
+                          Align detected programs to their academic department so sections, courses, and students carry the proper department linkage.
+                        </p>
+                      </div>
+                    </div>
+                    <span className="self-start sm:self-auto text-xs font-semibold px-2.5 py-1 bg-blue-50 text-[#001A4D] rounded-full border border-blue-200 whitespace-nowrap">
+                      {analysis.detectedPrograms.length} Programs Detected
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto border border-gray-100 rounded-lg">
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200">
+                        <tr>
+                          <th className="p-3">Program / Strand</th>
+                          <th className="p-3">Academic Track</th>
+                          <th className="p-3 text-center">Students In File</th>
+                          <th className="p-3">Assigned Academic Department</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {analysis.detectedPrograms.map((prog) => {
+                          const currentDeptId = programDepartmentMap[prog.code] || '';
+                          return (
+                            <tr key={prog.code} className="hover:bg-gray-50/60 transition-colors">
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono font-bold text-xs px-2 py-0.5 bg-blue-50 text-[#001A4D] rounded border border-blue-100">
+                                    {prog.code}
+                                  </span>
+                                  <span className="font-medium text-gray-800">{prog.name}</span>
+                                </div>
+                              </td>
+                              <td className="p-3">
+                                <span className="inline-block px-2 py-0.5 bg-gray-100 text-gray-600 rounded text-[11px]">
+                                  {prog.track || 'General'}
+                                </span>
+                              </td>
+                              <td className="p-3 text-center font-semibold text-gray-700">
+                                {prog.studentCount}
+                              </td>
+                              <td className="p-3">
+                                <select
+                                  value={currentDeptId}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setProgramDepartmentMap((prev) => ({
+                                      ...prev,
+                                      [prog.code]: val,
+                                    }));
+                                  }}
+                                  className={`w-full max-w-xs text-xs rounded-lg px-2.5 py-1.5 border transition-all cursor-pointer ${
+                                    currentDeptId
+                                      ? 'bg-blue-50/50 border-blue-300 text-gray-900 font-medium'
+                                      : 'bg-amber-50 border-amber-300 text-amber-900 font-medium'
+                                  }`}
+                                >
+                                  <option value="">-- Select Academic Department --</option>
+                                  {activeDepartments.map((dept) => (
+                                    <option key={dept.id} value={dept.id}>
+                                      {dept.name} ({dept.code})
+                                    </option>
+                                  ))}
+                                </select>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
               {/* Master Auto-Provisioning Options */}
               <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm space-y-2">

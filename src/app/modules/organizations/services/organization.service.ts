@@ -20,9 +20,29 @@ export const createOrganization = async (
     logoUrl = secureUrl;
   }
 
+  const isCross =
+    !payload.departmentId ||
+    payload.departmentId === 'cross-departmental' ||
+    payload.scope === 'cross-departmental' ||
+    payload.isCrossDepartmental === true;
+
+  const normalizedPayload: CreateOrganizationPayload = {
+    ...payload,
+    departmentId: isCross ? 'cross-departmental' : payload.departmentId,
+    departmentName: isCross
+      ? (payload.departmentName || 'Cross-Departmental / All Students')
+      : (payload.departmentName || 'Academic Department'),
+    departmentCode: isCross ? (payload.departmentCode || 'ALL') : (payload.departmentCode || ''),
+    department: isCross
+      ? (payload.departmentName || 'Cross-Departmental / All Students')
+      : (payload.departmentName || 'Academic Department'),
+    scope: isCross ? 'cross-departmental' : 'departmental',
+    isCrossDepartmental: isCross,
+  };
+
   try {
     const addPromise = addDoc(collection(db, COLLECTION), {
-      ...payload,
+      ...normalizedPayload,
       logoUrl,
       status: 'active',
       memberCount: 0,
@@ -101,11 +121,27 @@ export const updateOrganization = async (
 
   try {
     const docRef = doc(db, COLLECTION, orgId);
-    
+
     const updateData: any = {
       ...payload,
       updatedAt: serverTimestamp(),
     };
+
+    if (payload.departmentId !== undefined) {
+      const isCross =
+        payload.departmentId === 'cross-departmental' ||
+        payload.scope === 'cross-departmental' ||
+        payload.isCrossDepartmental === true;
+
+      updateData.departmentId = isCross ? 'cross-departmental' : payload.departmentId;
+      updateData.departmentName = isCross
+        ? (payload.departmentName || 'Cross-Departmental / All Students')
+        : (payload.departmentName || 'Academic Department');
+      updateData.departmentCode = isCross ? (payload.departmentCode || 'ALL') : (payload.departmentCode || '');
+      updateData.department = updateData.departmentName;
+      updateData.scope = isCross ? 'cross-departmental' : 'departmental';
+      updateData.isCrossDepartmental = isCross;
+    }
     
     if (logoUrl !== undefined) {
       updateData.logoUrl = logoUrl;

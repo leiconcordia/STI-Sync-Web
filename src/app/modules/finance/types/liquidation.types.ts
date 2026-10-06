@@ -19,6 +19,7 @@ export interface ExpenseLineItem {
   proposedQuantity?: number; // Proposed quantity from proposal
   proposedUnitCost?: number; // Proposed unit cost from proposal
   isPreFilled?: boolean; // If true, description & category cannot be edited or deleted
+  isContingency?: boolean; // True if designated as contingency fund advance
   quantity: number;
   unitCost: number;
   totalCost: number;

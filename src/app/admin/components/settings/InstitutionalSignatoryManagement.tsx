@@ -55,16 +55,20 @@ import type {
   CreateSignatoryRolePayload,
 } from '../../../modules/signatories/types/signatory-role.types';
 import { useAdviserProfile } from '../../../modules/auth';
+import { useDepartments } from '../../../modules/academic';
 
 export default function InstitutionalSignatoryManagement() {
   const { profile } = useAdviserProfile();
   const { roles: dbRoles, loading: rolesLoading } = useSignatoryRolesStream();
+  const { data: departments = [] } = useDepartments();
+  const activeDepartments = React.useMemo(() => departments.filter((d) => !d.archived), [departments]);
 
   const [activeTab, setActiveTab] = useState<'signatories' | 'roles'>('signatories');
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoleFilter, setSelectedRoleFilter] = useState<string>('all');
+  const [selectedDeptFilter, setSelectedDeptFilter] = useState<string>('all');
   const [roleSearchQuery, setRoleSearchQuery] = useState('');
 
   // Modals for Signatories
@@ -123,6 +127,8 @@ export default function InstitutionalSignatoryManagement() {
       roleTitle: '',
       actionType: 'endorser',
       employeeId: '',
+      department: '',
+      departmentId: '',
       temporaryPassword: generateTemporaryPassword(),
     });
     setIsAddModalOpen(true);
@@ -278,6 +284,8 @@ export default function InstitutionalSignatoryManagement() {
         roleTitle: cleanTitle,
         actionType: editingSignatory.actionType || 'endorser',
         employeeId: editingSignatory.employeeId ? editingSignatory.employeeId.trim() : '',
+        department: editingSignatory.department || '',
+        departmentId: editingSignatory.departmentId || '',
       });
       toast.success('Signatory details updated successfully.');
       setEditingSignatory(null);
@@ -342,6 +350,7 @@ export default function InstitutionalSignatoryManagement() {
       s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.roleTitle.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (s.department && s.department.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (s.employeeId && s.employeeId.toLowerCase().includes(searchQuery.toLowerCase()));
 
     const cap = s.actionType || (s.role === 'school_president' ? 'approver' : 'endorser');
@@ -351,7 +360,13 @@ export default function InstitutionalSignatoryManagement() {
       (selectedRoleFilter === 'endorser' && (cap === 'endorser' || cap === 'endorse')) ||
       (selectedRoleFilter === 'both' && cap === 'both');
 
-    return matchesSearch && matchesRole;
+    const matchesDept =
+      selectedDeptFilter === 'all' ||
+      (selectedDeptFilter === 'institutional' && (!s.departmentId && !s.department)) ||
+      (s.departmentId && s.departmentId === selectedDeptFilter) ||
+      (s.department && s.department === selectedDeptFilter);
+
+    return matchesSearch && matchesRole && matchesDept;
   });
 
   return (
@@ -414,16 +429,32 @@ export default function InstitutionalSignatoryManagement() {
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col md:flex-row gap-4 justify-between items-start md:items-center">
-        {/* Search */}
-        <div className="relative w-full md:w-80">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input
-            type="text"
-            placeholder="Search by name, title, or email..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
-          />
+        {/* Search & Department Filter */}
+        <div className="flex flex-col sm:flex-row gap-2.5 w-full md:w-auto flex-1 max-w-xl">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search by name, title, department, or email..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+            />
+          </div>
+
+          <select
+            value={selectedDeptFilter}
+            onChange={(e) => setSelectedDeptFilter(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-xs font-semibold text-gray-700 bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+          >
+            <option value="all">All Departments & Scope</option>
+            <option value="institutional">Institutional / Campus-Wide Only</option>
+            {activeDepartments.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name} ({d.code})
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Authority Capability Filters */}
@@ -477,8 +508,8 @@ export default function InstitutionalSignatoryManagement() {
             <UserCheck className="w-12 h-12 text-gray-300 mx-auto mb-3" />
             <p className="font-semibold text-gray-700">No signatories found</p>
             <p className="text-sm mt-1">
-              {searchQuery
-                ? 'Try adjusting your search query or filter.'
+              {searchQuery || selectedDeptFilter !== 'all'
+                ? 'Try adjusting your search query or department filter.'
                 : 'Get started by appointing your first institutional signatory.'}
             </p>
           </div>
@@ -489,6 +520,7 @@ export default function InstitutionalSignatoryManagement() {
                 <tr>
                   <th className="py-3 px-4">Signatory & Official Email</th>
                   <th className="py-3 px-4">Signatory Role / Position Title</th>
+                  <th className="py-3 px-4">Department / Scope</th>
                   <th className="py-3 px-4">Authority Capability</th>
                   <th className="py-3 px-4">Digital Signature</th>
                   <th className="py-3 px-4">Status</th>
@@ -517,6 +549,20 @@ export default function InstitutionalSignatoryManagement() {
                     {/* Role Title */}
                     <td className="py-3.5 px-4">
                       <div className="font-semibold text-gray-800">{sig.roleTitle}</div>
+                    </td>
+
+                    {/* Department / Scope */}
+                    <td className="py-3.5 px-4">
+                      {sig.department ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-blue-50 text-[#0E4EBD] text-xs font-semibold rounded-lg border border-blue-200">
+                          <Building className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                          {sig.department}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-md">
+                          Institutional / Campus-Wide
+                        </span>
+                      )}
                     </td>
 
                     {/* Authority Capability */}
@@ -684,6 +730,35 @@ export default function InstitutionalSignatoryManagement() {
                 />
                 <p className="text-[11px] text-gray-500 mt-1">
                   The formal title that appears beneath the signature line on official documents, proposals, and printouts.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                  Academic Department / Office Assignment
+                </label>
+                <select
+                  value={formData.departmentId || ''}
+                  onChange={(e) => {
+                    const deptId = e.target.value;
+                    const deptObj = activeDepartments.find((d) => d.id === deptId);
+                    setFormData({
+                      ...formData,
+                      departmentId: deptId,
+                      department: deptObj ? deptObj.name : '',
+                    });
+                  }}
+                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                >
+                  <option value="">None / Institutional (Campus-Wide)</option>
+                  {activeDepartments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      [{d.academicLevel || 'College'}] {d.code} — {d.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Assign to an academic department so this signatory is automatically required when an activity targets this department's students.
                 </p>
               </div>
 
@@ -878,6 +953,35 @@ export default function InstitutionalSignatoryManagement() {
                 />
                 <p className="text-[11px] text-gray-500 mt-1">
                   The formal title that appears beneath the signature line on official documents, proposals, and printouts.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                  Academic Department / Office Assignment
+                </label>
+                <select
+                  value={editingSignatory.departmentId || ''}
+                  onChange={(e) => {
+                    const deptId = e.target.value;
+                    const deptObj = activeDepartments.find((d) => d.id === deptId);
+                    setEditingSignatory({
+                      ...editingSignatory,
+                      departmentId: deptId,
+                      department: deptObj ? deptObj.name : '',
+                    });
+                  }}
+                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                >
+                  <option value="">None / Institutional (Campus-Wide)</option>
+                  {activeDepartments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      [{d.academicLevel || 'College'}] {d.code} — {d.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Assign to an academic department so this signatory is automatically required when an activity targets this department's students.
                 </p>
               </div>
 
