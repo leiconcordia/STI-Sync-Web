@@ -1,40 +1,53 @@
 import { useState, useMemo, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Sparkles,
-  Users,
-  QrCode,
+  Zap,
+  FileText,
+  FileCheck2,
   Wallet,
+  Clock,
+  QrCode,
+  Users,
   Trash2,
   X,
   CheckCircle2,
   AlertCircle,
   Loader2,
-  CalendarCheck,
-  Building2,
+  KeyRound,
+  ExternalLink,
+  ShieldCheck,
+  Check,
+  ChevronRight,
+  ArrowRight,
   Layers,
-  Zap,
-  Target,
-  Filter,
-  CalendarPlus,
-  Clock,
-  Coins,
+  Sparkles,
+  Archive,
 } from 'lucide-react';
 import { Button } from '../../app/components/ui/button';
 import { useStudents } from '../../app/modules/students/hooks/useStudentStream';
 import { useAllEvents } from '../../app/modules/events/hooks/useEventStream';
-import { useOrganizationStream } from '../../app/modules/organizations/hooks/useOrganizationStream';
+import { useAllLiquidations } from '../../app/modules/finance/hooks/useLiquidationStream';
+import { useAdminPARs } from '../../app/modules/post-activity-reports/hooks/usePostActivityReportStream';
+import { subscribeToSignatories } from '../../app/modules/signatories/services/signatory.service';
+import { InstitutionalSignatory } from '../../app/modules/signatories/types/signatory.types';
 import {
+  switchActiveSignatorySession,
+  signProposalStep,
+  signAllProposalSteps,
+  concludeLifecycleEvent,
+  seedLifecycleLiquidation,
+  signLiquidationStep,
+  signAllLiquidationSteps,
+  seedLifecyclePAR,
+  signPARStep,
+  signAllPARSteps,
+  seedLifecycleProposal,
   seedSampleStudents,
   seedEventAttendance,
-  seedPayables,
-  seedSampleEvent,
   clearAllTestData,
-  isStudentEligibleForEvent,
-  EVENT_PRESETS,
-  SeedStudentOptions,
-  SeedEventOptions,
+  getRealUploadedSignature,
 } from '../services/test-seeder.service';
+import { SIGNATORY_SESSION_KEY } from '../../app/auth/hooks/useOfficerAuth';
 
 interface DevDataSeederModalProps {
   isOpen: boolean;
@@ -42,62 +55,141 @@ interface DevDataSeederModalProps {
 }
 
 export function DevDataSeederModal({ isOpen, onClose }: DevDataSeederModalProps) {
-  const [activeTab, setActiveTab] = useState<'attendance' | 'events' | 'students' | 'payables' | 'purge'>('attendance');
+  const [activeTab, setActiveTab] = useState<'simulator' | 'signatories' | 'mock_data' | 'purge'>('simulator');
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Live data streams for dropdown selectors
+  // Live Firestore data streams
   const { data: students = [] } = useStudents();
   const { events = [] } = useAllEvents();
-  const { data: organizations = [] } = useOrganizationStream();
+  const { liquidations = [] } = useAllLiquidations();
+  const { pars = [] } = useAdminPARs();
 
-  // ── Form States ──
+  // Live institutional signatories from Firestore
+  const [realSignatories, setRealSignatories] = useState<InstitutionalSignatory[]>([]);
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeToSignatories((list) => {
+      setRealSignatories(list);
+    });
+    return () => unsub();
+  }, [isOpen]);
 
-  // 1. Attendance form
-  const [selectedEventId, setSelectedEventId] = useState<string>('');
-  const [selectedSessionId, setSelectedSessionId] = useState<string>('ALL');
-  const [attendanceRate, setAttendanceRate] = useState<number>(85);
+  // Current session in localStorage
+  const [currentSession, setCurrentSession] = useState<any>(null);
+  const refreshActiveSession = () => {
+    try {
+      const raw = localStorage.getItem(SIGNATORY_SESSION_KEY);
+      if (raw) setCurrentSession(JSON.parse(raw));
+      else setCurrentSession(null);
+    } catch (_) {
+      setCurrentSession(null);
+    }
+  };
 
-  // 2. Event Creator form
-  const [eventPresetIdx, setEventPresetIdx] = useState<number>(0);
-  const [customEventTitle, setCustomEventTitle] = useState<string>('');
-  const [eventOrgId, setEventOrgId] = useState<string>('');
-  const [eventTrack, setEventTrack] = useState<'COLLEGE' | 'SHS' | 'CAMPUS_WIDE'>('COLLEGE');
-  const [eventCourses, setEventCourses] = useState<string[]>(['BSIT', 'BSCS']);
-  const [eventSessionCount, setEventSessionCount] = useState<number>(1);
-  const [eventHasTimeOut, setEventHasTimeOut] = useState<boolean>(true);
-  const [eventProposalStatus, setEventProposalStatus] = useState<'approved' | 'pending_review' | 'draft'>('approved');
-  const [eventTicketFee, setEventTicketFee] = useState<number>(150);
-  const [eventEnablePayables, setEventEnablePayables] = useState<boolean>(true);
+  useEffect(() => {
+    if (isOpen) refreshActiveSession();
+  }, [isOpen]);
 
-  // 3. Student form
-  const [studentCount, setStudentCount] = useState<number>(10);
-  const [studentTrack, setStudentTrack] = useState<'COLLEGE' | 'SHS' | 'MIXED'>('MIXED');
-  const [selectedCourse, setSelectedCourse] = useState<string>('');
+  // Selected Activity / Proposal
+  const [selectedActivityId, setSelectedActivityId] = useState<string>('');
 
-  // 4. Payables form
-  const [payableOrgId, setPayableOrgId] = useState<string>('');
-  const [payableTitle, setPayableTitle] = useState<string>('Membership Dues & Shirt Fee');
-  const [payableAmount, setPayableAmount] = useState<number>(150);
-  const [payablePaidPct, setPayablePaidPct] = useState<number>(80);
+  const selectedActivity = useMemo(() => {
+    if (!selectedActivityId) return events[0] || null;
+    return events.find((e) => e.id === selectedActivityId) || events[0] || null;
+  }, [events, selectedActivityId]);
 
-  // Resolved event for attendance
-  const selectedEvent = useMemo(() => {
-    return events.find((e) => e.id === selectedEventId) || events[0];
-  }, [events, selectedEventId]);
+  // Look up associated Liquidation for selected activity
+  const selectedLiquidation = useMemo(() => {
+    if (!selectedActivity) return null;
+    const act = selectedActivity as any;
+    if (act.liquidationId) {
+      return liquidations.find((l) => l.id === act.liquidationId) || null;
+    }
+    return liquidations.find((l) => l.eventId === selectedActivity.id) || null;
+  }, [liquidations, selectedActivity]);
 
-  // Target-eligible students matching selected event's criteria
-  const eligibleStudentsForEvent = useMemo(() => {
-    if (!selectedEvent) return [];
-    return students.filter((s) => isStudentEligibleForEvent(selectedEvent, s));
-  }, [students, selectedEvent]);
+  // Look up associated PAR for selected activity
+  const selectedPAR = useMemo(() => {
+    if (!selectedActivity) return null;
+    const act = selectedActivity as any;
+    if (act.parId) {
+      return pars.find((p) => p.id === act.parId) || null;
+    }
+    return pars.find((p) => p.eventId === selectedActivity.id) || null;
+  }, [pars, selectedActivity]);
+
+  // Selected Signers from dropdowns
+  const [selectedProposalSignerIdx, setSelectedProposalSignerIdx] = useState<number>(0);
+  const [selectedLiquidationSignerIdx, setSelectedLiquidationSignerIdx] = useState<number>(0);
+  const [selectedPARSignerIdx, setSelectedPARSignerIdx] = useState<number>(0);
+
+  // Proposal approval chain
+  const proposalChain: any[] = useMemo(() => {
+    if (!selectedActivity) return [];
+    return (selectedActivity as any).approvalChain || [];
+  }, [selectedActivity]);
+
+  // Liquidation approval chain
+  const liquidationChain: any[] = useMemo(() => {
+    if (!selectedLiquidation) return [];
+    return selectedLiquidation.approvalChain || [];
+  }, [selectedLiquidation]);
+
+  // PAR approval chain
+  const parChain: any[] = useMemo(() => {
+    if (!selectedPAR) return [];
+    return selectedPAR.approvalChain || [];
+  }, [selectedPAR]);
+
+  // Pending signers list for Proposal
+  const pendingProposalSigners = useMemo(() => {
+    return proposalChain.filter((s) => s.status === 'current' || s.status === 'waiting');
+  }, [proposalChain]);
+
+  // Pending signers list for Liquidation
+  const pendingLiquidationSigners = useMemo(() => {
+    return liquidationChain.filter((s) => s.status === 'current' || s.status === 'waiting');
+  }, [liquidationChain]);
+
+  // Pending signers list for PAR
+  const pendingPARSigners = useMemo(() => {
+    return parChain.filter((s) => s.status === 'current' || s.status === 'waiting');
+  }, [parChain]);
+
+  // Derived lifecycle stage
+  const isProposalApproved = useMemo(() => {
+    if (!selectedActivity) return false;
+    const act = selectedActivity as any;
+    return (
+      act.proposalStatus === 'approved' ||
+      act.status === 'Upcoming' ||
+      act.status === 'Active' ||
+      act.status === 'Completed' ||
+      act.lifecycleStatus === 'completed'
+    );
+  }, [selectedActivity]);
+
+  const isEventConcluded = useMemo(() => {
+    if (!selectedActivity) return false;
+    const act = selectedActivity as any;
+    return act.lifecycleStatus === 'completed' || act.isConcluded || act.status === 'Completed';
+  }, [selectedActivity]);
+
+  const isLiquidationApproved = useMemo(() => {
+    if (!selectedLiquidation) return (selectedActivity as any)?.liquidationStatus === 'approved';
+    return selectedLiquidation.status === 'approved';
+  }, [selectedLiquidation, selectedActivity]);
+
+  const isPARApproved = useMemo(() => {
+    if (!selectedPAR) return (selectedActivity as any)?.parStatus === 'approved';
+    return selectedPAR.status === 'approved';
+  }, [selectedPAR, selectedActivity]);
 
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
+      if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
@@ -107,77 +199,83 @@ export function DevDataSeederModal({ isOpen, onClose }: DevDataSeederModalProps)
 
   // ── Handlers ──
 
-  const handleApplyPreset = (idx: number) => {
-    setEventPresetIdx(idx);
-    const preset = EVENT_PRESETS[idx];
-    if (preset) {
-      setCustomEventTitle(preset.title);
-      setEventTrack(preset.track);
-      setEventCourses(preset.courses);
-      setEventTicketFee(preset.fee);
-      setEventEnablePayables(preset.fee > 0);
-    }
+  const handleSwitchSignatory = (sig: InstitutionalSignatory) => {
+    switchActiveSignatorySession(sig);
+    refreshActiveSession();
+    setStatusMessage({
+      type: 'success',
+      text: `Impersonating: ${sig.name} (${sig.roleTitle || sig.role}). Active session updated!`,
+    });
   };
 
-  const handleCreateEvent = async () => {
-    const org = organizations.find((o) => o.id === eventOrgId) || organizations[0];
-    const title = customEventTitle.trim() || EVENT_PRESETS[eventPresetIdx]?.title || 'Campus Academic Event';
+  const handleClearSession = () => {
+    localStorage.removeItem(SIGNATORY_SESSION_KEY);
+    localStorage.removeItem('sti_sync_officer_session');
+    refreshActiveSession();
+    window.dispatchEvent(new Event('storage'));
+    setStatusMessage({ type: 'success', text: 'Signatory session cleared.' });
+  };
+
+  // 1. Sign chosen person in Proposal
+  const handleSignSelectedProposalSigner = async () => {
+    if (!selectedActivity || pendingProposalSigners.length === 0) return;
+    const target = pendingProposalSigners[selectedProposalSignerIdx] || pendingProposalSigners[0];
+    if (!target) return;
 
     setIsProcessing(true);
     setStatusMessage(null);
     try {
-      const opts: SeedEventOptions = {
-        title,
-        hostingOrgId: org?.id,
-        hostingOrgName: org?.name,
-        academicTrack: eventTrack,
-        targetCourses: eventCourses,
-        sessionCount: eventSessionCount,
-        hasTimeOut: eventHasTimeOut,
-        proposalStatus: eventProposalStatus,
-        enablePayables: eventEnablePayables,
-        ticketFee: Number(eventTicketFee),
-      };
-
-      const created = await seedSampleEvent(opts);
-      setSelectedEventId(created.id);
+      const res = await signProposalStep(selectedActivity.id, target);
       setStatusMessage({
         type: 'success',
-        text: `Created Event "${created.title}" with ${created.sessions.length} session(s) (${eventHasTimeOut ? 'Time-In & Time-Out' : 'Time-In Only'}) and ${created.proposalStatus.toUpperCase()} status!`,
+        text: res.isFullyApproved
+          ? `Proposal approved by School President! Event is now officially published on the campus calendar.`
+          : `Signed and endorsed by ${res.signerName} (${target.roleTitle || target.role})!`,
       });
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Failed to create event.' });
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign proposal step.' });
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleSeedAttendance = async () => {
-    if (!selectedEvent) {
-      setStatusMessage({ type: 'error', text: 'Please select or create an event first.' });
-      return;
-    }
-    if (eligibleStudentsForEvent.length === 0) {
-      setStatusMessage({
-        type: 'error',
-        text: `No students match this event's targeting criteria. Generate students matching ${(selectedEvent.targetCourses || []).join(', ') || selectedEvent.academicLevel || 'this event'} first!`,
-      });
-      return;
-    }
-
+  // 2. Sign ALL in Proposal
+  const handleSignAllProposal = async () => {
+    if (!selectedActivity) return;
     setIsProcessing(true);
     setStatusMessage(null);
     try {
+      const res = await signAllProposalSteps(selectedActivity.id);
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully signed all ${res.totalSigned} pending steps in this proposal! Event is now approved and active on the calendar.`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign all proposal steps.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 3. Inject Attendance & Conclude
+  const handleInjectAttendance = async () => {
+    if (!selectedActivity) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      let testStudents = students.filter((s) => (s as any).isTestData);
+      if (testStudents.length < 20) {
+        testStudents = await seedSampleStudents({ count: 25, track: 'COLLEGE' });
+      }
       const res = await seedEventAttendance({
-        event: selectedEvent,
-        students: eligibleStudentsForEvent,
-        sessionId: selectedSessionId,
-        attendanceRate,
-        strictTargeting: true,
+        event: selectedActivity,
+        students: testStudents,
+        strictTargeting: false,
+        attendanceRate: 88,
       });
       setStatusMessage({
         type: 'success',
-        text: `Injected ${res.totalInjected} attendance logs across ${res.sessionsCount} session(s) (${res.attendees} Unique Attendees) for "${selectedEvent.title}"! Gate pass rules and timeout configurations were strictly applied.`,
+        text: `Injected ${res.totalInjected} attendance records (${res.attendees} unique attendees).`,
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Failed to inject attendance.' });
@@ -186,73 +284,153 @@ export function DevDataSeederModal({ isOpen, onClose }: DevDataSeederModalProps)
     }
   };
 
-  const handleSeedStudents = async () => {
+  const handleConcludeEvent = async () => {
+    if (!selectedActivity) return;
     setIsProcessing(true);
     setStatusMessage(null);
     try {
-      const opts: SeedStudentOptions = {
-        count: studentCount,
-        track: studentTrack,
-        courseCode: selectedCourse || undefined,
-      };
-      const created = await seedSampleStudents(opts);
+      await concludeLifecycleEvent(selectedActivity.id);
       setStatusMessage({
         type: 'success',
-        text: `Generated ${created.length} students with valid 11-digit IDs and sections! Matching event payables were automatically synchronized.`,
+        text: `Event marked concluded! Financial Liquidation (Form LF-01) is now unlocked.`,
       });
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Failed to generate students.' });
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to conclude event.' });
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const handleSeedPayables = async () => {
-    const org = organizations.find((o) => o.id === payableOrgId) || organizations[0];
-    if (!org) {
-      setStatusMessage({ type: 'error', text: 'Please select an organization.' });
-      return;
-    }
-    if (students.length === 0) {
-      setStatusMessage({ type: 'error', text: 'No students available. Generate students first!' });
-      return;
-    }
-
+  // 4. Create Liquidation
+  const handleCreateLiquidation = async () => {
+    if (!selectedActivity) return;
     setIsProcessing(true);
     setStatusMessage(null);
     try {
-      const res = await seedPayables({
-        organizationId: org.id,
-        organizationName: org.name,
-        students: students.slice(0, 30),
-        title: payableTitle,
-        amount: Number(payableAmount),
-        type: 'dues',
-        paidPercentage: payablePaidPct,
-      });
+      const res = await seedLifecycleLiquidation(selectedActivity.id);
       setStatusMessage({
         type: 'success',
-        text: `Injected ${res.total} payables for ${org.name} (${res.paid} Paid, ${res.unpaid} Unpaid)!`,
+        text: `Form LF-01 created (${res.referenceNo}) with expense receipts from Firestore signatories!`,
       });
     } catch (err: any) {
-      setStatusMessage({ type: 'error', text: err.message || 'Failed to seed payables.' });
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to create liquidation.' });
     } finally {
       setIsProcessing(false);
     }
   };
 
+  // 5. Sign chosen person in Liquidation
+  const handleSignSelectedLiquidationSigner = async () => {
+    if (!selectedLiquidation || pendingLiquidationSigners.length === 0) return;
+    const target = pendingLiquidationSigners[selectedLiquidationSignerIdx] || pendingLiquidationSigners[0];
+    if (!target) return;
+
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await signLiquidationStep(selectedLiquidation.id, target);
+      setStatusMessage({
+        type: 'success',
+        text: res.isFullyApproved
+          ? `Financial Liquidation fully approved and posted to ledger! Post-Activity Report is now unlocked.`
+          : `Signed and verified by ${res.signerName} (${target.roleTitle || target.role})!`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign liquidation step.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 6. Sign ALL in Liquidation
+  const handleSignAllLiquidation = async () => {
+    if (!selectedLiquidation) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await signAllLiquidationSteps(selectedLiquidation.id);
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully signed all ${res.totalSigned} steps on Form LF-01! Posted to ledger and Post-Activity Report unlocked.`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign all liquidation steps.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 7. Create PAR
+  const handleCreatePAR = async () => {
+    if (!selectedActivity) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await seedLifecyclePAR(selectedActivity.id);
+      setStatusMessage({
+        type: 'success',
+        text: `Post-Activity Report (${res.referenceNo}) generated with 4 STI recommendations and gallery photos!`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to create PAR.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 8. Sign chosen person in PAR
+  const handleSignSelectedPARSigner = async () => {
+    if (!selectedPAR || pendingPARSigners.length === 0) return;
+    const target = pendingPARSigners[selectedPARSignerIdx] || pendingPARSigners[0];
+    if (!target) return;
+
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await signPARStep(selectedPAR.id, target);
+      setStatusMessage({
+        type: 'success',
+        text: res.isFullyApproved
+          ? `Post-Activity Report fully approved by School President! Automatically archived in EDMS!`
+          : `Signed and endorsed by ${res.signerName} (${target.roleTitle || target.role})!`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign PAR step.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 9. Sign ALL in PAR
+  const handleSignAllPAR = async () => {
+    if (!selectedPAR) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await signAllPARSteps(selectedPAR.id);
+      setStatusMessage({
+        type: 'success',
+        text: `Successfully signed all ${res.totalSigned} steps on Post-Activity Report! Fully approved and archived into EDMS repository.`,
+      });
+    } catch (err: any) {
+      setStatusMessage({ type: 'error', text: err.message || 'Failed to sign all PAR steps.' });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // 10. Purge
   const handlePurge = async () => {
-    if (!confirm('Are you sure you want to purge only dev test-generated data? Real records will be preserved.')) {
+    if (!window.confirm('Delete all seeded test data (proposals, events, attendance, payables, liquidations, PARs, and EDMS documents)?')) {
       return;
     }
-
     setIsProcessing(true);
     setStatusMessage(null);
     try {
-      const res = await clearAllTestData();
+      const counts = await clearAllTestData();
       setStatusMessage({
         type: 'success',
-        text: `Cleaned: ${res.events} test events, ${res.students} test students, ${res.attendance} test attendance records, and ${res.payables} test payables.`,
+        text: `Purged ${counts.events} events, ${counts.attendance} scans, ${counts.liquidations} liquidations, ${counts.pars} PARs, and ${counts.documents} EDMS documents!`,
       });
     } catch (err: any) {
       setStatusMessage({ type: 'error', text: err.message || 'Failed to purge test data.' });
@@ -262,636 +440,916 @@ export function DevDataSeederModal({ isOpen, onClose }: DevDataSeederModalProps)
   };
 
   return createPortal(
-    <div
-      className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] text-left animate-in fade-in zoom-in-95"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="bg-gradient-to-r from-[#001A4D] via-[#0E4EBD] to-[#001A4D] px-6 py-4 flex items-center justify-between text-white flex-shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#FFD41C]/20 border border-[#FFD41C]/40 flex items-center justify-center text-[#FFD41C]">
-              <Zap className="w-4 h-4 fill-[#FFD41C]" />
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/80 backdrop-blur-sm overflow-hidden animate-in fade-in duration-200">
+      <div className="flex flex-col w-full max-w-5xl h-[90vh] max-h-[850px] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+        
+        {/* ── Top Header ── */}
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 text-white border-b border-slate-800 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 shadow-md shadow-blue-500/20">
+              <Zap className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h3 className="font-bold text-base flex items-center gap-2">
-                STI Sync Dev Test Data Seeder
-                <span className="text-[10px] bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded font-black uppercase">
-                  Parity Flow
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-white tracking-wide">STI Lifecycle Simulator & Signatory Seeder</h2>
+                <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 rounded-full">
+                  Real Firestore Signatories
                 </span>
-              </h3>
-              <p className="text-xs text-white/75">
-                Generates realistic events, students, gatepass attendance, and payables matching DB maintenance schemas.
+              </div>
+              <p className="text-xs text-slate-400">
+                Sign with real Firestore names & signatures: Proposal (AP-01) → Conclude → Liquidation (LF-01) → PAR → EDMS
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="text-white/70 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer">
-            <X className="w-5 h-5" />
+
+          <div className="flex items-center gap-3">
+            {currentSession ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-medium">
+                <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>
+                  Active Signer: <strong>{currentSession.name}</strong> ({currentSession.roleTitle})
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearSession}
+                  className="ml-1 text-slate-400 hover:text-white"
+                  title="Clear Session"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 text-xs">
+                <span>No Session Impersonated</span>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Navigation Tabs ── */}
+        <div className="flex items-center gap-1 px-6 bg-slate-100 dark:bg-slate-950/60 border-b border-slate-200 dark:border-slate-800 overflow-x-auto shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab('simulator')}
+            className={`flex items-center gap-2 px-4 py-3 text-xs font-semibold border-b-2 transition-all ${
+              activeTab === 'simulator'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900 shadow-sm'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            <Zap className="w-4 h-4" />
+            Lifecycle Simulator & Signer Picker
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('signatories')}
+            className={`flex items-center gap-2 px-4 py-3 text-xs font-semibold border-b-2 transition-all ${
+              activeTab === 'signatories'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900 shadow-sm'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            <KeyRound className="w-4 h-4" />
+            Real Firestore Signatories ({realSignatories.length})
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('mock_data')}
+            className={`flex items-center gap-2 px-4 py-3 text-xs font-semibold border-b-2 transition-all ${
+              activeTab === 'mock_data'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900 shadow-sm'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+            }`}
+          >
+            <Users className="w-4 h-4" />
+            Students & Attendance Injector
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('purge')}
+            className={`flex items-center gap-2 px-4 py-3 text-xs font-semibold border-b-2 transition-all ${
+              activeTab === 'purge'
+                ? 'border-rose-600 text-rose-600 dark:text-rose-400 bg-white dark:bg-slate-900 shadow-sm'
+                : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-rose-600'
+            }`}
+          >
+            <Trash2 className="w-4 h-4" />
+            Purge Test Data
           </button>
         </div>
 
-        {/* Tab Selector */}
-        <div className="flex border-b border-gray-200 bg-gray-50/80 px-6 pt-2 gap-2 overflow-x-auto flex-shrink-0">
-          {[
-            { id: 'attendance', label: 'Event Attendance', icon: QrCode },
-            { id: 'events', label: 'Create Event', icon: CalendarPlus },
-            { id: 'students', label: 'Student Registry', icon: Users },
-            { id: 'payables', label: 'Finance & Payables', icon: Wallet },
-            { id: 'purge', label: 'Purge Test Data', icon: Trash2 },
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const active = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => {
-                  setActiveTab(tab.id as any);
-                  setStatusMessage(null);
-                }}
-                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition-all cursor-pointer whitespace-nowrap ${
-                  active
-                    ? 'border-[#0E4EBD] text-[#0E4EBD] bg-white rounded-t-lg shadow-2xs'
-                    : 'border-transparent text-gray-500 hover:text-gray-900'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Status Message Banner */}
+        {/* ── Status Message Alert ── */}
         {statusMessage && (
           <div
-            className={`mx-6 mt-4 p-3 rounded-xl text-xs flex items-center gap-2 font-medium ${
+            className={`flex items-start gap-3 px-6 py-2.5 text-xs font-medium border-b shrink-0 ${
               statusMessage.type === 'success'
-                ? 'bg-green-50 text-green-800 border border-green-200'
-                : 'bg-red-50 text-red-800 border border-red-200'
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
             }`}
           >
             {statusMessage.type === 'success' ? (
-              <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             ) : (
-              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             )}
-            <span>{statusMessage.text}</span>
+            <div className="flex-1">{statusMessage.text}</div>
+            <button
+              type="button"
+              onClick={() => setStatusMessage(null)}
+              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
 
-        {/* Modal Body / Tab Content */}
-        <div className="p-6 overflow-y-auto space-y-4 text-xs">
-          {/* ═══════════ TAB 1: ATTENDANCE SEEDER ═══════════ */}
-          {activeTab === 'attendance' && (
-            <div className="space-y-4">
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Target Event</label>
-                {events.length > 0 ? (
+        {/* ── Tab Content Container ── */}
+        <div className="flex-1 p-6 overflow-y-auto space-y-6 min-h-0">
+
+          {/* ══════════════════════════════════════════════════════════════════
+              TAB 1: LIFECYCLE SIMULATOR & SIGNER PICKER
+             ══════════════════════════════════════════════════════════════════ */}
+          {activeTab === 'simulator' && (
+            <div className="space-y-6">
+
+              {/* Activity / Proposal Selector Dropdown */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 p-4 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800">
+                <div className="flex-1 w-full sm:w-auto">
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    Select Activity / Proposal to Review & Sign:
+                  </label>
                   <select
-                    value={selectedEventId || selectedEvent?.id || ''}
-                    onChange={(e) => setSelectedEventId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D] font-medium"
+                    value={selectedActivityId}
+                    onChange={(e) => {
+                      setSelectedActivityId(e.target.value);
+                      setSelectedProposalSignerIdx(0);
+                      setSelectedLiquidationSignerIdx(0);
+                      setSelectedPARSignerIdx(0);
+                    }}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-blue-500 font-medium"
                   >
-                    {events.map((e) => (
-                      <option key={e.id} value={e.id}>
-                        {e.title} ({e.status || 'Active'}) — Expected: {e.expectedAttendees || e.expectedParticipantCount || 0}
+                    {events.map((ev: any) => (
+                      <option key={ev.id} value={ev.id}>
+                        {ev.title} ({ev.referenceId || ev.referenceNo || ev.id.slice(0, 10)}) — Status: {ev.lifecycleStatus || ev.status || 'Active'}
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800">
-                    No events found in database. Go to the <strong>Create Event</strong> tab to seed a test event first!
-                  </div>
-                )}
+                </div>
+
+                <Button
+                  type="button"
+                  onClick={async () => {
+                    setIsProcessing(true);
+                    setStatusMessage(null);
+                    try {
+                      const res = await seedLifecycleProposal();
+                      setSelectedActivityId(res.proposalId);
+                      setStatusMessage({
+                        type: 'success',
+                        text: `New Activity Proposal created (${res.referenceNo}) using active Firestore signatories!`,
+                      });
+                    } catch (err: any) {
+                      setStatusMessage({ type: 'error', text: err.message || 'Failed to create proposal.' });
+                    } finally {
+                      setIsProcessing(false);
+                    }
+                  }}
+                  disabled={isProcessing}
+                  className="shrink-0 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                >
+                  {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+                  + New Proposal (Real Signatories)
+                </Button>
               </div>
 
-              {/* Event Targeting Criteria Card */}
-              {selectedEvent && (
-                <div className="p-3.5 bg-blue-50/60 border border-blue-200 rounded-xl space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5 font-bold text-[#001A4D]">
-                      <Target className="w-4 h-4 text-[#0E4EBD]" />
-                      <span>Event Participant Targeting Rules</span>
-                    </div>
-                    <span className="px-2 py-0.5 bg-[#001A4D] text-[#FFD41C] text-[10px] font-bold rounded-md">
-                      {eligibleStudentsForEvent.length} of {students.length} Students Match
-                    </span>
-                  </div>
+              {selectedActivity ? (
+                <div className="space-y-6">
 
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-                    <div className="bg-white p-2 rounded-lg border border-blue-100">
-                      <span className="text-gray-400 block text-[10px]">Track</span>
-                      <span className="font-bold text-[#001A4D]">{selectedEvent.academicLevel || 'College & SHS'}</span>
-                    </div>
-                    <div className="bg-white p-2 rounded-lg border border-blue-100">
-                      <span className="text-gray-400 block text-[10px]">Target Courses</span>
-                      <span className="font-bold text-[#001A4D]">
-                        {(selectedEvent.targetCourses || []).length > 0 ? selectedEvent.targetCourses.join(', ') : 'All Programs'}
-                      </span>
-                    </div>
-                    <div className="bg-white p-2 rounded-lg border border-blue-100">
-                      <span className="text-gray-400 block text-[10px]">Target Year</span>
-                      <span className="font-bold text-[#001A4D]">
-                        {(selectedEvent.targetYearLevels || []).length > 0 ? selectedEvent.targetYearLevels.join(', ') : 'All Year Levels'}
-                      </span>
-                    </div>
-                    <div className="bg-white p-2 rounded-lg border border-blue-100">
-                      <span className="text-gray-400 block text-[10px]">Target Sections</span>
-                      <span className="font-bold text-[#001A4D]">
-                        {(selectedEvent.targetSections || []).length > 0 ? selectedEvent.targetSections.join(', ') : 'All Sections'}
-                      </span>
-                    </div>
-                  </div>
+                  {/* ────────────────────────────────────────────────────────────
+                      SECTION 1: ACTIVITY PROPOSAL (FORM AP-01) STAGES & SIGNERS
+                     ──────────────────────────────────────────────────────────── */}
+                  <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2.5">
+                        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-950 text-blue-600 font-bold text-xs">
+                          1
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                              Activity Proposal (Form AP-01) Approval Stages
+                            </h3>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                isProposalApproved
+                                  ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'
+                              }`}
+                            >
+                              {isProposalApproved ? 'Approved & Published' : 'Under Review'}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500">
+                            Real signatories assigned to sign this proposal from Firestore database:
+                          </p>
+                        </div>
+                      </div>
 
-                  {eligibleStudentsForEvent.length === 0 && (
-                    <div className="p-2 bg-amber-100/70 border border-amber-300 rounded-lg text-amber-900 text-[11px]">
-                      ⚠️ <strong>No registered students match this event's criteria.</strong> Go to the <em>Student Registry</em> tab to generate students matching {(selectedEvent.targetCourses || []).join(', ') || selectedEvent.academicLevel || 'this event'}.
+                      {/* Open Portal Link */}
+                      <a
+                        href="/signatory/endorsements"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline"
+                      >
+                        Open Signatory Portal <ExternalLink className="w-3 h-3" />
+                      </a>
                     </div>
-                  )}
-                </div>
-              )}
 
-              {/* Session Selector & Gate Pass Rule Display */}
-              {selectedEvent && (
-                <div className="space-y-2">
-                  <label className="block font-bold text-gray-700">Target Session & Gate Pass Mode</label>
-                  <select
-                    value={selectedSessionId}
-                    onChange={(e) => setSelectedSessionId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D] font-medium"
-                  >
-                    <option value="ALL">
-                      All Sessions ({(selectedEvent.sessions || []).length || 1} Total)
-                    </option>
-                    {(selectedEvent.sessions || []).map((sess, idx) => (
-                      <option key={sess.id || idx} value={sess.id || `sess-${idx}`}>
-                        {sess.title || `Session ${idx + 1}`} ({sess.hasTimeOut ? 'Time-In & Time-Out' : 'Time-In Only'})
-                      </option>
-                    ))}
-                  </select>
+                    {/* Proposal Approval Chain Roster */}
+                    {proposalChain.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                        {proposalChain.map((step, idx) => {
+                          const isDone = step.status === 'endorsed' || step.status === 'approved';
+                          const isCurrent = step.status === 'current';
+                          return (
+                            <div
+                              key={step.id || idx}
+                              className={`p-3 rounded-xl border transition-all ${
+                                isDone
+                                  ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                                  : isCurrent
+                                  ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-400 dark:border-blue-700 ring-1 ring-blue-500/30'
+                                  : 'bg-slate-50/60 dark:bg-slate-800/30 border-slate-200 dark:border-slate-800'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-1 mb-1">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                  Stage {step.stageIndex ?? 1}
+                                </span>
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold uppercase ${
+                                    isDone
+                                      ? 'bg-emerald-600 text-white'
+                                      : isCurrent
+                                      ? 'bg-blue-600 text-white animate-pulse'
+                                      : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                                  }`}
+                                >
+                                  {step.status}
+                                </span>
+                              </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                    {(selectedEvent.sessions && selectedEvent.sessions.length > 0 ? selectedEvent.sessions : [
-                      { id: 'sess_main', title: 'Main Session', hasTimeOut: true, timeInOpen: '07:30', timeInClose: '09:00', timeOutOpen: '11:30', timeOutClose: '12:30' }
-                    ]).map((s, idx) => {
-                      const isTimeInOnly = s.hasTimeOut === false;
-                      return (
-                        <div
-                          key={s.id || idx}
-                          className="p-2.5 rounded-xl border border-gray-200 bg-gray-50/70 flex items-start justify-between"
-                        >
-                          <div>
-                            <p className="font-bold text-[#001A4D]">{s.title || `Session ${idx + 1}`}</p>
-                            <p className="text-[10px] text-gray-500 mt-0.5">
-                              Time-In: {s.timeInOpen || s.startTime || '08:00 AM'}
-                            </p>
-                            <p className="text-[10px] text-gray-500">
-                              Time-Out:{' '}
-                              {isTimeInOnly ? (
-                                <span className="text-amber-600 font-semibold">Not Required (Time-In Only)</span>
+                              <div className="font-bold text-xs text-slate-900 dark:text-slate-100 mb-0.5">
+                                {step.signatoryName || 'Institutional Signatory'}
+                              </div>
+                              <div className="text-[11px] text-blue-600 dark:text-blue-400 font-medium mb-1">
+                                {step.roleTitle || step.role}
+                              </div>
+
+                              {/* Signature Status */}
+                              {isDone ? (
+                                <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+                                  <Check className="w-3 h-3 stroke-[3]" /> Signed {step.signedAt ? new Date(step.signedAt).toLocaleDateString() : ''}
+                                </div>
                               ) : (
-                                s.timeOutOpen || s.endTime || '12:00 PM'
+                                <div className="text-[10px] text-slate-400">
+                                  Action: <strong>{step.actionType || 'endorse'}</strong>
+                                </div>
                               )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 italic">No approval steps found on this proposal document.</div>
+                    )}
+
+                    {/* Proposal Action Box: Choose Signatory or Sign All */}
+                    {!isProposalApproved && pendingProposalSigners.length > 0 && (
+                      <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex-1">
+                          <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                            Choose who will sign this proposal:
+                          </label>
+                          <select
+                            value={selectedProposalSignerIdx}
+                            onChange={(e) => setSelectedProposalSignerIdx(Number(e.target.value))}
+                            className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-medium"
+                          >
+                            {pendingProposalSigners.map((s, idx) => (
+                              <option key={s.id || idx} value={idx}>
+                                [Stage {s.stageIndex ?? 1}] {s.signatoryName} ({s.roleTitle || s.role}) — Status: {s.status}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            type="button"
+                            onClick={handleSignSelectedProposalSigner}
+                            disabled={isProcessing}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                          >
+                            {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />}
+                            Sign as Selected Person
+                          </Button>
+
+                          <Button
+                            type="button"
+                            onClick={handleSignAllProposal}
+                            disabled={isProcessing}
+                            variant="outline"
+                            className="text-xs font-bold border-slate-300 dark:border-slate-700"
+                          >
+                            ⚡ Sign All in this Proposal
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ────────────────────────────────────────────────────────────
+                      SECTION 2: EVENT ATTENDANCE SCANS & CONCLUDE
+                     ──────────────────────────────────────────────────────────── */}
+                  {isProposalApproved && (
+                    <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-100 dark:bg-indigo-950 text-indigo-600 font-bold text-xs">
+                            2
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                                Event Attendance & Event Conclusion
+                              </h3>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                  isEventConcluded
+                                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                    : 'bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300'
+                                }`}
+                              >
+                                {isEventConcluded ? 'Event Concluded' : 'Active / In-Progress'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              Turnout: <strong>{(selectedActivity as any).attendeesCount || (selectedActivity as any).actualAttendees || 0}</strong> verified scans recorded.
                             </p>
                           </div>
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              isTimeInOnly
-                                ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                                : 'bg-green-100 text-green-800 border border-green-300'
-                            }`}
-                          >
-                            {isTimeInOnly ? '1 Gate (In)' : '2 Gates (In+Out)'}
-                          </span>
                         </div>
-                      );
-                    })}
-                  </div>
+
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            onClick={handleInjectAttendance}
+                            disabled={isProcessing}
+                            className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                          >
+                            <QrCode className="w-3.5 h-3.5 mr-1.5" />
+                            Inject 40–80 Student Scans
+                          </Button>
+
+                          {!isEventConcluded && (
+                            <Button
+                              type="button"
+                              onClick={handleConcludeEvent}
+                              disabled={isProcessing}
+                              className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold"
+                            >
+                              <Clock className="w-3.5 h-3.5 mr-1.5" />
+                              Mark Event Concluded
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ────────────────────────────────────────────────────────────
+                      SECTION 3: FINANCIAL LIQUIDATION (FORM LF-01) STAGES & SIGNERS
+                     ──────────────────────────────────────────────────────────── */}
+                  {isEventConcluded && (
+                    <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-950 text-emerald-600 font-bold text-xs">
+                            3
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                                Financial Liquidation (Form LF-01) Approval Stages
+                              </h3>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                  isLiquidationApproved
+                                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                    : selectedLiquidation
+                                    ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                                }`}
+                              >
+                                {isLiquidationApproved ? 'Approved & Posted to Ledger' : selectedLiquidation ? 'Under Review' : 'Ready to Create'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              Real institutional accountant and executive approvers assigned from Firestore:
+                            </p>
+                          </div>
+                        </div>
+
+                        {!selectedLiquidation && (
+                          <Button
+                            type="button"
+                            onClick={handleCreateLiquidation}
+                            disabled={isProcessing}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"
+                          >
+                            <Wallet className="w-3.5 h-3.5 mr-1.5" />
+                            + Create Form LF-01 Liquidation
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Liquidation Roster */}
+                      {selectedLiquidation && liquidationChain.length > 0 && (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            {liquidationChain.map((step, idx) => {
+                              const isDone = step.status === 'endorsed' || step.status === 'approved';
+                              const isCurrent = step.status === 'current';
+                              return (
+                                <div
+                                  key={step.id || idx}
+                                  className={`p-3 rounded-xl border transition-all ${
+                                    isDone
+                                      ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                                      : isCurrent
+                                      ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-400 dark:border-blue-700 ring-1 ring-blue-500/30'
+                                      : 'bg-slate-50/60 dark:bg-slate-800/30 border-slate-200 dark:border-slate-800'
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-1 mb-1">
+                                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                      Stage {step.stageIndex ?? 1}
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold uppercase ${
+                                        isDone
+                                          ? 'bg-emerald-600 text-white'
+                                          : isCurrent
+                                          ? 'bg-blue-600 text-white animate-pulse'
+                                          : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                                      }`}
+                                    >
+                                      {step.status}
+                                    </span>
+                                  </div>
+
+                                  <div className="font-bold text-xs text-slate-900 dark:text-slate-100 mb-0.5">
+                                    {step.signatoryName || 'Institutional Accountant'}
+                                  </div>
+                                  <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium mb-1">
+                                    {step.roleTitle || step.role}
+                                  </div>
+
+                                  {isDone ? (
+                                    <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+                                      <Check className="w-3 h-3 stroke-[3]" /> Audited & Approved
+                                    </div>
+                                  ) : (
+                                    <div className="text-[10px] text-slate-400">
+                                      Action: <strong>{step.actionType || 'check'}</strong>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Liquidation Action Box */}
+                          {!isLiquidationApproved && pendingLiquidationSigners.length > 0 && (
+                            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              <div className="flex-1">
+                                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                                  Choose who will sign this liquidation:
+                                </label>
+                                <select
+                                  value={selectedLiquidationSignerIdx}
+                                  onChange={(e) => setSelectedLiquidationSignerIdx(Number(e.target.value))}
+                                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-medium"
+                                >
+                                  {pendingLiquidationSigners.map((s, idx) => (
+                                    <option key={s.id || idx} value={idx}>
+                                      [Stage {s.stageIndex ?? 1}] {s.signatoryName} ({s.roleTitle || s.role}) — Status: {s.status}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Button
+                                  type="button"
+                                  onClick={handleSignSelectedLiquidationSigner}
+                                  disabled={isProcessing}
+                                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                                  Sign Liquidation as Selected Person
+                                </Button>
+
+                                <Button
+                                  type="button"
+                                  onClick={handleSignAllLiquidation}
+                                  disabled={isProcessing}
+                                  variant="outline"
+                                  className="text-xs font-bold border-slate-300 dark:border-slate-700"
+                                >
+                                  ⚡ Sign All in this Liquidation
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ────────────────────────────────────────────────────────────
+                      SECTION 4: POST-ACTIVITY REPORT (FORM PAR) STAGES & SIGNERS
+                     ──────────────────────────────────────────────────────────── */}
+                  {isLiquidationApproved && (
+                    <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center gap-2.5">
+                          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-purple-100 dark:bg-purple-950 text-purple-600 font-bold text-xs">
+                            4
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                                Post-Activity Report (Form PAR) Approval Stages
+                              </h3>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold uppercase ${
+                                  isPARApproved
+                                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                    : selectedPAR
+                                    ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
+                                }`}
+                              >
+                                {isPARApproved ? 'Archived in EDMS' : selectedPAR ? 'Under Review' : 'Ready to Create'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              Real institutional Program Head, Dean, and President assigned from Firestore:
+                            </p>
+                          </div>
+                        </div>
+
+                        {!selectedPAR && (
+                          <Button
+                            type="button"
+                            onClick={handleCreatePAR}
+                            disabled={isProcessing}
+                            className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold"
+                          >
+                            <FileCheck2 className="w-3.5 h-3.5 mr-1.5" />
+                            + Create Form PAR (4 Recommendations)
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* PAR Roster */}
+                      {selectedPAR && parChain.length > 0 && (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                            {parChain.map((step, idx) => {
+                              const isDone = step.status === 'endorsed' || step.status === 'approved';
+                              const isCurrent = step.status === 'current';
+                              return (
+                                <div
+                                  key={step.id || idx}
+                                  className={`p-3 rounded-xl border transition-all ${
+                                    isDone
+                                      ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-300 dark:border-emerald-800'
+                                      : isCurrent
+                                      ? 'bg-blue-50/70 dark:bg-blue-950/30 border-blue-400 dark:border-blue-700 ring-1 ring-blue-500/30'
+                                      : 'bg-slate-50/60 dark:bg-slate-800/30 border-slate-200 dark:border-slate-800'
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-1 mb-1">
+                                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                      Stage {step.stageIndex ?? 1}
+                                    </span>
+                                    <span
+                                      className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold uppercase ${
+                                        isDone
+                                          ? 'bg-emerald-600 text-white'
+                                          : isCurrent
+                                          ? 'bg-blue-600 text-white animate-pulse'
+                                          : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'
+                                      }`}
+                                    >
+                                      {step.status}
+                                    </span>
+                                  </div>
+
+                                  <div className="font-bold text-xs text-slate-900 dark:text-slate-100 mb-0.5">
+                                    {step.signatoryName || 'Institutional Signatory'}
+                                  </div>
+                                  <div className="text-[11px] text-purple-600 dark:text-purple-400 font-medium mb-1">
+                                    {step.roleTitle || step.role}
+                                  </div>
+
+                                  {isDone ? (
+                                    <div className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+                                      <Check className="w-3 h-3 stroke-[3]" /> Endorsed & Approved
+                                    </div>
+                                  ) : (
+                                    <div className="text-[10px] text-slate-400">
+                                      Action: <strong>{step.actionType || 'endorse'}</strong>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* PAR Action Box */}
+                          {!isPARApproved && pendingPARSigners.length > 0 && (
+                            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                              <div className="flex-1">
+                                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                                  Choose who will sign this PAR:
+                                </label>
+                                <select
+                                  value={selectedPARSignerIdx}
+                                  onChange={(e) => setSelectedPARSignerIdx(Number(e.target.value))}
+                                  className="w-full px-3 py-2 text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 font-medium"
+                                >
+                                  {pendingPARSigners.map((s, idx) => (
+                                    <option key={s.id || idx} value={idx}>
+                                      [Stage {s.stageIndex ?? 1}] {s.signatoryName} ({s.roleTitle || s.role}) — Status: {s.status}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Button
+                                  type="button"
+                                  onClick={handleSignSelectedPARSigner}
+                                  disabled={isProcessing}
+                                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                                  Sign PAR as Selected Person
+                                </Button>
+
+                                <Button
+                                  type="button"
+                                  onClick={handleSignAllPAR}
+                                  disabled={isProcessing}
+                                  variant="outline"
+                                  className="text-xs font-bold border-slate-300 dark:border-slate-700"
+                                >
+                                  ⚡ Sign All in this PAR
+                                </Button>
+                              </div>
+                            </div>
+                          )}
+
+                          {isPARApproved && (
+                            <div className="p-4 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+                              <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 text-xs font-bold">
+                                <Archive className="w-4 h-4 text-emerald-600" />
+                                Post-Activity Report 100% Cleared and Archived in EDMS!
+                              </div>
+                              <a
+                                href="/admin/edms"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 hover:underline"
+                              >
+                                View in EDMS Vault <ExternalLink className="w-3 h-3" />
+                              </a>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                </div>
+              ) : (
+                <div className="p-12 text-center text-slate-500">
+                  No activity found. Click "+ New Proposal (Real Signatories)" to start.
                 </div>
               )}
 
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">
-                  Attendance Turnout Rate: <span className="text-[#0E4EBD]">{attendanceRate}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={20}
-                  max={100}
-                  step={5}
-                  value={attendanceRate}
-                  onChange={(e) => setAttendanceRate(Number(e.target.value))}
-                  className="w-full accent-[#0E4EBD]"
-                />
-                <div className="flex justify-between text-[10px] text-gray-400">
-                  <span>20% (Low)</span>
-                  <span>85% (Average)</span>
-                  <span>100% (Full)</span>
-                </div>
-              </div>
-
-              <Button
-                onClick={handleSeedAttendance}
-                disabled={isProcessing || !selectedEvent || eligibleStudentsForEvent.length === 0}
-                className="w-full bg-[#001A4D] hover:bg-[#0E4EBD] text-white font-bold py-2.5 rounded-xl cursor-pointer"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <QrCode className="w-4 h-4 mr-2" />}
-                Inject Attendance for {eligibleStudentsForEvent.length} Eligible Students
-              </Button>
             </div>
           )}
 
-          {/* ═══════════ TAB 2: CREATE EVENT SEEDER ═══════════ */}
-          {activeTab === 'events' && (
+          {/* ══════════════════════════════════════════════════════════════════
+              TAB 2: REAL FIRESTORE SIGNATORIES LIST & SWITCHER
+             ══════════════════════════════════════════════════════════════════ */}
+          {activeTab === 'signatories' && (
             <div className="space-y-4">
-              {/* Event Preset Selector */}
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Quick Event Template Preset</label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {EVENT_PRESETS.map((p, idx) => (
-                    <button
-                      key={p.title}
-                      type="button"
-                      onClick={() => handleApplyPreset(idx)}
-                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
-                        eventPresetIdx === idx
-                          ? 'border-[#0E4EBD] bg-blue-50/70 ring-2 ring-[#0E4EBD]/20'
-                          : 'border-gray-200 bg-white hover:border-gray-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-[#001A4D] text-[11px] truncate block">{p.title}</span>
-                        <span className="text-[9px] bg-blue-100 text-[#0E4EBD] px-1.5 py-0.5 rounded font-black">
-                          {p.track}
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-gray-500 block truncate mt-0.5">{p.tagline}</span>
-                    </button>
-                  ))}
-                </div>
+              <div className="p-4 rounded-xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-xs text-blue-900 dark:text-blue-300">
+                <strong>Real Firestore Signatories ({realSignatories.length}):</strong> Live accounts directly loaded from your <code>institutional_signatories</code> collection. You can click <strong>"Log In As"</strong> to instantly impersonate any of them.
               </div>
 
-              {/* Event Title */}
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Event Title</label>
-                <input
-                  type="text"
-                  value={customEventTitle}
-                  onChange={(e) => setCustomEventTitle(e.target.value)}
-                  placeholder="e.g. STI Tech Summit 2026"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs"
-                />
-              </div>
-
-              {/* Host Org & Academic Track */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Hosting Organization</label>
-                  <select
-                    value={eventOrgId || organizations[0]?.id || ''}
-                    onChange={(e) => setEventOrgId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    {organizations.map((org) => (
-                      <option key={org.id} value={org.id}>
-                        {org.name} ({org.category || 'Org'})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Academic Track</label>
-                  <select
-                    value={eventTrack}
-                    onChange={(e) => {
-                      const t = e.target.value as any;
-                      setEventTrack(t);
-                      if (t === 'SHS') setEventCourses(['STEM', 'ABM']);
-                      else if (t === 'COLLEGE') setEventCourses(['BSIT', 'BSCS']);
-                      else setEventCourses([]);
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value="COLLEGE">College (Semestral)</option>
-                    <option value="SHS">Senior High School (Trimestral)</option>
-                    <option value="CAMPUS_WIDE">Campus-Wide (All Tracks)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Target Courses Selector */}
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Target Participant Courses / Strands</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {(eventTrack === 'SHS' ? ['STEM', 'ABM', 'HUMSS', 'TVL'] : ['BSIT', 'BSCS', 'BSHM', 'BSTM', 'BSBA']).map((course) => {
-                    const selected = eventCourses.includes(course);
+              {realSignatories.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {realSignatories.map((sig) => {
+                    const isCurrent = currentSession?.email?.toLowerCase() === sig.email.toLowerCase();
+                    const hasUploadedSignature = Boolean(sig.signatureUrl || sig.signatureDataUrl);
                     return (
-                      <button
-                        key={course}
-                        type="button"
-                        onClick={() => {
-                          if (selected) setEventCourses(eventCourses.filter((c) => c !== course));
-                          else setEventCourses([...eventCourses, course]);
-                        }}
-                        className={`px-3 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
-                          selected
-                            ? 'bg-[#0E4EBD] text-white border-[#0E4EBD]'
-                            : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+                      <div
+                        key={sig.id}
+                        className={`p-4 rounded-xl border transition-all ${
+                          isCurrent
+                            ? 'bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-400 dark:border-emerald-700 shadow-md ring-1 ring-emerald-400/50'
+                            : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 shadow-sm'
                         }`}
                       >
-                        {course}
-                      </button>
+                        <div className="flex items-start justify-between mb-2">
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-900 dark:text-slate-100">{sig.name}</h4>
+                            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                              {sig.roleTitle || sig.role}
+                            </span>
+                          </div>
+                          {isCurrent && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-black uppercase bg-emerald-600 text-white">
+                              Active
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="space-y-1 text-xs text-slate-500 dark:text-slate-400 mb-3">
+                          <div>
+                            <strong>Dept:</strong> {sig.department || 'Institutional'}
+                          </div>
+                          <div>
+                            <strong>Email:</strong> <code className="text-slate-800 dark:text-slate-200">{sig.email}</code>
+                          </div>
+                          <div>
+                            <strong>Role Scope:</strong> {sig.applicableScope || 'both'}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <strong>Signature:</strong>{' '}
+                            {hasUploadedSignature ? (
+                              <span className="text-emerald-600 font-semibold flex items-center gap-0.5">
+                                <Check className="w-3 h-3 stroke-[3]" /> Uploaded in Firestore
+                              </span>
+                            ) : (
+                              <span className="text-amber-600 italic">Auto-Calligraphic Fallback</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Signature Preview Thumbnail */}
+                        <div className="p-2 mb-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-800 flex items-center justify-center h-14 overflow-hidden">
+                          {hasUploadedSignature ? (
+                            <img
+                              src={sig.signatureUrl || sig.signatureDataUrl}
+                              alt={sig.name}
+                              className="max-h-full object-contain"
+                            />
+                          ) : (
+                            <span className="text-[10px] text-slate-400 italic">No custom image uploaded</span>
+                          )}
+                        </div>
+
+                        <Button
+                          type="button"
+                          onClick={() => handleSwitchSignatory(sig)}
+                          variant={isCurrent ? 'outline' : 'default'}
+                          className={`w-full text-xs font-semibold ${
+                            isCurrent
+                              ? 'border-emerald-500 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-blue-600 hover:bg-blue-700 text-white'
+                          }`}
+                        >
+                          <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+                          {isCurrent ? 'Currently Active' : `Log In As ${sig.name.split(' ')[0]}`}
+                        </Button>
+                      </div>
                     );
                   })}
-                  <button
-                    type="button"
-                    onClick={() => setEventCourses([])}
-                    className={`px-3 py-1 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
-                      eventCourses.length === 0
-                        ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D]'
-                        : 'bg-white text-gray-500 border-gray-300'
-                    }`}
-                  >
-                    All Courses (Open)
-                  </button>
                 </div>
+              ) : (
+                <div className="p-12 text-center text-slate-500 border border-dashed rounded-xl">
+                  No institutional signatories found in Firestore. Configure them under Admin Settings → Signatories Management.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ══════════════════════════════════════════════════════════════════
+              TAB 3: STUDENTS & ATTENDANCE INJECTOR
+             ══════════════════════════════════════════════════════════════════ */}
+          {activeTab === 'mock_data' && (
+            <div className="p-5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+              <div className="flex items-center gap-2">
+                <Users className="w-5 h-5 text-blue-600" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                  Seed Realistic STI Students
+                </h3>
               </div>
-
-              {/* Sessions & Gatepass Config */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Sessions Count</label>
-                  <select
-                    value={eventSessionCount}
-                    onChange={(e) => setEventSessionCount(Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value={1}>1 Session (Half-Day)</option>
-                    <option value={2}>2 Sessions (Morning + Afternoon)</option>
-                    <option value={3}>3 Sessions (2-Day Event)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Gate Pass Mode</label>
-                  <select
-                    value={eventHasTimeOut ? 'both' : 'checkin_only'}
-                    onChange={(e) => setEventHasTimeOut(e.target.value === 'both')}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value="both">2 Gates: Time-In & Time-Out (Complete)</option>
-                    <option value="checkin_only">1 Gate: Time-In Only (Checked In)</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Proposal Status & Payable Ticket Fee */}
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Event Proposal Lifecycle Status</label>
-                  <select
-                    value={eventProposalStatus}
-                    onChange={(e) => setEventProposalStatus(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value="approved">Approved (Live & Active for Attendance)</option>
-                    <option value="pending_review">Pending Review (For SAO Review testing)</option>
-                    <option value="draft">Draft (For Officer Proposal editing)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Participant Ticket Fee (PHP)</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={eventTicketFee}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        setEventTicketFee(v);
-                        setEventEnablePayables(v > 0);
-                      }}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs"
-                      placeholder="0 (Free)"
-                    />
-                    <label className="flex items-center gap-1 text-[11px] font-bold text-gray-700 whitespace-nowrap cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={eventEnablePayables}
-                        onChange={(e) => setEventEnablePayables(e.target.checked)}
-                        className="rounded"
-                      />
-                      Sync Payables
-                    </label>
-                  </div>
-                </div>
-              </div>
-
-              {/* Automatic DB Maintenance Info Banner */}
-              <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl space-y-1">
-                <p className="font-bold text-[#001A4D] flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                  Database Maintenance Mappings Handled Automatically:
-                </p>
-                <p className="text-[11px] text-gray-600">
-                  Maps real FKs to <code>/event_types</code>, <code>/event_categories</code>, <code>/venues</code>, active <code>/semesters</code>, generates 6-digit scanner code, realistic budget line items, and assigns officer scanners.
-                </p>
-              </div>
+              <p className="text-xs text-slate-500">
+                Quickly inject 20 sample students with real STI student numbers and courses into Firestore:
+              </p>
 
               <Button
-                onClick={handleCreateEvent}
+                type="button"
+                onClick={async () => {
+                  setIsProcessing(true);
+                  setStatusMessage(null);
+                  try {
+                    const res = await seedSampleStudents({ count: 20, track: 'COLLEGE' });
+                    setStatusMessage({ type: 'success', text: `Created ${res.length} sample student accounts in Firestore!` });
+                  } catch (err: any) {
+                    setStatusMessage({ type: 'error', text: err.message || 'Failed to seed students.' });
+                  } finally {
+                    setIsProcessing(false);
+                  }
+                }}
                 disabled={isProcessing}
-                className="w-full bg-[#001A4D] hover:bg-[#0E4EBD] text-white font-bold py-2.5 rounded-xl cursor-pointer"
+                className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
               >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CalendarPlus className="w-4 h-4 mr-2" />}
-                Generate & Publish Test Event
+                {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Users className="w-3.5 h-3.5 mr-1.5" />}
+                Inject 20 Students Now
               </Button>
             </div>
           )}
 
-          {/* ═══════════ TAB 3: STUDENT GENERATOR ═══════════ */}
-          {activeTab === 'students' && (
-            <div className="space-y-4">
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Number of Students to Generate</label>
-                <div className="flex gap-2">
-                  {[5, 10, 25, 50].map((cnt) => (
-                    <button
-                      key={cnt}
-                      type="button"
-                      onClick={() => setStudentCount(cnt)}
-                      className={`flex-1 py-2 rounded-xl border text-center font-bold transition-all cursor-pointer ${
-                        studentCount === cnt
-                          ? 'border-[#0E4EBD] bg-blue-50 text-[#0E4EBD]'
-                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                      }`}
-                    >
-                      {cnt} Students
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Academic Track</label>
-                  <select
-                    value={studentTrack}
-                    onChange={(e) => setStudentTrack(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value="MIXED">Mixed (College & SHS)</option>
-                    <option value="COLLEGE">College Only (Semestral)</option>
-                    <option value="SHS">Senior High School Only (Trimestral)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Specific Course/Strand (Optional)</label>
-                  <select
-                    value={selectedCourse}
-                    onChange={(e) => setSelectedCourse(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                  >
-                    <option value="">Auto-assign from Database Courses</option>
-                    <option value="BSIT">BSIT</option>
-                    <option value="BSCS">BSCS</option>
-                    <option value="BSHM">BSHM</option>
-                    <option value="BSBA">BSBA</option>
-                    <option value="STEM">STEM (SHS)</option>
-                    <option value="ABM">ABM (SHS)</option>
-                    <option value="HUMSS">HUMSS (SHS)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="p-3.5 bg-blue-50 border border-blue-100 rounded-xl text-gray-700 space-y-1.5">
-                <p className="font-bold text-[#001A4D] flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                  Full Registration Flow Parity:
-                </p>
-                <ul className="list-disc pl-4 text-[11px] space-y-0.5 text-gray-600">
-                  <li><strong>Unique Filipino Names:</strong> Randomly generated from 100,000+ non-repeating permutations.</li>
-                  <li><strong>11-digit Student IDs:</strong> Strictly generated as <code>02000XXXXXX</code>.</li>
-                  <li><strong>Live Academic Mapping:</strong> Mapped to registered Departments, Courses, and Sections in Firestore.</li>
-                  <li><strong>Auto-Payable Synchronization:</strong> Background checks active events and creates payables if targeting matches!</li>
-                </ul>
-              </div>
-
-              <Button
-                onClick={handleSeedStudents}
-                disabled={isProcessing}
-                className="w-full bg-[#001A4D] hover:bg-[#0E4EBD] text-white font-bold py-2.5 rounded-xl cursor-pointer"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Users className="w-4 h-4 mr-2" />}
-                Generate {studentCount} Realistically-Enrolled Students
-              </Button>
-            </div>
-          )}
-
-          {/* ═══════════ TAB 4: PAYABLES SEEDER ═══════════ */}
-          {activeTab === 'payables' && (
-            <div className="space-y-4">
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">Target Organization</label>
-                <select
-                  value={payableOrgId || organizations[0]?.id || ''}
-                  onChange={(e) => setPayableOrgId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs bg-white text-[#001A4D]"
-                >
-                  {organizations.map((org) => (
-                    <option key={org.id} value={org.id}>
-                      {org.name} ({org.category || 'College'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Fee Description</label>
-                  <input
-                    type="text"
-                    value={payableTitle}
-                    onChange={(e) => setPayableTitle(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs"
-                    placeholder="e.g. Semestral Membership Due"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-gray-700 mb-1">Fee Amount (PHP)</label>
-                  <input
-                    type="number"
-                    value={payableAmount}
-                    onChange={(e) => setPayableAmount(Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs"
-                    placeholder="150"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">
-                  Collection Rate: <span className="text-green-600 font-bold">{payablePaidPct}% Paid</span> ({100 - payablePaidPct}% Unpaid)
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  step={5}
-                  value={payablePaidPct}
-                  onChange={(e) => setPayablePaidPct(Number(e.target.value))}
-                  className="w-full accent-green-600"
-                />
-              </div>
-
-              <Button
-                onClick={handleSeedPayables}
-                disabled={isProcessing || organizations.length === 0}
-                className="w-full bg-green-700 hover:bg-green-800 text-white font-bold py-2.5 rounded-xl cursor-pointer"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Wallet className="w-4 h-4 mr-2" />}
-                Generate Student Payables Ledger
-              </Button>
-            </div>
-          )}
-
-          {/* ═══════════ TAB 5: PURGE TEST DATA ═══════════ */}
+          {/* ══════════════════════════════════════════════════════════════════
+              TAB 4: PURGE TEST DATA
+             ══════════════════════════════════════════════════════════════════ */}
           {activeTab === 'purge' && (
-            <div className="space-y-4 text-center py-4">
-              <div className="w-12 h-12 rounded-2xl bg-red-50 border border-red-100 flex items-center justify-center text-red-600 mx-auto">
-                <Trash2 className="w-6 h-6" />
-              </div>
-              <div>
-                <h4 className="font-bold text-base text-[#001A4D]">Purge Dev Test Data</h4>
-                <p className="text-xs text-gray-500 max-w-md mx-auto mt-1">
-                  This will safely delete only mock test records that were generated by this dev tool (identified with <code>isTestData: true</code>). Real registrations, actual events, and live settings will remain untouched.
-                </p>
+            <div className="p-6 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/20 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-900/40 text-rose-600">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-rose-900 dark:text-rose-200">
+                    Purge All Seeded Test Data
+                  </h3>
+                  <p className="text-xs text-rose-700 dark:text-rose-400">
+                    Safely removes mock activities, attendance, liquidations, and PARs marked with <code>isTestData: true</code>.
+                  </p>
+                </div>
               </div>
 
               <Button
+                type="button"
                 onClick={handlePurge}
                 disabled={isProcessing}
-                className="bg-red-600 hover:bg-red-700 text-white font-bold px-6 py-2.5 rounded-xl cursor-pointer"
+                className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold"
               >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Trash2 className="w-4 h-4 mr-2" />}
-                Confirm & Clean Test Records
+                {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
+                Purge All Seeded Test Data Now
               </Button>
             </div>
           )}
+
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
-          <span>Current Database: {students.length} Students · {events.length} Events</span>
-          <Button variant="ghost" onClick={onClose} className="text-xs text-gray-600 font-bold cursor-pointer">
+        {/* ── Footer ── */}
+        <div className="flex items-center justify-between px-6 py-3.5 bg-slate-50 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800 text-xs text-slate-500 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>Firestore Linked: STI College Ormoc Database</span>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onClose}
+            className="text-xs font-semibold"
+          >
             Close
           </Button>
         </div>
+
       </div>
     </div>,
     document.body

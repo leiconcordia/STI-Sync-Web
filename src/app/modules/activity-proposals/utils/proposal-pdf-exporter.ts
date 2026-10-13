@@ -841,6 +841,11 @@ export async function exportActivityProposalPDF(
               console.warn('Could not draw signature image:', e);
             }
           }
+        } else if (sig.status === 'waived') {
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(6.5);
+          doc.setTextColor(130, 130, 130);
+          doc.text('(Waived — Executive Clearance Granted)', slotX, currentLineY - 1.5);
         }
 
         // Horizontal signature line (underline matching AP_FORMAT_EMPTY)

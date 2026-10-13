@@ -53,6 +53,13 @@ export function subscribeToSignatories(
     (snapshot) => {
       const list: InstitutionalSignatory[] = snapshot.docs.map((docSnap) => {
         const data = docSnap.data();
+        const isAccountant =
+          (data.role || '').toLowerCase() === 'accountant' ||
+          (data.roleTitle || '').toLowerCase().includes('accountant') ||
+          (data.roleTitle || '').toLowerCase().includes('auditor');
+        const resolvedScope =
+          data.applicableScope || (isAccountant ? 'liquidation_only' : 'both');
+
         return {
           id: docSnap.id,
           uid: data.uid || docSnap.id,
@@ -67,6 +74,8 @@ export function subscribeToSignatories(
           signatureUrl: data.signatureUrl || data.signatureDataUrl || undefined,
           signatureDataUrl: data.signatureDataUrl || undefined,
           signatureUpdatedAt: data.signatureUpdatedAt,
+          isPermanentSigner: Boolean(data.isPermanentSigner),
+          applicableScope: resolvedScope,
           isActive: data.isActive !== false,
           requiresPasswordChange: data.requiresPasswordChange ?? true,
           temporaryPassword: data.temporaryPassword,
@@ -97,6 +106,13 @@ export async function getInstitutionalSignatories(): Promise<InstitutionalSignat
     const snapshot = await getDocs(q);
     return snapshot.docs.map((docSnap) => {
       const data = docSnap.data();
+      const isAccountant =
+        (data.role || '').toLowerCase() === 'accountant' ||
+        (data.roleTitle || '').toLowerCase().includes('accountant') ||
+        (data.roleTitle || '').toLowerCase().includes('auditor');
+      const resolvedScope =
+        data.applicableScope || (isAccountant ? 'liquidation_only' : 'both');
+
       return {
         id: docSnap.id,
         uid: data.uid || docSnap.id,
@@ -109,6 +125,9 @@ export async function getInstitutionalSignatories(): Promise<InstitutionalSignat
         actionType: data.actionType || 'endorse',
         status: data.status || 'active',
         signatureUrl: data.signatureUrl || undefined,
+        isPermanentSigner: Boolean(data.isPermanentSigner),
+        applicableScope: resolvedScope,
+        isActive: data.isActive !== false,
         createdAt: data.createdAt,
         updatedAt: data.updatedAt,
       } as InstitutionalSignatory;
@@ -170,6 +189,9 @@ export async function createInstitutionalSignatory(
       department: payload.department ? payload.department.trim() : '',
       departmentId: payload.departmentId || '',
       employeeId: payload.employeeId ? payload.employeeId.trim() : '',
+      isPermanentSigner: Boolean(payload.isPermanentSigner),
+      isMandatoryForDepartment: payload.isMandatoryForDepartment || '',
+      applicableScope: payload.applicableScope || (payload.role === 'accountant' ? 'liquidation_only' : 'both'),
       isActive: true,
       requiresPasswordChange: true,
       temporaryPassword: tempPassword,
@@ -265,7 +287,7 @@ export async function toggleSignatoryStatus(
  */
 export async function updateSignatoryDetails(
   signatoryId: string,
-  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId'>>
+  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope'>>
 ): Promise<void> {
   const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
   await updateDoc(docRef, {

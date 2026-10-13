@@ -4,25 +4,49 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  getDoc,
   getDocs,
   query,
   where,
   Timestamp,
   serverTimestamp,
+  orderBy,
 } from 'firebase/firestore';
 import { db } from '../../services/firebase';
-import { StudentDocument, AcademicLevel, StudentSex, StudentYearLevel, StudentSemester } from '../../app/modules/students/types/student.types';
-import { EventDocument, EventSession, EventScanner, BudgetLineItem, EventDocumentFile } from '../../app/modules/events/types/event.types';
+import { StudentDocument, AcademicLevel, StudentYearLevel, StudentSemester } from '../../app/modules/students/types/student.types';
+import { EventDocument, EventSession, EventScanner, BudgetLineItem } from '../../app/modules/events/types/event.types';
 import { ATTENDANCE_COLLECTION } from '../../app/modules/attendance/services/attendance.service';
-import { AttendanceRecord, AttendanceStatus } from '../../app/modules/attendance/types/attendance.types';
+import { AttendanceStatus } from '../../app/modules/attendance/types/attendance.types';
 import { PAYABLES_COLLECTION, syncStudentPayablesForActiveEvents } from '../../app/modules/finance/services/payable.service';
-import { PayableDocument, PayableType } from '../../app/modules/finance/types/payable.types';
+import { PayableType } from '../../app/modules/finance/types/payable.types';
 import { COURSES_COLLECTION, DEPARTMENTS_COLLECTION, SECTIONS_COLLECTION, SEMESTERS_COLLECTION } from '../../app/modules/academic/services/academic.service';
 import { EVENTS_COLLECTION, generatePayablesForEvent } from '../../app/modules/events/services/event.service';
+import { SIGNATORIES_COLLECTION, getInstitutionalSignatories } from '../../app/modules/signatories/services/signatory.service';
+import { InstitutionalSignatory } from '../../app/modules/signatories/types/signatory.types';
+import {
+  PROPOSALS_COLLECTION,
+  endorseProposal,
+  submitProposalForReview,
+  generateProposalReferenceNumber,
+} from '../../app/modules/activity-proposals/services/proposal.service';
+import { buildDynamicApprovalChain } from '../../app/modules/activity-proposals/utils/proposal-routing';
+import {
+  LIQUIDATIONS_COLLECTION,
+  createLiquidationReport,
+  endorseLiquidationStep,
+  generateDefaultLiquidationChain,
+} from '../../app/modules/finance/services/liquidation.service';
+import {
+  PAR_COLLECTION,
+  saveOrSubmitPAR,
+  endorsePARStep,
+  generateDefaultPARSignatoryChain,
+} from '../../app/modules/post-activity-reports/services/par.service';
+const DOCUMENTS_COLLECTION = 'documents';
 
-// Helper to strip all `undefined` values recursively for Firestore compatibility
+// ─── Helper to recursively strip undefined values ─────────────────────────────
 export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
-  const result: any = {};
+  const result: any = Array.isArray(obj) ? [] : {};
   for (const [key, value] of Object.entries(obj)) {
     if (value !== undefined) {
       if (
@@ -30,7 +54,7 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
         typeof value === 'object' &&
         !(value instanceof Timestamp) &&
         !(value instanceof Date) &&
-        !Array.isArray(value)
+        typeof (value as any).toDate !== 'function'
       ) {
         result[key] = cleanForFirestore(value);
       } else {
@@ -41,96 +65,789 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   return result;
 }
 
-// ─── Extensive Filipino Names Pool (Over 100,000+ unique permutations) ────────
-const FIRST_NAMES_MALE = [
-  'Juan', 'Mark', 'Joshua', 'Christian', 'Angelo', 'Gabriel', 'John Paul', 'Kenneth', 'Daniel',
-  'Jayson', 'Carl', 'Justin', 'Matthew', 'Nathaniel', 'Lance', 'Vince', 'Paolo', 'Rafael',
-  'Alden', 'Jericho', 'Dominic', 'Miguel', 'Elijah', 'Francis', 'Cedric', 'Kian', 'Gian',
-  'Patrick', 'Kyle', 'Sean', 'Kurt', 'Tristan', 'Marc', 'Dexter', 'Renzo', 'Rico', 'Noel',
-];
-
-const FIRST_NAMES_FEMALE = [
-  'Maria', 'Angelica', 'Bea', 'Christine', 'Nicole', 'Patricia', 'Alyssa', 'Camille', 'Samantha',
-  'Katrina', 'Andrea', 'Princess', 'Denise', 'Hannah', 'Erika', 'Kimberly', 'Rhea', 'Danica',
-  'Jasmine', 'Chloe', 'Bianca', 'Janine', 'Clarisse', 'Pauline', 'Abigail', 'Mae', 'Joyce',
-  'Ella', 'Shaira', 'Stephanie', 'Kyla', 'Giselle', 'Faith', 'Angel', 'Sofia', 'Cheska',
-];
-
-const LAST_NAMES = [
-  'Dela Cruz', 'Santos', 'Reyes', 'Fernandez', 'Gonzales', 'Concordia', 'Lucanas', 'Mendoza',
-  'Garcia', 'Flores', 'Villanueva', 'Bautista', 'Torres', 'Navarro', 'Castillo', 'Alvarez',
-  'Mercado', 'Ramos', 'Aquino', 'Salazar', 'Domingo', 'Valdez', 'Perez', 'Castro',
-  'Soriano', 'Gomez', 'Cruz', 'Robles', 'Pascual', 'Manalo', 'Rivera', 'Santiago',
-  'Vergara', 'Ocampo', 'Cabrera', 'Padilla', 'Delos Reyes', 'Tolentino', 'Morales',
-];
-
-const MIDDLE_NAMES = [
-  'Basa', 'Custodio', 'Dizon', 'Enriquez', 'Fabian', 'Guinto', 'Hernandez', 'Ilagan',
-  'Jimenez', 'Katigbak', 'Lacson', 'Magno', 'Natividad', 'Ortiz', 'Pineda', 'Quizon',
-  'Rosario', 'San Jose', 'Tañedo', 'Urbano', 'Veloso', 'Yambao', 'Zamora',
-];
-
-// Pre-crafted Event Title Presets
-export const EVENT_PRESETS = [
-  {
-    title: 'Tech Innovators Hackathon & Dev Summit 2026',
-    tagline: 'Building Next-Generation Digital Solutions for Community Impact',
-    description: 'A 2-day hands-on tech summit and software development hackathon bringing together passionate developers, designers, and tech enthusiasts.',
-    track: 'COLLEGE' as const,
-    courses: ['BSIT', 'BSCS'],
-    fee: 150,
-  },
-  {
-    title: 'Hospitality & Culinary Arts Grand Expo',
-    tagline: 'Mastering World-Class Service, Culinary Excellence, and Tourism Trends',
-    description: 'An immersive showcase of hospitality management, fine dining table service, mocktail mixology, and modern tourism marketing strategies.',
-    track: 'COLLEGE' as const,
-    courses: ['BSHM', 'BSTM'],
-    fee: 200,
-  },
-  {
-    title: 'STI Ormoc Institutional Leadership Congress',
-    tagline: 'Empowering Student Leaders through Ethical Governance and Collaboration',
-    description: 'Annual leadership training and general assembly for student organization officers, council members, and aspiring student leaders.',
-    track: 'CAMPUS_WIDE' as const,
-    courses: [],
-    fee: 0,
-  },
-  {
-    title: 'STEM Robotics & Scientific Innovation Symposium',
-    tagline: 'Pioneering Research, Automation, and Sustainable Engineering Solutions',
-    description: 'Interactive STEM exhibition featuring automated robotics displays, applied physics projects, and scientific paper presentations.',
-    track: 'SHS' as const,
-    courses: ['STEM'],
-    fee: 100,
-  },
-  {
-    title: 'Business Ventures & Entrepreneurship Pitch Fest',
-    tagline: 'Transforming Creative Ideas into Scalable Enterprise Solutions',
-    description: 'Capstone project pitching competition where students showcase feasibility studies, business models, and innovative products.',
-    track: 'COLLEGE' as const,
-    courses: ['BSBA', 'BSIT'],
-    fee: 120,
-  },
-];
-
-function getRandomItem<T>(array: T[]): T {
-  return array[Math.floor(Math.random() * array.length)];
-}
-
-function generateRandomStudentId(): string {
-  const randomSuffix = Math.floor(100000 + Math.random() * 900000);
-  return `02000${randomSuffix}`;
+// ─── Calligraphic Signature SVG Generator (Used as fallback if none uploaded) ─
+export function generateCalligraphicSignature(name: string, roleTitle: string): string {
+  const sanitizedName = (name || 'STI Signatory').replace(/[<>&"']/g, '');
+  const sanitizedTitle = (roleTitle || '').replace(/[<>&"']/g, '');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="110" viewBox="0 0 320 110">
+    <defs>
+      <linearGradient id="sigGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#1e3a8a"/>
+        <stop offset="100%" stop-color="#0284c7"/>
+      </linearGradient>
+    </defs>
+    <path d="M 25 70 Q 55 20, 95 65 T 165 45 T 235 60 T 290 35" fill="none" stroke="url(#sigGrad)" stroke-width="2.6" stroke-linecap="round"/>
+    <path d="M 40 82 Q 130 92, 275 75" fill="none" stroke="#1d4ed8" stroke-width="1.8" stroke-linecap="round"/>
+    <text x="160" y="98" font-family="'Brush Script MT', 'Dancing Script', cursive, sans-serif" font-size="20" font-weight="bold" fill="#0f172a" text-anchor="middle">${sanitizedName}</text>
+    <text x="160" y="108" font-family="Inter, sans-serif" font-size="8.5" font-weight="600" fill="#64748b" text-anchor="middle" letter-spacing="0.5">${sanitizedTitle}</text>
+  </svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 1. EVENT PARTICIPANT TARGETING VALIDATOR
+// 1. DYNAMIC SIGNATURE LOOKUP & REAL FIRESTORE SIGNATORIES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Retrieves the real uploaded digital signature from Firestore for a given signatory.
+ * Checks institutional_signatories collection by UID, ID, email, or name.
+ */
+export async function getRealUploadedSignature(
+  step: { signatoryUid?: string; signatoryEmail?: string; signatoryName?: string; signatureUrl?: string }
+): Promise<string> {
+  // 1. If step already has a verified signatureUrl, use it
+  if (step.signatureUrl && step.signatureUrl.length > 20) {
+    return step.signatureUrl;
+  }
+
+  // 2. Query Firestore institutional_signatories by UID
+  if (step.signatoryUid) {
+    try {
+      const snap = await getDoc(doc(db, SIGNATORIES_COLLECTION, step.signatoryUid));
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.signatureUrl || data.signatureDataUrl) {
+          return data.signatureUrl || data.signatureDataUrl;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Query Firestore institutional_signatories by Email
+  if (step.signatoryEmail) {
+    try {
+      const q = query(
+        collection(db, SIGNATORIES_COLLECTION),
+        where('email', '==', step.signatoryEmail.trim().toLowerCase())
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const data = snap.docs[0].data();
+        if (data.signatureUrl || data.signatureDataUrl) {
+          return data.signatureUrl || data.signatureDataUrl;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 4. Query Firestore institutional_signatories by Name
+  if (step.signatoryName) {
+    try {
+      const q = query(
+        collection(db, SIGNATORIES_COLLECTION),
+        where('name', '==', step.signatoryName.trim())
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const data = snap.docs[0].data();
+        if (data.signatureUrl || data.signatureDataUrl) {
+          return data.signatureUrl || data.signatureDataUrl;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // Fallback: Generate SVG calligraphic signature using their real name
+  return generateCalligraphicSignature(step.signatoryName || 'STI Signatory', 'Institutional Endorsement');
+}
+
+/**
+ * 1-Click Session Switcher / Impersonator:
+ * Updates localStorage to instantly simulate being logged in as any real Firestore signatory.
+ */
+export function switchActiveSignatorySession(signatory: InstitutionalSignatory | any): void {
+  const signatorySession = {
+    uid: signatory.uid || signatory.id,
+    id: signatory.id,
+    name: signatory.name,
+    email: signatory.email,
+    role: signatory.role,
+    roleTitle: signatory.roleTitle || signatory.title || 'Institutional Signatory',
+    actionType: signatory.actionType || (signatory.role === 'school_president' ? 'approve' : 'endorse'),
+    department: signatory.department || '',
+    employeeId: signatory.employeeId || '',
+    signatureUrl: signatory.signatureUrl || signatory.signatureDataUrl || generateCalligraphicSignature(signatory.name, signatory.roleTitle || ''),
+    isSignatory: true,
+    requiresPasswordChange: false,
+    availableWorkspaces: {
+      hasSignatory: true,
+      hasOfficer: true,
+      hasAdviser: signatory.role === 'adviser',
+    },
+  };
+
+  localStorage.setItem('sti_sync_signatory_session', JSON.stringify(signatorySession));
+  localStorage.setItem(
+    'sti_sync_officer_session',
+    JSON.stringify({
+      ...signatorySession,
+      studentName: signatory.name,
+      activeRoleId: signatory.role,
+    })
+  );
+
+  window.dispatchEvent(new Event('storage'));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 2. DYNAMIC PROPOSAL SIGNING (FORM AP-01)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Signs a specific pending step on an Activity Proposal on behalf of the person assigned to that step.
+ * Uses their real Firestore name, role, email, and real uploaded signature.
+ */
+export async function signProposalStep(
+  proposalId: string,
+  targetStep: {
+    id?: string;
+    signatoryUid?: string;
+    signatoryEmail?: string;
+    signatoryName: string;
+    role: string;
+    roleTitle?: string;
+    actionType?: 'endorse' | 'approve';
+    signatureUrl?: string;
+  },
+  remarks = ''
+): Promise<{ success: boolean; isFullyApproved: boolean; signerName: string; stageAdvanced?: boolean }> {
+  // Fetch real uploaded signature from Firestore
+  const signatureUrl = await getRealUploadedSignature(targetStep);
+
+  const signerPayload = {
+    id: targetStep.signatoryUid || targetStep.id || '',
+    uid: targetStep.signatoryUid || targetStep.id || '',
+    name: targetStep.signatoryName,
+    email: targetStep.signatoryEmail || '',
+    role: targetStep.role,
+    roleTitle: targetStep.roleTitle || '',
+    actionType: targetStep.actionType || (targetStep.role === 'school_president' ? 'approve' : 'endorse'),
+    signatureUrl,
+  };
+
+  const effectiveRemarks = remarks || `Signed and verified by ${targetStep.signatoryName} (${targetStep.roleTitle || targetStep.role}).`;
+
+  const result = await endorseProposal(proposalId, signerPayload, effectiveRemarks);
+
+  return {
+    success: result.success,
+    isFullyApproved: result.isFullyApproved,
+    signerName: targetStep.signatoryName,
+    stageAdvanced: result.stageAdvanced,
+  };
+}
+
+/**
+ * Sequentially signs ALL remaining steps in an Activity Proposal across all stages.
+ * Strictly uses the real names and real uploaded signatures defined on each step.
+ */
+export async function signAllProposalSteps(proposalId: string): Promise<{ totalSigned: number; isFullyApproved: boolean }> {
+  let isFullyApproved = false;
+  let signedCount = 0;
+  let iterations = 0;
+
+  while (!isFullyApproved && iterations < 15) {
+    const propRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+    const snap = await getDoc(propRef);
+    if (!snap.exists()) break;
+
+    const data = snap.data();
+    if (data.status === 'approved' || data.status === 'approved_president') {
+      isFullyApproved = true;
+      break;
+    }
+
+    const chain: any[] = data.approvalChain || [];
+    const currentStage = data.currentStageIndex ?? 1;
+
+    // Find first pending step in current active stage
+    const pendingStep = chain.find(
+      (s) => (s.stageIndex ?? 1) === currentStage && (s.status === 'current' || s.status === 'waiting')
+    );
+
+    if (!pendingStep) {
+      // If no steps pending in current stage, check if any future stage has pending steps
+      const anyPending = chain.find((s) => s.status === 'current' || s.status === 'waiting');
+      if (!anyPending) {
+        isFullyApproved = true;
+        break;
+      }
+      break;
+    }
+
+    const res = await signProposalStep(proposalId, pendingStep);
+    signedCount++;
+    isFullyApproved = res.isFullyApproved;
+    iterations++;
+  }
+
+  return { totalSigned: signedCount, isFullyApproved };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. DYNAMIC LIQUIDATION SIGNING (FORM LF-01)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Signs a specific pending step on a Financial Liquidation Report.
+ * Uses the real person assigned to that step and their real uploaded signature from Firestore.
+ */
+export async function signLiquidationStep(
+  liquidationId: string,
+  targetStep: {
+    id?: string;
+    signatoryUid?: string;
+    signatoryEmail?: string;
+    signatoryName: string;
+    role: string;
+    roleTitle?: string;
+    actionType?: 'check' | 'endorse' | 'approve' | 'note';
+    signatureUrl?: string;
+  },
+  remarks = ''
+): Promise<{ success: boolean; isFullyApproved: boolean; signerName: string; stageAdvanced?: boolean }> {
+  const signatureUrl = await getRealUploadedSignature(targetStep);
+
+  const signerPayload = {
+    id: targetStep.signatoryUid || targetStep.id || '',
+    uid: targetStep.signatoryUid || targetStep.id || '',
+    name: targetStep.signatoryName,
+    email: targetStep.signatoryEmail || '',
+    role: targetStep.role,
+    roleTitle: targetStep.roleTitle || '',
+    actionType: targetStep.actionType || (targetStep.role === 'school_president' ? 'approve' : 'endorse'),
+    signatureUrl,
+  };
+
+  const effectiveRemarks = remarks || `Voucher and receipts audited and signed by ${targetStep.signatoryName}.`;
+
+  const result = await endorseLiquidationStep(liquidationId, signerPayload, effectiveRemarks);
+
+  return {
+    success: result.success,
+    isFullyApproved: result.isFullyApproved,
+    signerName: targetStep.signatoryName,
+    stageAdvanced: result.stageAdvanced,
+  };
+}
+
+/**
+ * Sequentially signs ALL remaining steps on a Financial Liquidation report.
+ */
+export async function signAllLiquidationSteps(liquidationId: string): Promise<{ totalSigned: number; isFullyApproved: boolean }> {
+  let isFullyApproved = false;
+  let signedCount = 0;
+  let iterations = 0;
+
+  while (!isFullyApproved && iterations < 15) {
+    const liqRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+    const snap = await getDoc(liqRef);
+    if (!snap.exists()) break;
+
+    const data = snap.data();
+    if (data.status === 'approved') {
+      isFullyApproved = true;
+      break;
+    }
+
+    const chain: any[] = data.approvalChain || [];
+    const currentStage = data.currentStageIndex ?? 1;
+
+    const pendingStep = chain.find(
+      (s) => (s.stageIndex ?? 1) === currentStage && (s.status === 'current' || s.status === 'waiting')
+    );
+
+    if (!pendingStep) {
+      const anyPending = chain.find((s) => s.status === 'current' || s.status === 'waiting');
+      if (!anyPending) {
+        isFullyApproved = true;
+        break;
+      }
+      break;
+    }
+
+    const res = await signLiquidationStep(liquidationId, pendingStep);
+    signedCount++;
+    isFullyApproved = res.isFullyApproved;
+    iterations++;
+  }
+
+  return { totalSigned: signedCount, isFullyApproved };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 4. DYNAMIC POST-ACTIVITY REPORT SIGNING (FORM PAR)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Signs a specific pending step on a Post-Activity Report.
+ * Uses the real person assigned to that step and their real uploaded signature from Firestore.
+ */
+export async function signPARStep(
+  parId: string,
+  targetStep: {
+    id?: string;
+    signatoryUid?: string;
+    signatoryEmail?: string;
+    signatoryName: string;
+    role: string;
+    roleTitle?: string;
+    signatureUrl?: string;
+  },
+  remarks = ''
+): Promise<{ success: boolean; isFullyApproved: boolean; signerName: string; stageAdvanced?: boolean }> {
+  const signatureUrl = await getRealUploadedSignature(targetStep);
+
+  const signerPayload = {
+    id: targetStep.signatoryUid || targetStep.id || '',
+    uid: targetStep.signatoryUid || targetStep.id || '',
+    name: targetStep.signatoryName,
+    email: targetStep.signatoryEmail || '',
+    role: targetStep.role,
+    roleTitle: targetStep.roleTitle || '',
+    signatureUrl,
+  };
+
+  const effectiveRemarks = remarks || `Post-Activity Report reviewed and endorsed by ${targetStep.signatoryName}.`;
+
+  const result = await endorsePARStep(parId, signerPayload, effectiveRemarks);
+
+  return {
+    success: result.success,
+    isFullyApproved: result.isFullyApproved,
+    signerName: targetStep.signatoryName,
+    stageAdvanced: result.stageAdvanced,
+  };
+}
+
+/**
+ * Sequentially signs ALL remaining steps on a Post-Activity Report.
+ * Clears final approval and automatically archives the report into EDMS.
+ */
+export async function signAllPARSteps(parId: string): Promise<{ totalSigned: number; isFullyApproved: boolean }> {
+  let isFullyApproved = false;
+  let signedCount = 0;
+  let iterations = 0;
+
+  while (!isFullyApproved && iterations < 15) {
+    const parRef = doc(db, PAR_COLLECTION, parId);
+    const snap = await getDoc(parRef);
+    if (!snap.exists()) break;
+
+    const data = snap.data();
+    if (data.status === 'approved') {
+      isFullyApproved = true;
+      break;
+    }
+
+    const chain: any[] = data.approvalChain || [];
+    const currentStage = data.currentStageIndex ?? 1;
+
+    const pendingStep = chain.find(
+      (s) => (s.stageIndex ?? 1) === currentStage && (s.status === 'current' || s.status === 'waiting')
+    );
+
+    if (!pendingStep) {
+      const anyPending = chain.find((s) => s.status === 'current' || s.status === 'waiting');
+      if (!anyPending) {
+        isFullyApproved = true;
+        break;
+      }
+      break;
+    }
+
+    const res = await signPARStep(parId, pendingStep);
+    signedCount++;
+    isFullyApproved = res.isFullyApproved;
+    iterations++;
+  }
+
+  return { totalSigned: signedCount, isFullyApproved };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 5. LIFECYCLE EVENT CREATOR & STEPPER (ZERO HARDCODED NAMES)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface SeedProposalOptions {
+  title?: string;
+  tagline?: string;
+  description?: string;
+  organizationId?: string;
+  organizationName?: string;
+  ticketFee?: number;
+  expectedAttendees?: number;
+}
+
+/**
+ * Creates an Activity Proposal whose approval chain is dynamically generated
+ * from REAL institutional signatories in Firestore (zero hardcoded names).
+ */
+export async function seedLifecycleProposal(
+  options: SeedProposalOptions = {}
+): Promise<{ proposalId: string; referenceNo: string }> {
+  const activeSignatories = await getInstitutionalSignatories();
+  const now = new Date();
+  const dateStr = now.toISOString().split('T')[0];
+
+  const title = options.title || 'Tech Innovators Hackathon & Dev Summit 2026';
+  const tagline = options.tagline || 'Building Next-Generation Digital Solutions for Community Impact';
+  const description = options.description || 'Hands-on technological symposium and software development hackathon bringing together students for collaborative problem solving.';
+  const orgId = options.organizationId || 'org_jpcs';
+  const orgName = options.organizationName || 'Junior Philippine Computer Society';
+  const ticketFee = options.ticketFee !== undefined ? options.ticketFee : 150;
+  const expectedAttendees = options.expectedAttendees || 80;
+
+  // Build dynamic approval chain using REAL signatories from Firestore
+  const approvalChain = buildDynamicApprovalChain(
+    {
+      scope: 'all',
+      allStudents: true,
+      departments: ['Information Technology'],
+      courseCodes: ['BSIT', 'BSCS'],
+      estimatedAttendance: expectedAttendees,
+    },
+    activeSignatories,
+    'Student Affairs & Services',
+    false,
+    false
+  );
+
+  const budgetItems: BudgetLineItem[] = [
+    { id: 'b_1', item: 'Venue & Audio-Visual Equipment Rental', description: 'Sound system, projectors, and network switches', quantity: 1, unitCost: 1500, approvedAmount: 1500, status: 'approved' },
+    { id: 'b_2', item: 'Resource Speaker Token & Honorarium', description: 'Guest speaker professional token and honorarium', quantity: 1, unitCost: 3000, approvedAmount: 3000, status: 'approved' },
+    { id: 'b_3', item: 'Participant Badges & Materials', description: 'Participant badges and certificate stock', quantity: expectedAttendees, unitCost: 25, approvedAmount: expectedAttendees * 25, status: 'approved' },
+  ];
+  const totalApprovedBudget = budgetItems.reduce((acc, b) => acc + b.approvedAmount, 0);
+
+  const sessions: EventSession[] = [
+    {
+      id: `sess_${Date.now()}_1`,
+      title: 'Main Session & Keynote Workshop',
+      date: dateStr,
+      startTime: '08:00',
+      endTime: '17:00',
+      timeInOpen: '07:30',
+      timeInClose: '09:30',
+      hasTimeOut: true,
+      timeOutOpen: '16:00',
+      timeOutClose: '17:30',
+    },
+  ];
+
+  const referenceNo = await generateProposalReferenceNumber('ORG');
+  const proposalId = `test_prop_${Date.now()}_${Math.floor(100 + Math.random() * 900)}`;
+
+  const proposalData: any = {
+    id: proposalId,
+    referenceNo,
+    title,
+    tagline,
+    description,
+    objectives: [
+      'Foster student innovation, collaboration, and applied software development.',
+      'Provide practical experiential learning aligned with industry standards.',
+      'Encourage student engagement across institutional academic programs.',
+    ],
+    status: 'under_review',
+    proposalStatus: 'under_review',
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+    isOfficerProposal: true,
+    creatorRole: 'officer',
+    createdByUid: 'dev_test_officer',
+    createdByName: 'Student Organization Officer',
+    createdByEmail: 'officer@ormoc.sti.edu.ph',
+    organizationId: orgId,
+    hostingOrgId: orgId,
+    organizationName: orgName,
+    academicTrack: 'COLLEGE',
+    academicLevel: 'COLLEGE',
+    semester: '1st Semester',
+    schoolYear: '2026-2027',
+    startDate: dateStr,
+    endDate: dateStr,
+    startTime: '08:00',
+    endTime: '17:00',
+    venueName: 'STI Ormoc Gymnasium & Innovation Hub',
+    venueId: 'venue_gym',
+    customVenueName: 'STI Ormoc Gymnasium & Innovation Hub',
+    eventFormat: 'On-Campus',
+    expectedParticipantCount: expectedAttendees,
+    expectedAttendees,
+    actualAttendees: 0,
+    attendeesCount: 0,
+    attendanceEnabled: true,
+    minAttendancePercent: 80,
+    studentPayablesEnabled: ticketFee > 0,
+    suggestedFeePerStudent: ticketFee,
+    adminFeeOverride: ticketFee,
+    totalExpectedCollection: ticketFee * expectedAttendees,
+    sessions,
+    budgetItems,
+    totalApprovedBudget,
+    approvalChain,
+    isTestData: true,
+  };
+
+  const userContext = {
+    uid: proposalData.createdByUid,
+    name: proposalData.createdByName,
+    email: proposalData.createdByEmail,
+    role: proposalData.creatorRole,
+    organizationId: orgId,
+  };
+
+  await submitProposalForReview(proposalData, userContext, proposalId);
+
+  return { proposalId, referenceNo };
+}
+
+/**
+ * Concludes an event to satisfy the gatekeeper for Financial Liquidation.
+ */
+export async function concludeLifecycleEvent(eventId: string): Promise<void> {
+  const updates = {
+    lifecycleStatus: 'completed',
+    status: 'Completed',
+    isConcluded: true,
+    concludedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  };
+
+  try {
+    await updateDoc(doc(db, 'activities', eventId), updates);
+  } catch (_) {}
+
+  try {
+    await updateDoc(doc(db, 'events', eventId), updates);
+  } catch (_) {}
+}
+
+/**
+ * Creates a Financial Liquidation Report whose approval chain is dynamically generated
+ * from REAL institutional signatories in Firestore (zero hardcoded names).
+ */
+export async function seedLifecycleLiquidation(
+  eventId: string
+): Promise<{ liquidationId: string; referenceNo: string }> {
+  const activeSignatories = await getInstitutionalSignatories();
+
+  let eventDocData: any = null;
+  const actSnap = await getDoc(doc(db, 'activities', eventId));
+  if (actSnap.exists()) eventDocData = actSnap.data();
+  else {
+    const evtSnap = await getDoc(doc(db, 'events', eventId));
+    if (evtSnap.exists()) eventDocData = evtSnap.data();
+  }
+
+  if (!eventDocData) throw new Error('Event not found.');
+
+  // Auto-conclude if needed
+  if (eventDocData.lifecycleStatus !== 'completed' && eventDocData.status !== 'Completed') {
+    await concludeLifecycleEvent(eventId);
+  }
+
+  const allocatedBudget = Number(eventDocData.totalApprovedBudget || 6500);
+  const now = new Date();
+  const yearStr = now.getFullYear().toString();
+  const dateStr = now.toISOString().split('T')[0];
+
+  const lineItems = [
+    {
+      id: 'li_1',
+      category: 'Venue & Setup',
+      particulars: 'Audio-Visual Sound Equipment Rental',
+      quantity: 1,
+      unitCost: 1500,
+      totalCost: 1500,
+      orNumber: `OR-${yearStr}-${Math.floor(1000 + Math.random() * 9000)}`,
+      receiptDate: dateStr,
+      supplierName: 'SoundWave Solutions Ormoc',
+      receiptAttachmentUrl: 'https://images.unsplash.com/photo-1554224155-6726b3ff858f?auto=format&fit=crop&w=800&q=80',
+    },
+    {
+      id: 'li_2',
+      category: 'Honorarium',
+      particulars: 'Resource Speaker Professional Honorarium',
+      quantity: 1,
+      unitCost: 3000,
+      totalCost: 3000,
+      orNumber: `AR-${yearStr}-${Math.floor(1000 + Math.random() * 9000)}`,
+      receiptDate: dateStr,
+      supplierName: 'Industry Consultant Services',
+      receiptAttachmentUrl: 'https://images.unsplash.com/photo-1450133064473-71024230f91b?auto=format&fit=crop&w=800&q=80',
+    },
+    {
+      id: 'li_3',
+      category: 'Materials',
+      particulars: 'Participant RFID Cards & Printing Stock',
+      quantity: 80,
+      unitCost: 25,
+      totalCost: 2000,
+      orNumber: `OR-${yearStr}-${Math.floor(1000 + Math.random() * 9000)}`,
+      receiptDate: dateStr,
+      supplierName: 'Commercial Press Ormoc',
+      receiptAttachmentUrl: 'https://images.unsplash.com/photo-1554224154-26032ffc0d07?auto=format&fit=crop&w=800&q=80',
+    },
+  ];
+
+  const totalActualSpending = lineItems.reduce((acc, item) => acc + item.totalCost, 0);
+  const surplusOrDeficit = allocatedBudget - totalActualSpending;
+
+  // Build dynamic chain from real Firestore signatories
+  const approvalChain = await generateDefaultLiquidationChain(
+    eventDocData.hostingOrgId || 'org_jpcs',
+    eventDocData.organizationName || 'Student Organization',
+    allocatedBudget,
+    activeSignatories
+  );
+
+  const referenceNo = `LF-${yearStr}-${Math.floor(100 + Math.random() * 900)}`;
+
+  const liquidationPayload: any = {
+    referenceNo,
+    eventId,
+    eventTitle: eventDocData.title,
+    eventReferenceId: eventDocData.referenceId || `EVT-${yearStr}-001`,
+    organizationId: eventDocData.hostingOrgId || 'org_jpcs',
+    organizationName: eventDocData.organizationName || 'Student Organization',
+    allocatedBudget,
+    totalActualSpending,
+    surplusOrDeficit,
+    status: 'under_review',
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+    lineItems,
+    approvalChain,
+    createdByUid: 'dev_test_officer',
+    createdByName: 'Student Organization Officer',
+    createdByEmail: 'officer@ormoc.sti.edu.ph',
+    createdByRole: 'officer',
+    submissionDate: dateStr,
+    isTestData: true,
+  };
+
+  const liquidationId = await createLiquidationReport(liquidationPayload);
+
+  const eventUpdate = {
+    liquidationStatus: 'under_review',
+    liquidationId,
+    updatedAt: serverTimestamp(),
+  };
+  try {
+    await updateDoc(doc(db, 'activities', eventId), eventUpdate);
+  } catch (_) {}
+  try {
+    await updateDoc(doc(db, 'events', eventId), eventUpdate);
+  } catch (_) {}
+
+  return { liquidationId, referenceNo };
+}
+
+/**
+ * Creates a Post-Activity Report whose approval chain is dynamically generated
+ * from REAL institutional signatories in Firestore (zero hardcoded names).
+ */
+export async function seedLifecyclePAR(
+  eventId: string
+): Promise<{ parId: string; referenceNo: string }> {
+  const activeSignatories = await getInstitutionalSignatories();
+
+  let eventDocData: any = null;
+  const actSnap = await getDoc(doc(db, 'activities', eventId));
+  if (actSnap.exists()) eventDocData = actSnap.data();
+  else {
+    const evtSnap = await getDoc(doc(db, 'events', eventId));
+    if (evtSnap.exists()) eventDocData = evtSnap.data();
+  }
+
+  if (!eventDocData) throw new Error('Event not found.');
+
+  if (eventDocData.lifecycleStatus !== 'completed' && eventDocData.status !== 'Completed') {
+    await concludeLifecycleEvent(eventId);
+  }
+  if (eventDocData.liquidationStatus !== 'approved') {
+    const liqRes = await seedLifecycleLiquidation(eventId);
+    await signAllLiquidationSteps(liqRes.liquidationId);
+  }
+
+  const isSasEvent =
+    eventDocData.isOfficerProposal === false ||
+    eventDocData.creatorRole === 'sas_admin' ||
+    eventDocData.hostingOrgId === 'sas' ||
+    !eventDocData.hostingOrgId;
+
+  const userContext = isSasEvent
+    ? {
+        uid: 'dev_test_sas',
+        name: 'SAS Coordinator',
+        email: 'sas.admin@ormoc.sti.edu.ph',
+        role: 'sas_admin',
+      }
+    : {
+        uid: 'dev_test_officer',
+        name: 'Student Organization Officer',
+        email: 'officer@ormoc.sti.edu.ph',
+        role: 'officer',
+        organizationId: eventDocData.hostingOrgId || 'org_jpcs',
+      };
+
+  // Build dynamic PAR chain from real Firestore signatories
+  const approvalChain = await generateDefaultPARSignatoryChain(
+    eventDocData.hostingOrgId,
+    activeSignatories
+  );
+
+  const parFormData: any = {
+    eventId,
+    eventTitle: eventDocData.title,
+    objectivesAchievement: 'fully_achieved',
+    accomplishments:
+      'The activity was successfully completed. Participants actively engaged in practical demonstrations, team exercises, and achieved core learning outcomes.',
+    learnings: [
+      'Early pre-configuration of equipment and testing prevented technical delays.',
+      'Automated attendance tracking via STI Sync mobile QR scanning ensured 100% verified gate records.',
+      'Peer collaboration fostered deeper learning retention among participants.',
+    ],
+    curriculumEnrichment:
+      'Directly enhanced foundational subject competencies and experiential leadership skills.',
+    recommendations: {
+      programFlow: 'Maintain dedicated 15-minute buffers between technical workshop segments for Q&A.',
+      participantEngagement: 'Incorporate live interactive polling and gamified leaderboards during presentations.',
+      technicalSetup: 'Coordinate laboratory workstation testing with network administrators 24 hours prior.',
+      participantPreparedness: 'Send event preparation guidelines to participants 48 hours ahead of time.',
+    },
+    photos: [
+      {
+        id: 'photo_1',
+        url: 'https://images.unsplash.com/photo-1531482615713-2afd69097998?auto=format&fit=crop&w=800&q=80',
+        caption: 'Speaker delivering presentation to participants in Gymnasium',
+        uploadedAt: new Date().toISOString(),
+      },
+      {
+        id: 'photo_2',
+        url: 'https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=800&q=80',
+        caption: 'Hands-on team workshop and interactive problem solving',
+        uploadedAt: new Date().toISOString(),
+      },
+    ],
+    approvalChain,
+    isTestData: true,
+  };
+
+  const result = await saveOrSubmitPAR(parFormData, userContext, false);
+
+  return { parId: result.id, referenceNo: result.referenceNo };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 6. STUDENT, ATTENDANCE & PAYABLES INJECTION HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export function isStudentEligibleForEvent(event: Partial<EventDocument> | any, student: Partial<StudentDocument> | any): boolean {
   if (!event || !student) return false;
 
-  // 1. Academic Track Check (College vs SHS)
   const isShsEvent =
     event.academicLevel === 'SHS' ||
     String(event.semester || '').includes('Trimester') ||
@@ -141,34 +858,16 @@ export function isStudentEligibleForEvent(event: Partial<EventDocument> | any, s
     String(student.semester || '').includes('Trimester') ||
     String(student.yearLevel || '').includes('Grade');
 
-  if (isShsEvent !== isShsStudent) {
-    return false;
-  }
+  if (isShsEvent !== isShsStudent) return false;
 
-  // 2. School Year Check (if event defines specific schoolYear)
-  if (event.schoolYear && student.schoolYear && event.schoolYear !== student.schoolYear) {
-    return false;
-  }
-
-  // 3. Semester / Term Check (if event defines specific term)
-  if (event.semester && student.semester && event.semester !== student.semester) {
-    return false;
-  }
-
-  // 4. Target Participant Scope
   const scope = event.targetAudienceScope || event.targetAudience || 'all';
-
   const targetCourses: string[] = (event.targetCourses || event.targetCourseIds || []).map((c: string) => String(c).trim().toLowerCase());
   const targetYearLevels: string[] = (event.targetYearLevels || []).map((y: string) => String(y).trim().toLowerCase());
   const targetSections: string[] = (event.targetSections || event.targetSectionNames || []).map((s: string) => String(s).trim().toLowerCase());
 
   const hasSpecificTargets = targetCourses.length > 0 || targetYearLevels.length > 0 || targetSections.length > 0;
+  if (scope === 'all' && !hasSpecificTargets) return true;
 
-  if (scope === 'all' && !hasSpecificTargets) {
-    return true;
-  }
-
-  // Match Course / Strand
   const studentCourseCode = String(student.courseCode || '').trim().toLowerCase();
   const studentCourseId = String(student.courseId || '').trim().toLowerCase();
   const matchesCourse =
@@ -176,247 +875,14 @@ export function isStudentEligibleForEvent(event: Partial<EventDocument> | any, s
     (studentCourseCode && targetCourses.includes(studentCourseCode)) ||
     (studentCourseId && targetCourses.includes(studentCourseId));
 
-  // Match Year Level
   const studentYear = String(student.yearLevel || '').trim().toLowerCase();
-  const matchesYear =
-    targetYearLevels.length === 0 ||
-    (studentYear && targetYearLevels.includes(studentYear));
+  const matchesYear = targetYearLevels.length === 0 || (studentYear && targetYearLevels.includes(studentYear));
 
-  // Match Section
   const studentSection = String(student.section || '').trim().toLowerCase();
-  const matchesSection =
-    targetSections.length === 0 ||
-    (studentSection && targetSections.includes(studentSection));
+  const matchesSection = targetSections.length === 0 || (studentSection && targetSections.includes(studentSection));
 
   return matchesCourse && matchesYear && matchesSection;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 2. REALISTIC EVENT SEEDER (WITH DB MAINTENANCE MAPPINGS)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-export interface SeedEventOptions {
-  title?: string;
-  tagline?: string;
-  description?: string;
-  hostingOrgId?: string;
-  hostingOrgName?: string;
-  academicTrack?: 'COLLEGE' | 'SHS' | 'CAMPUS_WIDE';
-  targetCourses?: string[];
-  targetYearLevels?: string[];
-  targetSections?: string[];
-  sessionCount?: number;
-  hasTimeOut?: boolean;
-  proposalStatus?: 'approved' | 'pending_review' | 'draft';
-  enablePayables?: boolean;
-  ticketFee?: number;
-  expectedAttendees?: number;
-  eventFormat?: 'On-Campus' | 'Online' | 'Hybrid';
-  venueName?: string;
-}
-
-export async function seedSampleEvent(options: SeedEventOptions = {}): Promise<EventDocument> {
-  const now = Timestamp.now();
-  const nowDate = new Date();
-  const yearStr = nowDate.getFullYear().toString();
-
-  // 1. Fetch Maintenance Data from DB Collections
-  let dbEventTypes: any[] = [];
-  let dbEventCategories: any[] = [];
-  let dbVenues: any[] = [];
-  let dbOrgs: any[] = [];
-  let activeCollegeSem: any = null;
-  let activeShsSem: any = null;
-
-  try {
-    const [typesSnap, catsSnap, venuesSnap, orgsSnap, semsSnap] = await Promise.all([
-      getDocs(collection(db, 'event_types')),
-      getDocs(collection(db, 'event_categories')),
-      getDocs(collection(db, 'venues')),
-      getDocs(collection(db, 'organizations')),
-      getDocs(query(collection(db, SEMESTERS_COLLECTION), where('status', '==', 'ACTIVE'))),
-    ]);
-
-    dbEventTypes = typesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    dbEventCategories = catsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    dbVenues = venuesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    dbOrgs = orgsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-    semsSnap.docs.forEach((d) => {
-      const s = { id: d.id, ...d.data() } as any;
-      if (s.academicLevel === 'SHS' || String(s.semester).includes('Trimester')) {
-        activeShsSem = s;
-      } else {
-        activeCollegeSem = s;
-      }
-    });
-  } catch (err) {
-    console.warn('[seedSampleEvent] Could not fetch DB maintenance collections:', err);
-  }
-
-  // Fallback defaults
-  const chosenPreset = getRandomItem(EVENT_PRESETS);
-  const track = options.academicTrack || chosenPreset.track;
-  const isShs = track === 'SHS';
-  const activeSem = isShs ? activeShsSem : activeCollegeSem;
-
-  const title = options.title || chosenPreset.title;
-  const tagline = options.tagline || chosenPreset.tagline;
-  const description = options.description || chosenPreset.description;
-
-  const chosenOrg =
-    (options.hostingOrgId ? dbOrgs.find((o) => o.id === options.hostingOrgId) : null) ||
-    dbOrgs[0] || { id: 'org_jpcs', name: 'Junior Philippine Computer Society' };
-
-  const eventTypeObj = dbEventTypes[0] || { id: 'type_seminar', name: 'Seminar / Workshop' };
-  const eventCategoryObj = dbEventCategories[0] || { id: 'cat_academic', name: 'Academic' };
-  const venueObj = dbVenues[0] || { id: 'venue_gym', name: options.venueName || 'STI Ormoc Gymnasium' };
-
-  const targetCourses = options.targetCourses !== undefined ? options.targetCourses : chosenPreset.courses;
-  const targetYearLevels = options.targetYearLevels || (isShs ? ['Grade 11', 'Grade 12'] : ['1st Year', '2nd Year', '3rd Year', '4th Year']);
-  const targetSections = options.targetSections || [];
-
-  const sessionCount = options.sessionCount || 1;
-  const hasTimeOut = options.hasTimeOut !== undefined ? options.hasTimeOut : true;
-  const proposalStatus = options.proposalStatus || 'approved';
-  const enablePayables = options.enablePayables !== undefined ? options.enablePayables : chosenPreset.fee > 0;
-  const ticketFee = options.ticketFee !== undefined ? options.ticketFee : chosenPreset.fee;
-  const expectedAttendees = options.expectedAttendees || (targetCourses.length > 0 ? 80 : 150);
-
-  // Generate sessions adhering to gate pass mode
-  const sessions: EventSession[] = [];
-  const eventDateStr = nowDate.toISOString().split('T')[0];
-
-  for (let i = 1; i <= sessionCount; i++) {
-    const isMorning = i === 1;
-    const sessDate = new Date(nowDate.getTime() + (i > 2 ? 86400000 : 0)).toISOString().split('T')[0];
-    sessions.push({
-      id: `sess_${Date.now()}_${i}`,
-      title: sessionCount === 1 ? 'Main Session' : isMorning ? 'Morning Session' : `Afternoon Session (Day ${i > 2 ? 2 : 1})`,
-      date: sessDate,
-      startTime: isMorning ? '08:00' : '13:00',
-      endTime: isMorning ? '12:00' : '17:00',
-      timeInOpen: isMorning ? '07:30' : '12:30',
-      timeInClose: isMorning ? '09:30' : '14:30',
-      hasTimeOut,
-      timeOutOpen: hasTimeOut ? (isMorning ? '11:30' : '16:30') : '',
-      timeOutClose: hasTimeOut ? (isMorning ? '12:30' : '17:30') : '',
-    });
-  }
-
-  // Generate Scanners
-  const scannerOfficerName = `${getRandomItem(FIRST_NAMES_MALE)} ${getRandomItem(LAST_NAMES)}`;
-  const scanners: EventScanner[] = [
-    {
-      id: `scan_${Date.now()}_1`,
-      officerName: scannerOfficerName,
-      officerUserId: `usr_${Date.now()}_1`,
-      organizationId: chosenOrg.id,
-      organizationName: chosenOrg.name,
-      fullAccess: true,
-      canCheckIn: true,
-      canCheckOut: hasTimeOut,
-      canViewList: true,
-      canEditRecords: true,
-      allowManualAttendance: true,
-    },
-  ];
-
-  // Budget Items
-  const budgetItems: BudgetLineItem[] = [
-    { id: 'b_1', item: 'Venue & Audio-Visual Setup', description: 'Sound system, microphones, and projector', quantity: 1, unitCost: 1500, approvedAmount: 1500, status: 'approved' },
-    { id: 'b_2', item: 'Resource Speaker Honorarium', description: 'Expert guest speaker token and honorarium', quantity: 1, unitCost: 3000, approvedAmount: 3000, status: 'approved' },
-    { id: 'b_3', item: 'Event Materials & Badges', description: 'Participant badges, certificates, and kits', quantity: expectedAttendees, unitCost: 25, approvedAmount: expectedAttendees * 25, status: 'approved' },
-  ];
-  const totalApprovedBudget = budgetItems.reduce((acc, b) => acc + b.approvedAmount, 0);
-
-  const docId = `test_evt_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
-  const referenceId = `EVT-ADM-${yearStr}-${Math.floor(1000 + Math.random() * 9000)}`;
-  const scannerActivationCode = Math.floor(100000 + Math.random() * 900000).toString();
-
-  const eventDoc = cleanForFirestore<EventDocument>({
-    id: docId,
-    referenceId,
-    title,
-    tagline,
-    description,
-    objectives: [
-      'Enhance practical skillsets aligned with industry standards.',
-      'Foster student collaboration, engagement, and leadership.',
-      'Provide experiential learning beyond the traditional classroom.',
-    ],
-    bannerImageUrl: null,
-    isVisible: true,
-    visibilityStart: null,
-    eventTypeId: eventTypeObj.id,
-    eventCategoryId: eventCategoryObj.id,
-    hostingOrgId: chosenOrg.id,
-    semesterId: activeSem?.id || 'sem_active',
-    schoolYear: activeSem?.academicYear || '2026-2027',
-    semester: activeSem?.semester || (isShs ? '1st Trimester' : '1st Semester'),
-    academicLevel: isShs ? 'SHS' : 'COLLEGE',
-    sessions,
-    venueId: venueObj.id,
-    customVenueName: venueObj.name,
-    eventFormat: options.eventFormat || 'On-Campus',
-    targetAudienceScope: targetCourses.length > 0 ? 'custom' : 'all',
-    targetCourses,
-    targetYearLevels,
-    targetSections,
-    expectedParticipantCount: expectedAttendees,
-    expectedAttendees,
-    actualAttendees: 0,
-    attendeesCount: 0,
-    attendanceEnabled: true,
-    minAttendancePercent: 80,
-    lateThresholdMinutes: 15,
-    gracePeriodMinutes: 30,
-    latePenaltyAmount: 20,
-    certificatesEnabled: true,
-    autoIssueCertificates: true,
-    certificateSignatory: 'SAO Adviser & Organization President',
-    studentPayablesEnabled: enablePayables,
-    suggestedFeePerStudent: enablePayables ? ticketFee : 0,
-    adminFeeOverride: enablePayables ? ticketFee : 0,
-    totalExpectedCollection: enablePayables ? ticketFee * expectedAttendees : 0,
-    supervisorId: 'sao_adviser_admin',
-    scanners,
-    scannerUserIds: scanners.map((s) => s.officerUserId).filter(Boolean) as string[],
-    scannerActivationCode,
-    budgetItems,
-    totalApprovedBudget,
-    documents: [],
-    enableQRTickets: true,
-    mandatoryAttendance: false,
-    lockAfterApproval: false,
-    proposalStatus,
-    status: proposalStatus === 'approved' ? 'Upcoming' : 'Draft',
-    createdBy: 'dev_test_seeder',
-    approvedBy: proposalStatus === 'approved' ? 'SAO Head Adviser' : null,
-    approvedAt: proposalStatus === 'approved' ? now : null,
-    createdAt: now,
-    updatedAt: now,
-    isTestData: true,
-  } as any);
-
-  // 1. Write Event Document
-  await setDoc(doc(db, EVENTS_COLLECTION, docId), eventDoc);
-
-  // 2. If payables enabled and approved, trigger payable generation for registered students
-  if (proposalStatus === 'approved' && enablePayables && ticketFee > 0) {
-    try {
-      await generatePayablesForEvent(eventDoc, docId, 'dev_test_seeder');
-    } catch (payErr) {
-      console.warn('[seedSampleEvent] Could not auto-generate student payables:', payErr);
-    }
-  }
-
-  return eventDoc;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 3. REALISTIC STUDENT REGISTRY SEEDER
-// ═══════════════════════════════════════════════════════════════════════════════
 
 export interface SeedStudentOptions {
   count: number;
@@ -428,116 +894,42 @@ export interface SeedStudentOptions {
   semester?: StudentSemester;
 }
 
+const FIRST_NAMES_MALE = [
+  'Juan', 'Mark', 'Joshua', 'Christian', 'Angelo', 'Gabriel', 'John Paul', 'Kenneth', 'Daniel',
+  'Jayson', 'Carl', 'Justin', 'Matthew', 'Nathaniel', 'Lance', 'Vince', 'Paolo', 'Rafael',
+];
+const FIRST_NAMES_FEMALE = [
+  'Maria', 'Angelica', 'Bea', 'Christine', 'Nicole', 'Patricia', 'Alyssa', 'Camille', 'Samantha',
+  'Katrina', 'Andrea', 'Princess', 'Denise', 'Hannah', 'Erika', 'Kimberly', 'Rhea', 'Danica',
+];
+const LAST_NAMES = [
+  'Dela Cruz', 'Santos', 'Reyes', 'Fernandez', 'Gonzales', 'Concordia', 'Lucanas', 'Mendoza',
+  'Garcia', 'Flores', 'Villanueva', 'Bautista', 'Torres', 'Navarro', 'Castillo', 'Alvarez',
+];
+
 export async function seedSampleStudents(options: SeedStudentOptions): Promise<StudentDocument[]> {
-  const {
-    count = 10,
-    track = 'MIXED',
-    courseCode,
-    yearLevel,
-    section,
-  } = options;
-
-  let dbCourses: any[] = [];
-  let dbDepartments: any[] = [];
-  let dbSections: any[] = [];
-  let activeCollegeSem: any = null;
-  let activeShsSem: any = null;
-
-  try {
-    const [coursesSnap, deptSnap, secSnap, semSnap] = await Promise.all([
-      getDocs(query(collection(db, COURSES_COLLECTION), where('archived', '==', false))),
-      getDocs(query(collection(db, DEPARTMENTS_COLLECTION), where('archived', '==', false))),
-      getDocs(query(collection(db, SECTIONS_COLLECTION), where('archived', '==', false))),
-      getDocs(query(collection(db, SEMESTERS_COLLECTION), where('status', '==', 'ACTIVE'))),
-    ]);
-
-    dbCourses = coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    dbDepartments = deptSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    dbSections = secSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-    semSnap.docs.forEach((d) => {
-      const sem = { id: d.id, ...d.data() } as any;
-      if (sem.academicLevel === 'SHS' || String(sem.semester).includes('Trimester')) {
-        activeShsSem = sem;
-      } else {
-        activeCollegeSem = sem;
-      }
-    });
-  } catch (err) {
-    console.warn('[seedSampleStudents] Could not fetch live academic settings, using defaults:', err);
-  }
-
-  const fallbackCollegeCourses = [
-    { id: 'course_bsit', code: 'BSIT', name: 'Bachelor of Science in Information Technology', departmentId: 'dept_it', departmentName: 'Information Technology', academicLevel: 'COLLEGE' },
-    { id: 'course_bscs', code: 'BSCS', name: 'Bachelor of Science in Computer Science', departmentId: 'dept_it', departmentName: 'Information Technology', academicLevel: 'COLLEGE' },
-    { id: 'course_bshm', code: 'BSHM', name: 'Bachelor of Science in Hospitality Management', departmentId: 'dept_thm', departmentName: 'Tourism & Hospitality', academicLevel: 'COLLEGE' },
-    { id: 'course_bsba', code: 'BSBA', name: 'Bachelor of Science in Business Administration', departmentId: 'dept_ba', departmentName: 'Business Administration', academicLevel: 'COLLEGE' },
-  ];
-
-  const fallbackShsCourses = [
-    { id: 'course_stem', code: 'STEM', name: 'Science, Technology, Engineering, and Mathematics', departmentId: 'dept_shs', departmentName: 'Senior High School', academicLevel: 'SHS' },
-    { id: 'course_abm', code: 'ABM', name: 'Accountancy, Business, and Management', departmentId: 'dept_shs', departmentName: 'Senior High School', academicLevel: 'SHS' },
-    { id: 'course_humss', code: 'HUMSS', name: 'Humanities and Social Sciences', departmentId: 'dept_shs', departmentName: 'Senior High School', academicLevel: 'SHS' },
-  ];
-
-  const availableCollegeCourses = dbCourses.filter((c) => c.academicLevel !== 'SHS').length > 0
-    ? dbCourses.filter((c) => c.academicLevel !== 'SHS')
-    : fallbackCollegeCourses;
-
-  const availableShsCourses = dbCourses.filter((c) => c.academicLevel === 'SHS').length > 0
-    ? dbCourses.filter((c) => c.academicLevel === 'SHS')
-    : fallbackShsCourses;
-
+  const { count = 10, track = 'COLLEGE', courseCode, yearLevel, section } = options;
   const createdStudents: StudentDocument[] = [];
-  const usedNames = new Set<string>();
   const now = Timestamp.now();
 
   for (let i = 0; i < count; i++) {
     const isMale = Math.random() > 0.5;
-    let firstName = isMale ? getRandomItem(FIRST_NAMES_MALE) : getRandomItem(FIRST_NAMES_FEMALE);
-    let lastName = getRandomItem(LAST_NAMES);
-    let middleName = getRandomItem(MIDDLE_NAMES);
-    let fullNameKey = `${firstName} ${middleName} ${lastName}`.toLowerCase();
+    const firstName = isMale
+      ? FIRST_NAMES_MALE[Math.floor(Math.random() * FIRST_NAMES_MALE.length)]
+      : FIRST_NAMES_FEMALE[Math.floor(Math.random() * FIRST_NAMES_FEMALE.length)];
+    const lastName = LAST_NAMES[Math.floor(Math.random() * LAST_NAMES.length)];
 
-    let attempts = 0;
-    while (usedNames.has(fullNameKey) && attempts < 10) {
-      firstName = isMale ? getRandomItem(FIRST_NAMES_MALE) : getRandomItem(FIRST_NAMES_FEMALE);
-      lastName = getRandomItem(LAST_NAMES);
-      fullNameKey = `${firstName} ${middleName} ${lastName}`.toLowerCase();
-      attempts++;
-    }
-    usedNames.add(fullNameKey);
-
-    const selectedTrack: AcademicLevel =
-      track === 'MIXED' ? (Math.random() > 0.4 ? 'COLLEGE' : 'SHS') : track;
-
-    const coursePool = selectedTrack === 'COLLEGE' ? availableCollegeCourses : availableShsCourses;
-    const courseObj =
-      (courseCode ? coursePool.find((c) => c.code === courseCode) : null) || getRandomItem(coursePool);
-
+    const selectedTrack: AcademicLevel = track === 'MIXED' ? (Math.random() > 0.5 ? 'COLLEGE' : 'SHS') : track;
+    const resolvedCourse = courseCode || (selectedTrack === 'COLLEGE' ? 'BSIT' : 'STEM');
     const selectedYear: StudentYearLevel =
       yearLevel ||
       (selectedTrack === 'COLLEGE'
-        ? (getRandomItem(['1st Year', '2nd Year', '3rd Year', '4th Year']) as StudentYearLevel)
-        : (getRandomItem(['Grade 11', 'Grade 12']) as StudentYearLevel));
+        ? (['1st Year', '2nd Year', '3rd Year', '4th Year'][Math.floor(Math.random() * 4)] as StudentYearLevel)
+        : (['Grade 11', 'Grade 12'][Math.floor(Math.random() * 2)] as StudentYearLevel));
 
-    const matchingSections = dbSections.filter(
-      (s) => s.courseId === courseObj.id || s.courseCode === courseObj.code
-    );
-    const selectedSection =
-      section ||
-      (matchingSections.length > 0
-        ? getRandomItem(matchingSections).name
-        : selectedTrack === 'COLLEGE'
-        ? `${courseObj.code} ${selectedYear.charAt(0)}0${Math.floor(1 + Math.random() * 3)}`
-        : `${courseObj.code} ${selectedYear.replace('Grade ', '')}-${String.fromCharCode(65 + Math.floor(Math.random() * 3))}`);
-
-    const activeSemDoc = selectedTrack === 'SHS' ? activeShsSem : activeCollegeSem;
-    const schoolYear = options.schoolYear || activeSemDoc?.academicYear || '2026-2027';
-    const semester: StudentSemester =
-      options.semester || activeSemDoc?.semester || (selectedTrack === 'SHS' ? '1st Trimester' : '1st Semester');
-
-    const studentIdNumber = generateRandomStudentId();
+    const selectedSection = section || `${resolvedCourse} 101`;
+    const randomSuffix = Math.floor(100000 + Math.random() * 900000);
+    const studentIdNumber = `02000${randomSuffix}`;
     const docId = `test_std_${studentIdNumber}`;
 
     const studentDoc = cleanForFirestore<StudentDocument>({
@@ -545,21 +937,21 @@ export async function seedSampleStudents(options: SeedStudentOptions): Promise<S
       studentId: studentIdNumber,
       firstName,
       lastName,
-      middleName,
-      dateOfBirth: `200${Math.floor(3 + Math.random() * 4)}-0${Math.floor(1 + Math.random() * 9)}-15`,
+      middleName: 'D.',
+      dateOfBirth: '2004-05-15',
       sex: isMale ? 'Male' : 'Female',
       contactNumber: `09${Math.floor(100000000 + Math.random() * 900000000)}`,
       academicLevel: selectedTrack,
-      courseId: courseObj.id || `course_${courseObj.code.toLowerCase()}`,
-      courseCode: courseObj.code,
-      courseName: courseObj.name,
-      departmentId: courseObj.departmentId || courseObj.deptId || 'dept_general',
-      departmentName: courseObj.departmentName || courseObj.deptName || 'Academic Department',
+      courseId: `course_${resolvedCourse.toLowerCase()}`,
+      courseCode: resolvedCourse,
+      courseName: resolvedCourse === 'BSIT' ? 'Bachelor of Science in Information Technology' : 'Academic Strand',
+      departmentId: 'dept_it',
+      departmentName: 'Information Technology',
       yearLevel: selectedYear,
       section: selectedSection,
-      schoolYear,
-      semester,
-      term: semester,
+      schoolYear: options.schoolYear || '2026-2027',
+      semester: options.semester || '1st Semester',
+      term: options.semester || '1st Semester',
       email: `${firstName.toLowerCase().replace(/\s+/g, '')}.${lastName.toLowerCase().replace(/\s+/g, '')}${Math.floor(Math.random() * 999)}@ormoc.sti.edu.ph`,
       authUid: `auth_${docId}`,
       requiresPasswordChange: false,
@@ -575,20 +967,10 @@ export async function seedSampleStudents(options: SeedStudentOptions): Promise<S
 
     await setDoc(doc(db, 'students', docId), studentDoc);
     createdStudents.push(studentDoc);
-
-    try {
-      await syncStudentPayablesForActiveEvents(studentDoc, 'dev_test_seeder');
-    } catch (paySyncErr) {
-      console.warn(`[seedSampleStudents] Could not auto-sync payables for ${studentIdNumber}:`, paySyncErr);
-    }
   }
 
   return createdStudents;
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 4. TARGET-RESTRICTED & REAL GATEPASS SESSION ATTENDANCE SEEDER
-// ═══════════════════════════════════════════════════════════════════════════════
 
 export interface SeedAttendanceOptions {
   event: EventDocument;
@@ -605,60 +987,34 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
   sessionsCount: number;
   skippedNonTargeted: number;
 }> {
-  const {
-    event,
-    students,
-    sessionId = 'ALL',
-    attendanceRate = 85,
-    scannerName = 'Lead Scanner Officer',
-    strictTargeting = true,
-  } = options;
+  const { event, students, sessionId = 'ALL', attendanceRate = 85, scannerName = 'Lead Gate Scanner', strictTargeting = true } = options;
+  if (!event || !event.id) throw new Error('Valid Event is required for attendance seeding.');
 
-  if (!event || !event.id) {
-    throw new Error('Valid Event is required for attendance seeding.');
-  }
-
-  const eligibleStudents = strictTargeting
-    ? students.filter((s) => isStudentEligibleForEvent(event, s))
-    : students;
-
+  const eligibleStudents = strictTargeting ? students.filter((s) => isStudentEligibleForEvent(event, s)) : students;
   const skippedCount = students.length - eligibleStudents.length;
 
   if (eligibleStudents.length === 0) {
-    throw new Error(
-      `None of the provided ${students.length} students match the event targeting criteria (Track: ${event.academicLevel || 'All'}, Courses: ${(event.targetCourses || []).join(', ') || 'All'}, Year: ${(event.targetYearLevels || []).join(', ') || 'All'}). Generate matching students first!`
-    );
+    throw new Error('No students matched event criteria. Generate students first!');
   }
 
-  const eventSessions: EventSession[] =
-    event.sessions && event.sessions.length > 0
-      ? event.sessions
-      : [
-          {
-            id: 'sess_main',
-            title: 'Main Session',
-            date: new Date().toISOString().split('T')[0],
-            startTime: '08:00',
-            endTime: '12:00',
-            timeInOpen: '07:30',
-            timeInClose: '09:00',
-            hasTimeOut: true,
-            timeOutOpen: '11:30',
-            timeOutClose: '12:30',
-          },
-        ];
+  const eventSessions: EventSession[] = event.sessions && event.sessions.length > 0 ? event.sessions : [
+    {
+      id: 'sess_main',
+      title: 'Main Session',
+      date: new Date().toISOString().split('T')[0],
+      startTime: '08:00',
+      endTime: '12:00',
+      timeInOpen: '07:30',
+      timeInClose: '09:00',
+      hasTimeOut: true,
+      timeOutOpen: '11:30',
+      timeOutClose: '12:30',
+    },
+  ];
 
-  const sessionsToProcess =
-    sessionId === 'ALL'
-      ? eventSessions
-      : eventSessions.filter((s) => s.id === sessionId);
-
-  if (sessionsToProcess.length === 0) {
-    throw new Error(`Selected session "${sessionId}" not found in event.`);
-  }
-
+  const sessionsToProcess = sessionId === 'ALL' ? eventSessions : eventSessions.filter((s) => s.id === sessionId);
   let totalInjected = 0;
-  let uniqueAttendees = new Set<string>();
+  const uniqueAttendees = new Set<string>();
 
   for (const session of sessionsToProcess) {
     const sessionDate = session.date ? new Date(session.date) : new Date();
@@ -669,52 +1025,27 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
       const isLate = isAttending && Math.random() < 0.15;
 
       let status: AttendanceStatus;
-      if (!isAttending) {
-        status = 'Absent';
-      } else if (isLate) {
-        status = 'Late';
-      } else if (!hasTimeOut) {
-        status = 'Checked In';
-      } else {
-        status = 'Complete';
-      }
+      if (!isAttending) status = 'Absent';
+      else if (isLate) status = 'Late';
+      else if (!hasTimeOut) status = 'Checked In';
+      else status = 'Complete';
 
-      if (isAttending) {
-        uniqueAttendees.add(student.studentId);
-      }
+      if (isAttending) uniqueAttendees.add(student.studentId);
 
-      const baseHour = session.startTime ? parseInt(session.startTime.split(':')[0], 10) : 8;
-      const checkInHour = isLate ? baseHour + 1 : baseHour;
-      const checkInMin = Math.floor(5 + Math.random() * 45);
-      const checkInAmPm = checkInHour >= 12 ? 'PM' : 'AM';
-      const formattedCheckInHour = checkInHour > 12 ? checkInHour - 12 : checkInHour === 0 ? 12 : checkInHour;
-      const checkInStr = isAttending
-        ? `${String(formattedCheckInHour).padStart(2, '0')}:${String(checkInMin).padStart(2, '0')} ${checkInAmPm}`
-        : '—';
-
-      let checkOutStr = '—';
-      if (hasTimeOut && isAttending) {
-        const endHour = session.endTime ? parseInt(session.endTime.split(':')[0], 10) : 12;
-        const checkOutMin = Math.floor(10 + Math.random() * 45);
-        const checkOutAmPm = endHour >= 12 ? 'PM' : 'AM';
-        const formattedEndHour = endHour > 12 ? endHour - 12 : endHour === 0 ? 12 : endHour;
-        checkOutStr = `${String(formattedEndHour).padStart(2, '0')}:${String(checkOutMin).padStart(2, '0')} ${checkOutAmPm}`;
-      }
+      const checkInStr = isAttending ? '08:15 AM' : '—';
+      const checkOutStr = hasTimeOut && isAttending ? '12:05 PM' : '—';
 
       const recordId = `test_att_${event.id}_${session.id}_${student.studentId}`;
-      const topAttendanceRef = doc(db, ATTENDANCE_COLLECTION, recordId);
-      const eventSubAttendanceRef = doc(db, 'activities', event.id, 'attendance_logs', recordId);
-
       const recordData = cleanForFirestore<any>({
         id: recordId,
         studentId: student.studentId || '',
-        name: `${student.lastName || ''}, ${student.firstName || ''} ${student.middleName || ''}`.trim(),
+        name: `${student.lastName || ''}, ${student.firstName || ''}`.trim(),
         studentSchoolId: student.studentId || '',
         studentName: `${student.lastName || ''}, ${student.firstName || ''}`.trim(),
         courseCode: student.courseCode || '',
         yearLevel: student.yearLevel || '',
         section: student.section || '',
-        org: event.hostingOrgId || event.organizationId || 'STI Council',
+        org: event.hostingOrgId || 'org_jpcs',
         eventId: event.id,
         event: event.title,
         eventName: event.title,
@@ -732,8 +1063,8 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
       });
 
       await Promise.all([
-        setDoc(topAttendanceRef, recordData),
-        setDoc(eventSubAttendanceRef, recordData),
+        setDoc(doc(db, ATTENDANCE_COLLECTION, recordId), recordData),
+        setDoc(doc(db, 'activities', event.id, 'attendance_logs', recordId), recordData),
       ]);
 
       totalInjected++;
@@ -742,24 +1073,20 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
 
   const totalActual = uniqueAttendees.size;
   try {
-    const actRef = doc(db, 'activities', event.id);
-    await updateDoc(actRef, {
+    await updateDoc(doc(db, 'activities', event.id), {
       actualAttendees: totalActual,
       attendeesCount: totalActual,
       updatedAt: serverTimestamp(),
     });
-  } catch (err) {
-    try {
-      const eventRef = doc(db, 'events', event.id);
-      await updateDoc(eventRef, {
-        actualAttendees: totalActual,
-        attendeesCount: totalActual,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (e) {}
-  }
-    console.warn('Could not update event actualAttendees count:', err);
-  }
+  } catch (_) {}
+
+  try {
+    await updateDoc(doc(db, 'events', event.id), {
+      actualAttendees: totalActual,
+      attendeesCount: totalActual,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (_) {}
 
   return {
     totalInjected,
@@ -768,10 +1095,6 @@ export async function seedEventAttendance(options: SeedAttendanceOptions): Promi
     skippedNonTargeted: skippedCount,
   };
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// 5. FINANCE & PAYABLES SEEDER
-// ═══════════════════════════════════════════════════════════════════════════════
 
 export interface SeedPayablesOptions {
   organizationId: string;
@@ -785,17 +1108,7 @@ export interface SeedPayablesOptions {
 }
 
 export async function seedPayables(options: SeedPayablesOptions): Promise<{ total: number; paid: number; unpaid: number }> {
-  const {
-    organizationId,
-    organizationName,
-    students,
-    title,
-    amount = 150,
-    type = 'event_fee',
-    eventId,
-    paidPercentage = 75,
-  } = options;
-
+  const { organizationId, organizationName, students, title, amount = 150, type = 'event_fee', eventId, paidPercentage = 75 } = options;
   let paidCount = 0;
   let unpaidCount = 0;
   const now = Timestamp.now();
@@ -811,11 +1124,11 @@ export async function seedPayables(options: SeedPayablesOptions): Promise<{ tota
       studentId: student.studentId || '',
       studentName: `${student.lastName || ''}, ${student.firstName || ''}`.trim(),
       studentSchoolId: student.studentId || '',
-      organizationId: organizationId || 'org_general',
-      organizationName: organizationName || 'Student Organization',
-      title: title || 'Payable Fee',
-      feeTitle: title || 'Payable Fee',
-      type: type || 'dues',
+      organizationId,
+      organizationName,
+      title,
+      feeTitle: title,
+      type,
       amount: Number(amount) || 0,
       status: isPaid ? 'paid' : 'pending',
       paymentStatus: isPaid ? 'PAID' : 'UNPAID',
@@ -823,7 +1136,7 @@ export async function seedPayables(options: SeedPayablesOptions): Promise<{ tota
       assignedAmount: Number(amount) || 0,
       paidAt: isPaid ? now : null,
       paymentMethod: isPaid ? 'cash' : null,
-      eventId: eventId ? eventId : null,
+      eventId: eventId || null,
       courseCode: student.courseCode || '',
       yearLevel: student.yearLevel || '',
       section: student.section || '',
@@ -842,7 +1155,7 @@ export async function seedPayables(options: SeedPayablesOptions): Promise<{ tota
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 6. PURGE TEST DATA
+// 7. COMPLETE TEST DATA PURGE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export async function clearAllTestData(): Promise<{
@@ -850,11 +1163,19 @@ export async function clearAllTestData(): Promise<{
   events: number;
   attendance: number;
   payables: number;
+  proposals: number;
+  liquidations: number;
+  pars: number;
+  documents: number;
 }> {
   let studentCount = 0;
   let eventCount = 0;
   let attCount = 0;
   let payCount = 0;
+  let propCount = 0;
+  let liqCount = 0;
+  let parCount = 0;
+  let docCount = 0;
 
   // 1. Students
   const stdSnap = await getDocs(query(collection(db, 'students'), where('isTestData', '==', true)));
@@ -863,11 +1184,15 @@ export async function clearAllTestData(): Promise<{
     studentCount++;
   }
 
-  // 2. Events
-  const evtSnap = await getDocs(query(collection(db, EVENTS_COLLECTION), where('isTestData', '==', true)));
-  for (const d of evtSnap.docs) {
+  // 2. Activities & Events
+  const actSnap = await getDocs(query(collection(db, 'activities'), where('isTestData', '==', true)));
+  for (const d of actSnap.docs) {
     await deleteDoc(d.ref);
     eventCount++;
+  }
+  const evtSnap = await getDocs(query(collection(db, 'events'), where('isTestData', '==', true)));
+  for (const d of evtSnap.docs) {
+    await deleteDoc(d.ref);
   }
 
   // 3. Attendance
@@ -884,5 +1209,35 @@ export async function clearAllTestData(): Promise<{
     payCount++;
   }
 
-  return { students: studentCount, events: eventCount, attendance: attCount, payables: payCount };
+  // 5. Liquidations
+  const liqSnap = await getDocs(query(collection(db, LIQUIDATIONS_COLLECTION), where('isTestData', '==', true)));
+  for (const d of liqSnap.docs) {
+    await deleteDoc(d.ref);
+    liqCount++;
+  }
+
+  // 6. Post-Activity Reports
+  const parSnap = await getDocs(query(collection(db, PAR_COLLECTION), where('isTestData', '==', true)));
+  for (const d of parSnap.docs) {
+    await deleteDoc(d.ref);
+    parCount++;
+  }
+
+  // 7. EDMS Documents
+  const docSnap = await getDocs(query(collection(db, DOCUMENTS_COLLECTION), where('isTestData', '==', true)));
+  for (const d of docSnap.docs) {
+    await deleteDoc(d.ref);
+    docCount++;
+  }
+
+  return {
+    students: studentCount,
+    events: eventCount,
+    attendance: attCount,
+    payables: payCount,
+    proposals: propCount,
+    liquidations: liqCount,
+    pars: parCount,
+    documents: docCount,
+  };
 }

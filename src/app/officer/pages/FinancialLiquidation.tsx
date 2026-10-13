@@ -13,7 +13,11 @@ import {
   Search,
   Download,
   TrendingUp,
-  TrendingDown
+  TrendingDown,
+  ShieldCheck,
+  Lock,
+  Trash2,
+  Undo2,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrgLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
@@ -22,6 +26,9 @@ import OfficerLiquidationModal from '../components/OfficerLiquidationModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
+import { deleteLiquidationReport, withdrawLiquidationReport } from '../../modules/finance/services/liquidation.service';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import { toast } from 'sonner';
@@ -64,6 +71,8 @@ export default function FinancialLiquidation() {
 
   const [showModal, setShowModal] = useState(false);
   const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
+  const [deletingReport, setDeletingReport] = useState<LiquidationDocument | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [viewingDetailReport, setViewingDetailReport] = useState<LiquidationDocument | null>(null);
   const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
   const [lightboxData, setLightboxData] = useState<{
@@ -74,6 +83,9 @@ export default function FinancialLiquidation() {
     fileName?: string;
     fileType?: string;
   } | null>(null);
+
+  const [withdrawingReport, setWithdrawingReport] = useState<LiquidationDocument | null>(null);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
 
   const { profile } = useOfficerProfile();
   const [session, setSession] = useState<any>(null);
@@ -98,7 +110,11 @@ export default function FinancialLiquidation() {
   const filteredReports = useMemo(() => {
     return liquidations
       .filter((report) => {
-        if (activeTab !== 'all' && report.status !== activeTab) return false;
+        if (activeTab === 'pending') {
+          if (report.status !== 'pending' && report.status !== 'under_review') return false;
+        } else if (activeTab !== 'all' && report.status !== activeTab) {
+          return false;
+        }
 
         const q = searchQuery.toLowerCase().trim();
         if (q) {
@@ -116,7 +132,7 @@ export default function FinancialLiquidation() {
   // Counts
   const counts = {
     all: liquidations.length,
-    pending: liquidations.filter((r) => r.status === 'pending').length,
+    pending: liquidations.filter((r) => r.status === 'pending' || r.status === 'under_review').length,
     approved: liquidations.filter((r) => r.status === 'approved').length,
     returned: liquidations.filter((r) => r.status === 'returned').length,
     draft: liquidations.filter((r) => r.status === 'draft').length,
@@ -125,7 +141,7 @@ export default function FinancialLiquidation() {
   // KPI calculations
   const pendingAmount = useMemo(() => {
     return liquidations
-      .filter((l) => l.status === 'pending')
+      .filter((l) => l.status === 'pending' || l.status === 'under_review')
       .reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
   }, [liquidations]);
 
@@ -159,6 +175,24 @@ export default function FinancialLiquidation() {
   const handleOpenEdit = (report: LiquidationDocument) => {
     setEditingReport(report);
     setShowModal(true);
+  };
+
+  const handleWithdraw = async () => {
+    if (!withdrawingReport) return;
+    setIsWithdrawing(true);
+    try {
+      await withdrawLiquidationReport(withdrawingReport.id, userUid, userName);
+      toast.success(`Liquidation report for "${withdrawingReport.eventTitle}" withdrawn to draft.`);
+      const reportToEdit = withdrawingReport;
+      setWithdrawingReport(null);
+      setViewingDetailReport(null);
+      handleOpenEdit({ ...reportToEdit, status: 'draft' });
+    } catch (err: any) {
+      console.error('[FinancialLiquidation] Withdraw failed:', err);
+      toast.error(err?.message || 'Failed to withdraw liquidation report.');
+    } finally {
+      setIsWithdrawing(false);
+    }
   };
 
   const handleExportCSV = () => {
@@ -198,6 +232,13 @@ export default function FinancialLiquidation() {
             Approved
           </span>
         );
+      case 'under_review':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/80">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+            Under Review
+          </span>
+        );
       case 'pending':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/80">
@@ -227,7 +268,20 @@ export default function FinancialLiquidation() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="text-gray-500 text-xs font-medium">Dashboard &gt; Financial Liquidation</div>
+          <div className="flex items-center gap-2.5">
+            <div className="text-gray-500 text-xs font-medium">Dashboard &gt; Financial Liquidation</div>
+            {profile?.isAdviser ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Adviser Authorized
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
+                <Lock className="w-3.5 h-3.5 text-amber-600" />
+                Student Officer (Draft Mode)
+              </span>
+            )}
+          </div>
           <p className="text-gray-500 text-sm mt-0.5 font-medium">
             Submit actual spendings, receipt evidence, and track financial variance against approved event budgets
           </p>
@@ -489,15 +543,37 @@ export default function FinancialLiquidation() {
                             <span>View</span>
                           </button>
 
-                          {(isDraft || isReturned) && (
+                          {isPending && (
                             <button
-                              onClick={() => handleOpenEdit(report)}
-                              className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                              title={isReturned ? 'Edit & Resubmit' : 'Edit Draft'}
+                              onClick={() => setWithdrawingReport(report)}
+                              className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                              title="Withdraw submission back to draft to edit"
                             >
-                              <Edit3 className="w-3 h-3" />
-                              <span>{isReturned ? 'Resubmit' : 'Edit'}</span>
+                              <Undo2 className="w-3 h-3 text-amber-600" />
+                              <span>Withdraw</span>
                             </button>
+                          )}
+
+                          {(isDraft || isReturned) && (
+                            <>
+                              <button
+                                onClick={() => handleOpenEdit(report)}
+                                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title={isReturned ? 'Edit & Resubmit' : 'Edit Draft'}
+                              >
+                                <Edit3 className="w-3 h-3" />
+                                <span>{isReturned ? 'Resubmit' : 'Edit'}</span>
+                              </button>
+
+                              <button
+                                onClick={() => setDeletingReport(report)}
+                                className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title="Discard Draft Report"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Discard</span>
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -529,9 +605,62 @@ export default function FinancialLiquidation() {
           userUid={userUid}
           userName={userName}
           userRole="officer"
+          isAdviser={profile?.isAdviser}
           editingReport={editingReport}
           existingLiquidations={liquidations}
         />
+      )}
+
+      {/* Delete / Discard Confirmation Modal */}
+      {deletingReport && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-200 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-base">Discard Liquidation Report?</h3>
+                <p className="text-xs text-gray-500">This action will delete the report and unlink it from the event.</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-xl border border-gray-100">
+              Are you sure you want to discard the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>? Any attached ledger transactions will be rolled back.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingReport(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!deletingReport) return;
+                  setIsDeleting(true);
+                  try {
+                    await deleteLiquidationReport(deletingReport.id);
+                    toast.success('Liquidation report discarded successfully.');
+                    setDeletingReport(null);
+                  } catch (err: any) {
+                    toast.error(err?.message || 'Failed to discard liquidation report.');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Discarding...' : 'Confirm Discard'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Detail Viewer Modal */}
@@ -573,11 +702,25 @@ export default function FinancialLiquidation() {
                 </div>
               </div>
 
-              {viewingDetailReport.status === 'returned' && viewingDetailReport.returnRemarks && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-900 font-medium space-y-1">
-                  <div className="font-bold text-[#991B1B] uppercase tracking-wider">SAO Adviser Return Remarks</div>
-                  <p>{viewingDetailReport.returnRemarks}</p>
-                </div>
+              {viewingDetailReport.status === 'returned' && (
+                <RevisionFeedbackBanner
+                  returnedBy={{
+                    name: (viewingDetailReport as any).returnedByName || (viewingDetailReport as any).returnedBy || 'Institutional Signatory',
+                    roleTitle: (viewingDetailReport as any).returnedByRoleTitle || 'Signatory Reviewer',
+                    email: (viewingDetailReport as any).returnedByEmail,
+                  }}
+                  returnedAt={viewingDetailReport.returnedAt}
+                  returnRemarks={viewingDetailReport.returnRemarks}
+                  revisionHistory={viewingDetailReport.revisionHistory}
+                  canEdit={true}
+                  onEditClick={() => {
+                    const toEdit = viewingDetailReport;
+                    setViewingDetailReport(null);
+                    handleOpenEdit(toEdit);
+                  }}
+                  documentTitle={viewingDetailReport.eventTitle}
+                  versionLabel={`v${viewingDetailReport.revisionCount || 1}.0`}
+                />
               )}
 
               <h4 className="font-bold text-sm text-gray-900 pt-2">Line Items</h4>
@@ -714,7 +857,7 @@ export default function FinancialLiquidation() {
             </div>
 
             <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
-              <div>
+              <div className="flex items-center gap-2">
                 {viewingDetailReport.status === 'approved' && (
                   <button
                     onClick={() => {
@@ -724,6 +867,30 @@ export default function FinancialLiquidation() {
                     className="px-4 py-2 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
                   >
                     <FileSpreadsheet className="w-4 h-4 text-[#FFD41C]" /> Export Liquidation Report
+                  </button>
+                )}
+
+                {(viewingDetailReport.status === 'pending' || viewingDetailReport.status === 'under_review') && (
+                  <button
+                    onClick={() => {
+                      setWithdrawingReport(viewingDetailReport);
+                    }}
+                    className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Undo2 className="w-3.5 h-3.5 text-amber-600" /> Withdraw Submission
+                  </button>
+                )}
+
+                {viewingDetailReport.status === 'returned' && (
+                  <button
+                    onClick={() => {
+                      const toEdit = viewingDetailReport;
+                      setViewingDetailReport(null);
+                      handleOpenEdit(toEdit);
+                    }}
+                    className="px-3.5 py-2 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-[#FFD41C]" /> Edit & Resubmit
                   </button>
                 )}
               </div>
@@ -737,6 +904,16 @@ export default function FinancialLiquidation() {
           </div>
         </div>
       )}
+
+      {/* Author Withdraw Modal */}
+      <WithdrawConfirmModal
+        isOpen={!!withdrawingReport}
+        onClose={() => setWithdrawingReport(null)}
+        onConfirm={handleWithdraw}
+        documentType="Financial Liquidation"
+        documentTitle={withdrawingReport?.eventTitle || ''}
+        isProcessing={isWithdrawing}
+      />
 
       {/* Lightbox Modal */}
       <ReceiptLightboxModal

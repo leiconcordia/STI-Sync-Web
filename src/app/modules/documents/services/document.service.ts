@@ -4,8 +4,10 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { DocumentDocument, DocStatus } from '../types/document.types';
+import { logAuditEvent } from '../../audit/services/audit.service';
 
 const COLLECTION_NAME = 'documents';
+export const DOCUMENTS_COLLECTION = COLLECTION_NAME;
 
 // ─── Create ──────────────────────────────────────────────────────────────────
 
@@ -18,6 +20,44 @@ export async function createDocument(
     updatedAt: serverTimestamp(),
   };
   const docRef = await addDoc(collection(db, COLLECTION_NAME), payload);
+
+  // Audit Log
+  if (data.type === 'submission') {
+    logAuditEvent({
+      action: 'Document Submitted',
+      actionType: 'Document Actions',
+      details: `Document "${data.title}" (${data.referenceNumber}) submitted for SAS review by ${data.submittedBy} (${data.submittedByOrgName || 'Student Organization'}).`,
+      performedBy: data.submittedBy,
+      userRole: 'Organization Officer',
+      userEmail: data.submittedByEmail,
+      targetId: docRef.id,
+      targetName: data.title,
+      academicLevel: 'CAMPUS',
+      metadata: {
+        category: data.category,
+        referenceNumber: data.referenceNumber,
+        fileType: data.fileType,
+        orgId: data.submittedByOrgId,
+      },
+    }).catch(console.error);
+  } else if (data.type === 'broadcast') {
+    logAuditEvent({
+      action: 'Document Broadcasted',
+      actionType: 'Document Actions',
+      details: `Official document "${data.title}" (${data.referenceNumber}) broadcasted to ${data.distribution === 'all' ? 'all student organizations' : `${data.targetOrgIds?.length || 0} organizations`} by ${data.broadcastBy}.`,
+      performedBy: data.broadcastBy,
+      userRole: 'SAO Admin',
+      targetId: docRef.id,
+      targetName: data.title,
+      academicLevel: 'CAMPUS',
+      metadata: {
+        category: data.category,
+        referenceNumber: data.referenceNumber,
+        distribution: data.distribution,
+      },
+    }).catch(console.error);
+  }
+
   return docRef.id;
 }
 
@@ -45,6 +85,17 @@ export async function reviewDocument(
     reviewedAt: Timestamp.now(),
     remarks,
   });
+
+  logAuditEvent({
+    action: `Document ${status}`,
+    actionType: 'Document Actions',
+    details: `Document (ID: ${id}) was marked as ${status} by ${reviewedBy}. Remarks: "${remarks || 'None provided'}".`,
+    performedBy: reviewedBy,
+    userRole: 'SAO Admin',
+    targetId: id,
+    academicLevel: 'CAMPUS',
+    metadata: { status, remarks },
+  }).catch(console.error);
 }
 
 // ─── Mark Broadcast Read ─────────────────────────────────────────────────────

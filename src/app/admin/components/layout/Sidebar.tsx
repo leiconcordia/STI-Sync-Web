@@ -13,6 +13,7 @@ import {
   Settings,
   GraduationCap,
   Files,
+  FileCheck2,
 } from "lucide-react";
 
 const navGroups = [
@@ -36,6 +37,7 @@ const navGroups = [
     title: "Finance & Documents",
     items: [
       { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations" },
+      { icon: FileCheck2, label: "Post-Activity Reports", path: "/home/post-activity-reports" },
       { icon: Files, label: "Document Management", path: "/home/documents" },
       { icon: Award, label: "Certificates", path: "/home/certificates" },
     ]

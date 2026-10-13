@@ -40,17 +40,16 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
 
       {/* Right Side */}
       <div className="flex items-center gap-3">
-        {/* Quick Dev Data Seeder Trigger (Development Only) - Commented out
-        {import.meta.env.DEV && (
-          <button
-            onClick={() => setShowSeederModal(true)}
-            title="Open Dev Test Data Seeder (Development Only)"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-xl text-amber-700 font-bold text-xs transition-all cursor-pointer shadow-2xs"
-          >
-            <Zap className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
-            <span className="hidden sm:inline">Dev Seeder</span>
-          </button>
-        )} */}
+        {/* Quick Dev Data Seeder Trigger */}
+        <button
+          type="button"
+          onClick={() => setShowSeederModal(true)}
+          title="Open Dev Lifecycle Simulator & Signatory Seeder"
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600/10 to-indigo-600/10 hover:from-blue-600/20 hover:to-indigo-600/20 border border-blue-500/30 hover:border-blue-500/50 rounded-xl text-blue-700 font-bold text-xs transition-all cursor-pointer shadow-2xs active:scale-95"
+        >
+          <Zap className="w-3.5 h-3.5 fill-blue-600 text-blue-600" />
+          <span className="hidden sm:inline">Dev Seeder</span>
+        </button>
 
         {/* Notifications */}
         <button className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors">
@@ -111,10 +110,10 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
         </div>
       </div>
 
-      {/* Dev Test Data Seeder Modal (Development Only) - Commented out
-      {import.meta.env.DEV && (
+      {/* Dev Test Data Seeder Modal */}
+      {showSeederModal && (
         <DevDataSeederModal isOpen={showSeederModal} onClose={() => setShowSeederModal(false)} />
-      )} */}
+      )}
     </header>
   );
 }

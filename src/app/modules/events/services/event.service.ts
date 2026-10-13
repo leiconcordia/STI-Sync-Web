@@ -25,10 +25,15 @@ import type {
 } from '../types/event.types';
 import { canCancelEvent } from '../utils/event-lifecycle.utils';
 import { STUDENTS_COLLECTION } from '../../students/services/student.service';
-import { deductApprovedEventBudget } from '../../finance/services/finance.service';
+import { 
+  deductApprovedEventBudget, 
+  removeLedgerTransactionsForEvent, 
+  removeLedgerTransactionsForLiquidation 
+} from '../../finance/services/finance.service';
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
+import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -542,6 +547,13 @@ export const approveEvent = async (
       await updateDoc(doc(db, 'activity_proposals', eventId), payload);
     } catch {}
   }
+
+  // Auto-archive approved activity proposal / permit into EDMS
+  try {
+    await autoArchiveApprovedEvent(eventId, adminUserId, remarks);
+  } catch (archErr) {
+    console.warn('[approveEvent] Auto-archive to EDMS notice:', archErr);
+  }
 };
 
 const buildEventSnapshot = (data: any) => {
@@ -777,6 +789,27 @@ export const updateAdviserRemarks = async (
 };
 
 export const deleteEvent = async (eventId: string): Promise<void> => {
+  // 1. Purge any associated liquidations and their ledger records
+  try {
+    const liquidationsCol = collection(db, LIQUIDATIONS_COLLECTION);
+    const q = query(liquidationsCol, where('eventId', '==', eventId));
+    const liqSnap = await getDocs(q);
+    for (const d of liqSnap.docs) {
+      await removeLedgerTransactionsForLiquidation(d.id);
+      await deleteDoc(d.ref);
+    }
+  } catch (err) {
+    console.warn('[deleteEvent] Liquidation cleanup note:', err);
+  }
+
+  // 2. Purge any event budget deduction from the ledger
+  try {
+    await removeLedgerTransactionsForEvent(eventId);
+  } catch (err) {
+    console.warn('[deleteEvent] Ledger rollback note:', err);
+  }
+
+  // 3. Delete the event document
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   await deleteDoc(ref);
 };
@@ -979,6 +1012,13 @@ export const cancelEventTransaction = async (
   let voidedLiquidationsCount = 0;
 
   for (const docSnap of liquidationsSnap.docs) {
+    // Purge any posted ledger entries for this voided liquidation
+    try {
+      await removeLedgerTransactionsForLiquidation(docSnap.id);
+    } catch (lErr) {
+      console.warn('[cancelEventTransaction] Liquidation ledger rollback note:', lErr);
+    }
+
     const lData = docSnap.data();
     if (lData.status !== 'voided') {
       const voidRemark = cleanUndefined({
@@ -1004,6 +1044,13 @@ export const cancelEventTransaction = async (
       });
       voidedLiquidationsCount++;
     }
+  }
+
+  // Purge any event budget deduction from the ledger
+  try {
+    await removeLedgerTransactionsForEvent(eventId);
+  } catch (evtLedgerErr) {
+    console.warn('[cancelEventTransaction] Event ledger rollback note:', evtLedgerErr);
   }
 
   // 5. Update Event Document

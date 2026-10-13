@@ -43,6 +43,7 @@ import {
   type InstitutionalSignatory,
   type SignatoryRole,
   type CreateSignatoryPayload,
+  type SignatoryDocumentScope,
 } from '../../../modules/signatories/types/signatory.types';
 import { useSignatoryRolesStream } from '../../../modules/signatories/hooks/useSignatoryRolesStream';
 import {
@@ -89,8 +90,10 @@ export default function InstitutionalSignatoryManagement() {
     role: '',
     roleTitle: '',
     actionType: 'endorser',
+    applicableScope: 'both',
     employeeId: '',
     temporaryPassword: '',
+    isPermanentSigner: false,
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -126,12 +129,29 @@ export default function InstitutionalSignatoryManagement() {
       role: '',
       roleTitle: '',
       actionType: 'endorser',
+      applicableScope: 'both',
       employeeId: '',
       department: '',
       departmentId: '',
       temporaryPassword: generateTemporaryPassword(),
+      isPermanentSigner: false,
     });
     setIsAddModalOpen(true);
+  };
+
+  const handleOpenEditModal = (sig: InstitutionalSignatory) => {
+    const isAcct =
+      (sig.role || '').toLowerCase() === 'accountant' ||
+      (sig.roleTitle || '').toLowerCase().includes('accountant') ||
+      (sig.roleTitle || '').toLowerCase().includes('auditor');
+
+    const resolvedScope: SignatoryDocumentScope =
+      sig.applicableScope || (isAcct ? 'liquidation_only' : 'both');
+
+    setEditingSignatory({
+      ...sig,
+      applicableScope: resolvedScope,
+    });
   };
 
   const handleOpenAddRoleModal = () => {
@@ -234,6 +254,8 @@ export default function InstitutionalSignatoryManagement() {
 
     const cleanTitle = formData.roleTitle.trim();
     const cleanRole = cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');
+    const finalScope: SignatoryDocumentScope = formData.applicableScope || (isAccountantRole ? 'liquidation_only' : 'both');
 
     setIsSubmitting(true);
     try {
@@ -243,6 +265,8 @@ export default function InstitutionalSignatoryManagement() {
           role: cleanRole,
           roleTitle: cleanTitle,
           actionType: formData.actionType || 'endorser',
+          applicableScope: finalScope,
+          isPermanentSigner: Boolean(formData.isPermanentSigner),
         },
         profile?.uid || 'admin'
       );
@@ -274,7 +298,10 @@ export default function InstitutionalSignatoryManagement() {
     }
 
     const cleanTitle = editingSignatory.roleTitle.trim();
-    const cleanRole = cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    // Preserve established role identifier if valid, otherwise derive from title
+    const cleanRole = editingSignatory.role || cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    // Directly save user's selected workflow scope
+    const finalScope: SignatoryDocumentScope = editingSignatory.applicableScope || 'both';
 
     setIsSubmitting(true);
     try {
@@ -283,9 +310,11 @@ export default function InstitutionalSignatoryManagement() {
         role: cleanRole,
         roleTitle: cleanTitle,
         actionType: editingSignatory.actionType || 'endorser',
+        applicableScope: finalScope,
         employeeId: editingSignatory.employeeId ? editingSignatory.employeeId.trim() : '',
         department: editingSignatory.department || '',
         departmentId: editingSignatory.departmentId || '',
+        isPermanentSigner: Boolean(editingSignatory.isPermanentSigner),
       });
       toast.success('Signatory details updated successfully.');
       setEditingSignatory(null);
@@ -404,11 +433,11 @@ export default function InstitutionalSignatoryManagement() {
             <div className="flex items-center gap-2">
               <h4 className="font-bold text-sm text-white">Student Affairs & Services (SAS) Mandatory Signatory Gate</h4>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-[#FFD41C]/20 text-[#FFD41C] border border-[#FFD41C]/30">
-                Gate 1 Locked
+                Built-in Fixed Gate 1
               </span>
             </div>
             <p className="text-xs text-blue-200 mt-0.5">
-              Maintain the authorized SAS Head / Coordinator name, position title, and digital e-signature automatically stamped on all student proposals.
+              SAS Head is automatically fixed as the mandatory Stage 1 endorser for all Student Organization Activity Proposals (AP-01)—no manual directory maintenance needed. Accountants are strictly restricted to Financial Liquidations (LF-01).
             </p>
           </div>
         </div>
@@ -522,6 +551,7 @@ export default function InstitutionalSignatoryManagement() {
                   <th className="py-3 px-4">Signatory Role / Position Title</th>
                   <th className="py-3 px-4">Department / Scope</th>
                   <th className="py-3 px-4">Authority Capability</th>
+                  <th className="py-3 px-4">Workflow Scope</th>
                   <th className="py-3 px-4">Digital Signature</th>
                   <th className="py-3 px-4">Status</th>
                   <th className="py-3 px-4 text-right">Actions</th>
@@ -548,7 +578,15 @@ export default function InstitutionalSignatoryManagement() {
 
                     {/* Role Title */}
                     <td className="py-3.5 px-4">
-                      <div className="font-semibold text-gray-800">{sig.roleTitle}</div>
+                      <div className="font-semibold text-gray-800 flex items-center gap-1.5 flex-wrap">
+                        <span>{sig.roleTitle}</span>
+                        {sig.isPermanentSigner && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 text-amber-900 border border-amber-300 rounded-md text-[10px] font-bold shadow-2xs">
+                            <ShieldCheck className="w-3 h-3 text-amber-700" />
+                            Permanent Signer
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Department / Scope */}
@@ -581,6 +619,26 @@ export default function InstitutionalSignatoryManagement() {
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-sky-50 text-sky-800 text-xs font-bold rounded-lg border border-sky-200">
                           <FileSignature className="w-3.5 h-3.5 text-sky-600" />
                           Endorser Only
+                        </span>
+                      )}
+                    </td>
+
+                    {/* Workflow Scope */}
+                    <td className="py-3.5 px-4">
+                      {sig.applicableScope === 'liquidation_only' || sig.role === 'accountant' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold rounded-lg">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                          Liquidations Only (LF-01)
+                        </span>
+                      ) : sig.applicableScope === 'proposal_only' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-900 border border-indigo-200 text-xs font-bold rounded-lg">
+                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                          Proposals Only (AP-01)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-900 border border-teal-200 text-xs font-bold rounded-lg">
+                          <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                          All Workflows
                         </span>
                       )}
                     </td>
@@ -627,7 +685,7 @@ export default function InstitutionalSignatoryManagement() {
                       <div className="inline-flex items-center gap-1.5">
                         {/* Edit */}
                         <button
-                          onClick={() => setEditingSignatory(sig)}
+                          onClick={() => handleOpenEditModal(sig)}
                           title="Edit Signatory Details"
                           className="p-1.5 hover:bg-gray-100 text-gray-600 rounded-lg transition-colors"
                         >
@@ -846,6 +904,107 @@ export default function InstitutionalSignatoryManagement() {
                     </div>
                   </label>
                 </div>
+              </div>
+
+              {/* Document Workflow Scope */}
+              <div>
+                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
+                  Document Workflow Scope *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (formData.applicableScope === 'both' || !formData.applicableScope)
+                        ? 'bg-teal-50 border-teal-400 ring-2 ring-teal-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeAdd"
+                      value="both"
+                      checked={formData.applicableScope === 'both' || !formData.applicableScope}
+                      onChange={() => setFormData({ ...formData, applicableScope: 'both' })}
+                      className="mt-0.5 text-teal-600 focus:ring-teal-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">All Workflows</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Proposals & Liquidations.
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      formData.applicableScope === 'liquidation_only'
+                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeAdd"
+                      value="liquidation_only"
+                      checked={formData.applicableScope === 'liquidation_only'}
+                      onChange={() => setFormData({ ...formData, applicableScope: 'liquidation_only' })}
+                      className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Liquidations Only</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form LF-01 only (Accountant).
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      formData.applicableScope === 'proposal_only'
+                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeAdd"
+                      value="proposal_only"
+                      checked={formData.applicableScope === 'proposal_only'}
+                      onChange={() => setFormData({ ...formData, applicableScope: 'proposal_only' })}
+                      className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Proposals Only</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form AP-01 proposals only.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Select which document workflows this signatory will be available for in STI Sync.
+                </p>
+              </div>
+
+              {/* Permanent Institutional Signer Toggle */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3.5">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(formData.isPermanentSigner)}
+                    onChange={(e) => setFormData({ ...formData, isPermanentSigner: e.target.checked })}
+                    className="mt-0.5 w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
+                      Permanent Institutional Signer
+                    </div>
+                    <p className="text-[11px] text-amber-800/90 mt-0.5 leading-snug">
+                      When enabled, this person is automatically designated and locked as the mandatory signer for their role across their authorized forms (LF-01 / AP-01). Proponents cannot remove or bypass them.
+                    </p>
+                  </div>
+                </label>
               </div>
 
               {/* Temporary Password Display */}
@@ -1069,6 +1228,115 @@ export default function InstitutionalSignatoryManagement() {
                     </div>
                   </label>
                 </div>
+              </div>
+
+              {/* Document Workflow Scope */}
+              <div>
+                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
+                  Document Workflow Scope *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      editingSignatory.applicableScope === 'both'
+                        ? 'bg-teal-50 border-teal-400 ring-2 ring-teal-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeEdit"
+                      value="both"
+                      checked={editingSignatory.applicableScope === 'both'}
+                      onChange={() =>
+                        setEditingSignatory({ ...editingSignatory, applicableScope: 'both' })
+                      }
+                      className="mt-0.5 text-teal-600 focus:ring-teal-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">All Workflows</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Proposals & Liquidations.
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      editingSignatory.applicableScope === 'liquidation_only'
+                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeEdit"
+                      value="liquidation_only"
+                      checked={editingSignatory.applicableScope === 'liquidation_only'}
+                      onChange={() =>
+                        setEditingSignatory({ ...editingSignatory, applicableScope: 'liquidation_only' })
+                      }
+                      className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Liquidations Only</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form LF-01 only (Accountant).
+                      </div>
+                    </div>
+                  </label>
+
+                  <label
+                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      editingSignatory.applicableScope === 'proposal_only'
+                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="applicableScopeEdit"
+                      value="proposal_only"
+                      checked={editingSignatory.applicableScope === 'proposal_only'}
+                      onChange={() =>
+                        setEditingSignatory({ ...editingSignatory, applicableScope: 'proposal_only' })
+                      }
+                      className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Proposals Only</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form AP-01 proposals only.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Determines whether this signatory appears in Activity Proposals (AP-01), Financial Liquidations (LF-01), or both.
+                </p>
+              </div>
+
+              {/* Permanent Institutional Signer Toggle */}
+              <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3.5">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(editingSignatory.isPermanentSigner)}
+                    onChange={(e) =>
+                      setEditingSignatory({ ...editingSignatory, isPermanentSigner: e.target.checked })
+                    }
+                    className="mt-0.5 w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500 cursor-pointer"
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-amber-700" />
+                      Permanent Institutional Signer
+                    </div>
+                    <p className="text-[11px] text-amber-800/90 mt-0.5 leading-snug">
+                      When enabled, this person is permanently locked into their designated workflows (LF-01 / AP-01). Proponents cannot remove or bypass them.
+                    </p>
+                  </div>
+                </label>
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t border-gray-100">

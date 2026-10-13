@@ -25,6 +25,11 @@ import type {
   ProposalFormData,
   ProposalStatus,
 } from '../types/proposal.types';
+import {
+  removeLedgerTransactionsForLiquidation,
+  removeLedgerTransactionsForEvent,
+} from '../../finance/services/finance.service';
+import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -488,6 +493,27 @@ export async function getProposalById(id: string): Promise<ActivityProposal | nu
  * Delete a draft proposal
  */
 export async function deleteProposal(id: string): Promise<void> {
+  // 1. Purge any associated liquidations and their ledger records
+  try {
+    const liquidationsCol = collection(db, 'liquidations');
+    const q = query(liquidationsCol, where('eventId', '==', id));
+    const liqSnap = await getDocs(q);
+    for (const d of liqSnap.docs) {
+      await removeLedgerTransactionsForLiquidation(d.id);
+      await deleteDoc(d.ref);
+    }
+  } catch (err) {
+    console.warn('[deleteProposal] Liquidation cleanup note:', err);
+  }
+
+  // 2. Purge any event budget deduction from the ledger
+  try {
+    await removeLedgerTransactionsForEvent(id);
+  } catch (err) {
+    console.warn('[deleteProposal] Ledger rollback note:', err);
+  }
+
+  // 3. Delete proposal/activity documents
   await deleteDoc(doc(db, ACTIVITIES_COLLECTION, id));
   try {
     await deleteDoc(doc(db, 'activity_proposals', id));
@@ -586,14 +612,21 @@ export async function endorseProposal(
   const targetStep = chain[targetStepIdx];
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
+  const isExecutiveApprover =
+    isPresident ||
+    isSchoolAdmin ||
+    targetStep.actionType === 'approve' ||
+    signatory.actionType === 'approve';
 
   // Determine whether this action is an approval or an endorsement
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
   if (isPresident) {
     newStatus = 'approved';
-  } else if (isSchoolAdmin) {
-    newStatus = signatory.actionType === 'approve' ? 'approved' : 'endorsed';
-  } else if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
+  } else if (signatory.actionType === 'approve') {
+    newStatus = 'approved';
+  } else if (signatory.actionType === 'endorse') {
+    newStatus = 'endorsed';
+  } else if (targetStep.actionType === 'approve') {
     newStatus = 'approved';
   }
 
@@ -625,24 +658,28 @@ export async function endorseProposal(
   chain[targetStepIdx] = updatedStep as any;
 
   // Dual-Approver Resolution within the Executive Stage:
-  if (isSchoolAdmin && newStatus === 'approved') {
-    // Administrator chose to fully authorize & approve: waive remaining approver steps in this stage
+  if (newStatus === 'approved') {
+    // Authorized approver chose to fully authorize & approve:
+    // Any remaining co-approvers in this stage are waived with clear audit attribution.
+    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
+    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
+
     chain.forEach((s, idx) => {
       if (
-        (s.stageIndex ?? 1) === currentStage &&
         idx !== targetStepIdx &&
         (s.status === 'waiting' || s.status === 'current') &&
-        (s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
       ) {
         chain[idx] = {
           ...s,
           status: 'waived',
-          remarks: `Step waived — Activity proposal authorized and fully approved by School Administrator (${signatory.name || targetStep.signatoryName})`,
+          remarks: `Step waived — Activity proposal authorized and fully approved by ${approverTitle} (${approverName})`,
         };
       }
     });
-  } else if (isSchoolAdmin && newStatus === 'endorsed') {
-    // Administrator chose to endorse and forward to President: activate the President's step
+  } else if (newStatus === 'endorsed' && isExecutiveApprover) {
+    // Executive approver chose to endorse & forward for higher approval (e.g. to President):
+    // Activate waiting higher approvers in this stage.
     chain.forEach((s, idx) => {
       if (
         (s.stageIndex ?? 1) === currentStage &&
@@ -705,10 +742,14 @@ export async function endorseProposal(
     }
   } else {
     // Legacy linear step progression
-    const nextIdx = targetStepIdx + 1;
-    isFullyApproved = nextIdx >= sanitizedChain.length;
-    if (!isFullyApproved && sanitizedChain[nextIdx]) {
-      sanitizedChain[nextIdx] = { ...sanitizedChain[nextIdx], status: 'current' };
+    if (newStatus === 'approved') {
+      isFullyApproved = true;
+    } else {
+      const nextIdx = targetStepIdx + 1;
+      isFullyApproved = nextIdx >= sanitizedChain.length;
+      if (!isFullyApproved && sanitizedChain[nextIdx]) {
+        sanitizedChain[nextIdx] = { ...sanitizedChain[nextIdx], status: 'current' };
+      }
     }
   }
 
@@ -743,6 +784,14 @@ export async function endorseProposal(
     }
   );
 
+  // Auto-archive approved activity proposal / permit into EDMS
+  if (isFullyApproved) {
+    try {
+      await autoArchiveApprovedEvent(proposalId, userUid || signatory.email, remarks);
+    } catch (archErr) {
+      console.warn('[endorseProposal] Auto-archive to EDMS notice:', archErr);
+    }
+  }
 
   return {
     success: true,
@@ -889,6 +938,61 @@ export async function rejectProposal(
 
   return { success: true };
 }
+
+/**
+ * Withdraw an Activity Proposal back to 'draft' status so author can edit before review.
+ */
+export async function withdrawProposal(
+  proposalId: string,
+  userId: string,
+  userName?: string
+): Promise<void> {
+  const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Proposal not found.');
+
+  const data = snap.data() as ActivityProposal;
+  const currentStatus = (data.status || (data as any).proposalStatus || '').toLowerCase().trim();
+  if (currentStatus !== 'under_review' && currentStatus !== 'pending') {
+    throw new Error('Only proposals currently under review can be withdrawn.');
+  }
+
+  // Reset chain steps
+  const chain = (data.approvalChain || []).map((step, idx) => {
+    const s: any = { ...step };
+    s.status = idx === 0 ? 'current' : 'waiting';
+    delete s.signedAt;
+    delete s.signatureUrl;
+    delete s.remarks;
+    return s;
+  });
+
+  const historyEntry = {
+    id: `log-${Date.now()}`,
+    action: 'edited',
+    performedBy: userId,
+    performedByName: userName || 'User',
+    performedAt: new Date().toISOString(),
+    remarks: `Proposal withdrawn back to draft by ${userName || 'proponent'} for revision.`,
+  };
+
+  const payload: any = {
+    proposalStatus: 'draft',
+    status: 'draft',
+    lifecycleStatus: 'draft',
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+    approvalChain: chain,
+    proposalHistory: arrayUnion(historyEntry),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
+
+  // Sync to events, proposals, activity_proposals collections
+  await syncProposalToEventsCollection({ ...data, ...payload }, 'draft');
+}
+
 
 
 

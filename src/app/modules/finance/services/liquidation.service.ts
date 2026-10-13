@@ -9,17 +9,25 @@ import {
   where,
   serverTimestamp,
   arrayUnion,
+  deleteDoc,
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
+import { removeLedgerTransactionsForLiquidation } from './finance.service';
 import type { 
   LiquidationDocument, 
   LiquidationRemark, 
-  LiquidationApprovalStep 
+  LiquidationApprovalStep,
+  LiquidationStatus
 } from '../types/liquidation.types';
-import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import {
+  type InstitutionalSignatory,
+  isSignatoryApplicableTo,
+} from '../../signatories/types/signatory.types';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
+import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
 
 export const LIQUIDATIONS_COLLECTION = 'liquidations';
 
@@ -31,7 +39,8 @@ export async function generateDefaultLiquidationChain(
   orgId?: string,
   orgName?: string,
   budgetAmount?: number,
-  providedSignatories?: InstitutionalSignatory[]
+  providedSignatories?: InstitutionalSignatory[],
+  isSasCreator = false
 ): Promise<LiquidationApprovalStep[]> {
   let activeSignatories = providedSignatories;
 
@@ -45,123 +54,187 @@ export async function generateDefaultLiquidationChain(
     }
   }
 
-  // 1. Accountant / SAO Auditor (Stage 1: Checking & Verification)
-  const accountant = activeSignatories.find(
-    (s) => s.role === 'accountant' || s.roleTitle.toLowerCase().includes('accountant') || s.roleTitle.toLowerCase().includes('auditor')
+  // Filter out inactive signatories and those designated for proposals only
+  activeSignatories = (activeSignatories || []).filter(
+    (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'liquidation')
   );
 
-  // 2. Program Head / Adviser / SAO Coordinator (Stage 2: Endorsement)
-  const programHead = activeSignatories.find(
-    (s) => (s.role === 'program_head' || s.roleTitle.toLowerCase().includes('program head') || s.roleTitle.toLowerCase().includes('coordinator') || s.roleTitle.toLowerCase().includes('adviser')) && s.id !== accountant?.id
-  ) || activeSignatories.find((s) => s.id !== accountant?.id);
+  if (activeSignatories.length === 0 && isSasCreator) {
+    return [];
+  }
 
-  // 3. Academic Head / Dean (Stage 3: Recommendation)
-  const academicHead = activeSignatories.find(
-    (s) => (s.role === 'academic_head' || s.roleTitle.toLowerCase().includes('academic head') || s.roleTitle.toLowerCase().includes('dean') || s.roleTitle.toLowerCase().includes('principal')) && s.id !== accountant?.id && s.id !== programHead?.id
-  ) || activeSignatories.find((s) => s.id !== accountant?.id && s.id !== programHead?.id);
+  // Dynamically group real signatories from maintenance into logical sequential stages.
+  // CRITICAL: Stages and steps are ONLY added if matching signatories actually exist in maintenance!
+  const stageGroups: {
+    stageName: string;
+    signers: InstitutionalSignatory[];
+    defaultAction: 'check' | 'endorse' | 'approve';
+  }[] = [];
 
-  // 4. Executive Approvers (Stage 4: Executive Administration & Presidential Approval)
+  const accountedSignatoryIds = new Set<string>();
+
+  // ── Stage 1 Gatekeeper for Student Organizations: Student Affairs & Services (SAS) Clearance ──
+  // If this liquidation is submitted by a student organization, SAS MUST review and endorse it first!
+  // If created by SAS internally, this gatekeeper is omitted.
+  if (!isSasCreator) {
+    const sasConfig = getCachedSasSignatoryConfig();
+    stageGroups.push({
+      stageName: 'Student Affairs & Services (SAS) Clearance',
+      signers: [
+        {
+          id: sasConfig.employeeId || 'sas_admin',
+          name: sasConfig.name || 'Student Affairs & Services Head',
+          email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+          role: 'sas_head' as any,
+          roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
+          department: sasConfig.department || 'Student Affairs & Services',
+          isActive: true,
+          isPermanentSigner: true,
+          applicableScope: 'all',
+          actionType: 'approver',
+        },
+      ],
+      defaultAction: 'endorse',
+    });
+  }
+
+  // 2. Financial Checking & Audit (Accountants / Internal Auditors)
+  // Only included if an accountant or auditor is configured in maintenance.
+  const accountants = activeSignatories.filter(
+    (s) =>
+      s.role === 'accountant' ||
+      (s.roleTitle && s.roleTitle.toLowerCase().includes('accountant')) ||
+      (s.roleTitle && s.roleTitle.toLowerCase().includes('auditor'))
+  );
+  if (accountants.length > 0) {
+    accountants.sort((a, b) => (b.isPermanentSigner ? 1 : 0) - (a.isPermanentSigner ? 1 : 0));
+    stageGroups.push({
+      stageName: 'Financial Checking & Audit',
+      signers: accountants,
+      defaultAction: 'check',
+    });
+    accountants.forEach((s) => accountedSignatoryIds.add(s.id));
+  }
+
+  // 2. Department & Program Endorsement (Program Heads, Advisers, Coordinators)
+  // Only included if program heads / advisers exist in maintenance.
+  const programHeads = activeSignatories.filter(
+    (s) =>
+      !accountedSignatoryIds.has(s.id) &&
+      (s.role === 'program_head' ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('program head')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('coordinator')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('adviser')))
+  );
+  if (programHeads.length > 0) {
+    programHeads.sort((a, b) => (b.isPermanentSigner ? 1 : 0) - (a.isPermanentSigner ? 1 : 0));
+    stageGroups.push({
+      stageName: 'Department & Program Endorsement',
+      signers: programHeads,
+      defaultAction: 'endorse',
+    });
+    programHeads.forEach((s) => accountedSignatoryIds.add(s.id));
+  }
+
+  // 3. Academic Affairs Recommendation (Academic Head, Dean, SHS Principal)
+  // Only included if academic heads exist in maintenance.
+  const academicHeads = activeSignatories.filter(
+    (s) =>
+      !accountedSignatoryIds.has(s.id) &&
+      (s.role === 'academic_head' ||
+        s.role === 'shs_principal' ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('academic head')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('dean')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('principal')))
+  );
+  if (academicHeads.length > 0) {
+    academicHeads.sort((a, b) => (b.isPermanentSigner ? 1 : 0) - (a.isPermanentSigner ? 1 : 0));
+    stageGroups.push({
+      stageName: 'Academic Affairs Recommendation',
+      signers: academicHeads,
+      defaultAction: 'endorse',
+    });
+    academicHeads.forEach((s) => accountedSignatoryIds.add(s.id));
+  }
+
+  // 4. Executive Administration & Presidential Approval (School Administrator / President)
+  // Only included if executive approvers exist in maintenance.
   const executiveApprovers = activeSignatories.filter(
     (s) =>
+      !accountedSignatoryIds.has(s.id) &&
       (s.role === 'school_president' ||
         s.role === 'school_administrator' ||
         s.actionType === 'approver' ||
         s.actionType === 'both' ||
-        s.roleTitle.toLowerCase().includes('president') ||
-        s.roleTitle.toLowerCase().includes('administrator')) &&
-      s.id !== accountant?.id &&
-      s.id !== programHead?.id &&
-      s.id !== academicHead?.id
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('president')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('administrator')))
   );
-
-  // Sort so School Administrator comes before School President
-  executiveApprovers.sort((a, b) => {
-    if (a.role === 'school_administrator' && b.role !== 'school_administrator') return -1;
-    if (b.role === 'school_administrator' && a.role !== 'school_administrator') return 1;
-    if (a.role === 'school_president' && b.role !== 'school_president') return 1;
-    if (b.role === 'school_president' && a.role !== 'school_president') return -1;
-    return 0;
-  });
-
-  const steps: LiquidationApprovalStep[] = [
-    {
-      id: `liq_step_1_${Date.now()}`,
-      step: 1,
-      stageIndex: 1,
-      stageName: 'Financial Checking & Audit',
-      role: accountant?.role || 'accountant',
-      roleTitle: accountant?.roleTitle || 'Accountant / SAO Auditor',
-      actionType: 'check',
-      signatoryUid: accountant?.id || '',
-      signatoryName: accountant?.name || 'Assigned Accountant / Auditor',
-      signatoryEmail: accountant?.email || '',
-      department: accountant?.department || 'Finance & Accounting',
-      status: 'current',
-    },
-    {
-      id: `liq_step_2_${Date.now()}`,
-      step: 2,
-      stageIndex: 2,
-      stageName: 'Department & Program Endorsement',
-      role: programHead?.role || 'program_head',
-      roleTitle: programHead?.roleTitle || 'Program Head / Adviser',
-      actionType: 'endorse',
-      signatoryUid: programHead?.id || '',
-      signatoryName: programHead?.name || 'Department Program Head',
-      signatoryEmail: programHead?.email || '',
-      department: programHead?.department || (orgName || 'Academic Department'),
-      status: 'waiting',
-    },
-    {
-      id: `liq_step_3_${Date.now()}`,
-      step: 3,
-      stageIndex: 3,
-      stageName: 'Academic Affairs Recommendation',
-      role: academicHead?.role || 'academic_head',
-      roleTitle: academicHead?.roleTitle || 'Academic Head / Dean',
-      actionType: 'endorse',
-      signatoryUid: academicHead?.id || '',
-      signatoryName: academicHead?.name || 'Academic Head / Dean',
-      signatoryEmail: academicHead?.email || '',
-      department: academicHead?.department || 'Academic Affairs',
-      status: 'waiting',
-    },
-  ];
-
-  let nextStepNumber = 4;
   if (executiveApprovers.length > 0) {
-    executiveApprovers.forEach((appr, idx) => {
-      steps.push({
-        id: `liq_step_4_${idx + 1}_${Date.now()}`,
-        step: nextStepNumber++,
-        stageIndex: 4,
-        stageName: 'Executive Presidential Approval',
-        role: appr.role || 'school_president',
-        roleTitle: appr.roleTitle || (appr.role === 'school_president' ? 'School President' : 'School Administrator'),
-        actionType: appr.role === 'school_president' ? 'approve' : (appr.actionType === 'approver' || appr.actionType === 'both' ? 'approve' : 'endorse'),
-        signatoryUid: appr.id || '',
-        signatoryName: appr.name || 'School Administrator / President',
-        signatoryEmail: appr.email || '',
-        department: appr.department || (appr.role === 'school_president' ? 'Office of the President' : 'School Administration'),
-        status: 'waiting',
-      });
+    executiveApprovers.sort((a, b) => {
+      if (a.isPermanentSigner && !b.isPermanentSigner) return -1;
+      if (!a.isPermanentSigner && b.isPermanentSigner) return 1;
+      if (a.role === 'school_administrator' && b.role !== 'school_administrator') return -1;
+      if (b.role === 'school_administrator' && a.role !== 'school_administrator') return 1;
+      if (a.role === 'school_president' && b.role !== 'school_president') return 1;
+      if (b.role === 'school_president' && a.role !== 'school_president') return -1;
+      return 0;
     });
-  } else {
-    steps.push({
-      id: `liq_step_4_${Date.now()}`,
-      step: 4,
-      stageIndex: 4,
+    stageGroups.push({
       stageName: 'Executive Presidential Approval',
-      role: 'school_president',
-      roleTitle: 'School Administrator / President',
-      actionType: 'approve',
-      signatoryUid: '',
-      signatoryName: 'School Administrator / President',
-      signatoryEmail: '',
-      department: 'Office of the President',
-      status: 'waiting',
+      signers: executiveApprovers,
+      defaultAction: 'approve',
+    });
+    executiveApprovers.forEach((s) => accountedSignatoryIds.add(s.id));
+  }
+
+  // 5. Any remaining active signatories applicable to liquidation
+  const remaining = activeSignatories.filter((s) => !accountedSignatoryIds.has(s.id));
+  if (remaining.length > 0) {
+    remaining.sort((a, b) => (b.isPermanentSigner ? 1 : 0) - (a.isPermanentSigner ? 1 : 0));
+    stageGroups.push({
+      stageName: 'Institutional Endorsement',
+      signers: remaining,
+      defaultAction: 'endorse',
     });
   }
+
+  // Convert populated groups into sequential LiquidationApprovalStep items
+  const steps: LiquidationApprovalStep[] = [];
+  let globalStepIndex = 1;
+
+  stageGroups.forEach((group, gIdx) => {
+    const stageIndex = gIdx + 1;
+    group.signers.forEach((sig, sIdx) => {
+      const isPermanent = Boolean(sig.isPermanentSigner);
+      let actionType: 'check' | 'endorse' | 'approve' = group.defaultAction;
+      if (sig.actionType === 'approver' || sig.role === 'school_president') {
+        actionType = 'approve';
+      } else if (
+        sig.role === 'accountant' ||
+        (sig.roleTitle && sig.roleTitle.toLowerCase().includes('accountant')) ||
+        (sig.roleTitle && sig.roleTitle.toLowerCase().includes('auditor'))
+      ) {
+        actionType = 'check';
+      }
+
+      steps.push({
+        id: `liq_step_${stageIndex}_${sIdx + 1}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        step: globalStepIndex++,
+        stageIndex,
+        stageName: group.stageName,
+        role: sig.role || '',
+        roleTitle: sig.roleTitle || 'Institutional Signatory',
+        actionType,
+        signatoryUid: sig.id,
+        signatoryName: sig.name,
+        signatoryEmail: sig.email,
+        department: sig.department || '',
+        status: stageIndex === 1 ? 'current' : 'waiting',
+        isMandatory: isPermanent,
+        isPermanent: isPermanent,
+      });
+    });
+  });
 
   return steps;
 }
@@ -177,18 +250,30 @@ export const createLiquidationReport = async (
   const totalActualSpending = lineItems.reduce((sum, item) => sum + (item.totalCost || 0), 0);
   const surplusOrDeficit = (data.allocatedBudget || 0) - totalActualSpending;
 
-  const isAdmin = data.createdByRole === 'admin';
-  const initialStatus = data.status || (isAdmin ? 'approved' : 'draft');
-  const isAutoApproved = isAdmin && initialStatus === 'approved';
+  // Never auto-approve on creation!
+  // If submitted, status is strictly 'under_review'. Otherwise 'draft'.
+  const isSubmitting = data.status === 'under_review' || data.status === 'pending';
+  const initialStatus: LiquidationStatus = isSubmitting ? 'under_review' : (data.status || 'draft');
 
   // Build or clean approval chain
+  const isSasCreator =
+    data.createdByRole === 'admin' ||
+    data.organizationId === 'sao_admin' ||
+    data.organizationId === 'sas';
+
   let chain = data.approvalChain;
   if (!chain || chain.length === 0) {
-    chain = await generateDefaultLiquidationChain(data.organizationId, data.organizationName, data.allocatedBudget);
+    chain = await generateDefaultLiquidationChain(
+      data.organizationId,
+      data.organizationName,
+      data.allocatedBudget,
+      undefined,
+      isSasCreator
+    );
   }
 
-  // If submitting right away (status === 'pending' or 'under_review'), ensure Stage 1 is 'current'
-  if (initialStatus === 'pending' || initialStatus === 'under_review') {
+  // If submitting right away, activate Stage 1 steps and ensure subsequent stages are waiting
+  if (isSubmitting) {
     chain = chain.map((step) => {
       if ((step.stageIndex ?? 1) === 1) {
         return { ...step, status: 'current' as const };
@@ -199,12 +284,12 @@ export const createLiquidationReport = async (
 
   const initialRemark: LiquidationRemark = {
     id: `rem-${Date.now()}`,
-    authorName: data.createdByName || (isAdmin ? 'SAO Adviser' : 'Officer'),
+    authorName: data.createdByName || 'Submitter',
     authorRole: data.createdByRole || 'officer',
-    action: isAutoApproved ? 'approved' : (initialStatus === 'pending' || initialStatus === 'under_review' ? 'submitted' : 'draft_saved'),
-    comment: isAutoApproved
-      ? 'Liquidation created and auto-approved by SAO Adviser.'
-      : (initialStatus === 'pending' || initialStatus === 'under_review' ? 'Liquidation report submitted for institutional signatory review.' : 'Draft liquidation created.'),
+    action: isSubmitting ? 'submitted' : 'draft_saved',
+    comment: isSubmitting
+      ? 'Liquidation report submitted for institutional signatory review.'
+      : 'Draft liquidation report created.',
     timestamp: new Date().toISOString(),
   };
 
@@ -217,7 +302,7 @@ export const createLiquidationReport = async (
     currentStageIndex: 1,
     currentStepIndex: 0,
     remarksHistory: [initialRemark],
-    ...(isAutoApproved ? { approvedAt: serverTimestamp() as any, approvedBy: data.createdById } : {}),
+    ...(isSubmitting ? { submittedAt: serverTimestamp() as any } : {}),
     createdAt: serverTimestamp() as any,
     updatedAt: serverTimestamp() as any,
   };
@@ -238,50 +323,138 @@ export const createLiquidationReport = async (
     }
   }
 
-  // If Admin created and auto-approved, auto-post to SAO Ledger
-  if (isAutoApproved) {
-    try {
-      await postLiquidationToLedger(docRef.id, payload as Partial<LiquidationDocument>, data.createdById);
-    } catch (err) {
-      console.warn('[createLiquidationReport] Ledger write note:', err);
-    }
-  }
-
+  // NOTE: Ledger posting occurs ONLY after final executive approval in endorseLiquidationStep!
   return docRef.id;
 };
 
 /**
  * Updates an existing Liquidation Report. Recalculates total spending and surplus/deficit.
+ * Features Smart Diff Engine to identify modified items on revision and resets pipeline to Stage 1 on resubmission.
  */
 export const updateLiquidationReport = async (
   id: string,
   data: Partial<LiquidationDocument>
 ): Promise<void> => {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
+  const snap = await getDoc(docRef);
+  const existingData = snap.exists() ? (snap.data() as LiquidationDocument) : null;
 
   const payload: any = {
     ...data,
     updatedAt: serverTimestamp(),
   };
 
-  if (data.lineItems !== undefined || data.allocatedBudget !== undefined) {
-    const lineItems = data.lineItems || [];
-    const totalActualSpending = lineItems.reduce((sum, item) => sum + (item.totalCost || 0), 0);
+  // Smart Change Detection (Diff Engine)
+  if (data.lineItems !== undefined && existingData && existingData.lineItems) {
+    const prevMap = new Map<string, any>();
+    existingData.lineItems.forEach((item, idx) => {
+      prevMap.set(item.id || `item-${idx}`, item);
+    });
+
+    const enrichedItems = data.lineItems.map((item, idx) => {
+      const prev = prevMap.get(item.id || `item-${idx}`);
+      if (!prev) {
+        // Brand new item added in revision
+        return {
+          ...item,
+          wasModifiedInRev: existingData.status === 'returned',
+        };
+      }
+
+      const hasChanged =
+        item.description !== prev.description ||
+        item.quantity !== prev.quantity ||
+        item.unitCost !== prev.unitCost ||
+        item.totalCost !== prev.totalCost ||
+        item.vendorName !== prev.vendorName ||
+        item.receiptUrl !== prev.receiptUrl ||
+        (item.receiptUrls?.length || 0) !== (prev.receiptUrls?.length || 0);
+
+      if (hasChanged) {
+        return {
+          ...item,
+          wasModifiedInRev: true,
+          previousValues: {
+            quantity: prev.quantity,
+            unitCost: prev.unitCost,
+            totalCost: prev.totalCost,
+            description: prev.description,
+          },
+        };
+      }
+
+      return {
+        ...item,
+        wasModifiedInRev: prev.wasModifiedInRev || false,
+        previousValues: prev.previousValues,
+      };
+    });
+
+    payload.lineItems = enrichedItems;
+  }
+
+  // Revision Handshake & Pipeline Reset
+  const isResubmission = existingData && existingData.status === 'returned' && (data.status === 'under_review' || data.status === 'pending');
+  if (isResubmission) {
+    const newRevCount = (existingData.revisionCount || 1) + 1;
+    payload.revisionCount = newRevCount;
+    payload.returnRemarks = null;
+    payload.currentStageIndex = 1;
+    payload.currentStepIndex = 0;
+
+    let chain = (data.approvalChain || existingData.approvalChain || []);
+    payload.approvalChain = chain.map((step) => {
+      if ((step.stageIndex ?? 1) === 1) {
+        return { ...step, status: 'current' as const, signedAt: null, signatureUrl: null };
+      }
+      return { ...step, status: 'waiting' as const, signedAt: null, signatureUrl: null };
+    });
+
+    const revisionEntry = {
+      version: existingData.revisionCount || 1,
+      versionLabel: `v${existingData.revisionCount || 1}.0`,
+      submittedAt: existingData.submittedAt || null,
+      submittedBy: existingData.submittedByName || existingData.createdByName || 'Submitter',
+      submittedByUid: existingData.createdById,
+      returnedAt: existingData.returnedAt || null,
+      returnedBy: (existingData as any).returnedByName || (existingData as any).returnedBy || 'Reviewer',
+      returnedByRoleTitle: (existingData as any).returnedByRoleTitle || 'Institutional Signatory',
+      returnRemarks: existingData.returnRemarks || 'Revision requested.',
+      resubmittedAt: new Date().toISOString(),
+      resubmissionNote: `Resubmitted as v${newRevCount}.0`,
+    };
+    payload.revisionHistory = arrayUnion(revisionEntry);
+
+    const resubmitRemark: LiquidationRemark = {
+      id: `rem-${Date.now()}`,
+      authorName: data.submittedByName || existingData.submittedByName || 'Submitter',
+      authorRole: (data.submittedByRole as any) || existingData.submittedByRole || 'officer',
+      action: 'submitted',
+      comment: `Resubmitted revision v${newRevCount}.0 with updated line items and receipt verification. Route reset to Stage 1.`,
+      timestamp: new Date().toISOString(),
+    };
+    payload.remarksHistory = arrayUnion(resubmitRemark);
+  }
+
+  if (payload.lineItems !== undefined || data.allocatedBudget !== undefined) {
+    const lineItems = payload.lineItems || data.lineItems || [];
+    const totalActualSpending = lineItems.reduce((sum: number, item: any) => sum + (item.totalCost || 0), 0);
     payload.totalActualSpending = totalActualSpending;
 
-    if (data.allocatedBudget !== undefined) {
-      payload.surplusOrDeficit = data.allocatedBudget - totalActualSpending;
-    }
+    const budgetCeiling = data.allocatedBudget !== undefined ? data.allocatedBudget : (existingData?.allocatedBudget || 0);
+    payload.surplusOrDeficit = budgetCeiling - totalActualSpending;
   }
 
   await updateDoc(docRef, payload);
 
   // Sync event document if eventId and status exist
-  if (data.eventId && data.status) {
+  const eventId = data.eventId || existingData?.eventId;
+  const statusToSync = data.status;
+  if (eventId && statusToSync) {
     try {
-      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      const eventRef = doc(db, EVENTS_COLLECTION, eventId);
       await updateDoc(eventRef, {
-        liquidationStatus: data.status,
+        liquidationStatus: statusToSync,
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
       });
@@ -300,29 +473,42 @@ export const submitLiquidationReport = async (
   commentText?: string
 ): Promise<void> => {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
+  const snap = await getDoc(docRef);
+  const data = snap.exists() ? (snap.data() as LiquidationDocument) : null;
+
+  // Activate Stage 1 signatories and set remaining to waiting
+  let chain = data?.approvalChain || [];
+  chain = chain.map((step) => {
+    if ((step.stageIndex ?? 1) === 1) {
+      return { ...step, status: 'current' as const };
+    }
+    return { ...step, status: 'waiting' as const };
+  });
 
   const newRemark: LiquidationRemark = {
     id: `rem-${Date.now()}`,
     authorName: authorName || 'Officer',
     authorRole: 'officer',
     action: 'submitted',
-    comment: commentText || 'Resubmitted liquidation report with updated line items and receipt evidence.',
+    comment: commentText || 'Submitted liquidation report for institutional signatory review.',
     timestamp: new Date().toISOString(),
   };
 
   await updateDoc(docRef, {
-    status: 'pending',
+    status: 'under_review',
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+    approvalChain: chain,
     submittedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(newRemark),
   });
 
   try {
-    const snap = await getDoc(docRef);
-    if (snap.exists() && snap.data()?.eventId) {
-      const eventRef = doc(db, EVENTS_COLLECTION, snap.data().eventId);
+    if (data?.eventId) {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
       await updateDoc(eventRef, {
-        liquidationStatus: 'submitted',
+        liquidationStatus: 'under_review',
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
       });
@@ -331,6 +517,98 @@ export const submitLiquidationReport = async (
     console.warn('[submitLiquidationReport] Event sync notice:', evtErr);
   }
 };
+
+/**
+ * Deletes a liquidation report document completely and rolls back any associated ledger entries.
+ * Also cleans up the liquidationStatus reference on the parent event.
+ */
+export async function deleteLiquidationReport(
+  liquidationId: string
+): Promise<{ success: boolean; rolledBackLedgerCount: number }> {
+  if (!liquidationId) throw new Error('Liquidation ID is required.');
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  const data = snap.exists() ? (snap.data() as LiquidationDocument) : null;
+
+  // 1. Purge any associated ledger transactions from /organization_ledger and /sao_ledger
+  const rolledBackCount = await removeLedgerTransactionsForLiquidation(liquidationId);
+
+  // 2. Delete the liquidation document from Firestore
+  await deleteDoc(docRef);
+
+  // 3. Reset event document references
+  if (data?.eventId) {
+    try {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      await updateDoc(eventRef, {
+        liquidationStatus: null,
+        liquidationReportId: null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('[deleteLiquidationReport] Non-critical event unlink notice:', e);
+    }
+  }
+
+  return { success: true, rolledBackLedgerCount: rolledBackCount };
+};
+
+/**
+ * Withdraws a submitted liquidation report back to 'draft' status so the author can edit before review.
+ */
+export async function withdrawLiquidationReport(
+  id: string,
+  userId: string,
+  userName?: string
+): Promise<void> {
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+
+  const data = snap.data() as LiquidationDocument;
+  const currentStatus = (data.status || '').toLowerCase().trim();
+  if (currentStatus !== 'under_review' && currentStatus !== 'pending') {
+    throw new Error('Only liquidation reports currently under review can be withdrawn.');
+  }
+
+  // Reset chain steps
+  const chain = (data.approvalChain || []).map((step, idx) => ({
+    ...step,
+    status: idx === 0 ? ('current' as const) : ('waiting' as const),
+    signedAt: null,
+    signatureUrl: null,
+  }));
+
+  const withdrawRemark: LiquidationRemark = {
+    id: `rem-${Date.now()}`,
+    authorName: userName || 'Author',
+    authorRole: data.createdByRole || 'officer',
+    action: 'draft_saved',
+    comment: `Liquidation submission withdrawn back to draft by ${userName || 'author'} for revision.`,
+    timestamp: new Date().toISOString(),
+  };
+
+  await updateDoc(docRef, {
+    status: 'draft',
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+    approvalChain: chain,
+    remarksHistory: arrayUnion(withdrawRemark),
+    updatedAt: serverTimestamp(),
+  });
+
+  if (data.eventId) {
+    try {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      await updateDoc(eventRef, {
+        liquidationStatus: 'draft',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('[withdrawLiquidationReport] Event sync notice:', e);
+    }
+  }
+}
 
 /**
  * Approves a liquidation report.
@@ -397,6 +675,13 @@ export const approveLiquidationReport = async (
   } catch (err) {
     console.warn('[approveLiquidationReport] Ledger write note:', err);
   }
+
+  // Auto-archive approved liquidation report into EDMS
+  try {
+    await autoArchiveApprovedLiquidation(id, liquidationData, adminUserId);
+  } catch (archErr) {
+    console.warn('[approveLiquidationReport] Auto-archive to EDMS notice:', archErr);
+  }
 };
 
 /**
@@ -405,31 +690,53 @@ export const approveLiquidationReport = async (
 export const returnLiquidationReport = async (
   id: string,
   adminUserId: string,
-  remarks: string
+  remarks: string,
+  adminName = 'SAS Adviser',
+  adminRoleTitle = 'Student Affairs & Services Head',
+  adminEmail?: string
 ): Promise<void> => {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
+  const snap = await getDoc(docRef);
+  const existingData = snap.exists() ? (snap.data() as LiquidationDocument) : null;
 
   const returnRemark: LiquidationRemark = {
     id: `rem-${Date.now()}`,
-    authorName: 'SAO Adviser',
+    authorName: adminName,
     authorRole: 'admin',
     action: 'returned',
     comment: remarks,
     timestamp: new Date().toISOString(),
   };
 
+  const revisionEntry = {
+    version: existingData?.revisionCount || 1,
+    versionLabel: `v${existingData?.revisionCount || 1}.0`,
+    submittedAt: existingData?.submittedAt || null,
+    submittedBy: existingData?.submittedByName || existingData?.createdByName || 'Submitter',
+    submittedByUid: existingData?.createdById,
+    returnedAt: new Date().toISOString(),
+    returnedBy: adminName,
+    returnedByRoleTitle: adminRoleTitle,
+    returnedByEmail: adminEmail,
+    returnRemarks: remarks,
+  };
+
   await updateDoc(docRef, {
     status: 'returned',
     returnRemarks: remarks,
+    returnedBy: adminUserId,
+    returnedByName: adminName,
+    returnedByRoleTitle: adminRoleTitle,
+    returnedByEmail: adminEmail || null,
     returnedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(returnRemark),
+    revisionHistory: arrayUnion(revisionEntry),
   });
 
   try {
-    const snap = await getDoc(docRef);
-    if (snap.exists() && snap.data()?.eventId) {
-      const eventRef = doc(db, EVENTS_COLLECTION, snap.data().eventId);
+    if (existingData?.eventId) {
+      const eventRef = doc(db, EVENTS_COLLECTION, existingData.eventId);
       await updateDoc(eventRef, {
         liquidationStatus: 'returned',
         liquidationReportId: id,
@@ -497,16 +804,20 @@ export async function endorseLiquidationStep(
   const targetStep = chain[targetStepIdx];
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
+  const isExecutiveApprover =
+    isPresident ||
+    isSchoolAdmin ||
+    targetStep.actionType === 'approve' ||
+    signatory.actionType === 'approve';
 
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
   if (isPresident) {
     newStatus = 'approved';
-  } else if (isSchoolAdmin) {
-    newStatus = signatory.actionType === 'approve' ? 'approved' : 'endorsed';
-  } else if (
-    targetStep.actionType === 'approve' ||
-    signatory.actionType === 'approve'
-  ) {
+  } else if (signatory.actionType === 'approve') {
+    newStatus = 'approved';
+  } else if (signatory.actionType === 'endorse') {
+    newStatus = 'endorsed';
+  } else if (targetStep.actionType === 'approve') {
     newStatus = 'approved';
   }
 
@@ -531,22 +842,28 @@ export async function endorseLiquidationStep(
   chain[targetStepIdx] = updatedStep as any;
 
   // Dual-Approver Resolution within Executive Stage
-  if (isSchoolAdmin && newStatus === 'approved') {
+  if (newStatus === 'approved') {
+    // Authorized approver chose to fully authorize & approve:
+    // Any remaining co-approvers in this stage are waived with clear audit attribution.
+    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
+    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
+
     chain.forEach((s, idx) => {
       if (
-        (s.stageIndex ?? 1) === currentStage &&
         idx !== targetStepIdx &&
         (s.status === 'waiting' || s.status === 'current') &&
-        (s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
       ) {
         chain[idx] = {
           ...s,
           status: 'waived',
-          remarks: `Step waived — Liquidation authorized and fully approved by School Administrator (${signatory.name || targetStep.signatoryName})`,
+          remarks: `Step waived — Liquidation authorized and fully approved by ${approverTitle} (${approverName})`,
         };
       }
     });
-  } else if (isSchoolAdmin && newStatus === 'endorsed') {
+  } else if (newStatus === 'endorsed' && isExecutiveApprover) {
+    // Executive approver chose to endorse & forward for higher approval (e.g. to President):
+    // Activate waiting higher approvers in this stage.
     chain.forEach((s, idx) => {
       if (
         (s.stageIndex ?? 1) === currentStage &&
@@ -646,12 +963,18 @@ export async function endorseLiquidationStep(
     }
   }
 
-  // If fully approved, post financial surplus or deficit to ledger
+  // If fully approved, post financial surplus or deficit to ledger and archive to EDMS
   if (isFullyApproved) {
     try {
       await postLiquidationToLedger(liquidationId, { ...data, ...rawUpdates }, signerUid);
     } catch (ledgerErr) {
       console.warn('[endorseLiquidationStep] Ledger write note:', ledgerErr);
+    }
+
+    try {
+      await autoArchiveApprovedLiquidation(liquidationId, { ...data, ...rawUpdates }, signerUid || signatory.email);
+    } catch (archErr) {
+      console.warn('[endorseLiquidationStep] Auto-archive to EDMS notice:', archErr);
     }
   }
 
@@ -713,13 +1036,31 @@ export async function returnLiquidationStep(
     timestamp: new Date().toISOString(),
   };
 
+  const revisionEntry = {
+    version: data.revisionCount || 1,
+    versionLabel: `v${data.revisionCount || 1}.0`,
+    submittedAt: data.submittedAt || null,
+    submittedBy: data.submittedByName || data.createdByName || 'Submitter',
+    submittedByUid: data.createdById,
+    returnedAt: new Date().toISOString(),
+    returnedBy: signatory.name || 'Signatory',
+    returnedByRoleTitle: signatory.roleTitle || 'Institutional Signatory',
+    returnedByEmail: signatory.email,
+    returnRemarks: remarks,
+  };
+
   const rawUpdates: any = {
     status: 'returned',
     returnRemarks: remarks,
+    returnedBy: signerUid || null,
+    returnedByName: signatory.name || 'Signatory',
+    returnedByRoleTitle: signatory.roleTitle || 'Institutional Signatory',
+    returnedByEmail: signatory.email || null,
     returnedAt: serverTimestamp(),
     approvalChain: chain,
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(returnRemark),
+    revisionHistory: arrayUnion(revisionEntry),
   };
 
   await updateDoc(docRef, rawUpdates);

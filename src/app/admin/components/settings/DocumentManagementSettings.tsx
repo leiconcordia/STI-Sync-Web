@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Tag, Plus, Trash2, Edit2, Check, X,
-  AlertCircle, Hash, Archive, Save, Loader2,
+  AlertCircle, Hash, Archive, Save, Loader2, RotateCcw,
 } from 'lucide-react';
 
 import { useDocumentCategories } from '../../../modules/documents/hooks/useDocumentCategories';
@@ -10,6 +10,7 @@ import {
   createDocumentCategory,
   updateDocumentCategory,
   deleteDocumentCategory,
+  seedStandardCategories,
 } from '../../../modules/documents/services/document_category.service';
 import { saveDocumentSettings } from '../../../modules/documents/services/document_settings.service';
 import { DEFAULT_DOCUMENT_SETTINGS } from '../../../modules/documents/types/document.types';
@@ -200,6 +201,20 @@ export default function DocumentManagementSettings() {
   const [newCatDot, setNewCatDot] = useState(COLOR_OPTIONS[0].dot);
   const [addingCat, setAddingCat] = useState(false);
   const [addingSaving, setAddingSaving] = useState(false);
+  const [seedingCategories, setSeedingCategories] = useState(false);
+
+  const handleSeedCategories = async () => {
+    const msg = categories.length > 0
+      ? 'This will restore the standard STI document categories to your list. Continue?'
+      : 'Initialize standard STI Student Affairs categories?';
+    if (!confirm(msg)) return;
+    setSeedingCategories(true);
+    try {
+      await seedStandardCategories(true);
+    } finally {
+      setSeedingCategories(false);
+    }
+  };
 
   const addCategory = async () => {
     if (!newCatName.trim()) return;
@@ -246,6 +261,8 @@ export default function DocumentManagementSettings() {
   // Local form state for Retention & Archival
   const [retentionYears, setRetentionYears] = useState(DEFAULT_DOCUMENT_SETTINGS.retentionYears);
   const [autoArchiveCompleted, setAutoArchiveCompleted] = useState(DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted);
+  const [autoArchiveProposals, setAutoArchiveProposals] = useState(DEFAULT_DOCUMENT_SETTINGS.autoArchiveProposals ?? true);
+  const [autoArchiveLiquidations, setAutoArchiveLiquidations] = useState(DEFAULT_DOCUMENT_SETTINGS.autoArchiveLiquidations ?? true);
   const [archiveAfterWeeks, setArchiveAfterWeeks] = useState(DEFAULT_DOCUMENT_SETTINGS.archiveAfterWeeks);
   const [allowOfficerDelete, setAllowOfficerDelete] = useState(DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete);
   const [draftExpiryDays, setDraftExpiryDays] = useState(DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
@@ -262,6 +279,8 @@ export default function DocumentManagementSettings() {
 
       setRetentionYears(settings.retentionYears ?? DEFAULT_DOCUMENT_SETTINGS.retentionYears);
       setAutoArchiveCompleted(settings.autoArchiveCompleted ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted);
+      setAutoArchiveProposals(settings.autoArchiveProposals ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveProposals ?? true);
+      setAutoArchiveLiquidations(settings.autoArchiveLiquidations ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveLiquidations ?? true);
       setArchiveAfterWeeks(settings.archiveAfterWeeks ?? (settings.archiveAfterSemesters ? settings.archiveAfterSemesters * 18 : DEFAULT_DOCUMENT_SETTINGS.archiveAfterWeeks));
       setAllowOfficerDelete(settings.allowOfficerDelete ?? DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete);
       setDraftExpiryDays(settings.draftExpiryDays ?? DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
@@ -285,11 +304,13 @@ export default function DocumentManagementSettings() {
     const dirty =
       retentionYears !== (saved.retentionYears ?? DEFAULT_DOCUMENT_SETTINGS.retentionYears) ||
       autoArchiveCompleted !== (saved.autoArchiveCompleted ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted) ||
+      autoArchiveProposals !== (saved.autoArchiveProposals ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveProposals ?? true) ||
+      autoArchiveLiquidations !== (saved.autoArchiveLiquidations ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveLiquidations ?? true) ||
       archiveAfterWeeks !== savedWeeks ||
       allowOfficerDelete !== (saved.allowOfficerDelete ?? DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete) ||
       draftExpiryDays !== (saved.draftExpiryDays ?? DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
     setRetDirty(dirty);
-  }, [retentionYears, autoArchiveCompleted, archiveAfterWeeks, allowOfficerDelete, draftExpiryDays, settings]);
+  }, [retentionYears, autoArchiveCompleted, autoArchiveProposals, autoArchiveLiquidations, archiveAfterWeeks, allowOfficerDelete, draftExpiryDays, settings]);
 
   useEffect(() => { checkRefDirty(); }, [checkRefDirty]);
   useEffect(() => { checkRetDirty(); }, [checkRetDirty]);
@@ -307,7 +328,15 @@ export default function DocumentManagementSettings() {
   const saveRetSettings = async () => {
     setRetSaving(true);
     try {
-      await saveDocumentSettings({ retentionYears, autoArchiveCompleted, archiveAfterWeeks, allowOfficerDelete, draftExpiryDays });
+      await saveDocumentSettings({
+        retentionYears,
+        autoArchiveCompleted,
+        autoArchiveProposals,
+        autoArchiveLiquidations,
+        archiveAfterWeeks,
+        allowOfficerDelete,
+        draftExpiryDays,
+      });
     } finally {
       setRetSaving(false);
     }
@@ -344,13 +373,24 @@ export default function DocumentManagementSettings() {
             </div>
             <p className="text-xs text-gray-500 mt-0.5">Manage the categories officers can select when submitting documents.</p>
           </div>
-          <button
-            onClick={() => setAddingCat(true)}
-            className="flex items-center gap-1.5 px-3 py-2 bg-[#001A4D] text-[#FFD41C] text-sm font-bold rounded-lg hover:bg-[#001A4D]/90 transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Add Category
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleSeedCategories}
+              disabled={seedingCategories}
+              className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 text-gray-700 text-xs font-semibold rounded-lg hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50"
+              title="Initialize standard STI categories (Activity Permits, Liquidation, Waivers, etc.)"
+            >
+              {seedingCategories ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0E4EBD]" /> : <RotateCcw className="w-3.5 h-3.5 text-gray-500" />}
+              <span>Standard Categories</span>
+            </button>
+            <button
+              onClick={() => setAddingCat(true)}
+              className="flex items-center gap-1.5 px-3 py-2 bg-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-lg hover:bg-[#001A4D]/90 transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Add Category
+            </button>
+          </div>
         </div>
 
         {/* Column headers */}
@@ -365,10 +405,27 @@ export default function DocumentManagementSettings() {
         </div>
 
         {categories.length === 0 && !addingCat ? (
-          <div className="text-center py-8 text-gray-400">
-            <Tag className="w-8 h-8 mx-auto mb-2 opacity-40" />
-            <p className="text-sm">No document categories yet.</p>
-            <p className="text-xs">Click "Add Category" to create your first one.</p>
+          <div className="text-center py-8 text-gray-400 border border-dashed border-gray-200 rounded-xl bg-gray-50/50 p-6">
+            <Tag className="w-8 h-8 mx-auto mb-2 text-[#0E4EBD] opacity-60" />
+            <p className="text-sm font-bold text-[#001A4D]">No document categories configured yet.</p>
+            <p className="text-xs text-gray-500 mb-4 max-w-sm mx-auto">Categories are maintained here for officers and SAS to select official document types.</p>
+            <div className="flex justify-center gap-2">
+              <button
+                onClick={handleSeedCategories}
+                disabled={seedingCategories}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#0E4EBD] text-white text-xs font-bold rounded-lg hover:bg-[#0E4EBD]/90 cursor-pointer disabled:opacity-50"
+              >
+                {seedingCategories ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                Load Standard STI Categories
+              </button>
+              <button
+                onClick={() => setAddingCat(true)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-700 text-xs font-medium rounded-lg hover:bg-white cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Create Custom
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-2">
@@ -563,6 +620,27 @@ export default function DocumentManagementSettings() {
                 <p className="text-xs text-gray-500">Officers can permanently delete their own unsent draft submissions. Submitted documents can never be deleted by officers.</p>
               </div>
               <Toggle value={allowOfficerDelete} onChange={setAllowOfficerDelete} />
+            </div>
+
+            {/* Cross-Module Workflow Auto-Archival */}
+            <div className="pt-3 mt-3 border-t border-gray-100 space-y-2">
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Workflow Automation & Cross-Module Archival</p>
+              
+              <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:border-blue-200 transition-colors">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Auto-Archive Approved Activity Proposals & Permits</p>
+                  <p className="text-xs text-gray-500">When an activity proposal is officially approved, automatically catalog the approved permit into the EDMS.</p>
+                </div>
+                <Toggle value={autoArchiveProposals} onChange={setAutoArchiveProposals} />
+              </div>
+
+              <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:border-blue-200 transition-colors">
+                <div>
+                  <p className="text-sm font-medium text-gray-900">Auto-Archive Approved Financial Liquidations (Form LF-01)</p>
+                  <p className="text-xs text-gray-500">When a financial liquidation is officially approved, automatically archive the Form LF-01 report into the EDMS audit vault.</p>
+                </div>
+                <Toggle value={autoArchiveLiquidations} onChange={setAutoArchiveLiquidations} />
+              </div>
             </div>
           </div>
         </div>

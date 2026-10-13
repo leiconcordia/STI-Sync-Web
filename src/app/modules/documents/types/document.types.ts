@@ -54,6 +54,13 @@ export interface DocumentDocument {
   targetOrgTypeId: string | null;
   readBy: Record<string, Timestamp>;
 
+  // ─── Source Tracking (for cross-module auto-archival) ───
+  sourceModule?: 'events' | 'finance' | 'accreditation' | 'general';
+  sourceRecordId?: string;
+  isSystemGenerated?: boolean;
+  visibility?: 'owner_and_sas' | 'sas_only' | 'public';
+  isSasInternal?: boolean;
+
   // ─── Timestamps ───
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -114,6 +121,8 @@ export interface DocumentSettingsDocument {
   // Retention & Archival
   retentionYears: number;
   autoArchiveCompleted: boolean;
+  autoArchiveProposals?: boolean;
+  autoArchiveLiquidations?: boolean;
   archiveAfterWeeks: number;
   archiveAfterSemesters?: number;
   allowOfficerDelete: boolean;
@@ -131,6 +140,8 @@ export const DEFAULT_DOCUMENT_SETTINGS: Omit<DocumentSettingsDocument, 'updatedA
 
   retentionYears: 5,
   autoArchiveCompleted: true,
+  autoArchiveProposals: true,
+  autoArchiveLiquidations: true,
   archiveAfterWeeks: 4,
   archiveAfterSemesters: 2,
   allowOfficerDelete: false,

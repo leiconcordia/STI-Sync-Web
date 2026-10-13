@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import {
   Radio, Clock, CheckCircle, XCircle, Send, Building2,
   Eye, Download, Check, X, Search, Save, FileText,
-  Upload, AlertCircle, ChevronDown, Users, Loader2, RotateCcw,
+  Upload, AlertCircle, ChevronDown, Users, Loader2, RotateCcw, Tag, Sparkles,
 } from "lucide-react";
 import { useDocumentCategories } from '../../modules/documents/hooks/useDocumentCategories';
 import { useIncomingDocuments, useSentDocuments } from '../../modules/documents/hooks/useDocumentStream';
@@ -97,9 +97,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Guidelines": "bg-blue-100 text-blue-700",
 };
 
-function CategoryPill({ category }: { category: string }) {
-  const cls = CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
-  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${cls}`}>{category}</span>;
+function CategoryPill({ category, categories }: { category: string; categories?: any[] }) {
+  const matched = categories?.find(c => c.name?.toLowerCase() === category?.toLowerCase());
+  const cls = matched?.color || CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
+  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{category}</span>;
 }
 
 function FileChip({ type }: { type: string }) {
@@ -814,7 +815,15 @@ function InboxTab() {
                           </div>
                         </td>
                         <td className="px-4 py-3 min-w-[180px]">
-                          <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
+                            {doc.sourceModule && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#0E4EBD] border border-blue-200" title={`Auto-archived from ${doc.sourceModule}`}>
+                                <Sparkles className="w-2.5 h-2.5 text-[#0E4EBD]" />
+                                {doc.sourceModule === 'finance' ? 'Liquidation' : 'Proposal'}
+                              </span>
+                            )}
+                          </div>
                           <div className="flex items-center gap-1.5 mt-1">
                             <FileChip type={doc.fileType} />
                             <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
@@ -822,13 +831,20 @@ function InboxTab() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0">{doc.submittedByOrgAcronym?.slice(0, 2) || '??'}</div>
+                            <div className={`w-7 h-7 ${doc.isSasInternal ? 'bg-gradient-to-br from-[#001A4D] to-purple-700' : 'bg-gradient-to-br from-[#001A4D] to-[#0E4EBD]'} rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
+                              {doc.submittedByOrgAcronym?.slice(0, 2) || (doc.isSasInternal ? 'SA' : '??')}
+                            </div>
                             <div>
                               <p className="text-[#001A4D] text-xs font-medium leading-tight">{doc.submittedByOrgName}</p>
+                              {doc.isSasInternal && (
+                                <span className="inline-block mt-0.5 px-1 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+                                  SAS Internal
+                                </span>
+                              )}
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                        <td className="px-4 py-3"><CategoryPill category={doc.category} categories={categories} /></td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <AcademicPeriodCell doc={doc} semesters={semesters} />
                         </td>
@@ -1139,7 +1155,7 @@ function SentTab() {
                       <p className="text-[#001A4D] font-bold text-sm">{doc.title}</p>
                       <div className="flex items-center gap-1.5 mt-1"><FileChip type={doc.fileType} /></div>
                     </td>
-                    <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                    <td className="px-4 py-3"><CategoryPill category={doc.category} categories={categories} /></td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <AcademicPeriodCell doc={doc} semesters={semesters} />
                     </td>
@@ -1199,6 +1215,7 @@ function SentTab() {
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export function AdminDocuments() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState<"incoming" | "sent">("incoming");
   const [showBroadcast, setShowBroadcast] = useState(false);
 
@@ -1215,15 +1232,26 @@ export function AdminDocuments() {
       {/* Page Header */}
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-gray-500 text-sm font-medium">Dashboard &rsaquo; Document Management</p>
+          <h1 className="text-xl font-bold text-[#001A4D]">Document Management</h1>
+          <p className="text-gray-500 text-xs font-medium">Dashboard &rsaquo; Document Management</p>
         </div>
-        <button
-          onClick={() => setShowBroadcast(true)}
-          className="flex items-center gap-2 px-5 py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg font-bold text-sm hover:bg-[#001A4D]/90 transition-colors cursor-pointer"
-        >
-          <Radio className="w-4 h-4" />
-          Broadcast Document to Clubs
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate('/home/settings?section=document-management')}
+            className="flex items-center gap-1.5 px-3 py-2 border border-gray-300 text-gray-700 bg-white rounded-lg text-xs font-semibold hover:bg-gray-50 transition-colors cursor-pointer"
+            title="Maintain document categories, reference numbers, and retention policies"
+          >
+            <Tag className="w-3.5 h-3.5 text-[#0E4EBD]" />
+            Category Settings
+          </button>
+          <button
+            onClick={() => setShowBroadcast(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-[#001A4D] text-[#FFD41C] rounded-lg font-bold text-xs hover:bg-[#001A4D]/90 transition-colors cursor-pointer shadow-sm"
+          >
+            <Radio className="w-3.5 h-3.5" />
+            Broadcast Document to Clubs
+          </button>
+        </div>
       </div>
 
       {/* Context banner */}

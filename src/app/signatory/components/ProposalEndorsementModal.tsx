@@ -116,7 +116,22 @@ export default function ProposalEndorsementModal({
     currentStep?.role === 'school_president' ||
     signatorySession?.role === 'school_president';
 
-  const isFinalApprover = isPresident || isSchoolAdmin || currentStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+  const isExecutiveApprover =
+    !isPresident &&
+    (isSchoolAdmin ||
+      currentStep?.actionType === 'approve' ||
+      currentStep?.actionType === 'both' ||
+      signatorySession?.actionType === 'approve' ||
+      signatorySession?.actionType === 'both');
+
+  const hasPresidentInChain = (proposal.approvalChain || []).some(
+    (s) => s.role === 'school_president'
+  );
+  const forwardLabel = hasPresidentInChain
+    ? 'Endorse & Forward to President'
+    : 'Endorse & Forward for Higher Approval';
+
+  const isFinalApprover = isPresident || isExecutiveApprover;
 
   const handleEndorse = async (overrideActionType?: 'endorse' | 'approve') => {
     if (!hasSignature) {
@@ -125,7 +140,7 @@ export default function ProposalEndorsementModal({
       return;
     }
 
-    const action = overrideActionType || (isFinalApprover ? 'approve' : 'endorse');
+    const action = overrideActionType || (isPresident ? 'approve' : 'endorse');
 
     setIsSubmitting(true);
     try {
@@ -572,18 +587,28 @@ export default function ProposalEndorsementModal({
             </h3>
             <div className="space-y-2">
               {proposal.approvalChain?.map((step, idx) => {
-                const isCurrent = idx === (proposal.currentStepIndex ?? 0);
-                const isSigned = step.status === 'endorsed';
+                const isApproved = step.status === 'approved';
+                const isSigned = step.status === 'endorsed' || isApproved;
+                const isWaived = step.status === 'waived';
                 const isReturned = step.status === 'returned';
+                const isCurrent =
+                  !isSigned &&
+                  !isWaived &&
+                  !isReturned &&
+                  (step.status === 'current' || idx === (proposal.currentStepIndex ?? 0));
 
                 return (
                   <div
                     key={idx}
                     className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs transition-all ${
-                      isCurrent
-                        ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-400/20'
+                      isApproved
+                        ? 'bg-blue-50/50 border-blue-300'
                         : isSigned
                         ? 'bg-emerald-50/50 border-emerald-300'
+                        : isWaived
+                        ? 'bg-slate-100/70 border-slate-200 text-slate-500'
+                        : isCurrent
+                        ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-400/20'
                         : isReturned
                         ? 'bg-amber-50/50 border-amber-300'
                         : 'bg-slate-50 border-slate-200'
@@ -592,18 +617,32 @@ export default function ProposalEndorsementModal({
                     <div className="flex items-center gap-3">
                       <div
                         className={`w-7 h-7 rounded-lg text-xs font-bold flex items-center justify-center ${
-                          isSigned
+                          isApproved
+                            ? 'bg-[#001A4D] text-[#FFD41C]'
+                            : isSigned
                             ? 'bg-emerald-600 text-white'
+                            : isWaived
+                            ? 'bg-slate-200 text-slate-500'
                             : isCurrent
                             ? 'bg-blue-600 text-white'
                             : 'bg-slate-200 text-slate-600'
                         }`}
                       >
-                        {isSigned ? <Check className="w-4 h-4" /> : step.step}
+                        {isApproved ? (
+                          <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                        ) : isSigned ? (
+                          <Check className="w-4 h-4" />
+                        ) : isWaived ? (
+                          <CheckCircle2 className="w-4 h-4 text-slate-400" />
+                        ) : (
+                          step.step
+                        )}
                       </div>
                       <div>
                         <div className="font-bold text-slate-900 flex items-center gap-2">
-                          <span>{step.signatoryName}</span>
+                          <span className={isWaived ? 'line-through text-slate-600' : ''}>
+                            {step.signatoryName}
+                          </span>
                           <span className="text-[10px] text-slate-500 font-normal">
                             ({step.signatoryEmail})
                           </span>
@@ -612,8 +651,12 @@ export default function ProposalEndorsementModal({
                           {step.roleTitle} {step.department && `• ${step.department}`}
                         </div>
                         {step.remarks && (
-                          <div className="text-[11px] text-slate-500 italic mt-0.5">
-                            Note: "{step.remarks}"
+                          <div
+                            className={`text-[11px] mt-0.5 italic ${
+                              isWaived ? 'text-slate-500' : 'text-slate-600'
+                            }`}
+                          >
+                            {isWaived ? step.remarks : `Note: "${step.remarks}"`}
                           </div>
                         )}
                       </div>
@@ -627,14 +670,20 @@ export default function ProposalEndorsementModal({
                             alt="Signature"
                             className="h-7 w-auto object-contain mx-auto"
                           />
-                          <span className="text-[9px] text-emerald-700 block font-mono">Digitally Endorsed</span>
+                          <span className="text-[9px] text-emerald-700 block font-mono">
+                            {isApproved ? 'Executive Clearance' : 'Digitally Endorsed'}
+                          </span>
                         </div>
                       )}
 
                       <span
                         className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
-                          isSigned
+                          isApproved
+                            ? 'bg-[#001A4D] text-[#FFD41C] border border-[#FFD41C]/30'
+                            : isSigned
                             ? 'bg-emerald-100 text-emerald-800'
+                            : isWaived
+                            ? 'bg-slate-200 text-slate-700 border border-slate-300'
                             : isCurrent
                             ? 'bg-blue-100 text-blue-800 font-black animate-pulse'
                             : isReturned
@@ -642,8 +691,12 @@ export default function ProposalEndorsementModal({
                             : 'bg-slate-100 text-slate-500'
                         }`}
                       >
-                        {isSigned
+                        {isApproved
+                          ? 'FULLY APPROVED'
+                          : isSigned
                           ? 'ENDORSED'
+                          : isWaived
+                          ? 'WAIVED'
                           : isCurrent
                           ? 'AWAITING YOUR SIGNATURE'
                           : isReturned
@@ -731,6 +784,11 @@ export default function ProposalEndorsementModal({
                 }
                 className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
               />
+              {isExecutiveApprover && (
+                <p className="text-[11px] text-blue-800 bg-blue-50/80 border border-blue-200/70 rounded-xl px-3 py-2 mt-2 leading-relaxed">
+                  <span className="font-bold">Dual Clearance Choice:</span> You may click <strong>Authorize & Approve (Final)</strong> if 1 approver is sufficient for this activity, or <strong>{forwardLabel}</strong> to route it for final Presidential review.
+                </p>
+              )}
             </div>
 
             {/* Return Mode Textarea if toggled */}
@@ -852,7 +910,7 @@ export default function ProposalEndorsementModal({
               Close
             </button>
 
-            {isSchoolAdmin ? (
+            {isExecutiveApprover ? (
               <>
                 <button
                   type="button"
@@ -861,7 +919,7 @@ export default function ProposalEndorsementModal({
                   className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <Send className="w-4 h-4" />
-                  <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to President'}</span>
+                  <span>{isSubmitting ? 'Processing...' : forwardLabel}</span>
                 </button>
 
                 <button

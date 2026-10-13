@@ -2385,140 +2385,6 @@ function StudentCollectionsAndPayablesTab({
 }
 
 
-// ─── Semester Transition Screens ───────────────────────────────────────────────
-function SemesterEndedScreen({ onViewPast, onStartNew }: { onViewPast: () => void; onStartNew: () => void }) {
-  return (
-    <div className="min-h-screen bg-white flex flex-col items-center justify-center px-8">
-      <div className="w-[120px] h-[120px] bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-full flex items-center justify-center mb-6">
-        <RefreshCw className="w-16 h-16 text-[#FFD41C]" style={{ animation: "spin 6s linear infinite" }} />
-      </div>
-      <h1 className="text-[#001A4D] font-bold text-3xl mb-2">Semester Has Ended</h1>
-      <p className="text-gray-500 text-base mb-8">2nd Semester · A.Y. 2025–2026 has concluded.</p>
-
-      <div className="grid grid-cols-2 gap-5 w-full max-w-2xl mb-6">
-        <div className="bg-white border border-[#E0E0E0] rounded-2xl p-6 text-center">
-          <History className="w-10 h-10 text-blue-600 mx-auto mb-3" />
-          <p className="text-blue-600 font-bold text-base mb-1">View Past Semester</p>
-          <p className="text-gray-500 text-sm mb-4">Browse events, attendance, finances, and payables from the completed semester.</p>
-          <button onClick={onViewPast} className="w-full py-2.5 border border-blue-600 text-blue-600 rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors">
-            View 2nd Semester Data
-          </button>
-        </div>
-        <div className="bg-white border border-[#E0E0E0] rounded-2xl p-6 text-center">
-          <ArrowRight className="w-10 h-10 text-[#0E4EBD] mx-auto mb-3" />
-          <p className="text-[#001A4D] font-bold text-base mb-1">Start New Semester</p>
-          <p className="text-gray-500 text-sm mb-4">Begin working in 1st Semester A.Y. 2026–2027.</p>
-          <button onClick={onStartNew} className="w-full py-2.5 bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] text-white rounded-lg text-sm font-medium hover:opacity-90 transition-opacity">
-            Go to New Semester Dashboard
-          </button>
-        </div>
-      </div>
-      <button className="text-gray-400 text-sm hover:text-gray-600 transition-colors">I'll decide later</button>
-    </div>
-  );
-}
-
-function SemesterSetupChecklist({ onContinue }: { onContinue: () => void }) {
-  const [done, setDone] = useState<Record<string, boolean>>({});
-  const items = [
-    { id: "officers", icon: Shield, color: "text-[#0E4EBD]", bg: "bg-blue-50", label: "Confirm Organization Officers", desc: "Verify that your organization's officer roster is up to date for this semester.", action: "Update Officers" },
-    { id: "budget", icon: Wallet, color: "text-[#0E4EBD]", bg: "bg-blue-50", label: "Set Club Budget Plan", desc: "Plan your organization's expenditures for the new semester.", action: "Set Budget Plan" },
-    { id: "dues", icon: Coins, color: "text-amber-600", bg: "bg-amber-50", label: "Set Up Member Dues", desc: "Configure the dues and registration fees for your members this semester.", action: "Set Up Dues" },
-    { id: "assign", icon: Users, color: "text-green-600", bg: "bg-green-50", label: "Assign Dues to Members", desc: "Once dues are configured, assign them to your active members.", action: "Assign Dues", disabled: !done["dues"] },
-  ];
-  const doneCount = Object.values(done).filter(Boolean).length;
-
-  return (
-    <div className="min-h-screen bg-white px-8 py-10">
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-[#001A4D] font-bold text-2xl mb-1">Set Up Your Organization for 1st Semester A.Y. 2026–2027</h1>
-        <p className="text-gray-500 text-sm mb-6">Complete these steps to get your organization ready for the new semester.</p>
-
-        <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden mb-6">
-          {items.map((item, i) => {
-            const Icon = item.icon;
-            return (
-              <div key={item.id} className={`flex items-center gap-4 px-5 py-4 ${i < items.length - 1 ? "border-b border-[#E0E0E0]" : ""} ${item.disabled ? "opacity-50" : ""}`}>
-                <button
-                  onClick={() => !item.disabled && setDone({ ...done, [item.id]: !done[item.id] })}
-                  className={`w-7 h-7 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${done[item.id] ? "bg-green-500 border-green-500" : "border-gray-300"}`}
-                >
-                  {done[item.id] && <CheckCircle className="w-4 h-4 text-white" />}
-                </button>
-                <div className={`w-10 h-10 ${item.bg} rounded-full flex items-center justify-center flex-shrink-0`}>
-                  <Icon className={`w-5 h-5 ${item.color}`} />
-                </div>
-                <div className="flex-1">
-                  <p className="text-[#001A4D] font-bold text-sm">{item.label}</p>
-                  <p className="text-gray-500 text-xs">{item.desc}</p>
-                </div>
-                <button
-                  disabled={!!item.disabled}
-                  className={`px-3 py-1.5 border rounded-lg text-xs font-medium transition-colors ${
-                    done[item.id]
-                      ? "border-green-200 text-green-600 bg-green-50"
-                      : item.disabled
-                      ? "border-gray-200 text-gray-400 cursor-not-allowed"
-                      : `border-[#0E4EBD] text-[#0E4EBD] hover:bg-blue-50`
-                  }`}
-                >
-                  {done[item.id] ? "✓ Done" : item.action}
-                </button>
-              </div>
-            );
-          })}
-
-          <div className="px-5 py-3 bg-gray-50 border-t border-[#E0E0E0]">
-            <div className="flex justify-between items-center mb-1">
-              <p className="text-gray-500 text-xs">{doneCount} of {items.length} setup steps completed</p>
-            </div>
-            <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] rounded-full transition-all" style={{ width: `${(doneCount / items.length) * 100}%` }} />
-            </div>
-          </div>
-        </div>
-
-        <div className="text-center">
-          <button
-            onClick={onContinue}
-            disabled={doneCount === 0}
-            className={`w-full py-3 rounded-xl text-sm font-bold mb-2 transition-colors ${
-              doneCount > 0 ? "bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] text-white hover:opacity-90" : "bg-gray-100 text-gray-400 cursor-not-allowed"
-            }`}
-          >
-            Continue to Dashboard →
-          </button>
-          <p className="text-gray-400 text-xs mb-4">You can complete remaining steps from your dashboard.</p>
-          <button onClick={onContinue} className="text-gray-400 text-sm hover:text-gray-600 transition-colors">Skip Setup — I'll do this later</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Historical Finance Summary ────────────────────────────────────────────────
-function HistoricalSummaryCard() {
-  return (
-    <div className="p-4 bg-[#001A4D] rounded-xl">
-      <p className="text-white/70 text-xs mb-3">Final Financial Record</p>
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: "Final Budget Utilization", value: "91%" },
-          { label: "Total Collections", value: "₱21,250.00" },
-          { label: "Total Outstanding", value: "₱3,500.00" },
-          { label: "Total Liquidations Filed", value: "6" },
-        ].map((s) => (
-          <div key={s.label} className="text-center">
-            <p className="text-[#FFD41C] font-bold text-xl">{s.value}</p>
-            <p className="text-white/70 text-xs mt-0.5">{s.label}</p>
-          </div>
-        ))}
-      </div>
-      <p className="text-white/50 text-xs italic mt-3">This is the final financial record for this semester.</p>
-    </div>
-  );
-}
-
 // ─── Main FinanceCenter Page ───────────────────────────────────────────────────
 export default function FinanceCenter() {
   const { profile } = useOfficerProfile();
@@ -2530,9 +2396,8 @@ export default function FinanceCenter() {
   const officerStudentId = profile?.studentId || 'officer';
 
   const { data: ledgerData } = useOrgLedger(activeOrgId);
-  const { data: semesters } = useSemesters();
-  const availableSemesters = semesters.filter((s) => s.status === 'ACTIVE' || s.status === 'UPCOMING');
-  const [selectedSemId, setSelectedSemId] = useState<string>("all");
+  const selectedSemId = "all";
+  const isPast = false;
 
   const { data: payablesData } = useOrgPayables(activeOrgId, selectedSemId);
 
@@ -2543,24 +2408,6 @@ export default function FinanceCenter() {
   }, [payablesData]);
 
   const [activeTab, setActiveTab] = useState<FinanceTab>("budget");
-  const [showTransition, setShowTransition] = useState(false);
-  const [showSetup, setShowSetup] = useState(false);
-
-  const selectedSemesterObj = semesters.find((s) => s.id === selectedSemId);
-  const isPast = selectedSemesterObj?.status === 'COMPLETED';
-
-  // Demo: simulate transition screens
-  if (showSetup) {
-    return <SemesterSetupChecklist onContinue={() => setShowSetup(false)} />;
-  }
-  if (showTransition) {
-    return (
-      <SemesterEndedScreen
-        onViewPast={() => { setShowTransition(false); setSelectedSemId("all"); }}
-        onStartNew={() => { setShowTransition(false); setShowSetup(true); }}
-      />
-    );
-  }
 
   return (
     <div className="space-y-5">
@@ -2573,65 +2420,17 @@ export default function FinanceCenter() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <select
-            value={selectedSemId}
-            onChange={(e) => setSelectedSemId(e.target.value)}
-            className="px-4 py-2 border border-[#E0E0E0] rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent outline-none"
-          >
-            <option value="all">All Semesters</option>
-            {availableSemesters.map((s) => (
-              <option key={s.id} value={s.id}>{s.label}</option>
-            ))}
-          </select>
-
-          <button className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium flex items-center gap-2 hover:bg-[#001A4D]/90 transition-colors">
+          <button className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer shadow-xs">
             <Download className="w-4 h-4" />
             Export Financial Report
-          </button>
-          <button
-            onClick={() => setShowTransition(true)}
-            className="px-3 py-2 border border-gray-300 text-gray-500 rounded-lg text-xs hover:bg-gray-50 transition-colors"
-            title="Demo: Semester Transition Screen"
-          >
-            Demo Transition
           </button>
         </div>
       </div>
 
-      {/* Past Semester Banner */}
-      {isPast && (
-        <div className="flex items-center justify-between px-5 py-3 bg-amber-50 border border-amber-200 rounded-xl">
-          <div className="flex items-center gap-2">
-            <Archive className="w-4 h-4 text-amber-600" />
-            <span className="text-amber-700 font-bold text-sm">Viewing: {selectedSemesterObj?.label || 'All Semesters'} — Read-Only Historical Data.</span>
-          </div>
-          <button onClick={() => setSelectedSemId("all")} className="text-[#001A4D] text-xs font-medium hover:underline">
-            Return to Current Semester
-          </button>
-        </div>
-      )}
-
-      {/* Past semester historical summary */}
-      {isPast && <HistoricalSummaryCard />}
-
       {/* Metric Cards */}
       <MetricsRow isPast={isPast} ledgerData={ledgerData} semesterId={selectedSemId} payablesData={orgNonEventPayables} />
 
-      {/* Export row for past semester */}
-      {isPast && (
-        <div className="flex gap-3">
-          <button className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-xs font-medium flex items-center gap-1.5 hover:bg-[#001A4D]/90 transition-colors">
-            <Download className="w-3.5 h-3.5" />
-            Export This Semester's Report (PDF)
-          </button>
-          <button className="px-4 py-2 border border-[#0E4EBD] text-[#0E4EBD] rounded-lg text-xs hover:bg-blue-50 transition-colors flex items-center gap-1.5">
-            <FileText className="w-3.5 h-3.5" />
-            Export Payables Summary (Excel)
-          </button>
-        </div>
-      )}
-
-      {/* Three-Tab Area */}
+      {/* Two-Tab Area */}
       <div>
         <div className="flex border-b border-gray-200 mb-4 overflow-x-auto">
           {([

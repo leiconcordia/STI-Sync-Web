@@ -4,6 +4,8 @@ import {
   getDocs,
   query,
   where,
+  deleteDoc,
+  writeBatch,
   serverTimestamp,
   Timestamp,
 } from 'firebase/firestore';
@@ -129,3 +131,80 @@ export async function deductApprovedEventBudget(
     return docRef.id;
   }
 }
+
+/**
+ * Completely purges and rolls back all ledger entries related to a specific liquidation.
+ * Searches both /organization_ledger and /sao_ledger by collectionId == liquidationId.
+ */
+export async function removeLedgerTransactionsForLiquidation(liquidationId: string): Promise<number> {
+  if (!liquidationId) return 0;
+  let deletedCount = 0;
+  const batch = writeBatch(db);
+
+  try {
+    // 1. Purge from organization_ledger
+    const orgQuery = query(collection(db, ORG_LEDGER_COLLECTION), where('collectionId', '==', liquidationId));
+    const orgSnap = await getDocs(orgQuery);
+    orgSnap.docs.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
+      deletedCount++;
+    });
+
+    // 2. Purge from sao_ledger
+    const saoQuery = query(collection(db, SAO_LEDGER_COLLECTION), where('collectionId', '==', liquidationId));
+    const saoSnap = await getDocs(saoQuery);
+    saoSnap.docs.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
+      deletedCount++;
+    });
+
+    if (deletedCount > 0) {
+      await batch.commit();
+      console.log(`[removeLedgerTransactionsForLiquidation] Successfully purged ${deletedCount} ledger entries for liquidation ${liquidationId}`);
+    }
+  } catch (err) {
+    console.error(`[removeLedgerTransactionsForLiquidation] Error rolling back ledger for liquidation ${liquidationId}:`, err);
+    throw err;
+  }
+
+  return deletedCount;
+}
+
+/**
+ * Completely purges and rolls back all ledger entries related to a specific event.
+ * Searches both /organization_ledger and /sao_ledger by eventId == eventId.
+ */
+export async function removeLedgerTransactionsForEvent(eventId: string): Promise<number> {
+  if (!eventId) return 0;
+  let deletedCount = 0;
+  const batch = writeBatch(db);
+
+  try {
+    // 1. Purge from organization_ledger
+    const orgQuery = query(collection(db, ORG_LEDGER_COLLECTION), where('eventId', '==', eventId));
+    const orgSnap = await getDocs(orgQuery);
+    orgSnap.docs.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
+      deletedCount++;
+    });
+
+    // 2. Purge from sao_ledger
+    const saoQuery = query(collection(db, SAO_LEDGER_COLLECTION), where('eventId', '==', eventId));
+    const saoSnap = await getDocs(saoQuery);
+    saoSnap.docs.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
+      deletedCount++;
+    });
+
+    if (deletedCount > 0) {
+      await batch.commit();
+      console.log(`[removeLedgerTransactionsForEvent] Successfully purged ${deletedCount} ledger entries for event ${eventId}`);
+    }
+  } catch (err) {
+    console.error(`[removeLedgerTransactionsForEvent] Error rolling back ledger for event ${eventId}:`, err);
+    throw err;
+  }
+
+  return deletedCount;
+}
+

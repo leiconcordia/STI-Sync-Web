@@ -62,6 +62,8 @@ export const SIGNATORY_ROLES: SignatoryRoleOption[] = [
 
 export type SignatoryAuthorityCapability = 'endorser' | 'approver' | 'both';
 
+export type SignatoryDocumentScope = 'both' | 'liquidation_only' | 'proposal_only';
+
 export interface InstitutionalSignatory {
   id: string;
   uid?: string;
@@ -76,6 +78,9 @@ export interface InstitutionalSignatory {
   signatureUrl?: string;
   signatureDataUrl?: string;
   signatureUpdatedAt?: any;
+  isPermanentSigner?: boolean;
+  isMandatoryForDepartment?: string;
+  applicableScope?: SignatoryDocumentScope; // 'both' | 'liquidation_only' | 'proposal_only'
   isActive: boolean;
   requiresPasswordChange?: boolean;
   temporaryPassword?: string;
@@ -96,6 +101,39 @@ export interface CreateSignatoryPayload {
   departmentId?: string;
   employeeId?: string;
   temporaryPassword?: string;
+  isPermanentSigner?: boolean;
+  isMandatoryForDepartment?: string;
+  applicableScope?: SignatoryDocumentScope;
 }
+
+/**
+ * Determines whether a signatory is eligible for a specific document workflow.
+ * Guarantees that Accountants are strictly for Liquidations and never Activity Proposals.
+ */
+export function isSignatoryApplicableTo(
+  sig: InstitutionalSignatory,
+  formType: 'proposal' | 'liquidation'
+): boolean {
+  const roleLower = (sig.role || '').toLowerCase();
+  const titleLower = (sig.roleTitle || '').toLowerCase();
+  const isAccountant =
+    roleLower === 'accountant' ||
+    titleLower.includes('accountant') ||
+    titleLower.includes('auditor');
+
+  if (formType === 'proposal') {
+    if (isAccountant) return false;
+    if (sig.applicableScope === 'liquidation_only') return false;
+    return true;
+  }
+
+  if (formType === 'liquidation') {
+    if (sig.applicableScope === 'proposal_only') return false;
+    return true;
+  }
+
+  return true;
+}
+
 
 

@@ -1208,10 +1208,18 @@ export function EventApprovals() {
                               Revision
                             </span>
                           ) : isApproved ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                              Approved
-                            </span>
+                            <div className="flex flex-col gap-1 items-start">
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                Approved
+                              </span>
+                              {(event as any).archivedRefNumber && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono text-[#0E4EBD] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200" title="Archived into EDMS">
+                                  <FileText className="w-2.5 h-2.5" />
+                                  {(event as any).archivedRefNumber}
+                                </span>
+                              )}
+                            </div>
                           ) : event.status === 'completed' || event.proposalStatus === 'completed' ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
                               <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />

@@ -5,14 +5,85 @@ import {
   CheckCircle, X, HelpCircle, Clock, FileText, Hash,
   Tag, Calendar, Building2, File, StickyNote, Send,
   ZoomIn, ZoomOut, Maximize2, RefreshCw, MessageSquare,
-  ExternalLink, Eye, Loader2
+  ExternalLink, Eye, Loader2, RotateCcw
 } from "lucide-react";
 import { useDocument } from "../../modules/documents/hooks/useDocumentStream";
+import { useDocumentCategories } from "../../modules/documents/hooks/useDocumentCategories";
 import { reviewDocument } from "../../modules/documents/services/document.service";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import { formatDistanceToNow } from "date-fns";
 import { formatAppDateTime } from "../../utils/date";
 import type { DocumentDocument } from "../../modules/documents/types/document.types";
+
+// ─── Return for Revision Confirmation Modal ────────────────────────────────────
+function ReturnModal({
+  doc,
+  remarks,
+  onClose,
+  onConfirm,
+  submitting
+}: {
+  doc: DocumentDocument;
+  remarks: string;
+  onClose: () => void;
+  onConfirm: (r: string) => void;
+  submitting: boolean;
+}) {
+  const [localRemarks, setLocalRemarks] = useState(remarks);
+  const canConfirm = localRemarks.trim().length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[560px] overflow-hidden">
+        <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-5 flex items-center gap-4">
+          <div className="w-11 h-11 bg-white/20 rounded-full flex items-center justify-center">
+            <RotateCcw className="w-6 h-6 text-white" />
+          </div>
+          <div>
+            <p className="text-white font-bold text-lg">Return Document for Revision</p>
+            <p className="text-[#FFD41C] text-sm">{doc.title}</p>
+          </div>
+        </div>
+        <div className="p-6 space-y-4">
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl">
+            <div className="flex items-center gap-2 mb-1">
+              <RotateCcw className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              <p className="text-[#001A4D] text-sm font-semibold">The document will be returned to the officer for revision.</p>
+            </div>
+            <p className="text-xs text-amber-800 ml-6">
+              The submitting officer will receive your feedback and can upload a corrected version without having to restart a new proposal.
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1.5">
+              Revision Instructions / Required Changes <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              rows={4}
+              placeholder="Specify the corrections, missing signatures, or required attachments..."
+              value={localRemarks}
+              onChange={(e) => setLocalRemarks(e.target.value)}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-none text-[#001A4D]"
+            />
+            <p className="text-gray-400 text-xs mt-1">These instructions will be displayed prominently on the officer's dashboard.</p>
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t border-gray-200 flex justify-between">
+          <button onClick={onClose} disabled={submitting} className="px-4 py-2 border border-gray-300 text-gray-600 rounded-lg text-sm hover:bg-gray-50 transition-colors disabled:opacity-50 cursor-pointer">Cancel</button>
+          <button
+            onClick={() => onConfirm(localRemarks)}
+            disabled={submitting || !canConfirm}
+            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-lg text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer"
+          >
+            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+            {submitting ? "Returning..." : "Return for Revision"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ─── Approve Confirmation Modal ────────────────────────────────────────────────
 function ApproveModal({ doc, remarks, onClose, onConfirm, submitting }: { doc: DocumentDocument; remarks: string; onClose: () => void; onConfirm: (r: string) => void; submitting: boolean }) {
@@ -160,15 +231,15 @@ export function AdminDocumentReview() {
   const navigate = useNavigate();
   const { docId } = useParams();
   const { data: doc, loading, error } = useDocument(docId);
+  const { data: docCategories } = useDocumentCategories();
   const { profile: adminProfile } = useAdviserProfile();
 
-  const [decision, setDecision] = useState<"approved" | "rejected" | "info" | null>(null);
+  const [decision, setDecision] = useState<"approved" | "rejected" | "returned" | null>(null);
   const [remarks, setRemarks] = useState("");
   const [showApproveModal, setShowApproveModal] = useState(false);
   const [showRejectModal, setShowRejectModal] = useState(false);
+  const [showReturnModal, setShowReturnModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const canReject = remarks.trim().length >= 10;
 
   if (loading) {
     return <div className="flex justify-center items-center h-[calc(100vh-80px)]"><Loader2 className="w-8 h-8 text-[#0E4EBD] animate-spin" /></div>;
@@ -177,7 +248,7 @@ export function AdminDocumentReview() {
     return <div className="flex justify-center items-center h-[calc(100vh-80px)]"><p className="text-gray-500">Document not found.</p></div>;
   }
 
-  const isProcessed = doc.status === 'Approved' || doc.status === 'Rejected';
+  const isProcessed = doc.status === 'Approved' || doc.status === 'Rejected' || doc.status === 'Returned';
 
   const handleApprove = async (finalRemarks: string) => {
     if (!adminProfile) return;
@@ -186,6 +257,16 @@ export function AdminDocumentReview() {
     setIsSubmitting(false);
     setDecision("approved");
     setShowApproveModal(false);
+    setTimeout(() => navigate("/home/documents"), 2000);
+  };
+
+  const handleReturn = async (returnRemarks: string) => {
+    if (!adminProfile) return;
+    setIsSubmitting(true);
+    await reviewDocument(doc.id, 'Returned', adminProfile.uid, returnRemarks || remarks || null);
+    setIsSubmitting(false);
+    setDecision("returned");
+    setShowReturnModal(false);
     setTimeout(() => navigate("/home/documents"), 2000);
   };
 
@@ -200,8 +281,6 @@ export function AdminDocumentReview() {
     setTimeout(() => navigate("/home/documents"), 2000);
   };
 
-  const handleRequestInfo = () => { setDecision("info"); };
-
   const submittedAtStr = formatAppDateTime(doc.createdAt, 'Unknown');
   const timeInQueueStr = doc.createdAt ? formatDistanceToNow(doc.createdAt.toDate()) : '';
   const fileSizeStr = doc.fileSize >= 1024 * 1024 ? `${(doc.fileSize / (1024 * 1024)).toFixed(1)} MB` : `${Math.round(doc.fileSize / 1024)} KB`;
@@ -211,14 +290,17 @@ export function AdminDocumentReview() {
   const isPdf = type === 'PDF';
   const isOffice = ['DOCX', 'DOC', 'XLSX', 'XLS', 'PPTX', 'PPT'].includes(type);
 
+  const matchedCategory = docCategories.find(c => c.name.toLowerCase() === doc.category.toLowerCase());
+  const categoryPillClass = matchedCategory?.color || "bg-blue-50 text-[#0E4EBD]";
+
   const history = [
     { label: "Submitted to SAS", color: "bg-[#0E4EBD]", icon: Send, timestamp: submittedAtStr, actor: doc.submittedBy },
   ];
-  if (doc.status === 'Approved' || doc.status === 'Rejected') {
+  if (doc.status === 'Approved' || doc.status === 'Rejected' || doc.status === 'Returned') {
     history.push({
-      label: doc.status === 'Approved' ? "Document Approved" : "Document Rejected",
-      color: doc.status === 'Approved' ? "bg-green-500" : "bg-red-500",
-      icon: doc.status === 'Approved' ? CheckCircle : X,
+      label: doc.status === 'Approved' ? "Document Approved" : doc.status === 'Returned' ? "Returned for Revision" : "Document Rejected",
+      color: doc.status === 'Approved' ? "bg-green-500" : doc.status === 'Returned' ? "bg-amber-500" : "bg-red-500",
+      icon: doc.status === 'Approved' ? CheckCircle : doc.status === 'Returned' ? RotateCcw : X,
       timestamp: formatAppDateTime(doc.reviewedAt, ''),
       actor: "SAS Admin"
     });
@@ -395,10 +477,14 @@ export function AdminDocumentReview() {
           {decision ? (
             /* Decision Made */
             <div className="space-y-4">
-              <div className={`p-5 rounded-2xl text-center ${decision === "approved" ? "bg-gradient-to-b from-green-500 to-green-600" : decision === "rejected" ? "bg-gradient-to-b from-red-500 to-orange-500" : "bg-gradient-to-b from-[#0E4EBD] to-blue-500"}`}>
+              <div className={`p-5 rounded-2xl text-center ${
+                decision === "approved" ? "bg-gradient-to-b from-green-500 to-green-600" :
+                decision === "returned" ? "bg-gradient-to-b from-amber-500 to-amber-600" :
+                "bg-gradient-to-b from-red-500 to-orange-500"
+              }`}>
                 {decision === "approved" && <><CheckCircle className="w-10 h-10 text-white mx-auto mb-2" /><p className="text-white font-bold text-lg">Document Approved</p></>}
+                {decision === "returned" && <><RotateCcw className="w-10 h-10 text-white mx-auto mb-2" /><p className="text-white font-bold text-lg">Returned for Revision</p></>}
                 {decision === "rejected" && <><X className="w-10 h-10 text-white mx-auto mb-2" /><p className="text-white font-bold text-lg">Document Rejected</p></>}
-                {decision === "info" && <><HelpCircle className="w-10 h-10 text-white mx-auto mb-2" /><p className="text-white font-bold text-lg">More Info Requested</p></>}
                 <p className="text-white/80 text-xs mt-1">{formatAppDateTime(new Date())}</p>
               </div>
               <button
@@ -409,9 +495,9 @@ export function AdminDocumentReview() {
               </button>
               <button
                 onClick={() => navigate("/home/documents")}
-                className="w-full py-2.5 bg-[#0E4EBD] text-white rounded-lg text-sm font-medium hover:bg-[#0E4EBD]/90 transition-colors"
+                className="w-full py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 transition-colors"
               >
-                Next Pending Document
+                Back to Document Queue
               </button>
             </div>
           ) : isProcessed ? (
@@ -422,11 +508,25 @@ export function AdminDocumentReview() {
                 <p className="text-[#001A4D] font-bold text-base">Review Decision</p>
               </div>
 
-              <div className={`p-4 rounded-xl border ${doc.status === 'Approved' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
+              <div className={`p-4 rounded-xl border ${
+                doc.status === 'Approved' ? 'bg-green-50 border-green-200' :
+                doc.status === 'Returned' ? 'bg-amber-50 border-amber-200' :
+                'bg-red-50 border-red-200'
+              }`}>
                 <div className="flex items-center gap-2 mb-2">
-                  {doc.status === 'Approved' ? <CheckCircle className="w-5 h-5 text-green-600" /> : <X className="w-5 h-5 text-red-600" />}
-                  <p className={`font-bold text-sm ${doc.status === 'Approved' ? 'text-green-700' : 'text-red-700'}`}>
-                    Document {doc.status}
+                  {doc.status === 'Approved' ? (
+                    <CheckCircle className="w-5 h-5 text-green-600" />
+                  ) : doc.status === 'Returned' ? (
+                    <RotateCcw className="w-5 h-5 text-amber-600" />
+                  ) : (
+                    <X className="w-5 h-5 text-red-600" />
+                  )}
+                  <p className={`font-bold text-sm ${
+                    doc.status === 'Approved' ? 'text-green-700' :
+                    doc.status === 'Returned' ? 'text-amber-800' :
+                    'text-red-700'
+                  }`}>
+                    Document {doc.status === 'Returned' ? 'Returned for Revision' : doc.status}
                   </p>
                 </div>
                 <p className="text-xs text-gray-500">
@@ -500,7 +600,7 @@ export function AdminDocumentReview() {
                 <div>
                   <button
                     onClick={() => setShowApproveModal(true)}
-                    className="w-full py-3.5 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:opacity-90 transition-opacity"
+                    className="w-full py-3.5 bg-gradient-to-r from-green-500 to-green-400 text-white rounded-xl font-bold text-base flex items-center justify-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm"
                   >
                     <CheckCircle className="w-5 h-5" />
                     Approve Document
@@ -508,28 +608,28 @@ export function AdminDocumentReview() {
                   <p className="text-gray-400 text-[10px] italic text-center mt-1">Officer will be notified. Document marked as approved.</p>
                 </div>
 
+                {/* Return for Revision */}
+                <div>
+                  <button
+                    onClick={() => setShowReturnModal(true)}
+                    className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 hover:opacity-90 transition-opacity cursor-pointer shadow-sm"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    Return for Revision
+                  </button>
+                  <p className="text-gray-400 text-[10px] italic text-center mt-1">Officer receives your feedback to submit a corrected version.</p>
+                </div>
+
                 {/* Reject */}
                 <div>
                   <button
                     onClick={() => setShowRejectModal(true)}
-                    className="w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 border-[1.5px] border-red-500 text-red-500 hover:bg-red-50 transition-colors"
+                    className="w-full py-2.5 rounded-xl font-medium text-xs flex items-center justify-center gap-2 border border-red-300 text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                     Reject Document
                   </button>
-                  <p className="text-gray-400 text-[10px] italic text-center mt-1">Officer receives your remarks and can resubmit.</p>
-                </div>
-
-                {/* Request More Info */}
-                <div>
-                  <button
-                    onClick={handleRequestInfo}
-                    className="w-full py-2.5 border border-blue-500 text-blue-600 rounded-xl text-sm flex items-center justify-center gap-2 hover:bg-blue-50 transition-colors"
-                  >
-                    <HelpCircle className="w-4 h-4" />
-                    Request More Information
-                  </button>
-                  <p className="text-gray-400 text-[10px] italic text-center mt-1">Document stays in queue. Officer is notified.</p>
+                  <p className="text-gray-400 text-[10px] italic text-center mt-1">For policy violations or unauthorized activities.</p>
                 </div>
               </div>
             </>
@@ -539,6 +639,9 @@ export function AdminDocumentReview() {
 
       {showApproveModal && (
         <ApproveModal doc={doc} remarks={remarks} onClose={() => setShowApproveModal(false)} onConfirm={handleApprove} submitting={isSubmitting} />
+      )}
+      {showReturnModal && (
+        <ReturnModal doc={doc} remarks={remarks} onClose={() => setShowReturnModal(false)} onConfirm={handleReturn} submitting={isSubmitting} />
       )}
       {showRejectModal && (
         <RejectModal doc={doc} remarks={remarks} onClose={() => setShowRejectModal(false)} onConfirm={handleReject} submitting={isSubmitting} />

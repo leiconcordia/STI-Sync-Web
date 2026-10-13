@@ -1,4 +1,4 @@
-import { CheckCircle, Calendar, Users, DollarSign, Shield, Rocket, Clock, MapPin, Award } from 'lucide-react';
+import { CheckCircle, Calendar, Users, DollarSign, Shield, Rocket, Clock, MapPin, Award, Lock } from 'lucide-react';
 import type { EventFormData } from '../../types/event.types';
 import { useOfficerProfile } from '../../../../auth/hooks/useOfficerProfile';
 import { useAdviserProfile } from '../../../auth/hooks/useAdviserProfile';
@@ -283,25 +283,49 @@ export default function Step7Publish({ data, onUpdate, onPublish, isPublishing, 
             </div>
 
             {/* Large Submit / Publish Button */}
-            <button
-              type="button"
-              onClick={onPublish}
-              disabled={!allValid || isPublishing}
-              className={`w-full py-3 text-white rounded-lg font-bold text-base transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
-                showOfficerMode
-                  ? 'bg-[#001A4D] hover:bg-[#002D72] shadow-xs'
-                  : 'bg-emerald-600 hover:bg-emerald-700'
-              }`}
-            >
-              <Rocket className="w-5 h-5" />
-              {isPublishing
-                ? 'Submitting...'
-                : showOfficerMode
-                ? (data.proposalStatus === 'returned' || data.proposalStatus === 'rejected'
-                    ? 'Save Changes & Resubmit Proposal'
-                    : 'Submit Proposal for SAO Approval')
-                : 'Create & Publish Event'}
-            </button>
+            {showOfficerMode && !officerProfile?.isAdviser ? (
+              <div className="space-y-2.5">
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-950 flex items-start gap-2.5">
+                  <Lock className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold block">Adviser Endorsement Required</span>
+                    <span className="text-[11px] text-amber-800 leading-snug block mt-0.5">
+                      Student Officers can prepare event details and save draft changes. In compliance with institutional policy, only your appointed Club Adviser has authorization to endorse and submit this proposal for institutional review.
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  disabled
+                  className="w-full py-3 bg-slate-100 border border-slate-300 text-slate-400 rounded-lg font-bold text-sm flex items-center justify-center gap-2 cursor-not-allowed shadow-2xs"
+                  title="Only Club Advisers can submit activity proposals"
+                >
+                  <Lock className="w-4 h-4 text-slate-400" />
+                  <span>Club Adviser Endorsement Required to Submit</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onPublish}
+                disabled={!allValid || isPublishing}
+                className={`w-full py-3 text-white rounded-lg font-bold text-base transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
+                  showOfficerMode
+                    ? 'bg-[#001A4D] hover:bg-[#002D72] shadow-xs'
+                    : 'bg-emerald-600 hover:bg-emerald-700'
+                }`}
+              >
+                <Rocket className="w-5 h-5" />
+                {isPublishing
+                  ? 'Submitting...'
+                  : showOfficerMode
+                  ? (data.proposalStatus === 'returned' || data.proposalStatus === 'rejected'
+                      ? 'Endorse & Resubmit Proposal'
+                      : 'Endorse & Submit Proposal for SAO Approval')
+                  : 'Create & Publish Event'}
+              </button>
+            )}
 
             {!allValid && (
               <p className="text-xs text-center text-red-600">

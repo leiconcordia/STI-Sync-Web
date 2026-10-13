@@ -3,7 +3,7 @@ import {
   Upload, Clock, CheckCircle, XCircle, Mail, ArrowUp, ArrowDown,
   Eye, Download, RefreshCw, Trash2, Search, Send, Save,
   FileText, X, MessageSquare, ChevronDown, ChevronUp,
-  Mailbox, EyeOff, BellOff, Loader2, AlertCircle, RotateCcw,
+  Mailbox, EyeOff, BellOff, Loader2, AlertCircle, RotateCcw, Sparkles,
 } from "lucide-react";
 import { useDocumentCategories } from '../../modules/documents/hooks/useDocumentCategories';
 import { useOfficerSubmissions, useOfficerInbox } from '../../modules/documents/hooks/useDocumentStream';
@@ -39,9 +39,112 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Policy": "bg-[#001A4D]/10 text-[#001A4D]",
 };
 
-function CategoryPill({ category }: { category: string }) {
-  const cls = CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
-  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${cls}`}>{category}</span>;
+function CategoryPill({ category, categories }: { category: string; categories?: any[] }) {
+  const matched = categories?.find(c => c.name?.toLowerCase() === category?.toLowerCase());
+  const cls = matched?.color || CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
+  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{category}</span>;
+}
+
+function downloadOfficialTemplate(name: string, type: 'docx' | 'xlsx' | 'pdf') {
+  let content = '';
+  const extension = type;
+
+  if (name.includes('Activity Proposal')) {
+    content = `STI COLLEGE - STUDENT AFFAIRS SERVICES (SAS)
+OFFICIAL ACTIVITY PROPOSAL & EVENT PERMIT TEMPLATE
+
+1. GENERAL EVENT INFORMATION
+- Organization Name: 
+- Event Title: 
+- Target Date & Time: 
+- Proposed Venue / Platform: 
+- Target Participants & Expected Headcount: 
+
+2. EVENT OBJECTIVES & INSTITUTIONAL ALIGNMENT
+- Primary Objective: 
+- Alignment with Institutional Goals: 
+
+3. PROGRAM FLOW & SCHEDULE
+- Time | Activity | Person Responsible
+
+4. BUDGET REQUIREMENTS & FUNDING SOURCE
+- Item | Quantity | Estimated Cost | Source (Org Fund / Registration / SAS Grant)
+- Total Estimated Budget: PHP 0.00
+
+5. SIGNATORIES & APPROVAL ROUTE
+- Prepared By: [Club Secretary / Project Head]
+- Noted By: [Club President]
+- Endorsed By: [Faculty Adviser]
+- Approved By: Student Affairs Services (SAS)`;
+  } else if (name.includes('Parent') || name.includes('Waiver')) {
+    content = `STI COLLEGE - STUDENT AFFAIRS SERVICES (SAS)
+OFFICIAL PARENT / GUARDIAN CONSENT & WAIVER OF LIABILITY
+
+I, the undersigned parent/legal guardian of:
+Student Name: _____________________________________
+Program & Year: ___________________________________
+Student Number: ___________________________________
+
+hereby grant permission for my son/daughter/ward to participate in the upcoming activity:
+Activity Title: ____________________________________
+Date & Time: _______________________________________
+Location / Destination: ___________________________
+Organizing Body: __________________________________
+
+ACKNOWLEDGMENT & WAIVER:
+I understand that proper precautions will be undertaken by the student organization and STI College. I release the school and its representatives from liability for incidents arising from causes beyond their reasonable control.
+
+Emergency Contact Person: _________________________
+Contact Number: ___________________________________
+
+Parent/Guardian Signature: ________________________
+Date Signed: ______________________________________`;
+  } else if (name.includes('Liquidation')) {
+    content = `STI COLLEGE - STUDENT AFFAIRS SERVICES (SAS)
+POST-EVENT FINANCIAL LIQUIDATION & EXPENSE REPORT
+
+Organization: ____________________
+Event Title: _____________________
+Date of Event: ___________________
+Fund Released / Cash Advance: PHP 0.00
+
+EXPENSE BREAKDOWN:
+Item # | Date | Official Receipt (OR) # | Payee / Store | Description | Amount (PHP)
+1      |      |                         |               | Food & Drinks| 0.00
+2      |      |                         |               | Materials    | 0.00
+3      |      |                         |               | Venue/Rental | 0.00
+4      |      |                         |               | Honorarium   | 0.00
+TOTAL DISBURSEMENTS: PHP 0.00
+
+RECONCILIATION:
+- Total Cash Advance Released: PHP 0.00
+- Less: Total Documented Expenses: PHP 0.00
+- Remaining Balance to Deposit / Refund: PHP 0.00
+
+Prepared By (Treasurer): __________________
+Audited By (Auditor): _____________________
+Certified Correct (President): ____________`;
+  } else {
+    content = `STI COLLEGE - STUDENT AFFAIRS SERVICES (SAS)
+STUDENT ORGANIZATION HANDBOOK & COMPLIANCE GUIDELINES
+Academic Year 2025-2026
+
+1. Accreditation & Re-Recognition Guidelines
+2. Student Activity Permit Protocols & Lead Times (submit 10 school days prior)
+3. Financial Handling & Strict 7-Day Liquidation Policy
+4. Disciplinary Rules & Brand Identity Compliance
+5. Campus Signatory Hierarchy & Digital Endorsements in STI Sync`;
+  }
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `STI_Official_${name.replace(/\s+/g, '_')}.${extension === 'pdf' ? 'txt' : extension === 'xlsx' ? 'csv' : 'txt'}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function FileChip({ type }: { type: string }) {
@@ -619,7 +722,15 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
 
   const statuses: DocStatus[] = ["Pending", "Approved", "Returned", "Rejected", "Resubmitted", "Draft"];
 
-  const uniqueCategories = useMemo(() => [...new Set(submissions.map(d => d.category))], [submissions]);
+  const availableCategories = useMemo(() => {
+    const set = new Set<string>();
+    docCategories.filter(c => c.active && c.officerCanSubmit).forEach(c => set.add(c.name));
+    submissions.forEach(d => { if (d.category) set.add(d.category); });
+    return Array.from(set).sort();
+  }, [docCategories, submissions]);
+
+  const returnedCount = useMemo(() => submissions.filter(d => d.status === 'Returned').length, [submissions]);
+  const [showTemplatesShelf, setShowTemplatesShelf] = useState(true);
 
   const availablePeriods = useMemo(() => {
     const periodMap = new Map<string, { key: string; label: string; sy: string; term: string }>();
@@ -703,6 +814,84 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
 
   return (
     <div className="space-y-4">
+      {/* Action Required Alert for Returned Submissions */}
+      {returnedCount > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl flex items-start justify-between gap-3 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-full bg-amber-500 text-white flex items-center justify-center flex-shrink-0 mt-0.5">
+              <RotateCcw className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-[#001A4D]">
+                {returnedCount} Document{returnedCount > 1 ? 's' : ''} Returned for Revision by SAS
+              </p>
+              <p className="text-xs text-amber-800 mt-0.5">
+                The SAS Adviser has requested revisions. Review the instructions on your returned documents and click Resubmit to upload corrected versions.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setStatusFilter("Returned")}
+            className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors flex-shrink-0 cursor-pointer"
+          >
+            View Returned
+          </button>
+        </div>
+      )}
+
+      {/* Official Document Templates Quick-Download Shelf */}
+      <div className="bg-gradient-to-r from-blue-50/90 to-indigo-50/70 border border-blue-200 rounded-2xl p-4 shadow-xs">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-[#0E4EBD] text-white flex items-center justify-center shadow-xs">
+              <FileText className="w-4 h-4" />
+            </div>
+            <div>
+              <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider">Official Document Templates & Guidelines</h4>
+              <p className="text-[11px] text-gray-500">Official STI College Ormoc templates for student organizations</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setShowTemplatesShelf(!showTemplatesShelf)}
+            className="text-xs text-[#0E4EBD] font-semibold hover:underline flex items-center gap-1 cursor-pointer"
+          >
+            {showTemplatesShelf ? 'Hide Templates' : 'Show Templates'}
+            {showTemplatesShelf ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+
+        {showTemplatesShelf && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3 pt-3 border-t border-blue-200/60">
+            {[
+              { title: "Activity Proposal Template", ext: "DOCX", type: "docx" as const, desc: "Standard activity permit with signatory matrix", color: "border-blue-200 hover:border-[#0E4EBD] bg-white" },
+              { title: "Off-Campus Parent Waiver", ext: "PDF", type: "pdf" as const, desc: "Mandatory liability release for off-campus events", color: "border-red-200 hover:border-red-500 bg-white" },
+              { title: "Financial Liquidation Form", ext: "XLSX", type: "xlsx" as const, desc: "Expense reconciliation and receipt audit sheet", color: "border-green-200 hover:border-green-600 bg-white" },
+              { title: "Student Org Handbook", ext: "PDF", type: "pdf" as const, desc: "A.Y. 2025–2026 campus guidelines and policies", color: "border-purple-200 hover:border-purple-600 bg-white" },
+            ].map((tmpl) => (
+              <div key={tmpl.title} className={`p-3 rounded-xl border transition-all flex flex-col justify-between ${tmpl.color}`}>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded ${tmpl.ext === 'PDF' ? 'bg-red-500 text-white' : tmpl.ext === 'XLSX' ? 'bg-green-600 text-white' : 'bg-blue-600 text-white'}`}>
+                      {tmpl.ext}
+                    </span>
+                    <span className="text-[10px] text-gray-400">Template</span>
+                  </div>
+                  <p className="text-xs font-bold text-[#001A4D] leading-tight mb-1">{tmpl.title}</p>
+                  <p className="text-[10px] text-gray-500 line-clamp-2">{tmpl.desc}</p>
+                </div>
+                <button
+                  onClick={() => downloadOfficialTemplate(tmpl.title, tmpl.type)}
+                  className="mt-2.5 w-full py-1.5 bg-gray-50 hover:bg-[#001A4D] hover:text-[#FFD41C] text-gray-700 text-[11px] font-bold rounded-lg border border-gray-200 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Download className="w-3 h-3" />
+                  Download Blank
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Filter bar */}
       <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 flex items-center gap-3 flex-wrap shadow-xs">
         <div className="relative flex-1 min-w-[200px]">
@@ -711,7 +900,7 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
         </div>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
           <option value="All">All Categories</option>
-          {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white min-w-[170px]" value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}>
           <option value="All">All Academic Periods</option>
@@ -767,13 +956,21 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
                           </div>
                         </td>
                         <td className="px-4 py-3 min-w-[200px]">
-                          <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
+                            {doc.sourceModule && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#0E4EBD] border border-blue-200" title={`Auto-archived from ${doc.sourceModule}`}>
+                                <Sparkles className="w-2.5 h-2.5 text-[#0E4EBD]" />
+                                {doc.sourceModule === 'finance' ? 'Liquidation' : 'Proposal'}
+                              </span>
+                            )}
+                          </div>
                           <div className="flex items-center gap-1.5 mt-1">
                             <FileChip type={doc.fileType} />
                             <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
                           </div>
                         </td>
-                        <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                        <td className="px-4 py-3"><CategoryPill category={doc.category} categories={docCategories} /></td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <AcademicPeriodCell doc={doc} semesters={semesters} />
                         </td>
@@ -845,7 +1042,7 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
       </div>
 
       {resubmitDoc && <ResubmitModal doc={resubmitDoc} onClose={() => setResubmitDoc(null)} orgId={orgId} orgName={orgName} orgAcronym={orgAcronym} orgTypeId={orgTypeId} officerName={officerName} officerEmail={officerEmail} />}
-      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
+      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} currentOrgId={orgId} />}
     </div>
   );
 }
@@ -854,6 +1051,7 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
 function InboxTab({ orgId }: { orgId: string }) {
   const { data: inbox, loading } = useOfficerInbox(orgId);
   const { data: semesters } = useSemesters();
+  const { data: docCategories } = useDocumentCategories();
   const [previewDoc, setPreviewDoc] = useState<DocumentDocument | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -861,7 +1059,12 @@ function InboxTab({ orgId }: { orgId: string }) {
   const [periodFilter, setPeriodFilter] = useState("All");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
 
-  const uniqueCategories = useMemo(() => [...new Set(inbox.map(d => d.category).filter(Boolean))], [inbox]);
+  const availableCategories = useMemo(() => {
+    const set = new Set<string>();
+    docCategories.filter(c => c.active).forEach(c => set.add(c.name));
+    inbox.forEach(d => { if (d.category) set.add(d.category); });
+    return Array.from(set).sort();
+  }, [docCategories, inbox]);
 
   const availablePeriods = useMemo(() => {
     const periodMap = new Map<string, { key: string; label: string; sy: string; term: string }>();
@@ -978,7 +1181,7 @@ function InboxTab({ orgId }: { orgId: string }) {
         </div>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
           <option value="All">All Categories</option>
-          {uniqueCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
         </select>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white min-w-[170px]" value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}>
           <option value="All">All Academic Periods</option>
@@ -1046,7 +1249,7 @@ function InboxTab({ orgId }: { orgId: string }) {
                           <span className="text-gray-500 text-xs">{doc.broadcastBy}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3"><CategoryPill category={doc.category} /></td>
+                      <td className="px-4 py-3"><CategoryPill category={doc.category} categories={docCategories} /></td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <AcademicPeriodCell doc={doc} semesters={semesters} />
                       </td>
@@ -1114,7 +1317,7 @@ function InboxTab({ orgId }: { orgId: string }) {
         </div>
       )}
 
-      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
+      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} currentOrgId={orgId} />}
     </div>
   );
 }

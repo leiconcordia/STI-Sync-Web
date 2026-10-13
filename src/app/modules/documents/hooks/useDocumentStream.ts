@@ -88,7 +88,13 @@ export function useOfficerSubmissions(orgId: string | null) {
       (snap) => {
         const docs = snap.docs
           .map(d => ({ id: d.id, ...d.data() } as DocumentDocument))
-          .filter(d => d.type === 'submission');
+          .filter(d =>
+            d.type === 'submission' &&
+            d.submittedByOrgId === orgId &&
+            d.submittedByOrgId !== 'sas' &&
+            !d.isSasInternal &&
+            d.visibility !== 'sas_only'
+          );
         docs.sort(sortByCreatedAtDesc);
         setData(docs);
         setLoading(false);

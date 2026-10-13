@@ -12,13 +12,12 @@ import {
   Shield,
   Tag,
   GraduationCap,
-  Sparkles,
-  ExternalLink,
+  Coins,
+  FileText,
 } from 'lucide-react';
 import { useSemesters, useCourses } from '../../modules/academic';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { createPayable } from '../../modules/finance/services/payable.service';
-import { usePayableCategories } from '../../modules/finance/services/payable-category.service';
 import type { PayableType } from '../../modules/finance/types/payable.types';
 import { toast } from 'sonner';
 import { formatCurrency } from '../../utils/currency';
@@ -39,7 +38,6 @@ export function AddPayableModal({
   organizationId,
   organizationName,
   addedBy,
-  onOpenCategoryMaintenance,
   preselectedMemberId,
 }: AddPayableModalProps) {
   const { data: semesters = [] } = useSemesters();
@@ -49,17 +47,9 @@ export function AddPayableModal({
   const { data: dbCourses = [] } = useCourses();
   const activeCourses = useMemo(() => dbCourses.filter((c) => !c.archived), [dbCourses]);
 
-  // Dynamic fee/fine categories (scoped to club + institutional)
-  const { data: dbCategories = [] } = usePayableCategories(organizationId);
-  const activeCategories = useMemo(() => {
-    return dbCategories.filter((c) => c.isActive);
-  }, [dbCategories]);
-
   const { members = [], loading: loadingMembers } = useOrgMembers(organizationId);
 
-  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
   const [payableType, setPayableType] = useState<PayableType>('custom');
-  const [categoryName, setCategoryName] = useState<string>('Club Assessment');
   const [label, setLabel] = useState('');
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState<number | ''>('');
@@ -109,21 +99,6 @@ export function AddPayableModal({
     }
     return ['1st Year', '2nd Year', '3rd Year', '4th Year', 'Grade 11', 'Grade 12'];
   }, [courseFilter, activeCourses]);
-
-  // Handle choosing a category
-  const handleSelectCategory = (catId: string) => {
-    setSelectedCategoryId(catId);
-    const cat = activeCategories.find((c) => c.id === catId);
-    if (cat) {
-      setLabel(cat.name);
-      setAmount(cat.defaultAmount);
-      setPayableType((cat.type === 'admin_fine' ? 'org_fine' : cat.type) as PayableType);
-      setCategoryName(cat.name);
-      if (cat.description) {
-        setDescription(cat.description);
-      }
-    }
-  };
 
   // Filtered members based on search, course, and year
   const filteredMembers = useMemo(() => {
@@ -181,6 +156,13 @@ export function AddPayableModal({
     }
   };
 
+  const categoryName =
+    payableType === 'org_fine'
+      ? 'Organization Fine'
+      : payableType === 'membership_due'
+      ? 'Membership Due'
+      : 'Event Contribution';
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -235,7 +217,7 @@ export function AddPayableModal({
           label: label.trim(),
           title: label.trim(),
           feeTitle: label.trim(),
-          category: categoryName.trim() || (payableType === 'org_fine' ? 'Organization Fine' : 'Club Fee'),
+          category: categoryName,
           description: description.trim() || `Assessment for ${organizationName}`,
           organizationId: organizationId,
           organizationName: organizationName,
@@ -276,7 +258,7 @@ export function AddPayableModal({
             <div>
               <h2 className="font-bold text-base text-white">Add Club Payable / Fine</h2>
               <p className="text-white/70 text-xs">
-                Assess member dues, custom fees, or fines for{' '}
+                Assess member contributions or fines for{' '}
                 <span className="text-[#FFD41C] font-semibold">{organizationName}</span>
               </p>
             </div>
@@ -292,126 +274,97 @@ export function AddPayableModal({
 
         {/* Content Form */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-5">
-          {/* Dynamic Categories */}
+          {/* Simple Type Selection */}
           <div>
-            <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                <Tag className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                Fee & Fine Categories
-              </label>
-              <a
-                href="/officer/settings?tab=payable-categories"
-                target="_blank"
-                rel="noreferrer"
-                className="text-[11px] font-semibold text-[#0E4EBD] hover:underline flex items-center gap-1 cursor-pointer"
-                title="Manage categories in Officer Settings"
+            <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-2">
+              Payable Type <span className="text-red-500">*</span>
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPayableType('custom')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1 ${
+                  payableType === 'custom'
+                    ? 'bg-blue-50/80 border-[#0E4EBD] ring-2 ring-[#0E4EBD]/20 shadow-xs'
+                    : 'bg-white border-gray-200 hover:border-gray-300'
+                }`}
               >
-                Category Maintenance <ExternalLink className="w-3 h-3" />
-              </a>
-            </div>
-
-            {/* Category selection chips */}
-            <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto p-1.5 bg-gray-50 rounded-xl border border-gray-200">
-              {activeCategories.length === 0 ? (
-                <div className="flex items-center justify-between w-full p-1 text-xs text-gray-500">
-                  <span>No custom categories defined yet.</span>
-                  <a
-                    href="/officer/settings?tab=payable-categories"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[#0E4EBD] font-bold hover:underline flex items-center gap-1"
-                  >
-                    + Manage in Settings <ExternalLink className="w-3 h-3" />
-                  </a>
+                <div className="flex items-center gap-1.5 font-bold text-xs text-[#001A4D]">
+                  <Tag className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                  Event Contribution
                 </div>
-              ) : (
-                activeCategories.map((cat) => {
-                  const isSelected = selectedCategoryId === cat.id;
-                  const isFine = cat.categoryType === 'fine' || cat.type === 'org_fine' || cat.type === 'admin_fine';
-                  return (
-                    <button
-                      type="button"
-                      key={cat.id}
-                      onClick={() => handleSelectCategory(cat.id)}
-                      className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
-                        isSelected
-                          ? 'bg-[#001A4D] text-white shadow-2xs font-bold'
-                          : 'bg-white hover:bg-blue-50 border border-gray-200 text-gray-700'
-                      }`}
-                    >
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          isFine ? 'bg-amber-500' : 'bg-[#0E4EBD]'
-                        }`}
-                      />
-                      {cat.name} ({formatCurrency(cat.defaultAmount)})
-                    </button>
-                  );
-                })
-              )}
+                <span className="text-[11px] text-gray-500 leading-snug">
+                  Activities, shirts, kits, materials & project funds
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPayableType('org_fine')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1 ${
+                  payableType === 'org_fine'
+                    ? 'bg-amber-50/80 border-amber-600 ring-2 ring-amber-600/20 shadow-xs'
+                    : 'bg-white border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold text-xs text-[#001A4D]">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                  Club Fine
+                </div>
+                <span className="text-[11px] text-gray-500 leading-snug">
+                  Meeting absences, violation sanctions or penalties
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPayableType('membership_due')}
+                className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-1 ${
+                  payableType === 'membership_due'
+                    ? 'bg-purple-50/80 border-purple-600 ring-2 ring-purple-600/20 shadow-xs'
+                    : 'bg-white border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-bold text-xs text-[#001A4D]">
+                  <Coins className="w-3.5 h-3.5 text-purple-600" />
+                  Membership Due
+                </div>
+                <span className="text-[11px] text-gray-500 leading-snug">
+                  Club membership registration or periodic dues
+                </span>
+              </button>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Title / Label */}
-            <div>
-              <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                Payable Title <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={label}
-                onChange={(e) => setLabel(e.target.value)}
-                placeholder="e.g. Club Membership Due, T-Shirt Fee, Meeting Absence Fine"
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none font-medium"
-                required
-              />
-            </div>
-
-            {/* Assessment Category */}
-            <div>
-              <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                Assessment Category
-              </label>
-              <select
-                value={selectedCategoryId || payableType}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === 'custom' || val === 'org_fine' || val === 'membership_due') {
-                    setPayableType(val as PayableType);
-                    setSelectedCategoryId('');
-                  } else {
-                    handleSelectCategory(val);
-                  }
-                }}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none bg-white cursor-pointer"
-              >
-                <optgroup label="Standard Types">
-                  <option value="custom">General Club Fee / Activity Assessment</option>
-                  <option value="membership_due">Club Membership Due</option>
-                  <option value="org_fine">Absence / Disciplinary Fine</option>
-                </optgroup>
-                {activeCategories.length > 0 && (
-                  <optgroup label="Configured Categories">
-                    {activeCategories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} ({formatCurrency(c.defaultAmount)})
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
-            </div>
+          {/* Title / Label */}
+          <div>
+            <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
+              Title / Description of Payable <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder={
+                payableType === 'org_fine'
+                  ? 'e.g. General Assembly Absence Fine, Meeting Tardiness Fee'
+                  : payableType === 'membership_due'
+                  ? 'e.g. Club Membership Due, Semester Registration'
+                  : 'e.g. Sports Fest Team Shirt Contribution, Hackathon Kit Fee, Year-End Party'
+              }
+              className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none font-medium"
+              required
+            />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Amount */}
             <div>
               <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                Amount (PHP) <span className="text-red-500">*</span>
+                Amount Per Student (PHP) <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-semibold">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-semibold">
                   ₱
                 </span>
                 <input
@@ -421,37 +374,43 @@ export function AddPayableModal({
                   value={amount}
                   onChange={(e) => setAmount(e.target.value === '' ? '' : Number(e.target.value))}
                   placeholder="0.00"
-                  className="w-full pl-7 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none font-semibold text-gray-900"
+                  className="w-full pl-8 pr-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none font-bold text-gray-900"
                   required
                 />
               </div>
+              <p className="text-[11px] text-gray-500 mt-1">
+                Payments collected will directly credit to your club's treasury balance.
+              </p>
             </div>
 
             {/* Due Date */}
             <div>
               <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                Due Date (Optional)
+                Due Date <span className="text-gray-400 font-normal">(Optional)</span>
               </label>
               <input
                 type="date"
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
-                className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none cursor-pointer"
+                className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none cursor-pointer"
               />
+              <p className="text-[11px] text-gray-500 mt-1">
+                Deadline for members to settle their contribution or fine.
+              </p>
             </div>
           </div>
 
           {/* Description */}
           <div>
             <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-              Description / Notes (Optional)
+              Additional Details / Notes <span className="text-gray-400 font-normal">(Optional)</span>
             </label>
             <textarea
               rows={2}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Terms, inclusions, or justification for this club assessment."
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+              placeholder="e.g. Terms, inclusions, breakdown, or justification for this club assessment."
+              className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none resize-none"
             />
           </div>
 

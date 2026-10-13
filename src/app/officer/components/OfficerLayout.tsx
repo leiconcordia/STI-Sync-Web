@@ -13,6 +13,7 @@ const pageTitles: Record<string, string> = {
   '/officer/certificates': 'Certificates',
   '/officer/finance': 'Finance Center',
   '/officer/liquidation': 'Financial Liquidation',
+  '/officer/post-activity-reports': 'Post-Activity Reports',
   '/officer/documents': 'Documents',
   '/officer/members': 'Member Directory',
   '/officer/reports': 'Reports & Analytics',

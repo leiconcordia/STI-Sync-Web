@@ -43,8 +43,16 @@ export function buildDynamicApprovalChain(
   const chain: ProposalApprovalStep[] = [];
   let stepIndex = 1;
 
-  // Filter only active signatories from database
-  const signatories = activeSignatories.filter((s) => s.isActive !== false);
+  // Filter only active signatories from database applicable to Activity Proposals
+  // CRITICAL GOVERNANCE RULE: Accountants are strictly for Financial Liquidations, NEVER Activity Proposals.
+  const signatories = activeSignatories.filter((s) => {
+    if (s.isActive === false) return false;
+    const roleLower = (s.role || '').toLowerCase();
+    const titleLower = (s.roleTitle || '').toLowerCase();
+    if (roleLower === 'accountant' || titleLower.includes('accountant') || titleLower.includes('auditor')) return false;
+    if (s.applicableScope === 'liquidation_only') return false;
+    return true;
+  });
 
   const resolveActionType = (raw?: string, fallback: 'endorse' | 'approve' = 'endorse'): 'endorse' | 'approve' => {
     if (raw === 'approver' || raw === 'approve') return 'approve';
@@ -54,7 +62,7 @@ export function buildDynamicApprovalChain(
 
   // Stage numbering helpers based on creator:
   // If Officer / Non-SAS creator:
-  //   Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory First Gate)
+  //   Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory Fixed Built-in Gate)
   //   Stage 2: Department & Program Endorsements
   //   Stage 3: Institutional Review & Endorsements
   //   Stage 4: Executive Administration & Approval
@@ -80,27 +88,13 @@ export function buildDynamicApprovalChain(
 
   const usedSignatoryIds = new Set<string>();
 
-  // ── Stage 1: Student Affairs & Services (SAS) Endorsement (Mandatory First Gate for Org Proposals) ──
+  // ── Stage 1: Student Affairs & Services (SAS) Endorsement (Fixed System Milestone for Org Proposals) ──
   if (!isSasCreator) {
-    const resolvedName = sasConfig.name?.trim() || 'Riselle Mae B. Lucanas';
+    const resolvedName = sasConfig.name?.trim() || 'Student Affairs & Services (SAS)';
     const resolvedRoleTitle = sasConfig.roleTitle?.trim() || 'Student Affairs & Services Head';
     const resolvedEmail = sasConfig.email?.trim().toLowerCase() || 'sao@ormoc.sti.edu.ph';
-    const resolvedDept = sasConfig.department?.trim() || 'Student Affairs & Services';
+    const resolvedDept = 'Student Affairs & Services';
     const resolvedUid = sasConfig.employeeId || 'sas_admin';
-
-    // Check if an institutional signatory in the database matches this email or role
-    const matchedSasSig = signatories.find(
-      (s) =>
-        (resolvedEmail && s.email?.trim().toLowerCase() === resolvedEmail) ||
-        s.role === 'sas_coordinator' ||
-        s.role === 'sas_head' ||
-        s.roleTitle?.toLowerCase().includes('student affairs') ||
-        s.roleTitle?.toLowerCase().includes('sas')
-    );
-
-    if (matchedSasSig) {
-      usedSignatoryIds.add(matchedSasSig.id);
-    }
 
     chain.push({
       id: `step_${stepIndex}`,
@@ -110,12 +104,13 @@ export function buildDynamicApprovalChain(
       role: 'sas_head',
       roleTitle: resolvedRoleTitle,
       actionType: 'endorse',
-      signatoryUid: matchedSasSig?.id || resolvedUid,
+      signatoryUid: resolvedUid,
       signatoryName: resolvedName,
       signatoryEmail: resolvedEmail,
       department: resolvedDept,
-      departmentId: matchedSasSig?.departmentId,
       status: 'current', // Mandatory first gate, active immediately upon submission!
+      isMandatory: true,
+      isPermanent: true,
     });
   }
 
@@ -226,7 +221,6 @@ export function buildDynamicApprovalChain(
       s.role === 'academic_head' ||
       s.roleTitle.toLowerCase().includes('academic head') ||
       s.roleTitle.toLowerCase().includes('dean') ||
-      !s.departmentId ||
       ['institutional', 'campus-wide', 'campus wide', 'academic affairs'].includes(
         (s.department || '').toLowerCase().trim()
       )

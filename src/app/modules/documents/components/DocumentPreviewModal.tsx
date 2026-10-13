@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Download, FileText, AlertCircle, Mail, Loader2, Check, RotateCcw } from 'lucide-react';
+import { X, Download, FileText, AlertCircle, Mail, Loader2, Check, RotateCcw, ExternalLink, Sparkles, Lock } from 'lucide-react';
 import type { DocumentDocument } from '../types/document.types';
 import { downloadFile } from '../../../../utils/fileDownloader';
 
@@ -10,6 +10,7 @@ interface DocumentPreviewModalProps {
   onReturn?: (remarks: string) => Promise<void> | void;
   onReject?: (remarks: string) => Promise<void> | void;
   isAdmin?: boolean;
+  currentOrgId?: string | null;
 }
 
 function formatBytes(bytes: number): string {
@@ -33,7 +34,39 @@ export function DocumentPreviewModal({
   onReturn,
   onReject,
   isAdmin,
+  currentOrgId,
 }: DocumentPreviewModalProps) {
+  // Strict Privacy Guard: If SAS-only or belongs to another student organization, block access
+  const isUnauthorized = !isAdmin && (
+    doc.visibility === 'sas_only' ||
+    doc.isSasInternal === true ||
+    doc.submittedByOrgId === 'sas' ||
+    (doc.submittedByOrgId && currentOrgId && doc.submittedByOrgId !== currentOrgId)
+  );
+
+  if (isUnauthorized) {
+    return (
+      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-[#001A4D]/80 backdrop-blur-sm" onClick={onClose} />
+        <div className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border border-red-200">
+          <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-8 h-8" />
+          </div>
+          <h3 className="text-lg font-bold text-[#001A4D] mb-2">Access Restricted</h3>
+          <p className="text-gray-500 text-sm mb-6 leading-relaxed">
+            This document contains confidential institutional records restricted strictly to Student Affairs Services (SAS) and the owning student organization.
+          </p>
+          <button
+            onClick={onClose}
+            className="w-full py-2.5 bg-[#001A4D] text-[#FFD41C] font-bold rounded-xl hover:bg-[#001A4D]/90 transition-colors cursor-pointer"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   const type = doc.fileType?.toUpperCase() || 'UNKNOWN';
   const isImage = ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'SVG'].includes(type);
   const isPdf = type === 'PDF';
@@ -114,21 +147,44 @@ export function DocumentPreviewModal({
 
   const DirectDownload = () => (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-gray-50">
-      <div className={`w-20 h-20 rounded-2xl flex items-center justify-center mb-6 shadow-sm ${isPdf ? 'bg-red-500' : 'bg-blue-600'}`}>
-        <FileText className="w-10 h-10 text-white" />
+      <div className={`w-20 h-20 rounded-2xl flex items-center justify-center mb-6 shadow-sm ${doc.sourceModule ? 'bg-gradient-to-br from-[#001A4D] to-[#0E4EBD]' : isPdf ? 'bg-red-500' : 'bg-blue-600'}`}>
+        {doc.sourceModule ? <Sparkles className="w-10 h-10 text-[#FFD41C]" /> : <FileText className="w-10 h-10 text-white" />}
       </div>
-      <p className="text-[#001A4D] font-bold text-xl mb-2">Preview not available for {doc.fileType}</p>
-      <p className="text-gray-500 text-sm mb-8 max-w-md">
-        This file format cannot be previewed directly in the browser. Please download the file to view it on your device.
+      <p className="text-[#001A4D] font-bold text-xl mb-2">
+        {doc.sourceModule ? 'Officially Approved Institutional Document' : `Preview not available for ${doc.fileType}`}
       </p>
-      <button 
-        onClick={handleDownload}
-        disabled={downloading}
-        className="flex items-center gap-2 px-6 py-3 bg-[#0E4EBD] text-white rounded-xl font-bold hover:bg-[#0E4EBD]/90 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-      >
-        {downloading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-        {downloading ? 'Downloading...' : `Download ${doc.fileName}`}
-      </button>
+      <p className="text-gray-500 text-sm mb-6 max-w-lg">
+        {doc.description || (doc.sourceModule
+          ? 'This record was automatically compiled and preserved in the EDMS audit vault upon institutional approval.'
+          : 'This file format cannot be previewed directly in the browser. Please download the file to view it on your device.')}
+      </p>
+
+      {doc.sourceRecordId && (
+        <a
+          href={
+            doc.sourceModule === 'finance'
+              ? `/home/liquidations?id=${doc.sourceRecordId}`
+              : `/home/event-approvals?id=${doc.sourceRecordId}`
+          }
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 px-6 py-3 bg-[#001A4D] text-[#FFD41C] rounded-xl font-bold hover:bg-[#001A4D]/90 transition-colors shadow-sm cursor-pointer mb-4"
+        >
+          <span>Open Original {doc.sourceModule === 'finance' ? 'Liquidation' : 'Event Proposal'}</span>
+          <ExternalLink className="w-4 h-4" />
+        </a>
+      )}
+
+      {doc.fileUrl && (
+        <button 
+          onClick={handleDownload}
+          disabled={downloading}
+          className="flex items-center gap-2 px-6 py-3 bg-[#0E4EBD] text-white rounded-xl font-bold hover:bg-[#0E4EBD]/90 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+        >
+          {downloading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
+          {downloading ? 'Downloading...' : `Download ${doc.fileName}`}
+        </button>
+      )}
       <p className="text-gray-400 text-xs mt-4">{formatBytes(doc.fileSize)}</p>
     </div>
   );
@@ -183,14 +239,16 @@ export function DocumentPreviewModal({
           </div>
           
           <div className="flex items-center gap-2 flex-shrink-0">
-            <button 
-              onClick={handleDownload}
-              disabled={downloading}
-              className="flex items-center gap-2 px-4 py-2 bg-white/10 text-white rounded-lg text-sm font-medium hover:bg-white/20 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-              {downloading ? 'Downloading...' : 'Download'}
-            </button>
+            {doc.fileUrl && (
+              <button 
+                onClick={handleDownload}
+                disabled={downloading}
+                className="flex items-center gap-2 px-4 py-2 bg-white/10 text-white rounded-lg text-sm font-medium hover:bg-white/20 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                {downloading ? 'Downloading...' : 'Download'}
+              </button>
+            )}
             <div className="w-px h-6 bg-white/20 mx-1"></div>
             <button 
               onClick={onClose} 
@@ -200,6 +258,34 @@ export function DocumentPreviewModal({
             </button>
           </div>
         </div>
+
+        {/* System Archival Notice Banner */}
+        {doc.sourceModule && (
+          <div className="bg-blue-50/90 border-b border-blue-200 px-6 py-2.5 flex items-center justify-between text-xs text-[#001A4D] flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
+              <span>
+                <strong>Cross-Module Auto-Archive:</strong> Preserved automatically from the{' '}
+                <span className="font-semibold">{doc.sourceModule === 'finance' ? 'Financial Liquidations' : 'Activity Proposals'}</span> module upon approval.
+              </span>
+            </div>
+            {doc.sourceRecordId && (
+              <a
+                href={
+                  doc.sourceModule === 'finance'
+                    ? `/home/liquidations?id=${doc.sourceRecordId}`
+                    : `/home/event-approvals?id=${doc.sourceRecordId}`
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-semibold text-[#0E4EBD] hover:underline"
+              >
+                <span>View Original Record</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+            )}
+          </div>
+        )}
 
         {/* Content Area */}
         <div className="flex-1 bg-gray-100 relative w-full h-full flex flex-col overflow-hidden">

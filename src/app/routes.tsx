@@ -15,6 +15,7 @@ import { BudgetFundSettings } from "./admin/pages/BudgetFundSettings";
 import { AdminDocuments } from "./admin/pages/AdminDocuments";
 import { AdminDocumentReview } from "./admin/pages/AdminDocumentReview";
 import { AuditLogs } from "./admin/pages/AuditLogs";
+import AdminPostActivityReports from "./admin/pages/AdminPostActivityReports";
 
 // Auth Pages
 import SASAdminLogin from "./auth/SASAdminLogin";
@@ -39,6 +40,7 @@ import MemberDirectory from "./officer/pages/MemberDirectory";
 import OfficerAnnouncements from "./officer/pages/OfficerAnnouncements";
 import OfficerSettings from "./officer/pages/OfficerSettings";
 import OfficerReportsPage from "./officer/pages/OfficerReportsPage";
+import OfficerPostActivityReports from "./officer/pages/OfficerPostActivityReports";
 
 // Error Page
 import ErrorPage from "./ErrorPage";
@@ -88,6 +90,7 @@ export const router = createBrowserRouter([
       { path: "event-approvals", Component: EventApprovals },
       { path: "attendance", Component: AttendanceMonitoring },
       { path: "liquidations", Component: FinancialLiquidations },
+      { path: "post-activity-reports", Component: AdminPostActivityReports },
       { path: "students", Component: StudentRegistry },
       { path: "reports", Component: ReportsAnalytics },
       { path: "certificates", Component: Certificates },
@@ -108,11 +111,13 @@ export const router = createBrowserRouter([
     Component: OfficerLayout,
     ErrorBoundary: ErrorPage,
     children: [
+      { index: true, element: <Navigate to="/officer/dashboard" replace /> },
       { path: "dashboard", Component: OfficerDashboardPage },
       { path: "events", Component: EventManagement },
       { path: "attendance", Component: AttendanceLogs },
       { path: "certificates", Component: OfficerCertificates },
       { path: "liquidation", Component: FinancialLiquidation },
+      { path: "post-activity-reports", Component: OfficerPostActivityReports },
       { path: "finance", Component: FinanceCenter },
       { path: "documents", Component: OfficerDocuments },
       { path: "members", Component: MemberDirectory },

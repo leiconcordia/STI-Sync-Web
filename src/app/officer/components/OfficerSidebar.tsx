@@ -10,6 +10,7 @@ import {
   Bell,
   Settings,
   Files,
+  FileCheck2,
   BarChart3,
   Wallet,
 } from 'lucide-react';
@@ -37,6 +38,7 @@ const navGroups = [
     items: [
       { icon: Wallet, label: 'Finance Center', path: '/officer/finance', badge: null },
       { icon: Receipt, label: 'Financial Liquidation', path: '/officer/liquidation', badge: null },
+      { icon: FileCheck2, label: 'Post-Activity Reports', path: '/officer/post-activity-reports', badge: null },
       { icon: Files, label: 'Documents', path: '/officer/documents', badge: 2 },
       { icon: BarChart3, label: 'Reports & Analytics', path: '/officer/reports', badge: null },
     ]

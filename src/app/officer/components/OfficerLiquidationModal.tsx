@@ -42,6 +42,8 @@ import LiquidationSignatoryTracker from '../../modules/finance/components/Liquid
 import LiquidationFlowBuilder from '../../modules/finance/components/LiquidationFlowBuilder';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
+import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import { toast } from 'sonner';
 
 interface OfficerLiquidationModalProps {
@@ -52,6 +54,7 @@ interface OfficerLiquidationModalProps {
   userUid: string;
   userName: string;
   userRole: 'admin' | 'officer';
+  isAdviser?: boolean;
   editingReport?: LiquidationDocument | null;
   existingLiquidations?: LiquidationDocument[];
 }
@@ -122,9 +125,13 @@ export default function OfficerLiquidationModal({
   userUid,
   userName,
   userRole,
+  isAdviser,
   editingReport,
   existingLiquidations,
 }: OfficerLiquidationModalProps) {
+  const { profile: officerProfile } = useOfficerProfile();
+  const effectiveIsAdviser = Boolean(isAdviser ?? officerProfile?.isAdviser ?? (userRole === 'admin'));
+
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
 
@@ -298,12 +305,16 @@ export default function OfficerLiquidationModal({
 
   // Pre-fill if editing an existing / returned report
   useEffect(() => {
+    if (!isOpen) return;
+
     if (editingReport) {
       setSelectedEventId(editingReport.eventId);
       setAllocatedBudget(editingReport.allocatedBudget || 0);
       setLineItems(normalizeLineItems(editingReport.lineItems || []));
       if (editingReport.approvalChain && editingReport.approvalChain.length > 0) {
-        setApprovalChain(editingReport.approvalChain);
+        // Strip out any legacy placeholder steps with empty UIDs
+        const validSteps = editingReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
+        setApprovalChain(validSteps);
       } else {
         generateDefaultLiquidationChain(orgId, orgName, editingReport.allocatedBudget || 0, activeSignatories).then((chain) => {
           setApprovalChain(chain);
@@ -331,7 +342,7 @@ export default function OfficerLiquidationModal({
         setApprovalChain(chain);
       });
     }
-  }, [editingReport, isOpen, orgId, orgName]);
+  }, [editingReport, isOpen, orgId, orgName, activeSignatories]);
 
   // Update budget & auto-fetch budgetItems when event is selected
   const handleEventSelect = async (eventId: string) => {
@@ -341,12 +352,13 @@ export default function OfficerLiquidationModal({
       const budget = calculateEventBudget(event);
       setAllocatedBudget(budget);
 
-      // Auto-load liquidation approval chain
+      // Auto-load liquidation approval chain dynamically from active maintenance signatories
       if (!editingReport || !editingReport.approvalChain || editingReport.approvalChain.length === 0) {
         const defaultChain = await generateDefaultLiquidationChain(
           event.hostingOrgId || orgId,
           event.hostingOrgName || orgName,
-          budget
+          budget,
+          activeSignatories
         );
         setApprovalChain(defaultChain);
       }
@@ -535,6 +547,10 @@ export default function OfficerLiquidationModal({
 
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
+      if (!effectiveIsAdviser && userRole !== 'admin') {
+        setError('Only appointed Club Advisers are authorized to officially submit Financial Liquidations. Student officers can prepare and save drafts.');
+        return;
+      }
       if (lineItems.length === 0) {
         setError('Please add at least one expense line item before submitting.');
         return;
@@ -574,8 +590,8 @@ export default function OfficerLiquidationModal({
     setError(null);
 
     try {
-      const isAdmin = userRole === 'admin';
-      const nextStatus = shouldSubmit ? (isAdmin ? 'approved' : 'under_review') : 'draft';
+      const nextStatus = shouldSubmit ? 'under_review' : 'draft';
+      const submitterRole = effectiveIsAdviser ? 'adviser' : userRole;
 
       // Ensure approval chain statuses are set appropriately on submit
       let finalizedChain = approvalChain;
@@ -597,7 +613,7 @@ export default function OfficerLiquidationModal({
         createdByRole: userRole,
         createdByName: userName,
         submittedByName: userName,
-        submittedByRole: userRole,
+        submittedByRole: submitterRole,
         allocatedBudget,
         totalActualSpending,
         surplusOrDeficit,
@@ -616,14 +632,14 @@ export default function OfficerLiquidationModal({
         });
         toast.success(
           shouldSubmit
-            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for institutional endorsement.')
+            ? 'Liquidation report submitted successfully for institutional review.'
             : 'Draft liquidation report updated successfully.'
         );
       } else {
         await createLiquidationReport(payload);
         toast.success(
           shouldSubmit
-            ? (isAdmin ? 'Liquidation report approved and posted to ledger.' : 'Liquidation report submitted successfully for institutional endorsement.')
+            ? 'Liquidation report submitted successfully for institutional review.'
             : 'Draft liquidation report saved successfully.'
         );
       }
@@ -669,14 +685,19 @@ export default function OfficerLiquidationModal({
             </div>
           )}
 
-          {editingReport?.status === 'returned' && editingReport.returnRemarks && (
-            <div className="p-4 bg-red-50 border-2 border-red-300 rounded-xl text-red-900 text-xs font-medium space-y-1">
-              <div className="flex items-center gap-2 font-bold text-red-700 text-sm uppercase tracking-wider">
-                <AlertCircle className="w-4.5 h-4.5 text-red-600" />
-                SAO Adviser Return Remarks
-              </div>
-              <p className="text-red-900 text-xs font-semibold pl-6.5">{editingReport.returnRemarks}</p>
-            </div>
+          {editingReport?.status === 'returned' && (
+            <RevisionFeedbackBanner
+              returnedBy={{
+                name: (editingReport as any).returnedByName || (editingReport as any).returnedBy || 'Institutional Signatory',
+                roleTitle: (editingReport as any).returnedByRoleTitle || 'Signatory Reviewer',
+                email: (editingReport as any).returnedByEmail,
+              }}
+              returnedAt={editingReport.returnedAt}
+              returnRemarks={editingReport.returnRemarks}
+              revisionHistory={editingReport.revisionHistory}
+              documentTitle={editingReport.eventTitle}
+              versionLabel={`v${editingReport.revisionCount || 1}.0`}
+            />
           )}
 
           {/* Empty State Warning Alert */}
@@ -861,6 +882,11 @@ export default function OfficerLiquidationModal({
                           {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
                             <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
                               Allocated: {formatCurrency(item.allocatedCost)}
+                            </span>
+                          )}
+                          {item.wasModifiedInRev && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-800 rounded border border-amber-300">
+                              ✏️ Revised in Revision
                             </span>
                           )}
                           {attachedFiles.length > 0 ? (
@@ -1258,14 +1284,28 @@ export default function OfficerLiquidationModal({
               {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
               Save Draft
             </button>
-            <button
-              onClick={() => handleSave(true)}
-              disabled={isSubmitting}
-              className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 cursor-pointer"
-            >
-              {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
-              Submit Liquidation
-            </button>
+            <div className="flex items-center gap-2">
+              {!effectiveIsAdviser && userRole !== 'admin' && (
+                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium">
+                  <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                  Adviser Required to Submit
+                </span>
+              )}
+              <button
+                onClick={() => handleSave(true)}
+                disabled={isSubmitting || (!effectiveIsAdviser && userRole !== 'admin')}
+                title={!effectiveIsAdviser && userRole !== 'admin' ? "Only appointed Club Advisers can submit. You can prepare and save drafts." : undefined}
+                className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 ${
+                  !effectiveIsAdviser && userRole !== 'admin'
+                    ? 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed'
+                    : 'bg-[#001A4D] hover:bg-[#0E4EBD] text-white cursor-pointer'
+                }`}
+              >
+                {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
+                {!effectiveIsAdviser && userRole !== 'admin' && <Lock className="w-4 h-4" />}
+                Submit Liquidation
+              </button>
+            </div>
           </div>
         </div>
       </div>

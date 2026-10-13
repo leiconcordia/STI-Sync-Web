@@ -29,6 +29,13 @@ export interface ExpenseLineItem {
   receiptPublicId?: string;
   receiptUrls?: string[]; // Multiple receipt URLs
   receiptFiles?: ReceiptAttachment[]; // Detailed receipt attachment objects
+  wasModifiedInRev?: boolean; // Flagged true if changed during revision cycle
+  previousValues?: {
+    quantity?: number;
+    unitCost?: number;
+    totalCost?: number;
+    description?: string;
+  };
 }
 
 export interface LiquidationRemark {
@@ -56,6 +63,8 @@ export interface LiquidationApprovalStep {
   signatureUrl?: string;
   signedAt?: any;
   remarks?: string;
+  isMandatory?: boolean;
+  isPermanent?: boolean;
 }
 
 export interface LiquidationDocument {
@@ -86,6 +95,7 @@ export interface LiquidationDocument {
   voidedAt?: Timestamp | any;
   voidedBy?: string;
   voidedReason?: string;
+  revisionCount?: number;
   createdAt?: Timestamp | any;
   updatedAt?: Timestamp | any;
 }

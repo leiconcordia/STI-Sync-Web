@@ -32,7 +32,11 @@ import {
   Lock,
 } from 'lucide-react';
 import type { ProposalApprovalStep, ProposalTargetAudience } from '../../types/proposal.types';
-import type { InstitutionalSignatory, SignatoryActionType } from '../../../signatories/types/signatory.types';
+import {
+  type InstitutionalSignatory,
+  type SignatoryActionType,
+  isSignatoryApplicableTo,
+} from '../../../signatories/types/signatory.types';
 import { buildDynamicApprovalChain } from '../../utils/proposal-routing';
 import {
   subscribeToSasSignatoryConfig,
@@ -137,6 +141,62 @@ export default function ProposalFlowBuilder({
       }
     }
   }, [activeSignatories.length, approvalChain?.length, sasConfig.name, sasConfig.roleTitle]);
+
+  // Adapt existing approvalChain in real-time to signatory edits and scope changes in database
+  useEffect(() => {
+    if (!approvalChain || approvalChain.length === 0 || activeSignatories.length === 0) return;
+
+    let modified = false;
+    // 1. Purge signatories that are liquidation-only or accountants
+    const filteredSteps = approvalChain.filter((step) => {
+      // Never filter out fixed Stage 1 SAS for officer proposals
+      if (
+        isOfficerProposal &&
+        (step.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator')
+      ) {
+        return true;
+      }
+      const matched = activeSignatories.find(
+        (s) =>
+          s.id === step.signatoryUid ||
+          (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
+      );
+      if (matched && !isSignatoryApplicableTo(matched, 'proposal')) {
+        modified = true;
+        return false;
+      }
+      return true;
+    });
+
+    // 2. Synchronize edited names, titles, and departments from database
+    const updatedSteps = filteredSteps.map((step) => {
+      const matched = activeSignatories.find(
+        (s) =>
+          s.id === step.signatoryUid ||
+          (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
+      );
+      if (matched) {
+        if (
+          (matched.name && matched.name !== step.signatoryName) ||
+          (matched.roleTitle && matched.roleTitle !== step.roleTitle) ||
+          (matched.department && matched.department !== step.department)
+        ) {
+          modified = true;
+          return {
+            ...step,
+            signatoryName: matched.name || step.signatoryName,
+            roleTitle: matched.roleTitle || step.roleTitle,
+            department: matched.department || step.department,
+          };
+        }
+      }
+      return step;
+    });
+
+    if (modified) {
+      onChange(updatedSteps);
+    }
+  }, [activeSignatories, isOfficerProposal]);
 
   // Synchronize custom stage names or indices from approvalChain into stageConfigs
   React.useEffect(() => {
@@ -316,6 +376,11 @@ export default function ProposalFlowBuilder({
 
     const signatory = activeSignatories.find((s) => s.id === selectedSigId);
     if (!signatory) return;
+
+    if (!isSignatoryApplicableTo(signatory, 'proposal')) {
+      alert(`"${signatory.name}" (${signatory.roleTitle}) is designated for Financial Liquidations only and cannot be added to Activity Proposals.`);
+      return;
+    }
 
     // Prevent duplicate within the same stage
     const existsInStage = stages
@@ -675,15 +740,22 @@ export default function ProposalFlowBuilder({
                   ) : (
                     stage.steps.map((step, stepIdx) => {
                       const isApprover = step.actionType === 'approve' || step.role === 'school_president';
-                      const isLockedSasSigner =
+                      const matchedSig = activeSignatories.find(
+                        (s) => s.id === step.signatoryUid || (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
+                      );
+                      const isApplicableToProposal = matchedSig ? isSignatoryApplicableTo(matchedSig, 'proposal') : true;
+                      const isPermanentSigner = Boolean(matchedSig?.isPermanentSigner && isApplicableToProposal);
+                      const isBuiltinFixedSasSigner = Boolean(
                         isOfficerProposal &&
-                        (stage.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator');
+                        (stage.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator')
+                      );
+                      const isLockedSigner = isBuiltinFixedSasSigner || isPermanentSigner;
 
                       return (
                         <div
                           key={step.id || `${stage.stageIndex}_${stepIdx}`}
                           className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
-                            isLockedSasSigner
+                            isLockedSigner
                               ? 'bg-amber-50/50 border-amber-200 hover:bg-amber-50/80'
                               : 'bg-slate-50/80 border-slate-200/90 hover:bg-slate-50'
                           }`}
@@ -702,12 +774,17 @@ export default function ProposalFlowBuilder({
                                     ({step.signatoryEmail})
                                   </span>
                                 )}
-                                {isLockedSasSigner && (
+                                {isBuiltinFixedSasSigner ? (
                                   <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs">
                                     <Lock className="w-2.5 h-2.5 text-amber-700" />
-                                    Mandatory SAS Gatekeeper
+                                    Fixed Built-in SAS Gatekeeper
                                   </span>
-                                )}
+                                ) : isPermanentSigner ? (
+                                  <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1 shadow-2xs">
+                                    <Lock className="w-2.5 h-2.5 text-amber-700" />
+                                    Permanent Required Signer
+                                  </span>
+                                ) : null}
                               </div>
                               <div className="text-[11px] text-blue-900 font-semibold flex items-center gap-1.5 mt-0.5">
                                 <span>{step.roleTitle || 'Signatory'}</span>
@@ -722,10 +799,10 @@ export default function ProposalFlowBuilder({
                           </div>
 
                           <div className="flex items-center gap-2 self-end sm:self-auto">
-                            {isLockedSasSigner ? (
+                            {isLockedSigner ? (
                               <div className="px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 bg-blue-50 text-blue-900 border-blue-200 shadow-2xs">
                                 <FileSignature className="w-3.5 h-3.5 text-blue-700" />
-                                <span>Stage 1 Endorser</span>
+                                <span>{isBuiltinFixedSasSigner ? 'Stage 1 SAS Endorser' : isApprover ? 'Permanent Approver' : 'Permanent Endorser'}</span>
                               </div>
                             ) : (
                               <>
@@ -913,7 +990,7 @@ export default function ProposalFlowBuilder({
                         >
                           <option value="">+ Choose Registered Signatory from Directory...</option>
                           {activeSignatories
-                            .filter((sig) => sig.isActive !== false)
+                            .filter((sig) => sig.isActive !== false && isSignatoryApplicableTo(sig, 'proposal'))
                             .map((sig) => {
                               const capLabel =
                                 sig.actionType === 'both'

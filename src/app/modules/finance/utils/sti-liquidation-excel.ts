@@ -20,6 +20,7 @@ export interface StiLiquidationExcelOptions {
   daysLapsed?: string;
   orNumber?: string;
   signatories?: StiSignatory[];
+  includeSignatures?: boolean;
 }
 
 function escapeXml(unsafe: string | number | undefined | null): string {
@@ -40,34 +41,51 @@ function escapeXml(unsafe: string | number | undefined | null): string {
 /**
  * Exports a Liquidation Report to an official STI College Ormoc formatted Excel spreadsheet (.xls / Excel XML).
  * Faithfully mirrors the clean monochrome layout, standard borders, cell positions, formulas,
- * and signature matrix of LIQUIDATION-FORMAT_v1.xlsx without unnecessary decorative colors.
+ * and structure of LIQUIDATION-FORMAT_v1.xlsx.
  */
 export function exportOfficialStiLiquidationExcel(
   report: LiquidationDocument,
   options: StiLiquidationExcelOptions = {}
 ) {
   const eventTitle = report.eventTitle || 'Event Activity';
-  const officerName = options.officerName || report.submittedByName || '';
-  const chequeNumber = options.chequeNumber || '';
-  const activityEndDate = options.activityEndDate || formatAppDate(report.createdAt, '');
-  const submissionDeadline = options.submissionDeadline || '';
-  const dateSubmitted = options.dateSubmitted || formatAppDate(report.submittedAt || report.createdAt, new Date().toLocaleDateString());
-  const dateReleased = options.dateReleased || '';
-  const amountAdvanced = options.amountAdvanced !== undefined ? options.amountAdvanced : (report.allocatedBudget || report.totalAllocatedBudget || report.totalActualSpent || 0);
-  const daysLapsed = options.daysLapsed || '-o-';
-  const orNumber = options.orNumber || (report.lineItems?.find(i => i.receiptNumber)?.receiptNumber) || '';
+  const officerName = options.officerName || report.submittedByName || report.createdByName || '';
+  const chequeNumber =
+    options.chequeNumber ||
+    (report as any).chequeNumber ||
+    (report as any).checkNumber ||
+    (report.id ? report.id.slice(0, 8).toUpperCase() : '');
 
-  // Dynamic Signatories (Clean fallback defaults matching STI standard with NO hardcoded sample names)
-  const signatories: StiSignatory[] = options.signatories && options.signatories.length > 0
-    ? options.signatories
-    : [
-        { id: '1', type: 'Submitted By:', name: officerName, role: '(Name of Employee / Treasurer)' },
-        { id: '2', type: 'Checked By:', name: '', role: '(Accountant)' },
-        { id: '3', type: 'Indorsed By:', name: '', role: '(Supervisor)' },
-        { id: '4', type: 'Recommending Approval:', name: '', role: '(Supervisor)' },
-        { id: '5', type: 'Approved By:', name: '', role: '(Administrator)' },
-        { id: '6', type: 'Noted By:', name: '', role: '(President)' },
-      ];
+  const rawEndDate = options.activityEndDate || formatAppDate(report.createdAt, '');
+  const activityEndDate = rawEndDate.replace(/Z$/, '').trim();
+
+  let fallbackDeadline = '';
+  const parsedEnd = parseDateSafe(activityEndDate || report.createdAt);
+  if (parsedEnd) {
+    const deadDate = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+    fallbackDeadline = formatAppDate(deadDate, '');
+  }
+  const submissionDeadline = (options.submissionDeadline || fallbackDeadline).replace(/Z$/, '').trim();
+
+  const rawSubmitted =
+    options.dateSubmitted ||
+    formatAppDate(report.submittedAt || report.createdAt, new Date().toLocaleDateString());
+  const dateSubmitted = rawSubmitted.replace(/Z$/, '').trim();
+
+  const dateReleased = (options.dateReleased || '').replace(/Z$/, '').trim();
+  const amountAdvanced =
+    options.amountAdvanced !== undefined
+      ? options.amountAdvanced
+      : (report.allocatedBudget || (report as any).totalAllocatedBudget || report.totalActualSpending || (report as any).totalActualSpent || 0);
+  const daysLapsed = options.daysLapsed || '-o-';
+
+  const lineItemORs = Array.from(
+    new Set(
+      (report.lineItems || [])
+        .map((i) => i.receiptNumber?.trim())
+        .filter((n): n is string => Boolean(n && n.length > 0))
+    )
+  );
+  const orNumber = options.orNumber || (lineItemORs.length > 0 ? lineItemORs.join(', ') : '');
 
   // Group line items by category (e.g. A. Fare, B. Meals, C. Supplies, D. Accommodation, etc.)
   const rawItems = report.lineItems || [];
@@ -155,16 +173,16 @@ export function exportOfficialStiLiquidationExcel(
   const actualExpenseSummaryRow = currentRow++;
   const balanceRow = currentRow++;
 
-  // Dynamic Signatures Block Rows
+  // Signatures block is omitted unless explicitly requested (no signatories/matrix needed)
   let signaturesXml = '';
-  let sigStartRow = currentRow + 2;
+  if (options.includeSignatures && options.signatories && options.signatories.length > 0) {
+    let sigStartRow = currentRow + 2;
+    options.signatories.forEach((sig) => {
+      const titleRow = sigStartRow++;
+      const roleRow = sigStartRow++;
+      sigStartRow++; // spacing row
 
-  signatories.forEach((sig) => {
-    const titleRow = sigStartRow++;
-    const roleRow = sigStartRow++;
-    sigStartRow++; // spacing row
-
-    signaturesXml += `
+      signaturesXml += `
    <Row ss:Index="${titleRow}">
     <Cell ss:StyleID="SigHeader"><Data ss:Type="String">${escapeXml(sig.type)}</Data></Cell>
     <Cell ss:StyleID="Default"/>
@@ -179,7 +197,8 @@ export function exportOfficialStiLiquidationExcel(
     <Cell ss:StyleID="Default"/>
     <Cell ss:StyleID="SigDateText"><Data ss:Type="String">(Date)</Data></Cell>
    </Row>`;
-  });
+    });
+  }
 
   // Clean XML Document matching the monochrome styling of LIQUIDATION-FORMAT_v1.xlsx
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -447,8 +466,8 @@ export function exportOfficialStiLiquidationExcel(
     <Cell ss:StyleID="TotalAmountCell" ss:Formula="${totalAdvanceFormula}"><Data ss:Type="Number">${amountAdvanced}</Data></Cell>
     <Cell ss:StyleID="TotalLabel"><Data ss:Type="String">Total Actual Expense</Data></Cell>
     <Cell ss:StyleID="Default"/>
-    <Cell ss:StyleID="TotalAmountCell" ss:Formula="${totalActualFormula}"><Data ss:Type="Number">${report.totalActualSpent || 0}</Data></Cell>
-    <Cell ss:StyleID="TotalAmountCell" ss:Formula="${varianceFormula}"><Data ss:Type="Number">${(report.surplusOrDeficit || 0)}</Data></Cell>
+    <Cell ss:StyleID="TotalAmountCell" ss:Formula="${totalActualFormula}"><Data ss:Type="Number">${report.totalActualSpending || (report as any).totalActualSpent || 0}</Data></Cell>
+    <Cell ss:StyleID="TotalAmountCell" ss:Formula="${varianceFormula}"><Data ss:Type="Number">${(report.surplusOrDeficit || (amountAdvanced - (report.totalActualSpending || (report as any).totalActualSpent || 0)))}</Data></Cell>
     <Cell ss:StyleID="Default"/>
    </Row>
 
@@ -466,13 +485,13 @@ export function exportOfficialStiLiquidationExcel(
 
    <Row ss:Index="${actualExpenseSummaryRow}">
     <Cell ss:StyleID="BalanceSummaryLabel"><Data ss:Type="String">          Total Actual Expense</Data></Cell>
-    <Cell ss:StyleID="CurrencyCell" ss:Formula="=R${totalsRow}C5"><Data ss:Type="Number">${report.totalActualSpent || 0}</Data></Cell>
+    <Cell ss:StyleID="CurrencyCell" ss:Formula="=R${totalsRow}C5"><Data ss:Type="Number">${report.totalActualSpending || (report as any).totalActualSpent || 0}</Data></Cell>
     <Cell ss:MergeAcross="4" ss:StyleID="Default"/>
    </Row>
 
    <Row ss:Index="${balanceRow}" ss:Height="20">
     <Cell ss:StyleID="BalanceSummaryLabel"><Data ss:Type="String">          Balance: </Data></Cell>
-    <Cell ss:StyleID="BalanceSummaryValue" ss:Formula="=R${amountAdvancedRow}C2-R${actualExpenseSummaryRow}C2"><Data ss:Type="Number">${(report.surplusOrDeficit || 0)}</Data></Cell>
+    <Cell ss:StyleID="BalanceSummaryValue" ss:Formula="=R${amountAdvancedRow}C2-R${actualExpenseSummaryRow}C2"><Data ss:Type="Number">${(report.surplusOrDeficit || (amountAdvanced - (report.totalActualSpending || (report as any).totalActualSpent || 0)))}</Data></Cell>
     <Cell ss:StyleID="MetaLabel"><Data ss:Type="String">OR NO: ${escapeXml(orNumber)}</Data></Cell>
     <Cell ss:MergeAcross="3" ss:StyleID="Default"/>
    </Row>

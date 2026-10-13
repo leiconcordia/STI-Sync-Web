@@ -19,19 +19,28 @@ import {
   Download,
   TrendingUp,
   TrendingDown,
-  Edit3
+  Edit3,
+  Trash2,
+  Shield,
+  Undo2,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import {
   approveLiquidationReport,
-  returnLiquidationReport
+  returnLiquidationReport,
+  deleteLiquidationReport,
+  withdrawLiquidationReport,
 } from '../../modules/finance/services/liquidation.service';
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
+import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import { resolveApprovalPermissions } from '../../modules/workflow/utils/approval-permissions.utils';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import { toast } from 'sonner';
@@ -84,6 +93,8 @@ export function FinancialLiquidations() {
   const [activeTab, setActiveTab] = useState<TabValue>('all');
   const [selectedReport, setSelectedReport] = useState<LiquidationDocument | null>(null);
   const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
+  const [deletingReport, setDeletingReport] = useState<LiquidationDocument | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -95,10 +106,44 @@ export function FinancialLiquidations() {
   const [showFilters, setShowFilters] = useState(false);
   const [filterOrg, setFilterOrg] = useState('all');
 
+  const { profile: adviserProfile } = useAdviserProfile();
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+
+  const currentUser = useMemo(() => ({
+    uid: adviserProfile?.uid || 'sao_admin_user',
+    name: adviserProfile?.name || adviserProfile?.displayName || 'SAO Administrator',
+    role: 'admin',
+    organizationId: 'sao_admin',
+    email: adviserProfile?.email || 'sao@ormoc.sti.edu.ph',
+  }), [adviserProfile]);
+
+  const permissions = useMemo(() => {
+    return resolveApprovalPermissions(selectedReport, currentUser);
+  }, [selectedReport, currentUser]);
+
   const handleOpenEditDraft = (report: LiquidationDocument) => {
     setSelectedReport(null);
     setEditingReport(report);
     setShowAdminCreateModal(true);
+  };
+
+  const handleWithdraw = async () => {
+    if (!selectedReport) return;
+    setIsProcessing(true);
+    setActionError(null);
+    try {
+      await withdrawLiquidationReport(selectedReport.id, currentUser.uid, currentUser.name);
+      toast.success(`Liquidation report for "${selectedReport.eventTitle}" withdrawn to draft.`);
+      const reportToEdit = selectedReport;
+      setSelectedReport(null);
+      handleOpenEditDraft({ ...reportToEdit, status: 'draft' });
+    } catch (err: any) {
+      console.error('[FinancialLiquidations] Withdraw failed:', err);
+      setActionError(err?.message || 'Failed to withdraw liquidation report.');
+      toast.error(err?.message || 'Failed to withdraw liquidation report.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   useEffect(() => {
@@ -131,7 +176,11 @@ export function FinancialLiquidations() {
   const filteredLiquidations = useMemo(() => {
     return liquidations
       .filter((liq) => {
-        if (activeTab !== 'all' && liq.status !== activeTab) return false;
+        if (activeTab === 'pending') {
+          if (liq.status !== 'pending' && liq.status !== 'under_review') return false;
+        } else if (activeTab !== 'all' && liq.status !== activeTab) {
+          return false;
+        }
         if (filterOrg !== 'all' && liq.organizationName !== filterOrg) return false;
 
         const q = searchQuery.toLowerCase().trim();
@@ -149,7 +198,10 @@ export function FinancialLiquidations() {
   }, [liquidations, activeTab, filterOrg, searchQuery]);
 
   // KPI calculations
-  const pendingItems = useMemo(() => liquidations.filter((l) => l.status === 'pending'), [liquidations]);
+  const pendingItems = useMemo(
+    () => liquidations.filter((l) => l.status === 'pending' || l.status === 'under_review'),
+    [liquidations]
+  );
   const approvedItems = useMemo(() => liquidations.filter((l) => l.status === 'approved'), [liquidations]);
   const returnedItems = useMemo(() => liquidations.filter((l) => l.status === 'returned'), [liquidations]);
   const draftItems = useMemo(() => liquidations.filter((l) => l.status === 'draft'), [liquidations]);
@@ -269,6 +321,13 @@ export function FinancialLiquidations() {
             Approved
           </span>
         );
+      case 'under_review':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/80">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+            Under Review
+          </span>
+        );
       case 'pending':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/80">
@@ -316,7 +375,7 @@ export function FinancialLiquidations() {
           className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer self-start sm:self-auto"
         >
           <Plus className="w-4 h-4 text-[#FFD41C]" />
-          Create Admin Liquidation
+          Create Financial Liquidation
         </Button>
       </div>
 
@@ -389,17 +448,15 @@ export function FinancialLiquidations() {
                 <button
                   key={tab.key}
                   onClick={() => handleTabChange(tab.key as TabValue)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-                    isActive
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
                       ? 'bg-[#001A4D] text-white shadow-xs'
                       : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
-                  }`}
+                    }`}
                 >
                   <span>{tab.label}</span>
                   <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                      isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                    }`}
+                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      }`}
                   >
                     {tab.count}
                   </span>
@@ -425,11 +482,10 @@ export function FinancialLiquidations() {
             {/* Filter Toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${
-                showFilters || filterOrg !== 'all'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all'
                   ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
                   : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <Filter className="w-3.5 h-3.5" />
               <span>Filter</span>
@@ -562,9 +618,8 @@ export function FinancialLiquidations() {
                         </div>
                         <div className="w-24 bg-gray-200 rounded-full h-1.5 mt-1 overflow-hidden">
                           <div
-                            className={`h-1.5 rounded-full transition-all ${
-                              isOverBudget ? 'bg-red-500' : 'bg-[#001A4D]'
-                            }`}
+                            className={`h-1.5 rounded-full transition-all ${isOverBudget ? 'bg-red-500' : 'bg-[#001A4D]'
+                              }`}
                             style={{ width: `${utilPct}%` }}
                           />
                         </div>
@@ -580,9 +635,8 @@ export function FinancialLiquidations() {
 
                       {/* Variance */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className={`inline-flex items-center gap-1 font-bold text-xs ${
-                          isDeficit ? 'text-red-600' : 'text-emerald-700'
-                        }`}>
+                        <div className={`inline-flex items-center gap-1 font-bold text-xs ${isDeficit ? 'text-red-600' : 'text-emerald-700'
+                          }`}>
                           {isDeficit ? (
                             <TrendingDown className="w-3.5 h-3.5" />
                           ) : (
@@ -607,52 +661,81 @@ export function FinancialLiquidations() {
 
                       {/* Status */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        {renderStatusBadge(liq.status)}
+                        <div className="flex flex-col gap-1 items-start">
+                          {renderStatusBadge(liq.status)}
+                          {(liq as any).archivedRefNumber && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-mono text-[#0E4EBD] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200" title="Archived into EDMS">
+                              <FileText className="w-2.5 h-2.5" />
+                              {(liq as any).archivedRefNumber}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Inline Actions */}
                       <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
-                          {liq.status === 'draft' && (
-                            <button
-                              onClick={() => handleOpenEditDraft(liq)}
-                              className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                              title="Edit Draft Liquidation"
-                            >
-                              <Edit3 className="w-3 h-3" />
-                              <span>Edit</span>
-                            </button>
-                          )}
+                          {(() => {
+                            const rowPerms = resolveApprovalPermissions(liq, currentUser);
+                            return (
+                              <>
+                                {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
+                                  <button
+                                    onClick={() => handleOpenEditDraft(liq)}
+                                    className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title={liq.status === 'returned' ? 'Revise & Resubmit Liquidation' : 'Edit Draft Liquidation'}
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>{liq.status === 'returned' ? 'Revise' : 'Edit'}</span>
+                                  </button>
+                                )}
 
-                          {isPending && (
-                            <>
-                              <button
-                                onClick={() => {
-                                  setSelectedReport(liq);
-                                  setReviewRemarks('');
-                                  setActionError(null);
-                                }}
-                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="Approve this liquidation"
-                              >
-                                <Check className="w-3 h-3" />
-                                <span>Approve</span>
-                              </button>
+                                {rowPerms.isOwner && isPending && (
+                                  <button
+                                    onClick={() => {
+                                      setSelectedReport(liq);
+                                      setShowWithdrawModal(true);
+                                    }}
+                                    className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title="Withdraw your liquidation submission"
+                                  >
+                                    <RotateCcw className="w-3 h-3 text-amber-600" />
+                                    <span>Withdraw</span>
+                                  </button>
+                                )}
 
-                              <button
-                                onClick={() => {
-                                  setSelectedReport(liq);
-                                  setReviewRemarks(liq.returnRemarks || '');
-                                  setActionError(null);
-                                }}
-                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="Return for revision"
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                                <span>Return</span>
-                              </button>
-                            </>
-                          )}
+                                {!rowPerms.isOwner && isPending && (
+                                  <>
+                                    <button
+                                      onClick={() => {
+                                        setSelectedReport(liq);
+                                        setReviewRemarks('');
+                                        setActionError(null);
+                                      }}
+                                      className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                      title="Approve this liquidation"
+                                    >
+                                      <Check className="w-3 h-3" />
+                                      <span>Approve</span>
+                                    </button>
+
+                                    <button
+                                      onClick={() => {
+                                        setSelectedReport(liq);
+                                        setReviewRemarks(liq.returnRemarks || '');
+                                        setActionError(null);
+                                      }}
+                                      className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                      title="Return for revision"
+                                    >
+                                      <RotateCcw className="w-3 h-3" />
+                                      <span>Return</span>
+                                    </button>
+                                  </>
+                                )}
+                              </>
+                            );
+                          })()}
 
                           {isApproved && (
                             <button
@@ -676,6 +759,15 @@ export function FinancialLiquidations() {
                           >
                             <Eye className="w-3 h-3" />
                             <span>View</span>
+                          </button>
+
+                          <button
+                            onClick={() => setDeletingReport(liq)}
+                            className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                            title="Delete report and purge ledger entries"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>Delete</span>
                           </button>
                         </div>
                       </td>
@@ -728,6 +820,26 @@ export function FinancialLiquidations() {
                 </div>
               )}
 
+              {/* Revision Feedback Banner */}
+              {selectedReport.status === 'returned' && (
+                <RevisionFeedbackBanner
+                  returnedBy={{
+                    name: (selectedReport as any).returnedByName || (selectedReport as any).returnedBy || 'Institutional Signatory',
+                    roleTitle: (selectedReport as any).returnedByRoleTitle || 'Signatory Reviewer',
+                    email: (selectedReport as any).returnedByEmail,
+                  }}
+                  returnedAt={selectedReport.returnedAt}
+                  returnRemarks={selectedReport.returnRemarks}
+                  revisionHistory={selectedReport.revisionHistory}
+                  canEdit={permissions.canEdit}
+                  onEditClick={() => {
+                    handleOpenEditDraft(selectedReport);
+                  }}
+                  documentTitle={selectedReport.eventTitle}
+                  versionLabel={`v${selectedReport.revisionCount || 1}.0`}
+                />
+              )}
+
               {/* Financial Math Bar */}
               <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl grid grid-cols-3 gap-4 text-center">
                 <div>
@@ -749,9 +861,8 @@ export function FinancialLiquidations() {
                     {selectedReport.surplusOrDeficit < 0 ? 'Deficit (Over Budget)' : 'Surplus (Remaining)'}
                   </div>
                   <div
-                    className={`text-lg font-bold mt-0.5 ${
-                      selectedReport.surplusOrDeficit < 0 ? 'text-red-600' : 'text-emerald-700'
-                    }`}
+                    className={`text-lg font-bold mt-0.5 ${selectedReport.surplusOrDeficit < 0 ? 'text-red-600' : 'text-emerald-700'
+                      }`}
                   >
                     {formatVariance(selectedReport.surplusOrDeficit)}
                   </div>
@@ -810,9 +921,8 @@ export function FinancialLiquidations() {
                             </td>
                             <td className="p-3 font-bold">
                               {itemVariance !== null ? (
-                                <span className={`px-2 py-0.5 rounded text-[11px] ${
-                                  itemVariance < 0 ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'
-                                }`}>
+                                <span className={`px-2 py-0.5 rounded text-[11px] ${itemVariance < 0 ? 'bg-red-100 text-red-800' : 'bg-emerald-100 text-emerald-800'
+                                  }`}>
                                   {itemVariance < 0
                                     ? `Deficit -${formatCurrency(Math.abs(itemVariance))}`
                                     : `Surplus +${formatCurrency(itemVariance)}`}
@@ -830,22 +940,22 @@ export function FinancialLiquidations() {
                                   item.receiptFiles && item.receiptFiles.length > 0
                                     ? item.receiptFiles
                                     : item.receiptUrls && item.receiptUrls.length > 0
-                                    ? item.receiptUrls.map((u, i) => ({
+                                      ? item.receiptUrls.map((u, i) => ({
                                         id: `${i}`,
                                         url: u,
                                         name: `Receipt ${i + 1}`,
                                         fileType: 'other' as const,
                                       }))
-                                    : item.receiptUrl
-                                    ? [
-                                        {
-                                          id: '1',
-                                          url: item.receiptUrl,
-                                          name: 'Receipt Attachment',
-                                          fileType: 'other' as const,
-                                        },
-                                      ]
-                                    : [];
+                                      : item.receiptUrl
+                                        ? [
+                                          {
+                                            id: '1',
+                                            url: item.receiptUrl,
+                                            name: 'Receipt Attachment',
+                                            fileType: 'other' as const,
+                                          },
+                                        ]
+                                        : [];
 
                                 if (files.length === 0) {
                                   return <span className="text-gray-400">No Proof</span>;
@@ -963,23 +1073,50 @@ export function FinancialLiquidations() {
 
               {selectedReport.status === 'pending' && (
                 <div className="flex items-center gap-3">
-                  <Button
-                    onClick={handleReturn}
-                    disabled={isProcessing}
-                    className="bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
-                  >
-                    {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                    Return for Revision
-                  </Button>
+                  {permissions.isOwner ? (
+                    // SAS Created this report: They CANNOT approve or return!
+                    <>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                        <Clock className="w-3.5 h-3.5 text-blue-600" /> Authored by SAO • Under Signatory Review
+                      </span>
+                      {permissions.canWithdraw && (
+                        <Button
+                          variant="outline"
+                          onClick={() => setShowWithdrawModal(true)}
+                          disabled={isProcessing}
+                          className="border-amber-300 text-amber-800 hover:bg-amber-50 font-bold text-xs cursor-pointer"
+                        >
+                          <Undo2 className="w-3.5 h-3.5 mr-1.5 text-amber-600" />
+                          Withdraw Submission
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    // Reviewer actions for Student Org submissions
+                    <>
+                      {permissions.canReturn && (
+                        <Button
+                          onClick={handleReturn}
+                          disabled={isProcessing}
+                          className="bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                        >
+                          {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                          Return for Revision
+                        </Button>
+                      )}
 
-                  <Button
-                    onClick={handleApprove}
-                    disabled={isProcessing}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
-                  >
-                    {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                    Approve Liquidation
-                  </Button>
+                      {permissions.canApprove && (
+                        <Button
+                          onClick={handleApprove}
+                          disabled={isProcessing}
+                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+                        >
+                          {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                          Approve Liquidation
+                        </Button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
 
@@ -988,27 +1125,49 @@ export function FinancialLiquidations() {
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-gray-100 text-gray-700 border border-gray-200">
                     <Clock className="w-3.5 h-3.5 text-gray-500" /> Draft Report (Unsubmitted)
                   </span>
-                  <Button
-                    onClick={() => handleOpenEditDraft(selectedReport)}
-                    className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5"
-                  >
-                    <Edit3 className="w-3.5 h-3.5 text-[#FFD41C]" />
-                    Edit Draft
-                  </Button>
+                  {permissions.canEdit && (
+                    <Button
+                      onClick={() => handleOpenEditDraft(selectedReport)}
+                      className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-[#FFD41C]" />
+                      Edit Draft
+                    </Button>
+                  )}
                 </div>
               )}
 
               {selectedReport.status === 'returned' && (
                 <div className="flex items-center gap-3">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                    <RotateCcw className="w-3.5 h-3.5 text-amber-700" /> Awaiting Officer Resubmission
-                  </span>
+                  {permissions.canEdit ? (
+                    <Button
+                      onClick={() => handleOpenEditDraft(selectedReport)}
+                      className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer shadow-xs flex items-center gap-1.5"
+                    >
+                      <Edit3 className="w-3.5 h-3.5 text-white" />
+                      Edit & Resubmit Liquidation
+                    </Button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      <RotateCcw className="w-3.5 h-3.5 text-amber-700" /> Awaiting Officer Resubmission
+                    </span>
+                  )}
                 </div>
               )}
             </div>
           </div>
         </div>
       )}
+
+      {/* Author Withdraw Modal */}
+      <WithdrawConfirmModal
+        isOpen={showWithdrawModal}
+        onClose={() => setShowWithdrawModal(false)}
+        onConfirm={handleWithdraw}
+        documentType="Financial Liquidation"
+        documentTitle={selectedReport?.eventTitle || ''}
+        isProcessing={isProcessing}
+      />
 
       {/* SAO Admin Create / Edit Liquidation Modal */}
       {showAdminCreateModal && (
@@ -1046,6 +1205,59 @@ export function FinancialLiquidations() {
         onClose={() => setExportReport(null)}
         report={exportReport}
       />
+
+      {/* Delete / Void Confirmation Modal */}
+      {deletingReport && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-200 space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-base">Delete / Void Liquidation Report?</h3>
+                <p className="text-xs text-gray-500">Purges document and rolls back ledger transactions.</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-xl border border-gray-100">
+              Are you sure you want to delete the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>?
+              All associated transactions in both <code>/organization_ledger</code> and <code>/sao_ledger</code> will be completely purged and rolled back.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingReport(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!deletingReport) return;
+                  setIsDeleting(true);
+                  try {
+                    await deleteLiquidationReport(deletingReport.id);
+                    toast.success('Liquidation report and ledger entries successfully purged.');
+                    setDeletingReport(null);
+                  } catch (err: any) {
+                    toast.error(err?.message || 'Failed to delete liquidation report.');
+                  } finally {
+                    setIsDeleting(false);
+                  }
+                }}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Deleting...' : 'Confirm Delete & Purge'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

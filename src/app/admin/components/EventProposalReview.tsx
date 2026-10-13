@@ -7,13 +7,14 @@ import {
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
-  PenTool, ShieldCheck
+  PenTool, ShieldCheck, Undo2
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
 import type { EventDocument } from '../../modules/events/types/event.types';
 import type { FinancialLineItem, ProposalApprovalStep } from '../../modules/activity-proposals/types/proposal.types';
-import { approveEvent, rejectEvent, returnEvent, updateAdviserRemarks } from '../../modules/events/services/event.service';
+import { approveEvent, rejectEvent, returnEvent, updateAdviserRemarks, withdrawProposal } from '../../modules/events/services/event.service';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { getProposalById, endorseProposal } from '../../modules/activity-proposals/services/proposal.service';
 import {
   getSasSignatoryConfig,
@@ -107,6 +108,32 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
 
 export default function EventProposalReview({ event, onClose }: EventProposalReviewProps) {
   const navigate = useNavigate();
+  const { profile: adviserProfile } = useAdviserProfile();
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+
+  const handleWithdraw = async () => {
+    setIsWithdrawing(true);
+    try {
+      await withdrawProposal(
+        event.id,
+        adviserProfile?.uid || 'admin-user',
+        adviserProfile?.displayName || 'SAO Admin'
+      );
+      toast.success('Proposal Withdrawn', {
+        description: `"${event.title}" has been returned to Draft status.`,
+      });
+      setShowWithdrawModal(false);
+      onClose();
+    } catch (err: any) {
+      toast.error('Failed to withdraw proposal', {
+        description: err.message || 'Please try again.',
+      });
+    } finally {
+      setIsWithdrawing(false);
+    }
+  };
+
   const [activeSection, setActiveSection] = useState('overview');
   const [visitedSections, setVisitedSections] = useState<Set<string>>(new Set(['overview']));
   const [remarks, setRemarks] = useState(event.adviserRemarks || '');
@@ -2880,6 +2907,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
                 </button>
                 <button
+                  onClick={() => setShowWithdrawModal(true)}
+                  disabled={isWithdrawing}
+                  className="w-full py-2.5 bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <Undo2 className="w-4 h-4 text-amber-600" />
+                  <span>Withdraw Submission to Edit</span>
+                </button>
+                <button
                   onClick={onClose}
                   className="w-full py-2.5 bg-[#001A4D] text-white hover:bg-[#001A4D]/90 rounded-xl font-bold text-xs transition-colors shadow-xs cursor-pointer"
                 >
@@ -3474,6 +3509,16 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           readOnly={isOrgManagedEvent}
         />
       )}
+
+      {/* Author Withdraw Modal */}
+      <WithdrawConfirmModal
+        isOpen={showWithdrawModal}
+        onClose={() => setShowWithdrawModal(false)}
+        onConfirm={handleWithdraw}
+        documentType="Activity Proposal"
+        documentTitle={event.title}
+        isProcessing={isWithdrawing}
+      />
     </div>
   );
 }
