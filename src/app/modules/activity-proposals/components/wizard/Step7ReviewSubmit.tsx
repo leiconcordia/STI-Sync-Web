@@ -104,7 +104,7 @@ export default function Step7ReviewSubmit({
     setIsExportingPdf(true);
     try {
       await exportActivityProposalPDF(formData);
-      toast.success('Official STI Form AP-01 Activity Proposal PDF generated successfully!');
+      toast.success('Official Activity Proposal PDF generated successfully!');
     } catch (err: any) {
       console.error('PDF export error:', err);
       toast.error('Failed to generate PDF: ' + (err?.message || 'Please try again.'));
@@ -284,7 +284,7 @@ export default function Step7ReviewSubmit({
             <div>
               <div className="flex items-center gap-2">
                 <span className="px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] font-bold uppercase tracking-wider">
-                  Official Form AP-01
+                  Official Activity Proposal
                 </span>
                 <span className="text-slate-400 text-xs font-mono">
                   {formData.referenceNo || 'AP-2026-SAS-PENDING'}
@@ -318,10 +318,10 @@ export default function Step7ReviewSubmit({
                 onClick={handleExportPdf}
                 disabled={isExportingPdf}
                 className="px-3 py-1.5 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 hover:text-white border border-blue-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs"
-                title="Generate and download official STI Form AP-01 PDF"
+                title="Generate and download official STI Activity Proposal PDF"
               >
                 <Download className="w-3.5 h-3.5 text-[#FFD41C]" />
-                <span>{isExportingPdf ? 'Exporting PDF...' : 'Download AP-01 PDF'}</span>
+                <span>{isExportingPdf ? 'Exporting PDF...' : 'Download Proposal PDF'}</span>
               </button>
             </div>
           </div>
@@ -643,7 +643,7 @@ export default function Step7ReviewSubmit({
             title="Download publication-quality PDF copy of this Activity Proposal"
           >
             <Download className="w-4 h-4 text-blue-600" />
-            <span>{isExportingPdf ? 'Generating PDF...' : 'Download AP-01 PDF'}</span>
+            <span>{isExportingPdf ? 'Generating PDF...' : 'Download Proposal PDF'}</span>
           </button>
         </div>
 

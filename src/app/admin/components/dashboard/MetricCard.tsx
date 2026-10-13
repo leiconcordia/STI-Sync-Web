@@ -5,7 +5,7 @@ interface MetricCardProps {
   title: string;
   value: string | number;
   icon: LucideIcon;
-  gradient: "blue" | "green" | "gold" | "red-orange" | "navy";
+  gradient: "blue" | "green" | "gold" | "red-orange" | "navy" | "purple" | "blue-dark";
   change?: string;
   badge?: ReactNode;
   trending?: "up" | "down";
@@ -13,11 +13,13 @@ interface MetricCardProps {
 }
 
 const gradients = {
-  blue: "from-[#0E4EBD] to-[#1E70E8]",
-  green: "from-[#22C55E] to-[#16A34A]",
-  gold: "from-[#FFC107] to-[#F59E0B]",
-  "red-orange": "from-[#EF4444] to-[#F97316]",
+  blue: "from-[#00B4DB] to-[#0072FF]",
+  green: "from-[#05D35A] to-[#00A83E]",
+  gold: "from-[#FFB800] to-[#E59500]",
+  "red-orange": "from-[#FF5E36] to-[#E62B2B]",
   navy: "from-[#001A4D] to-[#0E4EBD]",
+  purple: "from-[#FF5E36] to-[#E62B2B]", // Replaced purple with reference basis coral red-orange
+  "blue-dark": "from-[#001A4D] to-[#0E4EBD]",
 };
 
 export function MetricCard({
@@ -37,6 +39,10 @@ export function MetricCard({
         onClick ? "cursor-pointer hover:shadow-lg hover:scale-[1.01] transition-all group" : ""
       }`}
     >
+      {/* Decorative ambient subtle circle accents matching basis design */}
+      <div className="absolute -top-6 -right-6 w-24 h-24 rounded-full bg-white/10 pointer-events-none" />
+      <div className="absolute -bottom-6 -left-6 w-20 h-20 rounded-full bg-white/5 pointer-events-none" />
+
       {/* Icon Container */}
       <div className="absolute top-6 left-6 w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm group-hover:bg-white/30 transition-colors">
         <Icon className="w-6 h-6" />

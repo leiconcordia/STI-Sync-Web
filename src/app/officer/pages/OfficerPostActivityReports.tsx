@@ -287,7 +287,7 @@ export default function OfficerPostActivityReports() {
                   Concluded Activities Awaiting Post-Activity Report ({eligibleEvents.length})
                 </h3>
                 <p className="text-xs text-amber-800">
-                  Institutional policy compliance: Submit Form PAR within fifteen (15) school days following event conclusion and LF-01 liquidation clearance.
+                  Institutional policy compliance: Submit Post-Activity Report within fifteen (15) school days following event conclusion and financial liquidation clearance.
                 </p>
               </div>
             </div>
@@ -302,7 +302,7 @@ export default function OfficerPostActivityReports() {
                 <div>
                   <div className="flex items-center justify-between gap-2 mb-1.5">
                     <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
-                      LF-01 Cleared
+                      Liquidation Cleared
                     </span>
                     <span className="text-xs text-gray-400 font-medium">
                       {(ev as any).date || 'Concluded'}

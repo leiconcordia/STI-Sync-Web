@@ -311,10 +311,10 @@ export default function OfficerEventDetailView({
         financialProjections: financialProjections,
         approvalChain: fullProposal.approvalChain || (event as any).approvalChain || [],
       });
-      toast.success('Activity Proposal Form AP-01 exported successfully!');
+      toast.success('Activity Proposal exported successfully!');
     } catch (err: any) {
       console.error(err);
-      toast.error('Failed to export Form AP-01 PDF.');
+      toast.error('Failed to export Proposal PDF.');
     } finally {
       setExportingPdf(false);
     }
@@ -704,10 +704,10 @@ export default function OfficerEventDetailView({
             onClick={handleExportPDF}
             disabled={exportingPdf}
             className="px-3.5 py-1.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-            title="Download Official STI Form AP-01 PDF"
+            title="Download Official STI Proposal PDF"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01'}</span>
+            <span>{exportingPdf ? 'Exporting Proposal...' : 'Export Proposal'}</span>
           </button>
 
           {/* 1. Publish to Student App */}
@@ -975,7 +975,7 @@ export default function OfficerEventDetailView({
           {/* Section Navigation List (10 Sections) */}
           <div className="space-y-1">
             <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-3 mb-2">
-              Proposal Sections (Form AP-01)
+              Proposal Sections
             </p>
             {navSections.map((section) => {
               const Icon = section.icon;
@@ -1012,7 +1012,7 @@ export default function OfficerEventDetailView({
               <span>Official Record</span>
             </div>
             <p className="text-[11px] text-white/80 leading-relaxed">
-              Official STI College Ormoc Form AP-01. All approvals release operational studio controls, mobile app publishing, and budget allocations.
+              Official STI College Ormoc Activity Proposal. All approvals release operational studio controls, mobile app publishing, and budget allocations.
             </p>
           </div>
         </aside>
@@ -1129,7 +1129,7 @@ export default function OfficerEventDetailView({
           >
             <SectionHeader
               title="1. Activity Identity & Proponents"
-              subtitle="Official Form AP-01 title, theme, host bodies, principal proponents, and media assets"
+              subtitle="Official proposal title, theme, host bodies, principal proponents, and media assets"
             />
 
             <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-xs">
@@ -1241,7 +1241,7 @@ export default function OfficerEventDetailView({
           >
             <SectionHeader
               title="2. Institutional Objectives & Success Indicators"
-              subtitle="Form AP-01 strategic alignment, core objectives, and measurable Key Performance Indicators (KPIs)"
+              subtitle="Strategic alignment, core objectives, and measurable Key Performance Indicators (KPIs)"
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -1683,7 +1683,7 @@ export default function OfficerEventDetailView({
           >
             <SectionHeader
               title="6. Marketing & Documentation Strategy"
-              subtitle="Form AP-01 promotional outreach channels and official documentation / coverage plans"
+              subtitle="Promotional outreach channels and official documentation / coverage plans"
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -1788,7 +1788,7 @@ export default function OfficerEventDetailView({
             className="space-y-4"
           >
             <SectionHeader
-              title="8. Official Financial Projections (Form AP-01)"
+              title="8. Official Financial Projections"
               subtitle="Standard 6-column revenue and expenditure breakdown with projected net balance"
             />
 

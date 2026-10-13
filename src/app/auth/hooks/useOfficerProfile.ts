@@ -16,6 +16,7 @@ export interface OfficerProfile {
   activeOrganizationId: string | null;
   activeRoleId: string | null;
   isAdviser?: boolean;
+  isSignatory?: boolean;
   requiresPasswordChange?: boolean;
 }
 
@@ -47,16 +48,24 @@ export function useOfficerProfile() {
       return;
     }
 
-    const { studentId, studentName, email, activeOrganizationId, activeRoleId, isAdviser, requiresPasswordChange } = parsedSession;
+    const { studentId, studentName, email, activeOrganizationId, activeRoleId, isAdviser, isSignatory, requiresPasswordChange } = parsedSession;
     setProfile({
-      studentId,
-      studentName,
-      email,
-      activeOrganizationId,
-      activeRoleId,
+      studentId: studentId || '',
+      studentName: studentName || '',
+      email: email || '',
+      activeOrganizationId: activeOrganizationId || null,
+      activeRoleId: activeRoleId || null,
       isAdviser: isAdviser ?? false,
+      isSignatory: isSignatory ?? false,
       requiresPasswordChange: requiresPasswordChange ?? false,
     });
+
+    // Guard against missing/undefined studentId (e.g. signatory session in officer path)
+    if (!studentId || typeof studentId !== 'string') {
+      setRoles([]);
+      setLoading(false);
+      return;
+    }
 
     // Listen for their roles to ensure they are still active and to get their list of orgs
     const q = query(

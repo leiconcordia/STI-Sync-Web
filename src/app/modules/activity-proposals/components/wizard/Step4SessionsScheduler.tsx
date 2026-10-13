@@ -171,7 +171,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
               Date & time (and Venue) <span className="text-red-500">*</span>
             </label>
             <p className="text-[11px] text-gray-500 mt-0.5">
-              Activity proposal schedule and campus location (Form AP-01 Section 12).
+              Activity proposal schedule and campus location.
             </p>
           </div>
         </div>
@@ -182,7 +182,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
         <Info className="w-4 h-4 text-blue-600 flex-shrink-0 mt-0.5" />
         <div className="text-xs text-blue-950 space-y-1">
           <p className="font-bold">
-            Activity Target Schedule & Campus Venue (Reports & Form AP-01)
+            Activity Target Schedule & Campus Venue
           </p>
           <p className="text-blue-800 leading-relaxed font-normal">
             This records the target date, operational hours, and designated campus venue for official proposal vetting and administrative reports. Attendance sessions and scanners are configured separately after approval under Attendance & Scanners.

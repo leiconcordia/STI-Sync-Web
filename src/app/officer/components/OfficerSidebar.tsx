@@ -26,7 +26,7 @@ const navGroups = [
     ]
   },
   {
-    title: "Events & Activities",
+    title: "Activities & Logs",
     items: [
       { icon: Calendar, label: 'Activities', path: '/officer/events', badge: null },
       { icon: QrCode, label: 'Attendance Logs', path: '/officer/attendance', badge: null },

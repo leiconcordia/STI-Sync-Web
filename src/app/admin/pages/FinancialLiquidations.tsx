@@ -999,7 +999,7 @@ export function FinancialLiquidations() {
               {/* Multi-Stage Institutional Signatory Pipeline */}
               <div className="space-y-2 pt-2 border-t border-gray-200">
                 <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
-                  Institutional Signatory & Audit Route (Form LF-01)
+                  Institutional Signatory & Audit Route
                 </h4>
                 <LiquidationSignatoryTracker
                   approvalChain={selectedReport.approvalChain}

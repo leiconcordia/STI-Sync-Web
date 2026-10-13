@@ -636,8 +636,8 @@ export default function DocumentManagementSettings() {
 
               <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:border-blue-200 transition-colors">
                 <div>
-                  <p className="text-sm font-medium text-gray-900">Auto-Archive Approved Financial Liquidations (Form LF-01)</p>
-                  <p className="text-xs text-gray-500">When a financial liquidation is officially approved, automatically archive the Form LF-01 report into the EDMS audit vault.</p>
+                  <p className="text-sm font-medium text-gray-900">Auto-Archive Approved Financial Liquidations</p>
+                  <p className="text-xs text-gray-500">When a financial liquidation is officially approved, automatically archive the liquidation report into the EDMS audit vault.</p>
                 </div>
                 <Toggle value={autoArchiveLiquidations} onChange={setAutoArchiveLiquidations} />
               </div>

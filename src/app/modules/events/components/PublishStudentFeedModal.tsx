@@ -493,7 +493,7 @@ export default function PublishStudentFeedModal({
                     </span>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-0.5">
-                    Target scope and academic eligibility criteria were established during proposal submission (Form AP-01). No manual selection required.
+                    Target scope and academic eligibility criteria were established during proposal submission. No manual selection required.
                   </p>
                 </div>
               </div>

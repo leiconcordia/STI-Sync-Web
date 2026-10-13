@@ -393,7 +393,7 @@ export default function AdminPostActivityReports() {
                 <th className="py-3 px-4">Event Title</th>
                 <th className="py-3 px-4">Hosting Body</th>
                 <th className="py-3 px-4 text-center">Verified Attendance</th>
-                <th className="py-3 px-4 text-right">LF-01 Balance</th>
+                <th className="py-3 px-4 text-right">Liquidation Balance</th>
                 <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>

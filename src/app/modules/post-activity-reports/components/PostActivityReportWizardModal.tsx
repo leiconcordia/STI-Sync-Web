@@ -541,7 +541,7 @@ export default function PostActivityReportWizardModal({
                         </strong>
                       </div>
                       <div>
-                        <span className="text-slate-400 block font-medium">LF-01 Clearance:</span>
+                        <span className="text-slate-400 block font-medium">Liquidation Clearance:</span>
                         <strong className="text-emerald-300">
                           {liquidationRef || 'Approved & Verified'}
                         </strong>
@@ -608,7 +608,7 @@ export default function PostActivityReportWizardModal({
                         <div className="flex items-center gap-2">
                           <DollarSign className="w-4 h-4 text-emerald-600" />
                           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                            Form LF-01 Financial Clearance
+                            Financial Liquidation Clearance
                           </h4>
                         </div>
                         <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
@@ -640,7 +640,7 @@ export default function PostActivityReportWizardModal({
                         </div>
                       </div>
                       <p className="text-[11px] text-slate-500">
-                        Financial figures are verified against approved institutional liquidation records ({liquidationRef || 'LF-01'}).
+                        Financial figures are verified against approved institutional liquidation records{liquidationRef ? ` (${liquidationRef})` : ''}.
                       </p>
                     </div>
                   </div>

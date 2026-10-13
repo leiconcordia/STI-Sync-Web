@@ -56,6 +56,11 @@ export function OfficerLayout() {
     return <Navigate to="/officer/login" replace />;
   }
 
+  // If active user is purely a signatory without an active officer role, redirect to signatory portal
+  if (profile.isSignatory && !profile.activeOrganizationId) {
+    return <Navigate to="/signatory/endorsements" replace />;
+  }
+
   // Intercept layout if organization status is suspended, inactive, or archived
   const isSuspendedOrInactive = ['suspended', 'inactive', 'archived'].includes(activeOrgStatus);
   if (isSuspendedOrInactive) {

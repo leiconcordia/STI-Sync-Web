@@ -461,7 +461,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
               <h3 className="text-base font-bold text-[#001A4D] flex items-center gap-2">
                 Official Institutional Signatory & E-Signature
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FFD41C] text-[#001A4D]">
-                  Form AP-01
+                  Activity Proposal
                 </span>
               </h3>
               <p className="text-xs text-gray-500">
@@ -484,7 +484,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
             <p className="font-bold text-[#001A4D]">How your profile powers the Activity Proposal workflow:</p>
             <ul className="list-disc pl-4 space-y-0.5 text-blue-800">
               <li>When student officers create a proposal, your <strong>Full Name</strong> and <strong>Position Title</strong> are automatically populated and permanently locked on Stage 1.</li>
-              <li>When you approve proposals in the Event Proposal Review studio, this electronic signature is stamped on Form AP-01.</li>
+              <li>When you approve proposals in the Event Proposal Review studio, this electronic signature is stamped on the Activity Proposal.</li>
             </ul>
           </div>
         </div>
@@ -570,7 +570,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
                 </p>
                 <p className="text-[11px] text-gray-600 font-semibold">{position || 'SAS Coordinator'}</p>
                 <p className="text-[10px] text-gray-400 font-mono">
-                  Sealed Cryptographically • Form AP-01 Official Signatory
+                  Sealed Cryptographically • Activity Proposal Official Signatory
                 </p>
               </div>
             </div>
@@ -662,9 +662,9 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
           <div className="flex items-center justify-between text-xs">
             <span className="font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
               <Shield className="w-3.5 h-3.5 text-[#0E4EBD]" />
-              Form AP-01 Live Document Preview
+              Live Document Preview
             </span>
-            <span className="text-gray-400 text-[10px] font-mono">Official STI AP-01 Format</span>
+            <span className="text-gray-400 text-[10px] font-mono">Official Format</span>
           </div>
           <p className="text-xs text-gray-500">
             This is how your endorsement signature block will appear on official Activity Proposal documents:

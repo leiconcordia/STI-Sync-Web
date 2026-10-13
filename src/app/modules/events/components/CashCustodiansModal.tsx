@@ -328,7 +328,7 @@ export default function CashCustodiansModal({
                   {activity.referenceId}
                 </span>
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                  Form AP-01 Approved
+                  Proposal Approved
                 </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5 truncate max-w-md">

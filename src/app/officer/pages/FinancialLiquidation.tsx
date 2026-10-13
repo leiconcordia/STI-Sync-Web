@@ -439,6 +439,7 @@ export default function FinancialLiquidation() {
                   const isReturned = report.status === 'returned';
                   const isDraft = report.status === 'draft';
                   const isApproved = report.status === 'approved';
+                  const isPending = report.status === 'pending' || report.status === 'under_review';
 
                   const allocated = report.allocatedBudget || 0;
                   const spent = report.totalActualSpending || 0;
@@ -828,7 +829,7 @@ export default function FinancialLiquidation() {
               {/* Multi-Stage Institutional Signatory Pipeline */}
               <div className="pt-3 border-t border-gray-200 space-y-2">
                 <h4 className="font-bold text-xs text-[#001A4D] uppercase tracking-wider">
-                  Institutional Signatory & Audit Route (Form LF-01)
+                  Institutional Signatory & Audit Route
                 </h4>
                 <LiquidationSignatoryTracker
                   approvalChain={viewingDetailReport.approvalChain}

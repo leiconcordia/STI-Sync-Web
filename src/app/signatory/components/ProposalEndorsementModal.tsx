@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Download,
   Layers,
+  ArrowRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
@@ -39,7 +40,7 @@ import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calcu
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 
 interface ProposalEndorsementModalProps {
-  isOpen: boolean;
+  isOpen?: boolean;
   onClose: () => void;
   proposal: ActivityProposal | null;
   signatorySession: any;
@@ -48,7 +49,7 @@ interface ProposalEndorsementModalProps {
 }
 
 export default function ProposalEndorsementModal({
-  isOpen,
+  isOpen = true,
   onClose,
   proposal,
   signatorySession,
@@ -68,7 +69,7 @@ export default function ProposalEndorsementModal({
     setIsExportingPdf(true);
     try {
       await exportActivityProposalPDF(proposal);
-      toast.success('Official STI Form AP-01 Activity Proposal PDF downloaded successfully!');
+      toast.success('Official Activity Proposal PDF downloaded successfully!');
     } catch (err: any) {
       console.error('PDF export error:', err);
       toast.error('Failed to generate PDF: ' + (err?.message || 'Please try again.'));
@@ -108,30 +109,37 @@ export default function ProposalEndorsementModal({
   }, [signatorySession?.signatureUrl, signatorySession?.signatureDataUrl]);
 
   const hasSignature = Boolean(activeSignatureUrl);
-  const isSchoolAdmin =
-    currentStep?.role === 'school_administrator' ||
-    signatorySession?.role === 'school_administrator';
 
-  const isPresident =
-    currentStep?.role === 'school_president' ||
-    signatorySession?.role === 'school_president';
+  const chain = proposal.approvalChain || [];
 
-  const isExecutiveApprover =
-    !isPresident &&
-    (isSchoolAdmin ||
-      currentStep?.actionType === 'approve' ||
-      currentStep?.actionType === 'both' ||
-      signatorySession?.actionType === 'approve' ||
-      signatorySession?.actionType === 'both');
+  // Dynamically find current user's step index in the approval chain (zero hardcoded roles)
+  const myStepIndex = chain.findIndex((s) => {
+    const stageMatch = s.stageIndex ? s.stageIndex === currentStage : true;
+    if (!stageMatch) return false;
+    if (userUid && (s.signatoryUid === userUid || s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) return true;
+    if (userEmail && s.signatoryEmail?.toLowerCase() === userEmail) return true;
+    if (userRole && s.role && s.role.toLowerCase() === userRole.toLowerCase()) return true;
+    if (s.roleTitle && signatorySession?.roleTitle) {
+      const sT = s.roleTitle.toLowerCase();
+      const uT = signatorySession.roleTitle.toLowerCase();
+      if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
+    }
+    return false;
+  });
 
-  const hasPresidentInChain = (proposal.approvalChain || []).some(
-    (s) => s.role === 'school_president'
-  );
-  const forwardLabel = hasPresidentInChain
-    ? 'Endorse & Forward to President'
-    : 'Endorse & Forward for Higher Approval';
+  const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
 
-  const isFinalApprover = isPresident || isExecutiveApprover;
+  // Strict dynamic approver check
+  const isApprover = myStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+
+  // Count remaining approvers in the pipeline AFTER my step
+  const subsequentApproverSteps = chain.filter((s, idx) => {
+    return idx > myStepIndex && s.actionType === 'approve';
+  });
+  const subsequentApproversCount = subsequentApproverSteps.length;
+
+  const hasSubsequentApprover = isApprover && subsequentApproversCount > 0;
+  const isFinalApprover = isApprover && subsequentApproversCount === 0;
 
   const handleEndorse = async (overrideActionType?: 'endorse' | 'approve') => {
     if (!hasSignature) {
@@ -140,7 +148,7 @@ export default function ProposalEndorsementModal({
       return;
     }
 
-    const action = overrideActionType || (isPresident ? 'approve' : 'endorse');
+    const action = overrideActionType || (isFinalApprover ? 'approve' : 'endorse');
 
     setIsSubmitting(true);
     try {
@@ -271,7 +279,7 @@ export default function ProposalEndorsementModal({
               onClick={handleExportPdf}
               disabled={isExportingPdf}
               className="px-3 py-1.5 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 hover:text-white border border-blue-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs"
-              title="Download official STI Form AP-01 PDF"
+              title="Download official Activity Proposal PDF"
             >
               <Download className="w-3.5 h-3.5 text-[#FFD41C]" />
               <span className="hidden sm:inline">{isExportingPdf ? 'Exporting...' : 'Official PDF'}</span>
@@ -784,9 +792,9 @@ export default function ProposalEndorsementModal({
                 }
                 className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
               />
-              {isExecutiveApprover && (
+              {hasSubsequentApprover && (
                 <p className="text-[11px] text-blue-800 bg-blue-50/80 border border-blue-200/70 rounded-xl px-3 py-2 mt-2 leading-relaxed">
-                  <span className="font-bold">Dual Clearance Choice:</span> You may click <strong>Authorize & Approve (Final)</strong> if 1 approver is sufficient for this activity, or <strong>{forwardLabel}</strong> to route it for final Presidential review.
+                  <span className="font-bold">Multi-Approver Route:</span> Stamping your approval will advance this proposal to the subsequent approver in the dynamic pipeline.
                 </p>
               )}
             </div>
@@ -910,29 +918,17 @@ export default function ProposalEndorsementModal({
               Close
             </button>
 
-            {isExecutiveApprover ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => handleEndorse('endorse')}
-                  disabled={isSubmitting || !hasSignature}
-                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <Send className="w-4 h-4" />
-                  <span>{isSubmitting ? 'Processing...' : forwardLabel}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleEndorse('approve')}
-                  disabled={isSubmitting || !hasSignature}
-                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                  <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Final)'}</span>
-                </button>
-              </>
-            ) : isPresident ? (
+            {hasSubsequentApprover ? (
+              <button
+                type="button"
+                onClick={() => handleEndorse('endorse')}
+                disabled={isSubmitting || !hasSignature}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+              >
+                <ArrowRight className="w-4 h-4 text-[#FFD41C]" />
+                <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
+              </button>
+            ) : isFinalApprover ? (
               <button
                 type="button"
                 onClick={() => handleEndorse('approve')}
@@ -940,7 +936,7 @@ export default function ProposalEndorsementModal({
                 className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
               >
                 <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Presidential Final)'}</span>
+                <span>{isSubmitting ? 'Processing...' : 'Grant Final Approval'}</span>
               </button>
             ) : (
               <button

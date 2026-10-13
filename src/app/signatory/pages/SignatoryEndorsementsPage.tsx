@@ -58,7 +58,7 @@ interface ContextType {
 export default function SignatoryEndorsementsPage() {
   const { session, onOpenSignatureModal, onOpenPasswordModal } = useOutletContext<ContextType>();
   const [documentCategory, setDocumentCategory] = useState<'proposals' | 'liquidations' | 'pars'>('proposals');
-  const [activeTab, setActiveTab] = useState<'pending' | 'pipeline' | 'endorsed' | 'returned'>('pending');
+  const [activeTab, setActiveTab] = useState<'pending' | 'endorsed' | 'returned'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
   const [proposalsLoading, setProposalsLoading] = useState(true);
@@ -66,6 +66,15 @@ export default function SignatoryEndorsementsPage() {
   const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
   const [selectedPAR, setSelectedPAR] = useState<PostActivityReportDocument | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  // Sync tab with URL search parameter if present (e.g. ?tab=endorsed)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'endorsed' || tab === 'returned' || tab === 'pending') {
+      setActiveTab(tab as any);
+    }
+  }, [window.location.search]);
 
   const { liquidations: allLiquidations, loading: liquidationsLoading } = useAllLiquidations();
   const { pars: allPARs, loading: parsLoading } = useAllPARsForSignatories();
@@ -95,7 +104,7 @@ export default function SignatoryEndorsementsPage() {
     setDownloadingId(prop.id);
     try {
       await exportActivityProposalPDF(prop);
-      toast.success(`Official AP-01 PDF downloaded for ${prop.referenceNo}`);
+      toast.success(`Official Proposal PDF downloaded for ${prop.referenceNo}`);
     } catch (err: any) {
       toast.error('Failed to export PDF: ' + (err?.message || 'Please try again.'));
     } finally {
@@ -134,6 +143,7 @@ export default function SignatoryEndorsementsPage() {
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
         if (hasStages) {
+          // Strictly show only when it is my stage and my turn right now
           const isMyTurnInStage = chain.some((s) => {
             const inStage = (s.stageIndex ?? 1) === currentStage;
             const isPending = s.status === 'current' || (!s.status && inStage);
@@ -141,16 +151,9 @@ export default function SignatoryEndorsementsPage() {
             return inStage && isPending && isNotSigned && matchesSignatory(s);
           });
 
-          const isConfiguredInFutureStage = chain.some((s) => {
-            const inFuture = (s.stageIndex ?? 1) > currentStage;
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inFuture && isNotSigned && matchesSignatory(s);
-          });
-
+          // Future stage signatories (e.g. stage 3 while document is at stage 1 or 2) CANNOT see the proposal
           if (isMyTurnInStage) {
             pending.push(p);
-          } else if (isConfiguredInFutureStage) {
-            pipeline.push(p);
           }
         } else if (matchesSignatory(currentStep)) {
           pending.push(p);
@@ -180,16 +183,15 @@ export default function SignatoryEndorsementsPage() {
 
     return {
       pendingProposals: pending,
-      pipelineProposals: pipeline,
+      pipelineProposals: [],
       endorsedProposals: endorsed,
       returnedProposals: returned,
     };
   }, [allProposals, session]);
 
-  // Filter liquidations according to this signatory's role and status
+  // Filter liquidations according to this signatory's role and status (Strict stage-lock)
   const { pendingLiquidations, pipelineLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
     const pending: LiquidationDocument[] = [];
-    const pipeline: LiquidationDocument[] = [];
     const endorsed: LiquidationDocument[] = [];
     const returned: LiquidationDocument[] = [];
 
@@ -205,6 +207,7 @@ export default function SignatoryEndorsementsPage() {
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
         if (hasStages) {
+          // Strictly show only when it is my stage and my turn right now
           const isMyTurnInStage = chain.some((s) => {
             const inStage = (s.stageIndex ?? 1) === currentStage;
             const isPending = s.status === 'current' || (!s.status && inStage);
@@ -212,16 +215,9 @@ export default function SignatoryEndorsementsPage() {
             return inStage && isPending && isNotSigned && matchesSignatory(s);
           });
 
-          const isConfiguredInFutureStage = chain.some((s) => {
-            const inFuture = (s.stageIndex ?? 1) > currentStage;
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inFuture && isNotSigned && matchesSignatory(s);
-          });
-
+          // Future stage signatories CANNOT see the liquidation
           if (isMyTurnInStage) {
             pending.push(l);
-          } else if (isConfiguredInFutureStage) {
-            pipeline.push(l);
           }
         } else if (matchesSignatory(currentStep)) {
           pending.push(l);
@@ -247,12 +243,13 @@ export default function SignatoryEndorsementsPage() {
 
     return {
       pendingLiquidations: pending,
-      pipelineLiquidations: pipeline,
+      pipelineLiquidations: [],
       endorsedLiquidations: endorsed,
       returnedLiquidations: returned,
     };
   }, [allLiquidations, session]);
 
+  // Filter PARs according to this signatory's role and status (Strict stage-lock)
   const {
     pendingPARs,
     pipelinePARs,
@@ -260,7 +257,6 @@ export default function SignatoryEndorsementsPage() {
     returnedPARs,
   } = useMemo(() => {
     const pending: PostActivityReportDocument[] = [];
-    const pipeline: PostActivityReportDocument[] = [];
     const endorsed: PostActivityReportDocument[] = [];
     const returned: PostActivityReportDocument[] = [];
 
@@ -276,6 +272,7 @@ export default function SignatoryEndorsementsPage() {
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
         if (hasStages) {
+          // Strictly show only when it is my stage and my turn right now
           const isMyTurnInStage = chain.some((s) => {
             const inStage = (s.stageIndex ?? 1) === currentStage;
             const isPending = s.status === 'current' || (!s.status && inStage);
@@ -283,16 +280,9 @@ export default function SignatoryEndorsementsPage() {
             return inStage && isPending && isNotSigned && matchesSignatory(s);
           });
 
-          const isConfiguredInFutureStage = chain.some((s) => {
-            const inFuture = (s.stageIndex ?? 1) > currentStage;
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved';
-            return inFuture && isNotSigned && matchesSignatory(s);
-          });
-
+          // Future stage signatories CANNOT see the post-activity report
           if (isMyTurnInStage) {
             pending.push(p);
-          } else if (isConfiguredInFutureStage) {
-            pipeline.push(p);
           }
         } else if (matchesSignatory(currentStep)) {
           pending.push(p);
@@ -318,7 +308,7 @@ export default function SignatoryEndorsementsPage() {
 
     return {
       pendingPARs: pending,
-      pipelinePARs: pipeline,
+      pipelinePARs: [],
       endorsedPARs: endorsed,
       returnedPARs: returned,
     };
@@ -340,12 +330,11 @@ export default function SignatoryEndorsementsPage() {
         p.referenceNo?.toLowerCase().includes(q) ||
         p.organizers?.some((o) => o.toLowerCase().includes(q))
     );
-  }, [activeTab, pendingProposals, pipelineProposals, endorsedProposals, returnedProposals, searchQuery]);
+  }, [activeTab, pendingProposals, endorsedProposals, returnedProposals, searchQuery]);
 
   const activeLiquidationsList = useMemo(() => {
     let list: LiquidationDocument[] = [];
     if (activeTab === 'pending') list = pendingLiquidations;
-    else if (activeTab === 'pipeline') list = pipelineLiquidations;
     else if (activeTab === 'endorsed') list = endorsedLiquidations;
     else if (activeTab === 'returned') list = returnedLiquidations;
 
@@ -358,12 +347,11 @@ export default function SignatoryEndorsementsPage() {
         l.organizationName?.toLowerCase().includes(q) ||
         l.createdByName?.toLowerCase().includes(q)
     );
-  }, [activeTab, pendingLiquidations, pipelineLiquidations, endorsedLiquidations, returnedLiquidations, searchQuery]);
+  }, [activeTab, pendingLiquidations, endorsedLiquidations, returnedLiquidations, searchQuery]);
 
   const activePARsList = useMemo(() => {
     let list: PostActivityReportDocument[] = [];
     if (activeTab === 'pending') list = pendingPARs;
-    else if (activeTab === 'pipeline') list = pipelinePARs;
     else if (activeTab === 'endorsed') list = endorsedPARs;
     else if (activeTab === 'returned') list = returnedPARs;
 
@@ -376,7 +364,7 @@ export default function SignatoryEndorsementsPage() {
         p.referenceNo?.toLowerCase().includes(q) ||
         p.organizationName?.toLowerCase().includes(q)
     );
-  }, [activeTab, pendingPARs, pipelinePARs, endorsedPARs, returnedPARs, searchQuery]);
+  }, [activeTab, pendingPARs, endorsedPARs, returnedPARs, searchQuery]);
 
   const currentPendingCount =
     documentCategory === 'proposals'
@@ -384,12 +372,6 @@ export default function SignatoryEndorsementsPage() {
       : documentCategory === 'liquidations'
       ? pendingLiquidations.length
       : pendingPARs.length;
-  const currentPipelineCount =
-    documentCategory === 'proposals'
-      ? pipelineProposals.length
-      : documentCategory === 'liquidations'
-      ? pipelineLiquidations.length
-      : pipelinePARs.length;
   const currentEndorsedCount =
     documentCategory === 'proposals'
       ? endorsedProposals.length
@@ -573,9 +555,9 @@ export default function SignatoryEndorsementsPage() {
         </button>
       </div>
 
-      {/* Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Pending */}
+      {/* Metric Cards - 3 Executive Action Tabs */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* 1. Requires My Signature */}
         <div
           onClick={() => setActiveTab('pending')}
           className={`cursor-pointer p-5 rounded-2xl border transition-all ${
@@ -586,7 +568,7 @@ export default function SignatoryEndorsementsPage() {
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-              Pending Endorsement
+              Requires My Signature
             </span>
             <div className="w-8 h-8 rounded-lg bg-blue-100/60 text-[#0E4EBD] flex items-center justify-center">
               <Clock className="w-4 h-4" />
@@ -597,39 +579,12 @@ export default function SignatoryEndorsementsPage() {
           </div>
           <p className="text-[11px] text-gray-500 mt-1">
             {currentPendingCount === 1
-              ? `1 ${documentCategory === 'proposals' ? 'proposal' : 'liquidation'} awaiting your sign-off`
-              : `${currentPendingCount} ${documentCategory === 'proposals' ? 'proposals' : 'liquidations'} awaiting your sign-off`}
+              ? `1 item active in your stage awaiting your sign-off`
+              : `${currentPendingCount} items active in your stage awaiting your sign-off`}
           </p>
         </div>
 
-        {/* In Pipeline */}
-        <div
-          onClick={() => setActiveTab('pipeline')}
-          className={`cursor-pointer p-5 rounded-2xl border transition-all ${
-            activeTab === 'pipeline'
-              ? 'bg-purple-50/50 border-purple-500 shadow-md ring-2 ring-purple-500/20'
-              : 'bg-white border-gray-200 hover:border-gray-300 shadow-xs'
-          }`}
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-purple-700 uppercase tracking-wider">
-              In Review Pipeline
-            </span>
-            <div className="w-8 h-8 rounded-lg bg-purple-100/60 text-purple-600 flex items-center justify-center">
-              <Layers className="w-4 h-4" />
-            </div>
-          </div>
-          <div className="mt-3 text-3xl font-black text-purple-950">
-            {loading ? '...' : currentPipelineCount}
-          </div>
-          <p className="text-[11px] text-gray-500 mt-1">
-            {currentPipelineCount === 1
-              ? `1 ${documentCategory === 'proposals' ? 'proposal' : 'liquidation'} awaiting earlier review gates`
-              : `${currentPipelineCount} in review ahead of your stage`}
-          </p>
-        </div>
-
-        {/* Endorsed */}
+        {/* 2. Signed History & Archive */}
         <div
           onClick={() => setActiveTab('endorsed')}
           className={`cursor-pointer p-5 rounded-2xl border transition-all ${
@@ -640,7 +595,7 @@ export default function SignatoryEndorsementsPage() {
         >
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-              Endorsed / Approved
+              Signed History & Archive
             </span>
             <div className="w-8 h-8 rounded-lg bg-emerald-100/60 text-emerald-600 flex items-center justify-center">
               <CheckCircle className="w-4 h-4" />
@@ -649,10 +604,10 @@ export default function SignatoryEndorsementsPage() {
           <div className="mt-3 text-3xl font-black text-[#001A4D]">
             {loading ? '...' : currentEndorsedCount}
           </div>
-          <p className="text-[11px] text-gray-500 mt-1">Documents signed and forwarded</p>
+          <p className="text-[11px] text-gray-500 mt-1">Certified records with your electronic signature</p>
         </div>
 
-        {/* Returned */}
+        {/* 3. Returned for Revision */}
         <div
           onClick={() => setActiveTab('returned')}
           className={`cursor-pointer p-5 rounded-2xl border transition-all ${
@@ -669,7 +624,7 @@ export default function SignatoryEndorsementsPage() {
               <RotateCcw className="w-4 h-4" />
             </div>
           </div>
-          <div className="mt-3 text-3xl font-black text-[#001A4D]">
+          <div className="mt-3 text-3xl font-black text-amber-600">
             {loading ? '...' : currentReturnedCount}
           </div>
           <p className="text-[11px] text-gray-500 mt-1">Returned with feedback remarks</p>
@@ -804,14 +759,14 @@ export default function SignatoryEndorsementsPage() {
                           onClick={(e) => handleDownloadPdf(e, proposal)}
                           disabled={downloadingId === proposal.id}
                           className="px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
-                          title="Download Official STI AP-01 PDF"
+                          title="Download Official STI Proposal PDF"
                         >
                           {downloadingId === proposal.id ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
                           ) : (
                             <Download className="w-3.5 h-3.5 text-blue-600" />
                           )}
-                          <span className="hidden sm:inline">AP-01 PDF</span>
+                          <span className="hidden sm:inline">Proposal PDF</span>
                         </button>
 
                         {(() => {
@@ -928,7 +883,7 @@ export default function SignatoryEndorsementsPage() {
                       <div className="space-y-1.5 flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/80">
-                            Form LF-01
+                            Liquidation
                           </span>
                           <span className="text-[11px] text-gray-500">
                             Org: <strong>{liquidation.organizationName || 'Student Affairs & Services'}</strong>
@@ -1115,7 +1070,7 @@ export default function SignatoryEndorsementsPage() {
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 text-emerald-700 font-bold">
-                            <span>LF-01 Clearance: {parDoc.liquidationRefNumber || 'Cleared'}</span>
+                            <span>Liquidation Clearance: {parDoc.liquidationRefNumber || 'Cleared'}</span>
                           </div>
                         </div>
 

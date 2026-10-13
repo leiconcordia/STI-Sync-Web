@@ -35,6 +35,7 @@ import {
   Clock,
   ChevronRight,
   ShieldAlert,
+  ArrowRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type {
@@ -52,7 +53,7 @@ import { formatAppDateTime } from '../../utils/date';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 
 interface LiquidationEndorsementModalProps {
-  isOpen: boolean;
+  isOpen?: boolean;
   onClose: () => void;
   liquidation: LiquidationDocument | null;
   signatorySession: any;
@@ -87,7 +88,7 @@ function normalizeItemAttachments(item: ExpenseLineItem | undefined): ReceiptAtt
 }
 
 export default function LiquidationEndorsementModal({
-  isOpen,
+  isOpen = true,
   onClose,
   liquidation,
   signatorySession,
@@ -184,30 +185,21 @@ export default function LiquidationEndorsementModal({
   }, [signatorySession?.signatureUrl, signatorySession?.signatureDataUrl]);
 
   const hasSignature = Boolean(activeSignatureUrl);
-  const isSchoolAdmin =
-    currentStep?.role === 'school_administrator' ||
-    signatorySession?.role === 'school_administrator';
-  const isPresident =
-    currentStep?.role === 'school_president' ||
-    signatorySession?.role === 'school_president';
-  const isExecutiveApprover =
-    !isPresident &&
-    (isSchoolAdmin ||
-      currentStep?.actionType === 'approve' ||
-      currentStep?.actionType === 'both' ||
-      signatorySession?.actionType === 'approve' ||
-      signatorySession?.actionType === 'both');
+  const chain = liquidation.approvalChain || [];
+  const myStepIndex = chain.findIndex((s) => matchesCurrentSigner(s));
+  const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
 
-  const hasPresidentInChain = (liquidation.approvalChain || []).some(
-    (s) => s.role === 'school_president'
-  );
-  const forwardLabel = hasPresidentInChain
-    ? 'Endorse & Forward to President'
-    : 'Endorse & Forward for Higher Approval';
+  // Strict dynamic approver check based on step actionType
+  const isApprover = myStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+  const isChecker = myStep?.actionType === 'check' || signatorySession?.actionType === 'check';
 
-  const isFinalApprover = isPresident || isExecutiveApprover;
+  // Count remaining approvers in the pipeline AFTER my step
+  const subsequentApproversCount = chain.filter((s, idx) => {
+    return idx > myStepIndex && s.actionType === 'approve';
+  }).length;
 
-  const isChecker = currentStep?.actionType === 'check' || currentStep?.role === 'accountant';
+  const hasSubsequentApprover = isApprover && subsequentApproversCount > 0;
+  const isFinalApprover = isApprover && subsequentApproversCount === 0;
 
   const allocatedBudget = liquidation.allocatedBudget || 0;
   const totalActualSpending =
@@ -322,8 +314,8 @@ export default function LiquidationEndorsementModal({
                     ? 'Financial Audit & Receipt Verification Studio'
                     : 'Institutional Endorsement Studio'}
                 </h2>
-                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-blue-400/20 text-blue-200 border border-blue-400/30">
-                  Form LF-01
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-400/20 text-blue-200 border border-blue-400/30">
+                  Financial Liquidation
                 </span>
                 <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
                   Stage {currentStage}
@@ -365,7 +357,7 @@ export default function LiquidationEndorsementModal({
                 <span className="text-lg font-black text-[#001A4D] mt-0.5 block">
                   {formatCurrency(allocatedBudget)}
                 </span>
-                <span className="text-[10px] text-slate-400">Baseline Form AP-01</span>
+                <span className="text-[10px] text-slate-400">Approved Activity Budget</span>
               </div>
 
               <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-2xl">
@@ -591,7 +583,7 @@ export default function LiquidationEndorsementModal({
             <div className="space-y-2 pt-3 border-t border-slate-200">
               <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
                 <ShieldCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                <span>Multi-Stage Endorsement Route (Form LF-01)</span>
+                <span>Multi-Stage Endorsement Route</span>
               </h4>
               <LiquidationSignatoryTracker
                 approvalChain={liquidation.approvalChain}
@@ -985,29 +977,17 @@ export default function LiquidationEndorsementModal({
                   Close
                 </button>
 
-                {isExecutiveApprover ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => handleEndorse('endorse')}
-                      disabled={isSubmitting || !hasSignature}
-                      className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                    >
-                      <Send className="w-4 h-4" />
-                      <span>{isSubmitting ? 'Processing...' : forwardLabel}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleEndorse('approve')}
-                      disabled={isSubmitting || !hasSignature}
-                      className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-                    >
-                      <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                      <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve (Final)'}</span>
-                    </button>
-                  </>
-                ) : isPresident ? (
+                {hasSubsequentApprover ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('endorse')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
+                  </button>
+                ) : isFinalApprover ? (
                   <button
                     type="button"
                     onClick={() => handleEndorse('approve')}
@@ -1015,11 +995,7 @@ export default function LiquidationEndorsementModal({
                     className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
                   >
                     <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                    <span>
-                      {isSubmitting
-                        ? 'Processing...'
-                        : 'Authorize & Approve Financial Liquidation (Presidential Final)'}
-                    </span>
+                    <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation'}</span>
                   </button>
                 ) : (
                   <button

@@ -24,7 +24,12 @@ import PortalLogin from "./auth/PortalLogin";
 
 // Signatory Components
 import SignatoryLayout from "./signatory/components/SignatoryLayout";
-import SignatoryEndorsementsPage from "./signatory/pages/SignatoryEndorsementsPage";
+import SignatoryDashboardPage from "./signatory/pages/SignatoryDashboardPage";
+import SignatoryProposalsPage from "./signatory/pages/SignatoryProposalsPage";
+import SignatoryLiquidationsPage from "./signatory/pages/SignatoryLiquidationsPage";
+import SignatoryPARsPage from "./signatory/pages/SignatoryPARsPage";
+import SignatoryReportsPage from "./signatory/pages/SignatoryReportsPage";
+import SignatoryAccountPage from "./signatory/pages/SignatoryAccountPage";
 
 // Officer Components
 import { OfficerLayout } from "./officer/components/OfficerLayout";
@@ -74,8 +79,15 @@ export const router = createBrowserRouter([
     Component: SignatoryLayout,
     ErrorBoundary: ErrorPage,
     children: [
-      { index: true, element: <Navigate to="/signatory/endorsements" replace /> },
-      { path: "endorsements", Component: SignatoryEndorsementsPage },
+      { index: true, element: <Navigate to="/signatory/dashboard" replace /> },
+      { path: "dashboard", Component: SignatoryDashboardPage },
+      { path: "proposals", Component: SignatoryProposalsPage },
+      { path: "liquidations", Component: SignatoryLiquidationsPage },
+      { path: "post-activity-reports", Component: SignatoryPARsPage },
+      { path: "reports", Component: SignatoryReportsPage },
+      { path: "account", Component: SignatoryAccountPage },
+      // Backwards compatibility alias for endorsements
+      { path: "endorsements", element: <Navigate to="/signatory/dashboard" replace /> },
     ],
   },
 

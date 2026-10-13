@@ -38,7 +38,7 @@ export default function LiquidationSignatoryTracker({
     return (
       <div className={`p-4 bg-slate-50 border border-slate-200 rounded-2xl text-center text-slate-500 text-xs ${className}`}>
         <FileSignature className="w-5 h-5 mx-auto mb-1 text-slate-400" />
-        <p className="font-semibold">Standard Institutional Liquidation Flow (Form LF-01)</p>
+        <p className="font-semibold">Standard Institutional Liquidation Flow</p>
         <p className="text-[11px] text-slate-400 mt-0.5">
           Status: <span className="font-bold uppercase tracking-wider text-slate-700">{liquidationStatus || 'Pending Review'}</span>
         </p>
@@ -75,7 +75,7 @@ export default function LiquidationSignatoryTracker({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold uppercase tracking-wider text-blue-400">
-                Liquidation Signatory Pipeline (Form LF-01)
+                Liquidation Signatory Pipeline
               </span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${

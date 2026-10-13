@@ -250,7 +250,7 @@ export default function PostActivityReportDetailModal({
               <strong className="text-slate-900 font-bold">{report.eventVenue}</strong>
             </div>
             <div>
-              <span className="text-slate-400 block font-medium">LF-01 Clearance</span>
+              <span className="text-slate-400 block font-medium">Liquidation Clearance</span>
               <strong className="text-emerald-700 font-bold">{report.liquidationRefNumber || 'Cleared'}</strong>
             </div>
           </div>
@@ -294,7 +294,7 @@ export default function PostActivityReportDetailModal({
               <div className="flex items-center gap-2 mb-3">
                 <DollarSign className="w-4 h-4 text-emerald-600" />
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Form LF-01 Financial Summary
+                  Financial Liquidation Summary
                 </h4>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center mb-3">
@@ -318,7 +318,7 @@ export default function PostActivityReportDetailModal({
                 </div>
               </div>
               <p className="text-[11px] text-slate-500">
-                Financial expenditures verified and approved under Form LF-01 clearance.
+                Financial expenditures verified and approved under financial liquidation clearance.
               </p>
             </div>
           </div>

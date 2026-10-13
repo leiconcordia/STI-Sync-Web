@@ -437,7 +437,7 @@ export default function InstitutionalSignatoryManagement() {
               </span>
             </div>
             <p className="text-xs text-blue-200 mt-0.5">
-              SAS Head is automatically fixed as the mandatory Stage 1 endorser for all Student Organization Activity Proposals (AP-01)—no manual directory maintenance needed. Accountants are strictly restricted to Financial Liquidations (LF-01).
+              SAS Head is automatically fixed as the mandatory Stage 1 endorser for all Student Organization Activity Proposals—no manual directory maintenance needed. Accountants are strictly restricted to Financial Liquidations.
             </p>
           </div>
         </div>
@@ -628,12 +628,12 @@ export default function InstitutionalSignatoryManagement() {
                       {sig.applicableScope === 'liquidation_only' || sig.role === 'accountant' ? (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold rounded-lg">
                           <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                          Liquidations Only (LF-01)
+                          Liquidations Only
                         </span>
                       ) : sig.applicableScope === 'proposal_only' ? (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-900 border border-indigo-200 text-xs font-bold rounded-lg">
                           <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                          Proposals Only (AP-01)
+                          Proposals Only
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-900 border border-teal-200 text-xs font-bold rounded-lg">
@@ -953,7 +953,7 @@ export default function InstitutionalSignatoryManagement() {
                     <div>
                       <div className="font-bold text-gray-900">Liquidations Only</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form LF-01 only (Accountant).
+                        Financial Liquidations only (Accountant).
                       </div>
                     </div>
                   </label>
@@ -976,7 +976,7 @@ export default function InstitutionalSignatoryManagement() {
                     <div>
                       <div className="font-bold text-gray-900">Proposals Only</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form AP-01 proposals only.
+                        Activity Proposals only.
                       </div>
                     </div>
                   </label>
@@ -1001,7 +1001,7 @@ export default function InstitutionalSignatoryManagement() {
                       Permanent Institutional Signer
                     </div>
                     <p className="text-[11px] text-amber-800/90 mt-0.5 leading-snug">
-                      When enabled, this person is automatically designated and locked as the mandatory signer for their role across their authorized forms (LF-01 / AP-01). Proponents cannot remove or bypass them.
+                      When enabled, this person is automatically designated and locked as the mandatory signer for their role across their authorized workflows. Proponents cannot remove or bypass them.
                     </p>
                   </div>
                 </label>
@@ -1281,7 +1281,7 @@ export default function InstitutionalSignatoryManagement() {
                     <div>
                       <div className="font-bold text-gray-900">Liquidations Only</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form LF-01 only (Accountant).
+                        Financial Liquidations only (Accountant).
                       </div>
                     </div>
                   </label>
@@ -1306,13 +1306,13 @@ export default function InstitutionalSignatoryManagement() {
                     <div>
                       <div className="font-bold text-gray-900">Proposals Only</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form AP-01 proposals only.
+                        Activity Proposals only.
                       </div>
                     </div>
                   </label>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Determines whether this signatory appears in Activity Proposals (AP-01), Financial Liquidations (LF-01), or both.
+                  Determines whether this signatory appears in Activity Proposals, Financial Liquidations, or both.
                 </p>
               </div>
 
@@ -1333,7 +1333,7 @@ export default function InstitutionalSignatoryManagement() {
                       Permanent Institutional Signer
                     </div>
                     <p className="text-[11px] text-amber-800/90 mt-0.5 leading-snug">
-                      When enabled, this person is permanently locked into their designated workflows (LF-01 / AP-01). Proponents cannot remove or bypass them.
+                      When enabled, this person is permanently locked into their designated workflows. Proponents cannot remove or bypass them.
                     </p>
                   </div>
                 </label>

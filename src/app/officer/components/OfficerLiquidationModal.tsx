@@ -826,7 +826,7 @@ export default function OfficerLiquidationModal({
               }`}
             >
               <ShieldCheck className="w-4 h-4" />
-              <span>2. Signatory & Audit Route (Form LF-01)</span>
+              <span>2. Signatory & Audit Route</span>
               <span
                 className={`px-1.5 py-0.5 rounded-full text-[10px] ${
                   activeModalTab === 'signatories' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'

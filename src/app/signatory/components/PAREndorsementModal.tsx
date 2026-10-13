@@ -52,18 +52,31 @@ export default function PAREndorsementModal({
   const hasSignature = Boolean(signatorySession?.signatureUrl);
   const activeSignatureUrl = signatorySession?.signatureUrl;
 
-  const currentStep = (report.approvalChain || []).find(
-    (s) =>
-      s.status === 'current' &&
-      ((s.signatoryUid && (s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) ||
-        (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatorySession?.email || '').toLowerCase()) ||
-        (s.role && signatorySession?.role && s.role.toLowerCase() === signatorySession.role.toLowerCase()))
-  );
+  const chain = report.approvalChain || [];
+  const myStepIndex = chain.findIndex((s) => {
+    if (s.signatoryUid && (s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) return true;
+    if (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatorySession?.email || '').toLowerCase()) return true;
+    if (s.role && signatorySession?.role && s.role.toLowerCase() === signatorySession.role.toLowerCase()) return true;
+    if (s.roleTitle && signatorySession?.roleTitle) {
+      const sT = s.roleTitle.toLowerCase();
+      const uT = signatorySession.roleTitle.toLowerCase();
+      if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
+    }
+    return false;
+  });
 
-  const isFinalApprover =
-    currentStep?.actionType === 'approve' ||
-    signatorySession?.role === 'school_president' ||
-    signatorySession?.role === 'school_administrator';
+  const myStep = myStepIndex >= 0 ? chain[myStepIndex] : chain.find((s) => s.status === 'current');
+
+  // Strict dynamic approver check based on step actionType
+  const isApprover = myStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+
+  // Count remaining approvers in the pipeline AFTER my step
+  const subsequentApproversCount = chain.filter((s, idx) => {
+    return idx > myStepIndex && s.actionType === 'approve';
+  }).length;
+
+  const hasSubsequentApprover = isApprover && subsequentApproversCount > 0;
+  const isFinalApprover = isApprover && subsequentApproversCount === 0;
 
   const handleEndorse = async () => {
     if (!hasSignature) {
@@ -198,7 +211,7 @@ export default function PAREndorsementModal({
               <strong className="text-slate-900 font-bold">{report.eventVenue}</strong>
             </div>
             <div>
-              <span className="text-slate-400 block font-medium">LF-01 Clearance</span>
+              <span className="text-slate-400 block font-medium">Liquidation Clearance</span>
               <strong className="text-emerald-700 font-bold">{report.liquidationRefNumber || 'Cleared'}</strong>
             </div>
           </div>
@@ -237,7 +250,7 @@ export default function PAREndorsementModal({
               <div className="flex items-center gap-2 mb-2">
                 <DollarSign className="w-4 h-4 text-emerald-600" />
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Financial Clearance (Form LF-01)
+                  Financial Clearance
                 </h4>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center my-2">
@@ -261,7 +274,7 @@ export default function PAREndorsementModal({
                 </div>
               </div>
               <p className="text-[11px] text-slate-500">
-                Audited & cleared under Form LF-01 financial liquidation.
+                Audited & cleared under institutional financial liquidation.
               </p>
             </div>
           </div>
@@ -441,7 +454,11 @@ export default function PAREndorsementModal({
               ) : (
                 <>
                   <Send className="w-4 h-4 text-[#FFD41C]" />
-                  {isFinalApprover ? 'Approve & Clear Form PAR' : 'Endorse & Forward'}
+                  {hasSubsequentApprover
+                    ? 'Endorse & Forward to Higher-Ups'
+                    : isFinalApprover
+                    ? 'Grant Final Approval'
+                    : 'Stamp E-Signature & Endorse Report'}
                 </>
               )}
             </button>
