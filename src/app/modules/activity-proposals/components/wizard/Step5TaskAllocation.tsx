@@ -68,20 +68,8 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
     : [
         {
           id: 'task-1',
-          taskName: 'Activity Proposal Drafting & Submission',
-          assignedPerson: 'Lead Proponent',
-          completionDate: '',
-        },
-        {
-          id: 'task-2',
-          taskName: 'Venue & Logistics Coordination',
-          assignedPerson: 'Logistics Head',
-          completionDate: '',
-        },
-        {
-          id: 'task-3',
-          taskName: 'Event Execution',
-          assignedPerson: 'Organizing Committee',
+          taskName: '',
+          assignedPerson: '',
           completionDate: '',
         },
       ];

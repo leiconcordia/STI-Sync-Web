@@ -87,7 +87,7 @@ export default function FinancialLiquidation() {
   const [withdrawingReport, setWithdrawingReport] = useState<LiquidationDocument | null>(null);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
 
-  const { profile } = useOfficerProfile();
+  const { profile, activeOrgName } = useOfficerProfile();
   const [session, setSession] = useState<any>(null);
 
   useEffect(() => {
@@ -100,7 +100,7 @@ export default function FinancialLiquidation() {
   }, []);
 
   const orgId = profile?.activeOrganizationId || session?.activeOrganizationId || '';
-  const orgName = profile?.studentName || session?.studentName ? `${profile?.studentName || session?.studentName}'s Org` : 'Student Organization';
+  const orgName = activeOrgName || session?.activeOrgName || (profile?.studentName ? `${profile.studentName}'s Org` : 'Student Organization');
   const userUid = profile?.studentId || session?.studentId || 'officer_user';
   const userName = profile?.studentName || session?.studentName || 'Officer';
 

@@ -625,19 +625,10 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     });
   };
 
-  const marketingPlan = formData.marketingPlan || [
-    'STI College Ormoc Official FB Page Announcement',
-    'Campus Bulletin Board Poster Display & Classroom Visits',
-    'Endorsements through Program Heads & Faculty Advisors',
-  ];
+  const marketingPlan = formData.marketingPlan || [];
   const [marketingInput, setMarketingInput] = useState('');
 
-  const documentationPlan = formData.documentationPlan || [
-    'Digital QR Attendance Logs & Timestamp Records',
-    'High-Resolution Event Photography & Video Coverage',
-    'Post-Activity Evaluation Survey Form',
-    'Financial Completion & Liquidation Report',
-  ];
+  const documentationPlan = formData.documentationPlan || [];
   const [docInput, setDocInput] = useState('');
 
   // ── Materials handlers ──

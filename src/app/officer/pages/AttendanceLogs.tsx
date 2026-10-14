@@ -557,6 +557,27 @@ export default function AttendanceLogs() {
 
     return dbEvents
       .filter((evt) => {
+        // Attendance logs are strictly for officially approved or completed events
+        const pStatus = (evt.proposalStatus || '').toString().toLowerCase();
+        const eStatus = (evt.status || '').toString().toLowerCase();
+        const lStatus = ((evt as any).lifecycleStatus || '').toString().toLowerCase();
+
+        const isApprovedOrCompleted =
+          pStatus === 'approved' ||
+          pStatus === 'completed' ||
+          eStatus === 'completed' ||
+          eStatus === 'published' ||
+          lStatus === 'completed';
+
+        const isUnapproved =
+          pStatus === 'draft' ||
+          pStatus === 'pending' ||
+          pStatus === 'pending_review' ||
+          pStatus === 'returned' ||
+          pStatus === 'rejected';
+
+        if (!isApprovedOrCompleted || isUnapproved) return false;
+
         const isMyOrg = activeOrgId ? evt.hostingOrgId === activeOrgId : false;
         const isCreatedByMe = currentStudentId ? evt.createdBy === currentStudentId : false;
         const isMyScope = isMyOrg || isCreatedByMe;

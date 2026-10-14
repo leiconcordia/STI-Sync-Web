@@ -24,6 +24,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  envPrefix: ['VITE_', 'GEMINI_'],
   resolve: {
     alias: {
       // Alias @ to the src directory
@@ -33,6 +34,12 @@ export default defineConfig({
 
   server: {
     proxy: {
+      '/api/gemini': {
+        target: 'https://generativelanguage.googleapis.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/gemini/, ''),
+        secure: false,
+      },
       '/api/resend': {
         target: 'https://api.resend.com',
         changeOrigin: true,

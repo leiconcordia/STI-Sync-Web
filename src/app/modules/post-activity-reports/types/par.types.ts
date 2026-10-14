@@ -79,9 +79,16 @@ export interface PostActivityReportDocument {
   eventVenue: string;
   eventDescription: string;
   organizerName: string;
+  proposalOrganizers?: string[];
+  proposedMechanics?: string[];
   actualMechanics?: string; // Fill up only if actual mechanics differed from proposed
   materialsUtilized?: string[];
+  proposalMaterials?: string[];
   marketingConducted?: string[];
+  proposalMarketingPlan?: string[];
+  documentationPlan?: string[];
+  proposalObjectives?: string[];
+  proposalSuccessIndicators?: string[];
 
   // ─── Section 2: Attendance Verification (Auto-Populated from Attendance Logs) ───
   attendanceSummary: {
@@ -89,6 +96,7 @@ export interface PostActivityReportDocument {
     attendedCount: number;
     targetAudience: string;
     whoAttended: string; // e.g., "BSIT all year levels"
+    howManyAttended?: string; // e.g., "110 IT students"
     attendanceListUrl?: string;
   };
 
@@ -111,6 +119,7 @@ export interface PostActivityReportDocument {
     keyLearnings: string[]; // 3–5 bullet points
     classroomEnrichment: string;
     venueAssessment: string;
+    foodAssessment?: string;
     logisticsAssessment: string;
     scheduleCompliance: string;
     issuesEncountered: string; // "No major issues encountered" if none

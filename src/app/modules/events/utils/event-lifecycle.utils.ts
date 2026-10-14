@@ -28,46 +28,103 @@ export interface ProposalEditCheck {
 /**
  * Determines whether a proposal or event was authored/submitted by a student organization / officer.
  */
+export const SAS_ORGS = [
+  'sas',
+  'sas_admin',
+  'sao',
+  'sao_admin',
+  'admin',
+  'sti',
+  'sti_college',
+  'institutional',
+  'student affairs office',
+  'student affairs services',
+];
+
+/**
+ * Determines whether a proposal or event was authored/submitted by a student organization / officer.
+ * Ground truth priority:
+ * 1. Explicit internal SAS / Institutional flags
+ * 2. Organization ID (non-SAS = student org; SAS = institutional)
+ * 3. Organization Name (contains student affairs = institutional; else student org)
+ * 4. Reference Number (contains -SAS- vs -ORG-)
+ * 5. Explicit isOfficerProposal flag
+ * 6. Creator Role
+ */
 export function isOfficerProposal(event?: Partial<EventDocument> | any | null): boolean {
   if (!event) return false;
 
-  // 1. Explicit boolean flag
-  if (event.isOfficerProposal === true) return true;
-  if (event.isOfficerProposal === false) return false;
+  // 1. Explicit SAS direct / internal institutional flags
+  if (
+    event.isInstitutional === true ||
+    event.isSasInternal === true ||
+    event.isSasDirect === true ||
+    event.isDirectPublished === true
+  ) {
+    return false;
+  }
 
-  // 2. Creator role
-  const role = (event.creatorRole || event.createdByRole || '').toLowerCase().trim();
-  if (role === 'officer' || role === 'student_officer') return true;
-  if (role === 'admin' || role === 'sas_admin' || role === 'sao_admin' || role === 'sas') return false;
+  // 2. Hosting organization ID or organizationId (Primary ground truth)
+  const orgId = (
+    event.organizationId ||
+    event.hostingOrgId ||
+    event.createdByOrgId ||
+    event.orgId ||
+    event.org ||
+    ''
+  ).toString().toLowerCase().trim();
 
-  // 3. Explicit SAS direct flag
-  if (event.isSasDirect === true || event.isDirectPublished === true) return false;
-
-  // 4. Hosting organization ID or organizationId
-  const orgId = (event.organizationId || event.hostingOrgId || event.orgId || '').toLowerCase().trim();
-  const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sti', 'sti_college', 'institutional'];
   if (orgId && !SAS_ORGS.includes(orgId)) {
-    return true; // Belongs to a student organization (e.g. 'jpcs', 'ssc', 'org_123')
+    return true; // Belongs to a student organization (e.g. 'jpcs', 'ssc', 'org_123', 'student_org')
   }
   if (orgId && SAS_ORGS.includes(orgId)) {
     return false; // Belongs to institutional SAS
   }
 
-  // 5. Reference number / ID prefix check (e.g. AP-2026-SAS-001 vs AP-2026-JPCS-001 or AP-2026-ORG-001)
-  const ref = (event.referenceId || event.referenceNo || '').toUpperCase().trim();
+  // 3. Organization Name check
+  const orgName = (
+    event.hostingOrgName ||
+    event.organizationName ||
+    event.orgName ||
+    ''
+  ).toString().toLowerCase().trim();
+
+  if (
+    orgName.includes('student affairs') ||
+    orgName === 'sas' ||
+    orgName === 'sao' ||
+    orgName.includes('institutional')
+  ) {
+    return false;
+  }
+  if (orgName && !orgName.includes('student affairs') && orgName !== 'sas' && orgName !== 'sao') {
+    return true;
+  }
+
+  // 4. Reference number / ID prefix check (e.g. AP-2026-SAS-001 vs AP-2026-JPCS-001 or AP-2026-ORG-001)
+  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
   if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) return false;
   if (ref.includes('-ORG-') || (ref.startsWith('AP-') && !ref.includes('-SAS-'))) return true;
 
-  // 6. Creator email or name fallback
+  // 5. Explicit boolean flag
+  if (event.isOfficerProposal === true) return true;
+  if (event.isOfficerProposal === false) return false;
+
+  // 6. Creator role
+  const role = (event.creatorRole || event.createdByRole || '').toString().toLowerCase().trim();
+  if (role === 'officer' || role === 'student_officer') return true;
+  if (['admin', 'sas_admin', 'sao_admin', 'sas'].includes(role)) return false;
+
+  // 7. Creator email or name fallback
   const email = (event.createdByEmail || '').toLowerCase().trim();
   if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) return false;
 
   const createdByName = (event.createdByName || '').toLowerCase().trim();
-  if (createdByName.includes('student affairs & services') || createdByName === 'sao admin' || createdByName === 'sas admin') return false;
+  if (createdByName.includes('student affairs') || createdByName === 'sao admin' || createdByName === 'sas admin') return false;
 
-  // 7. Organizers check
+  // 8. Organizers check
   const organizers = Array.isArray(event.organizers) ? event.organizers : [];
-  if (organizers.some((o: string) => typeof o === 'string' && o.toLowerCase().includes('student affairs & services'))) {
+  if (organizers.some((o: string) => typeof o === 'string' && o.toLowerCase().includes('student affairs'))) {
     return false;
   }
 
@@ -80,6 +137,11 @@ export function isOfficerProposal(event?: Partial<EventDocument> | any | null): 
 export function isInstitutionalProposal(event?: Partial<EventDocument> | any | null): boolean {
   return !isOfficerProposal(event);
 }
+
+/**
+ * Alias for isInstitutionalProposal to explicitly check whether an activity belongs to SAS.
+ */
+export const isSasInstitutionalActivity = isInstitutionalProposal;
 
 /**
  * List of major event fields that cannot be changed directly once an event is approved.

@@ -1,0 +1,141 @@
+[TABLE START]
+  Row 1: Date: | January 28, 2026
+[TABLE END]
+[P] Post-Activity Report
+[TABLE START]
+  Row 1: Activity title: | CYBERSECURITY AWARENESS SEMINAR
+  Row 2: Description: | A seminar aimed at educating students, faculty, and staff on cybersecurity threats, safe online practices.This activity will be conducted in line with the College Fair scheduled on November 20–22, 2025, to support the event’s goal of promoting digital responsibility and awareness.
+  Row 3: Organizer/s: | IT Department
+  Row 4: Mechanics: | (Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)
+  Row 5:  | Opening remarks and introduction of speakers. 
+ Cybersecurity lecture covering threats, prevention, and best practices. 
+ Live demonstration of common cyberattacks (phishing, password attacks). 
+ Open forum / Q&A. 
+ Closing message and distribution of certificates.
+  Row 6: Materials: | Computer Unit and projector/TV 
+ Sound system and microphone 
+ Internet connection 
+ Printed certificates 
+ Tarpaulin / digital poster 
+ Attendance sheets
+  Row 7: Attendance: | (Attach attendance list, if available.)
+  Row 8:  | How many attended? 
+ 110 IT students 
+ Who attended? 
+ BSIT all year level
+  Row 9: Marketing: | Posting of digital posters on official pages 
+ Announcement through class advisers 
+ Display of tarpaulin at the campus lobby 
+ Inclusion in College Fair announcements (Nov. 20–22, 2025)
+  Row 10: Documentation: | Photos and videos of the event 
+ Attendance summary 
+ Post-evaluation forms
+  Row 11: Date & time: | November 24, 2025, 9:00 AM – 3:00 PM
+  Row 12: Venue: | STI College Ormoc – NEW ROOMS
+  Row 13:  | 
+  Row 14: Results of activity: | (Include assessment of success based on indicators. Attach a sheet, if necessary.)
+  Row 15:  | Results of the Activity 
+ Achievement of Objectives: The objectives were partially achieved as the 2nd objectives “To educate participants on data privacy principles and safe digital practices.” The speaker clarified that data privacy—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be handled by a lawyer. As a result, this portion of the objective was not covered.➤ Action: A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional. 
+ qualified to have a lecture about data privacy. Will conduct another seminar for these objective. 
+ Key Learnings / Insights Gained: 
+ A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior. 
+ Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence. 
+ Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment. 
+ Enrichment of Learning Beyond the Classroom:(Explain how the activity complemented or enhanced classroom learning)Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training. 
+ Reason for Venue Selection: (State justification if questioned or compared to another venue) 
+ It provided convenient and immediate access for IT students who were the primary audience of the seminar. 
+ The setup supported the required audio‑visual presentations and ensured a conducive learning environment. 
+ Food / Logistics Assessment: 
+ The food provided during the activity was: 
+ Adequate in quantity 
+ Acceptable in quality 
+ Served on time and properly coordinated 
+ The logistics were well-handled, with materials, equipment, and support personnel readily available as needed. 
+ Schedule Compliance: The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.(State if program followed as planned; mention delays or adjustments if any) 
+ Issues / Problems Encountered and Actions Taken: No major issues encountered(If none, state “No major issues encountered.”)
+  Row 16:  | 
+  Row 17: Financial report: | (Attach supporting receipts and list of participants who have/haven’t paid.) 
+ Attached also the liquidation.
+  Row 18:  | Description 
+ Unit Amount 
+ Total Amount 
+ Revenue:  10, 900 
+ Snack (20 pax ) 
+ 600.00 
+ Snack (2pax Speaker) 
+ 116.00 
+ Snack (2pax Speaker) 
+ 53.00 
+ Snack (22 pax ) 
+ 1,109.00 
+ Lunch (22pax) 
+ 2,530.00 
+ TARP PRINT A 
+ 720.00 
+ TARP PRINT B 
+ 720.00 
+ Certificate Paper 32x15 
+ 480.00 
+ Certificate Paper Add 32x4 
+ 128.00 
+ Certificate Holder 200x2 
+ 400.00 
+ Token 990x2 
+ 1,980.00 
+ Necklace [Lay] x2 
+ 80.00 
+ Tapex2 
+ 40.00 
+ SM to STI VV 
+ 20.00 
+ SM to STI VV 
+ 20.00 
+ Jollibee to STI VV [2person] 
+ 40.00 
+ R and C Native Product to STI VV 
+ 20.00 
+ AM Snack [Sophia to STI 2 person] 
+ 40.00 
+ Egarage STI VV 
+ 20.00 
+ Token Bag 
+ 89.00 
+ TOTAL 
+ 9,205.00 
+ Balance (Revenue less Expenses)  ₱1,695.00
+  Row 19:  | 
+  Row 20: Remarks: 
+ VIII. Attachments (if applicable) | (For future activity improvements.) 
+ 1. Program Flow and Time Management 
+ Observations: 
+ The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly. 
+ Recommendations: 
+ Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather. 
+ Provide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly. 
+ 2. Participant Engagement and Interaction 
+ Observations: 
+ Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decisionmaking. 
+ Handson or scenariobased portions received the strongest engagement. 
+ Recommendations: 
+ Consider integrating more interactive components such as short demos, simulations, or quick-response activities. 
+ Include structured Q&A portions after each section to maximize learning while maintaining order. 
+ Use digital tools (QR polls, live questions, etc.) to encourage real-time interaction. 
+ 3. Technical Setup and Venue Preparation 
+ Observations: 
+ Audiovisual equipment was generally functional, though minor adjustments to sound clarity were noted. 
+ Seating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge. 
+ Recommendations: 
+ Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone. 
+ Assign a technical support team to stand by throughout the event. 
+ Consider improving screen visibility through additional displays or adjusted seating layout. 
+ 4. Participant Preparedness and Expectations 
+ Observations: 
+ Majority of students arrived on time and were well-oriented about the seminar’s objective. 
+ Recommendations: 
+ Encourage students to prepare questions beforehand to enrich discussions. 
+ Please see attached documents.
+  Row 21:  | 
+  Row 22: Prepared by: | Rona Mira B. Lucañas
+  Row 23: Noted by: | Humabona l. Gonzales, Engr. Sheena Joy S. Muyuela, Atty. Antonio R. Lucero Jr.
+[TABLE END]
+[P] Note: This report must be submitted to the Administrator within 15 school days from the date of activity completion.

@@ -13,8 +13,17 @@ import {
   Plus,
   Trash2,
   AlertCircle,
+  Sparkles,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import type { ProposalFormData } from '../../types/proposal.types';
+import {
+  AIAssistButton,
+  AISuggestionModal,
+  generateObjectives,
+  generateSuccessIndicators,
+  generateMechanics,
+} from '../../../ai';
 
 interface Step2Props {
   formData: ProposalFormData;
@@ -26,6 +35,15 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
   const objectives = formData.objectives || [''];
   const successIndicators = formData.successIndicators || [''];
   const mechanics = formData.mechanics || [''];
+
+  // AI Modal State
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiModalTitle, setAiModalTitle] = useState('');
+  const [aiModalDesc, setAiModalDesc] = useState('');
+  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
+  const [isAILoading, setIsAILoading] = useState(false);
+  const [aiTargetField, setAiTargetField] = useState<'objectives' | 'indicators' | 'mechanics'>('objectives');
+  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
 
   // ── Objectives handlers ──
   const addObjective = () => {
@@ -75,6 +93,91 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
     onChange({ mechanics: mechanics.filter((_, idx) => idx !== index) });
   };
 
+  // ── AI Action Handlers ──
+  const handleSuggestObjectivesAction = async () => {
+    const title = formData.title?.trim();
+    if (!title) {
+      toast.info('Please enter an Activity Title in Step 1 first so AI can suggest aligned objectives.');
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const list = await generateObjectives(title, formData.description);
+      setIsAILoading(false);
+      if (list && list.length > 0) {
+        setAiTargetField('objectives');
+        setAiModalTitle('Suggested SMART Objectives');
+        setAiModalDesc('Select the objectives you want to insert into your proposal:');
+        setAiSuggestionList(list);
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleSuggestIndicatorsAction = async () => {
+    const title = formData.title?.trim();
+    if (!title) {
+      toast.info('Please enter an Activity Title in Step 1 first.');
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const list = await generateSuccessIndicators(title, objectives);
+      setIsAILoading(false);
+      if (list && list.length > 0) {
+        setAiTargetField('indicators');
+        setAiModalTitle('Suggested Success Indicators (KPIs)');
+        setAiModalDesc('Select the measurable indicators you want to add:');
+        setAiSuggestionList(list);
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleSuggestMechanicsAction = async () => {
+    const title = formData.title?.trim();
+    if (!title) {
+      toast.info('Please enter an Activity Title in Step 1 first.');
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const list = await generateMechanics(title, formData.description);
+      setIsAILoading(false);
+      if (list && list.length > 0) {
+        setAiTargetField('mechanics');
+        setAiModalTitle('Suggested Event Mechanics');
+        setAiModalDesc('Select the procedure steps to add to your activity guidelines:');
+        setAiSuggestionList(list);
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleApplyAIList = (selectedItems: string[]) => {
+    if (selectedItems.length === 0) return;
+
+    if (aiTargetField === 'objectives') {
+      const existing = (formData.objectives || []).filter((o) => o.trim().length > 0);
+      onChange({ objectives: [...existing, ...selectedItems] });
+      toast.success(`Added ${selectedItems.length} objective(s)!`);
+    } else if (aiTargetField === 'indicators') {
+      const existing = (formData.successIndicators || []).filter((s) => s.trim().length > 0);
+      onChange({ successIndicators: [...existing, ...selectedItems] });
+      toast.success(`Added ${selectedItems.length} indicator(s)!`);
+    } else if (aiTargetField === 'mechanics') {
+      const existing = (formData.mechanics || []).filter((m) => m.trim().length > 0);
+      onChange({ mechanics: [...existing, ...selectedItems] });
+      toast.success(`Added ${selectedItems.length} procedure step(s)!`);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Section 4: Objectives */}
@@ -88,14 +191,22 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
               Objective/s <span className="text-red-500">*</span>
             </label>
           </div>
-          <button
-            type="button"
-            onClick={addObjective}
-            className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] rounded-lg text-xs font-bold transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5 text-[#0E4EBD]" />
-            Add Objective
-          </button>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label="Suggest Objectives"
+              onClick={handleSuggestObjectivesAction}
+              isLoading={isAILoading && aiTargetField === 'objectives'}
+              tooltip="Generate SMART objectives aligned with your event title"
+            />
+            <button
+              type="button"
+              onClick={addObjective}
+              className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] rounded-lg text-xs font-bold transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              Add Objective
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2.5">
@@ -139,14 +250,22 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
               Success Indicator/s <span className="text-red-500">*</span>
             </label>
           </div>
-          <button
-            type="button"
-            onClick={addIndicator}
-            className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5 text-emerald-600" />
-            Add Indicator
-          </button>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label="Suggest Indicators"
+              onClick={handleSuggestIndicatorsAction}
+              isLoading={isAILoading && aiTargetField === 'indicators'}
+              tooltip="Generate quantifiable KPIs based on event title and objectives"
+            />
+            <button
+              type="button"
+              onClick={addIndicator}
+              className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5 text-emerald-600" />
+              Add Indicator
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2.5">
@@ -190,14 +309,22 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
               Mechanics & Procedures <span className="text-red-500">*</span>
             </label>
           </div>
-          <button
-            type="button"
-            onClick={addMechanic}
-            className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 rounded-lg text-xs font-bold transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5 text-indigo-700" />
-            Add Procedure
-          </button>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label="Suggest Mechanics"
+              onClick={handleSuggestMechanicsAction}
+              isLoading={isAILoading && aiTargetField === 'mechanics'}
+              tooltip="Generate sequential event procedures (Registration, Opening, Activities, Closing)"
+            />
+            <button
+              type="button"
+              onClick={addMechanic}
+              className="inline-flex items-center gap-1.5 px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 rounded-lg text-xs font-bold transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5 text-indigo-700" />
+              Add Procedure
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2.5">
@@ -229,6 +356,21 @@ export default function Step2ObjectivesMechanics({ formData, onChange, errors = 
           <p className="text-xs text-red-600 font-medium">{errors.mechanics}</p>
         )}
       </div>
+
+      {/* AI Suggestion List Modal */}
+      <AISuggestionModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        title={aiModalTitle}
+        description={aiModalDesc}
+        suggestionList={aiSuggestionList}
+        mode="list"
+        isLoading={isAILoading}
+        onApplyList={handleApplyAIList}
+        onRegenerate={() => {
+          if (activeAIAction) activeAIAction();
+        }}
+      />
     </div>
   );
 }

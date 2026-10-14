@@ -506,8 +506,31 @@ export function AttendanceMonitoring() {
   }, [dbSections, students]);
 
   const mappedEvents: (Event & { hostingOrgId: string; isInstitutional: boolean })[] = useMemo(() => {
-    const validEvents = dbEvents.filter(evt => evt.enableQRTickets !== false);
-    const eventsToUse = validEvents.length > 0 ? validEvents : dbEvents;
+    const validEvents = dbEvents.filter((evt) => {
+      // Must only monitor officially approved or completed events
+      const pStatus = (evt.proposalStatus || '').toString().toLowerCase();
+      const eStatus = (evt.status || '').toString().toLowerCase();
+      const lStatus = ((evt as any).lifecycleStatus || '').toString().toLowerCase();
+
+      const isApprovedOrCompleted =
+        pStatus === 'approved' ||
+        pStatus === 'completed' ||
+        eStatus === 'completed' ||
+        eStatus === 'published' ||
+        lStatus === 'completed';
+
+      const isUnapproved =
+        pStatus === 'draft' ||
+        pStatus === 'pending' ||
+        pStatus === 'pending_review' ||
+        pStatus === 'returned' ||
+        pStatus === 'rejected';
+
+      if (!isApprovedOrCompleted || isUnapproved) return false;
+
+      return evt.enableQRTickets !== false;
+    });
+    const eventsToUse = validEvents;
 
     if (eventsToUse.length === 0) return [];
 

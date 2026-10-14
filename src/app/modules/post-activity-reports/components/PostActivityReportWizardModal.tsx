@@ -41,8 +41,20 @@ import type {
   PARApprovalStep,
 } from '../types/par.types';
 import type { EventDocument } from '../../events/types/event.types';
+import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { formatCurrency, formatVariance } from '../../../utils/currency';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
+import PARFlowBuilder from './PARFlowBuilder';
+import { subscribeToSignatories } from '../../signatories/services/signatory.service';
+import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import {
+  AIAssistButton,
+  AISuggestionModal,
+  enhancePARNarrative,
+  suggestKeyLearnings,
+  generatePARRecommendations,
+  polishGrammar,
+} from '../../ai';
 
 interface PostActivityReportWizardModalProps {
   isOpen: boolean;
@@ -90,6 +102,16 @@ export default function PostActivityReportWizardModal({
   const [attendedCount, setAttendedCount] = useState(0);
   const [targetAudience, setTargetAudience] = useState('');
   const [whoAttended, setWhoAttended] = useState('');
+  const [howManyAttended, setHowManyAttended] = useState('');
+
+  // Proposal Copied Fields
+  const [proposalOrganizers, setProposalOrganizers] = useState<string[]>([]);
+  const [proposedMechanics, setProposedMechanics] = useState<string[]>([]);
+  const [proposalMaterials, setProposalMaterials] = useState<string[]>([]);
+  const [proposalMarketingPlan, setProposalMarketingPlan] = useState<string[]>([]);
+  const [proposalDocumentationPlan, setProposalDocumentationPlan] = useState<string[]>([]);
+  const [proposalObjectives, setProposalObjectives] = useState<string[]>([]);
+  const [proposalSuccessIndicators, setProposalSuccessIndicators] = useState<string[]>([]);
 
   // Section 2: Financial
   const [totalRevenue, setTotalRevenue] = useState(0);
@@ -102,14 +124,14 @@ export default function PostActivityReportWizardModal({
   // Section 3: Objectives & Results
   const [objectiveStatus, setObjectiveStatus] = useState<PARObjectiveStatus>('fully_achieved');
   const [achievementNarrative, setAchievementNarrative] = useState('');
-  const [keyLearnings, setKeyLearnings] = useState<string[]>([
-    'Demonstrated mastery of event objectives among attendees.',
-  ]);
+  const [keyLearnings, setKeyLearnings] = useState<string[]>([]);
   const [newLearningInput, setNewLearningInput] = useState('');
   const [classroomEnrichment, setClassroomEnrichment] = useState('');
   const [venueAssessment, setVenueAssessment] = useState('');
+  const [foodAssessment, setFoodAssessment] = useState('');
   const [logisticsAssessment, setLogisticsAssessment] = useState('');
-  const [issuesEncountered, setIssuesEncountered] = useState('No major issues encountered.');
+  const [scheduleCompliance, setScheduleCompliance] = useState('');
+  const [issuesEncountered, setIssuesEncountered] = useState('');
 
   // Section 4: 4 STI Recommendations
   const [progFlowObs, setProgFlowObs] = useState('');
@@ -126,6 +148,140 @@ export default function PostActivityReportWizardModal({
   const [newPhotoUrl, setNewPhotoUrl] = useState('');
   const [newPhotoCaption, setNewPhotoCaption] = useState('');
   const [approvalChain, setApprovalChain] = useState<PARApprovalStep[]>([]);
+  const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
+
+  // AI Assistant State
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiModalTitle, setAiModalTitle] = useState('');
+  const [aiModalDesc, setAiModalDesc] = useState('');
+  const [aiOriginalText, setAiOriginalText] = useState('');
+  const [aiSuggestionText, setAiSuggestionText] = useState('');
+  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
+  const [aiModalMode, setAiModalMode] = useState<'text' | 'choice' | 'list'>('text');
+  const [isAILoading, setIsAILoading] = useState(false);
+  const [isGeneratingRecs, setIsGeneratingRecs] = useState(false);
+  const [aiTargetField, setAiTargetField] = useState<'mechanics' | 'narrative' | 'learnings' | 'enrichment'>('narrative');
+  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
+
+  const handleEnhanceActualMechanics = async () => {
+    const raw = actualMechanics.trim();
+    if (!raw) {
+      toast.info('Please enter some brief notes about how the mechanics were conducted first.');
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const polished = await polishGrammar(raw, 'Actual Event Mechanics (Conducted)');
+      setIsAILoading(false);
+      if (polished) {
+        setAiTargetField('mechanics');
+        setAiModalTitle('Enhance Actual Mechanics');
+        setAiModalDesc('Polished narrative of actual procedures conducted during the event:');
+        setAiOriginalText(raw);
+        setAiSuggestionText(polished);
+        setAiModalMode('text');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleEnhanceNarrative = async () => {
+    const eventTitle = selectedEvent?.title || 'Campus Event';
+    const action = async () => {
+      setIsAILoading(true);
+      const narrative = await enhancePARNarrative(eventTitle, achievementNarrative, registeredCount, attendedCount);
+      setIsAILoading(false);
+      if (narrative) {
+        setAiTargetField('narrative');
+        setAiModalTitle('Achievement Narrative');
+        setAiModalDesc('Comprehensive accomplishments statement based on turnout and results:');
+        setAiOriginalText(achievementNarrative);
+        setAiSuggestionText(narrative);
+        setAiModalMode('text');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleSuggestKeyLearningsAction = async () => {
+    const eventTitle = selectedEvent?.title || 'Campus Event';
+    const action = async () => {
+      setIsAILoading(true);
+      const learnings = await suggestKeyLearnings(eventTitle, actualMechanics || achievementNarrative);
+      setIsAILoading(false);
+      if (learnings && learnings.length > 0) {
+        setAiTargetField('learnings');
+        setAiModalTitle('Suggested Key Learnings');
+        setAiModalDesc('Select learning takeaways to include in your Post-Activity Report:');
+        setAiSuggestionList(learnings);
+        setAiModalMode('list');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleAutoDraft4Recommendations = async () => {
+    if (!selectedEvent) {
+      toast.info('Please select an event in Overview first.');
+      return;
+    }
+    setIsGeneratingRecs(true);
+    const recs = await generatePARRecommendations(selectedEvent.title, issuesEncountered, actualMechanics);
+    setIsGeneratingRecs(false);
+    if (recs) {
+      if (recs.programFlow) {
+        setProgFlowObs(recs.programFlow.observations || '');
+        setProgFlowRec(recs.programFlow.recommendations || '');
+      }
+      if (recs.participantEngagement) {
+        setEngagementObs(recs.participantEngagement.observations || '');
+        setEngagementRec(recs.participantEngagement.recommendations || '');
+      }
+      if (recs.technicalSetup) {
+        setTechSetupObs(recs.technicalSetup.observations || '');
+        setTechSetupRec(recs.technicalSetup.recommendations || '');
+      }
+      if (recs.participantPreparedness) {
+        setPrepObs(recs.participantPreparedness.observations || '');
+        setPrepRec(recs.participantPreparedness.recommendations || '');
+      }
+      toast.success('Successfully drafted 4 STI recommendation categories!');
+    }
+  };
+
+  const handleApplyAIText = (appliedText: string, applyMode: 'replace' | 'append') => {
+    if (aiTargetField === 'mechanics') {
+      setActualMechanics(applyMode === 'append' && actualMechanics ? `${actualMechanics}\n\n${appliedText}` : appliedText);
+      toast.success('Actual mechanics updated!');
+    } else if (aiTargetField === 'narrative') {
+      setAchievementNarrative(applyMode === 'append' && achievementNarrative ? `${achievementNarrative}\n\n${appliedText}` : appliedText);
+      toast.success('Achievement narrative updated!');
+    } else if (aiTargetField === 'enrichment') {
+      setClassroomEnrichment(applyMode === 'append' && classroomEnrichment ? `${classroomEnrichment}\n\n${appliedText}` : appliedText);
+      toast.success('Curriculum enrichment updated!');
+    }
+  };
+
+  const handleApplyAIList = (items: string[]) => {
+    if (aiTargetField === 'learnings') {
+      setKeyLearnings([...keyLearnings, ...items]);
+      toast.success(`Added ${items.length} learning item(s)!`);
+    }
+  };
+
+  // Subscribe to real-time institutional signatories
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => {
+      setActiveSignatories(list);
+    });
+    return () => unsub();
+  }, []);
 
   // Initialize from editing document if provided
   useEffect(() => {
@@ -136,6 +292,21 @@ export default function PostActivityReportWizardModal({
       setAttendedCount(initialReport.attendanceSummary?.attendedCount || 0);
       setTargetAudience(initialReport.attendanceSummary?.targetAudience || '');
       setWhoAttended(initialReport.attendanceSummary?.whoAttended || '');
+      setHowManyAttended(
+        initialReport.attendanceSummary?.howManyAttended ||
+          (initialReport.attendanceSummary?.attendedCount
+            ? `${initialReport.attendanceSummary.attendedCount} Attendees`
+            : '')
+      );
+
+      // Hydrate proposal fields
+      setProposalOrganizers(initialReport.proposalOrganizers || []);
+      setProposedMechanics(initialReport.proposedMechanics || []);
+      setProposalMaterials(initialReport.proposalMaterials || []);
+      setProposalMarketingPlan(initialReport.proposalMarketingPlan || []);
+      setProposalDocumentationPlan(initialReport.proposalDocumentationPlan || []);
+      setProposalObjectives(initialReport.proposalObjectives || []);
+      setProposalSuccessIndicators(initialReport.proposalSuccessIndicators || []);
 
       setTotalRevenue(initialReport.financialSummary?.totalRevenue || 0);
       setTotalDisbursed(initialReport.financialSummary?.totalDisbursed || 0);
@@ -147,8 +318,10 @@ export default function PostActivityReportWizardModal({
       setKeyLearnings(initialReport.results?.keyLearnings || []);
       setClassroomEnrichment(initialReport.results?.classroomEnrichment || '');
       setVenueAssessment(initialReport.results?.venueAssessment || '');
+      setFoodAssessment(initialReport.results?.foodAssessment || '');
       setLogisticsAssessment(initialReport.results?.logisticsAssessment || '');
-      setIssuesEncountered(initialReport.results?.issuesEncountered || 'No major issues encountered.');
+      setScheduleCompliance(initialReport.results?.scheduleCompliance || '');
+      setIssuesEncountered(initialReport.results?.issuesEncountered || '');
 
       setProgFlowObs(initialReport.recommendations?.programFlow?.observations || '');
       setProgFlowRec(initialReport.recommendations?.programFlow?.recommendations || '');
@@ -180,6 +353,31 @@ export default function PostActivityReportWizardModal({
         const evData = { id: evSnap.id, ...evSnap.data() } as EventDocument;
         setSelectedEvent(evData);
 
+        // Auto-extract proposal fields
+        const orgs =
+          Array.isArray((evData as any).organizers) && (evData as any).organizers.length > 0
+            ? (evData as any).organizers
+            : [(evData as any).organizerName || evData.hostingOrgName || 'Student Affairs Services'];
+        setProposalOrganizers(orgs);
+
+        const mechs = Array.isArray((evData as any).mechanics) ? (evData as any).mechanics : [];
+        setProposedMechanics(mechs);
+
+        const mats = Array.isArray((evData as any).materials) ? (evData as any).materials : [];
+        setProposalMaterials(mats);
+
+        const mkt = Array.isArray((evData as any).marketingPlan) ? (evData as any).marketingPlan : [];
+        setProposalMarketingPlan(mkt);
+
+        const docs = Array.isArray((evData as any).documentationPlan) ? (evData as any).documentationPlan : [];
+        setProposalDocumentationPlan(docs);
+
+        const objs = Array.isArray((evData as any).objectives) ? (evData as any).objectives : [];
+        setProposalObjectives(objs);
+
+        const ind = Array.isArray((evData as any).successIndicators) ? (evData as any).successIndicators : [];
+        setProposalSuccessIndicators(ind);
+
         // Auto-populate target audience
         const audText =
           (evData as any).targetAudienceText ||
@@ -200,31 +398,59 @@ export default function PostActivityReportWizardModal({
           const regCount = (evData as any).expectedAttendees || (evData as any).registeredCount || attCount || 50;
           setAttendedCount(attCount || regCount);
           setRegisteredCount(regCount);
+          setHowManyAttended(`${attCount || regCount} Attendees`);
         } catch {
           setAttendedCount(50);
           setRegisteredCount(50);
+          setHowManyAttended('50 Attendees');
         }
 
         // Auto-fetch financial liquidation summary (Form LF-01)
-        if ((evData as any).liquidationReportId) {
+        let liqId = (evData as any).liquidationReportId || (evData as any).liquidationId;
+        if (!liqId) {
+          try {
+            const liqQuery = await getDocs(
+              query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', selectedEventId))
+            );
+            const foundLiq = liqQuery.docs.find((d) => {
+              const st = (d.data().status || '').toLowerCase();
+              return st !== 'voided' && st !== 'cancelled';
+            });
+            if (foundLiq) {
+              liqId = foundLiq.id;
+            }
+          } catch (qErr) {
+            console.warn('[PostActivityReportWizardModal] Error querying liquidation by eventId:', qErr);
+          }
+        }
+
+        if (liqId) {
           try {
             const liqSnap = await getDoc(
-              doc(db, LIQUIDATIONS_COLLECTION, (evData as any).liquidationReportId)
+              doc(db, LIQUIDATIONS_COLLECTION, liqId)
             );
             if (liqSnap.exists()) {
               const liqData = liqSnap.data() as any;
               setLiquidationRef(liqData.referenceNo || (evData as any).liquidationRefNumber || '');
-              setTotalRevenue(liqData.actualRevenueTotal || liqData.allocatedBudget || 0);
-              setTotalDisbursed(liqData.totalDisbursed || liqData.totalExpenses || 0);
-              if (Array.isArray(liqData.lineItems)) {
-                setFinancialLineItems(
-                  liqData.lineItems.map((li: any) => ({
-                    description: li.description || li.item || 'Expense Item',
-                    unitAmount: Number(li.actualCost || li.unitPrice || 0),
-                    totalAmount: Number(li.actualCost || li.total || 0),
-                  }))
-                );
-              }
+              
+              const rev = Number(liqData.actualRevenueTotal ?? liqData.allocatedBudget ?? liqData.totalBudget ?? 0);
+              const items = Array.isArray(liqData.lineItems) ? liqData.lineItems : [];
+              const computedExpenses = items.reduce((acc: number, it: any) => {
+                const cost = Number(it.totalCost ?? it.total ?? it.actualCost ?? (Number(it.quantity || 1) * Number(it.unitCost || it.unitPrice || 0)) ?? 0);
+                return acc + cost;
+              }, 0);
+              const disb = Number(liqData.totalDisbursed ?? liqData.totalExpenses ?? computedExpenses);
+
+              setTotalRevenue(rev);
+              setTotalDisbursed(disb);
+
+              setFinancialLineItems(
+                items.map((li: any) => ({
+                  description: li.particulars || li.description || li.item || 'Expense Item',
+                  unitAmount: Number(li.unitCost || li.unitPrice || li.actualCost || 0),
+                  totalAmount: Number(li.totalCost || li.total || li.actualCost || li.totalAmount || (Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0)) || 0),
+                }))
+              );
             }
           } catch {}
         } else {
@@ -233,7 +459,8 @@ export default function PostActivityReportWizardModal({
 
         // Auto-populate dynamic signatory pipeline if not initialized
         if (approvalChain.length === 0) {
-          const chain = await generateDefaultPARSignatoryChain(evData.hostingOrgId);
+          const isSasEvent = isSasAdmin || isSasInstitutionalActivity(evData);
+          const chain = await generateDefaultPARSignatoryChain(evData.hostingOrgId, activeSignatories, isSasEvent);
           setApprovalChain(chain);
         }
       } catch (err) {
@@ -307,11 +534,26 @@ export default function PostActivityReportWizardModal({
         referenceNo: initialReport?.referenceNo,
         eventId: selectedEventId,
         eventTitle: selectedEvent?.title || initialReport?.eventTitle || '',
-        eventVenue: (selectedEvent as any)?.venue || initialReport?.eventVenue || 'STI Campus',
-        eventDateFormatted: (selectedEvent as any)?.date || initialReport?.eventDateFormatted || 'Concluded Event',
+        eventVenue: (selectedEvent as any)?.venueName || (selectedEvent as any)?.venue || initialReport?.eventVenue || 'STI Campus',
+        eventDateFormatted: (selectedEvent as any)?.date
+          ? `${(selectedEvent as any).date}${(selectedEvent as any).startTime ? `, ${(selectedEvent as any).startTime} – ${(selectedEvent as any).endTime || ''}` : ''}`
+          : initialReport?.eventDateFormatted || 'Concluded Event',
         eventDescription: selectedEvent?.description || initialReport?.eventDescription || '',
         organizerName: selectedEvent?.organizerName || currentUser.name,
         actualMechanics,
+        liquidationId: (selectedEvent as any)?.liquidationReportId || (selectedEvent as any)?.liquidationId || initialReport?.liquidationId || '',
+        liquidationRefNumber: liquidationRef || (selectedEvent as any)?.liquidationRefNumber || initialReport?.liquidationRefNumber || '',
+
+        // Proposal Copied Fields
+        proposalOrganizers: proposalOrganizers.length > 0 ? proposalOrganizers : (initialReport?.proposalOrganizers || []),
+        proposedMechanics: proposedMechanics.length > 0 ? proposedMechanics : (initialReport?.proposedMechanics || []),
+        proposalMaterials: proposalMaterials.length > 0 ? proposalMaterials : (initialReport?.proposalMaterials || []),
+        proposalMarketingPlan: proposalMarketingPlan.length > 0 ? proposalMarketingPlan : (initialReport?.proposalMarketingPlan || []),
+        proposalDocumentationPlan: proposalDocumentationPlan.length > 0 ? proposalDocumentationPlan : (initialReport?.proposalDocumentationPlan || []),
+        proposalObjectives: proposalObjectives.length > 0 ? proposalObjectives : (initialReport?.proposalObjectives || []),
+        proposalSuccessIndicators: proposalSuccessIndicators.length > 0 ? proposalSuccessIndicators : (initialReport?.proposalSuccessIndicators || []),
+        materialsUtilized: proposalMaterials,
+        marketingConducted: proposalMarketingPlan,
 
         organizationId: isSasAdmin ? 'sas' : (selectedEvent?.hostingOrgId || currentUser.organizationId || ''),
         organizationName: isSasAdmin ? 'Student Affairs Services (SAS)' : (selectedEvent?.hostingOrgName || currentUser.organizationName || ''),
@@ -322,6 +564,7 @@ export default function PostActivityReportWizardModal({
           attendedCount,
           targetAudience,
           whoAttended,
+          howManyAttended: howManyAttended || (attendedCount ? `${attendedCount} Attendees` : '50 Attendees'),
         },
 
         financialSummary: {
@@ -336,28 +579,29 @@ export default function PostActivityReportWizardModal({
           achievementNarrative,
           keyLearnings,
           classroomEnrichment,
-          venueAssessment: venueAssessment || 'Venue was adequate for the scheduled activities.',
-          logisticsAssessment: logisticsAssessment || 'Logistics and equipment were managed appropriately.',
-          scheduleCompliance: 'Conducted in compliance with approved program schedule.',
-          issuesEncountered: issuesEncountered || 'No major issues encountered.',
+          venueAssessment: venueAssessment || '',
+          foodAssessment: foodAssessment || '',
+          logisticsAssessment: logisticsAssessment || '',
+          scheduleCompliance: scheduleCompliance || '',
+          issuesEncountered: issuesEncountered || '',
         },
 
         recommendations: {
           programFlow: {
-            observations: progFlowObs || 'Program flowed on schedule.',
-            recommendations: progFlowRec || 'Maintain current timing buffer.',
+            observations: progFlowObs || '',
+            recommendations: progFlowRec || '',
           },
           participantEngagement: {
-            observations: engagementObs || 'Attendees participated actively in discussions and workshops.',
-            recommendations: engagementRec || 'Continue interactive icebreakers and QA sessions.',
+            observations: engagementObs || '',
+            recommendations: engagementRec || '',
           },
           technicalSetup: {
-            observations: techSetupObs || 'Microphones, projector, and network connection were verified.',
-            recommendations: techSetupRec || 'Ensure dry-run setup at least 1 hour prior to event opening.',
+            observations: techSetupObs || '',
+            recommendations: techSetupRec || '',
           },
           participantPreparedness: {
-            observations: prepObs || 'Students arrived with necessary materials and pre-registered badges.',
-            recommendations: prepRec || 'Distribute event primer at least 3 days before event.',
+            observations: prepObs || '',
+            recommendations: prepRec || '',
           },
         },
 
@@ -589,14 +833,26 @@ export default function PostActivityReportWizardModal({
                         </div>
                         <div>
                           <label className="text-slate-500 font-semibold block mb-1">
-                            Actual Participant Profile
+                            How Many Attended?
+                          </label>
+                          <input
+                            type="text"
+                            value={howManyAttended}
+                            onChange={(e) => setHowManyAttended(e.target.value)}
+                            className="w-full bg-white border border-slate-300 rounded p-1.5 text-xs text-slate-800"
+                            placeholder="e.g. 110 IT students"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-slate-500 font-semibold block mb-1">
+                            Actual Participant Profile (Who Attended?)
                           </label>
                           <input
                             type="text"
                             value={whoAttended}
                             onChange={(e) => setWhoAttended(e.target.value)}
                             className="w-full bg-white border border-slate-300 rounded p-1.5 text-xs text-slate-800"
-                            placeholder="e.g. 1st to 4th year IT students and faculty"
+                            placeholder="e.g. BSIT all year level"
                           />
                         </div>
                       </div>
@@ -647,9 +903,17 @@ export default function PostActivityReportWizardModal({
 
                   {/* Actual Mechanics Note */}
                   <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                      Actual Mechanics & Logistics Conducted (Optional Notes)
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                        Actual Mechanics & Logistics Conducted (Optional Notes)
+                      </label>
+                      <AIAssistButton
+                        label="Polish Mechanics"
+                        onClick={handleEnhanceActualMechanics}
+                        isLoading={isAILoading && aiTargetField === 'mechanics'}
+                        tooltip="Polish actual mechanics notes into formal narrative"
+                      />
+                    </div>
                     <textarea
                       rows={2}
                       value={actualMechanics}
@@ -709,9 +973,17 @@ export default function PostActivityReportWizardModal({
 
               {/* Achievement Narrative */}
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Narrative of Accomplishments & Results *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    Narrative of Accomplishments & Results *
+                  </label>
+                  <AIAssistButton
+                    label="Enhance Narrative"
+                    onClick={handleEnhanceNarrative}
+                    isLoading={isAILoading && aiTargetField === 'narrative'}
+                    tooltip="Draft or elevate accomplishment narrative using attendance and event data"
+                  />
+                </div>
                 <textarea
                   rows={3}
                   value={achievementNarrative}
@@ -727,9 +999,17 @@ export default function PostActivityReportWizardModal({
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
                     Key Learnings & Student Insights (3–5 Points) *
                   </label>
-                  <span className="text-[11px] text-slate-400 font-medium">
-                    {keyLearnings.length} added
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <AIAssistButton
+                      label="Suggest Learnings"
+                      onClick={handleSuggestKeyLearningsAction}
+                      isLoading={isAILoading && aiTargetField === 'learnings'}
+                      tooltip="Generate key learnings from executed activity"
+                    />
+                    <span className="text-[11px] text-slate-400 font-medium">
+                      {keyLearnings.length} added
+                    </span>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <input
@@ -789,17 +1069,17 @@ export default function PostActivityReportWizardModal({
                 />
               </div>
 
-              {/* Operational & Issues */}
+              {/* Operational & Assessment Details */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Venue Assessment
+                    Reason for Venue Selection
                   </label>
                   <input
                     type="text"
                     value={venueAssessment}
                     onChange={(e) => setVenueAssessment(e.target.value)}
-                    placeholder="e.g. Spacious, air-conditioning functional, adequate chairs."
+                    placeholder="e.g. It provided convenient and immediate access for participants."
                     className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
                   />
                 </div>
@@ -811,7 +1091,34 @@ export default function PostActivityReportWizardModal({
                     type="text"
                     value={issuesEncountered}
                     onChange={(e) => setIssuesEncountered(e.target.value)}
-                    placeholder="e.g. Minor 10-minute projection delay, resolved quickly."
+                    placeholder="If none, state 'No major issues encountered.'"
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                    Food & Logistics Assessment
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={foodAssessment}
+                    onChange={(e) => setFoodAssessment(e.target.value)}
+                    placeholder="State food quantity/quality and logistics handling..."
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
+                    Schedule Compliance
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={scheduleCompliance}
+                    onChange={(e) => setScheduleCompliance(e.target.value)}
+                    placeholder="State if program followed as planned; mention delays or adjustments if any."
                     className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
                   />
                 </div>
@@ -822,14 +1129,23 @@ export default function PostActivityReportWizardModal({
           {/* TAB 3: 4 STI CATEGORIZED RECOMMENDATIONS */}
           {activeTab === 'recommendations' && (
             <div className="space-y-6">
-              <div className="bg-blue-50/70 p-4 rounded-xl border border-blue-200">
-                <h4 className="text-xs font-black uppercase tracking-wider text-[#001A4D] flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-[#0E4EBD]" />
-                  STI Institutional Post-Mortem Areas (Verbatim Standard)
-                </h4>
-                <p className="text-xs text-slate-600 mt-1">
-                  Complete the four standard STI recommendation categories to provide institutional insights for future campus events.
-                </p>
+              <div className="bg-blue-50/70 p-4 rounded-xl border border-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xs font-black uppercase tracking-wider text-[#001A4D] flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-[#0E4EBD]" />
+                    STI Institutional Post-Mortem Areas (Verbatim Standard)
+                  </h4>
+                  <p className="text-xs text-slate-600 mt-1">
+                    Complete the four standard STI recommendation categories to provide institutional insights for future campus events.
+                  </p>
+                </div>
+                <AIAssistButton
+                  label="Auto-Draft 4 Recommendations"
+                  onClick={handleAutoDraft4Recommendations}
+                  isLoading={isGeneratingRecs}
+                  variant="primary"
+                  tooltip="Generate observations and recommendations for Program Flow, Engagement, Tech Setup, and Prep"
+                />
               </div>
 
               {/* 1. Program Flow */}
@@ -1033,51 +1349,15 @@ export default function PostActivityReportWizardModal({
                 )}
               </div>
 
-              {/* Dynamic Signatory Pipeline Preview */}
-              <div className="border border-slate-200 rounded-xl p-5 bg-white space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-blue-600" />
-                    <div>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                        Dynamic Institutional Signatory Pipeline
-                      </h4>
-                      <p className="text-[11px] text-slate-500">
-                        Configured in Institutional Settings & Signatories Maintenance
-                      </p>
-                    </div>
-                  </div>
-                  <span className="text-xs font-semibold text-slate-500">
-                    {approvalChain.length} steps configured
-                  </span>
-                </div>
-
-                <div className="space-y-2">
-                  {approvalChain.map((step, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 font-bold flex items-center justify-center text-xs">
-                          {step.step}
-                        </div>
-                        <div>
-                          <strong className="text-slate-900 block font-bold">
-                            {step.signatoryName || 'Institutional Signatory'}
-                          </strong>
-                          <span className="text-[11px] text-slate-500">
-                            {step.roleTitle} {step.department ? `(${step.department})` : ''}
-                          </span>
-                        </div>
-                      </div>
-                      <span className="text-[11px] font-bold text-slate-600 uppercase tracking-wider bg-white border border-slate-200 px-2.5 py-1 rounded-md">
-                        {step.actionType === 'approve' ? 'Final Approval' : 'Endorsement'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              {/* Dynamic Institutional Signatory Pipeline Builder */}
+              <PARFlowBuilder
+                approvalChain={approvalChain}
+                onChange={setApprovalChain}
+                activeSignatories={activeSignatories}
+                orgId={selectedEvent?.hostingOrgId || currentUser.organizationId}
+                orgName={selectedEvent?.hostingOrgName || (isSasAdmin ? 'Student Affairs Services' : undefined)}
+                isSasCreator={isSasAdmin || (selectedEvent ? isSasInstitutionalActivity(selectedEvent) : false)}
+              />
             </div>
           )}
         </div>
@@ -1144,6 +1424,24 @@ export default function PostActivityReportWizardModal({
           </div>
         </div>
       </div>
+
+      {/* AI Suggestion Preview Modal */}
+      <AISuggestionModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        title={aiModalTitle}
+        description={aiModalDesc}
+        originalText={aiOriginalText}
+        suggestionText={aiSuggestionText}
+        suggestionList={aiSuggestionList}
+        mode={aiModalMode}
+        isLoading={isAILoading}
+        onApplyText={handleApplyAIText}
+        onApplyList={handleApplyAIList}
+        onRegenerate={() => {
+          if (activeAIAction) activeAIAction();
+        }}
+      />
     </div>
   );
 }

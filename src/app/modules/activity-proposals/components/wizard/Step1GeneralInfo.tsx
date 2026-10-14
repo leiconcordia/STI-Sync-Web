@@ -14,9 +14,20 @@ import {
   X,
   Calendar,
   UserCheck,
+  Sparkles,
+  Wand2,
+  PenTool,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useOrganizationStream } from '../../../../modules/organizations/hooks/useOrganizationStream';
 import type { ProposalFormData } from '../../types/proposal.types';
+import {
+  AIAssistButton,
+  AISuggestionModal,
+  rewriteTitle,
+  expandDescription,
+  polishGrammar,
+} from '../../../ai';
 
 interface Step1Props {
   formData: ProposalFormData;
@@ -28,6 +39,18 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
   const { data: organizations = [] } = useOrganizationStream();
   const [organizerInput, setOrganizerInput] = useState('');
   const [proponentInput, setProponentInput] = useState('');
+
+  // AI Assistant Modal State
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiModalTitle, setAiModalTitle] = useState('');
+  const [aiModalDesc, setAiModalDesc] = useState('');
+  const [aiOriginalText, setAiOriginalText] = useState('');
+  const [aiSuggestionText, setAiSuggestionText] = useState('');
+  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
+  const [aiModalMode, setAiModalMode] = useState<'text' | 'choice' | 'list'>('text');
+  const [isAILoading, setIsAILoading] = useState(false);
+  const [aiTargetField, setAiTargetField] = useState<'title' | 'description'>('title');
+  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
 
   const orgSuggestions = useMemo(() => {
     const list: string[] = ['Student Affairs & Services (SAS)'];
@@ -71,6 +94,100 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     onChange({
       proponents: proponents.filter((_, idx) => idx !== indexToRemove),
     });
+  };
+
+  const handleRewriteTitleAction = async () => {
+    const raw = formData.title?.trim();
+    if (!raw) {
+      toast.info('Please type a draft title first (e.g. "christmas party" or "bball tourna").', {
+        id: 'enter-title-hint',
+      });
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const suggestions = await rewriteTitle(raw);
+      setIsAILoading(false);
+      if (suggestions && suggestions.length > 0) {
+        setAiTargetField('title');
+        setAiModalTitle('AI Title Suggestions');
+        setAiModalDesc('Choose a formal, institutional title for STI College official records:');
+        setAiOriginalText(raw);
+        setAiSuggestionList(suggestions);
+        setAiModalMode('choice');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handlePolishDescriptionAction = async () => {
+    const raw = formData.description?.trim();
+    if (!raw) {
+      toast.info('Please type some rough notes or sentences in the description first.', {
+        id: 'enter-desc-hint',
+      });
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const polished = await polishGrammar(raw, 'Activity Proposal Description');
+      setIsAILoading(false);
+      if (polished) {
+        setAiTargetField('description');
+        setAiModalTitle('Polish Grammar & Tone');
+        setAiModalDesc('Proofread and elevated to formal STI institutional standards:');
+        setAiOriginalText(raw);
+        setAiSuggestionText(polished);
+        setAiModalMode('text');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleExpandDescriptionAction = async () => {
+    const raw = formData.description?.trim() || '';
+    const title = formData.title?.trim() || '';
+    if (!raw && !title) {
+      toast.info('Please enter at least an Activity Title or a few bullet points.', {
+        id: 'enter-notes-hint',
+      });
+      return;
+    }
+    const action = async () => {
+      setIsAILoading(true);
+      const expanded = await expandDescription(title, raw, formData.organizers);
+      setIsAILoading(false);
+      if (expanded) {
+        setAiTargetField('description');
+        setAiModalTitle('Elaborate & Expand Description');
+        setAiModalDesc('Fleshed out into full background rationale, targeted competencies, and student impact:');
+        setAiOriginalText(raw);
+        setAiSuggestionText(expanded);
+        setAiModalMode('text');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleApplyAIText = (appliedText: string, applyMode: 'replace' | 'append') => {
+    if (aiTargetField === 'title') {
+      onChange({ title: appliedText });
+      toast.success('Title updated!');
+    } else if (aiTargetField === 'description') {
+      if (applyMode === 'append' && formData.description?.trim()) {
+        onChange({ description: `${formData.description.trim()}\n\n${appliedText}` });
+        toast.success('Appended to description!');
+      } else {
+        onChange({ description: appliedText });
+        toast.success('Description updated!');
+      }
+    }
   };
 
   return (
@@ -196,9 +313,17 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
 
       {/* Section 1: Activity title */}
       <div>
-        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-          1. Activity title <span className="text-red-500">*</span>
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+            1. Activity title <span className="text-red-500">*</span>
+          </label>
+          <AIAssistButton
+            label="Rewrite Title"
+            onClick={handleRewriteTitleAction}
+            isLoading={isAILoading && aiTargetField === 'title'}
+            tooltip="Transform informal title (e.g. christmas party) into formal STI options"
+          />
+        </div>
         <input
           type="text"
           value={formData.title || ''}
@@ -215,9 +340,31 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
 
       {/* Section 2: Description */}
       <div>
-        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-          2. Description <span className="text-red-500">*</span>
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+            2. Description <span className="text-red-500">*</span>
+          </label>
+          <AIAssistButton
+            label="AI Assist"
+            isLoading={isAILoading && aiTargetField === 'description'}
+            options={[
+              {
+                id: 'expand',
+                label: 'Expand Rough Notes',
+                description: 'Flesh out short sentences or bullet points into formal text',
+                icon: <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                onClick: handleExpandDescriptionAction,
+              },
+              {
+                id: 'polish',
+                label: 'Fix Grammar & Polish',
+                description: 'Proofread and elevate vocabulary without changing meaning',
+                icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                onClick: handlePolishDescriptionAction,
+              },
+            ]}
+          />
+        </div>
         <textarea
           rows={5}
           value={formData.description || ''}
@@ -303,6 +450,23 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
           ))}
         </div>
       </div>
+
+      {/* AI Suggestion Preview Modal */}
+      <AISuggestionModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        title={aiModalTitle}
+        description={aiModalDesc}
+        originalText={aiOriginalText}
+        suggestionText={aiSuggestionText}
+        suggestionList={aiSuggestionList}
+        mode={aiModalMode}
+        isLoading={isAILoading}
+        onApplyText={handleApplyAIText}
+        onRegenerate={() => {
+          if (activeAIAction) activeAIAction();
+        }}
+      />
     </div>
   );
 }

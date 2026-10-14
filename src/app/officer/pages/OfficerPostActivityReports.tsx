@@ -20,6 +20,7 @@ import {
   FileText,
   ShieldCheck,
   Lock,
+  Trash2,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import {
@@ -30,6 +31,7 @@ import type { PostActivityReportDocument } from '../../modules/post-activity-rep
 import PostActivityReportWizardModal from '../../modules/post-activity-reports/components/PostActivityReportWizardModal';
 import PostActivityReportDetailModal from '../../modules/post-activity-reports/components/PostActivityReportDetailModal';
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
+import { deletePAR } from '../../modules/post-activity-reports/services/par.service';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { TablePagination } from '../../components/common/TablePagination';
 import { toast } from 'sonner';
@@ -38,7 +40,7 @@ type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft';
 const ITEMS_PER_PAGE = 8;
 
 export default function OfficerPostActivityReports() {
-  const { profile } = useOfficerProfile();
+  const { profile, activeOrgName } = useOfficerProfile();
 
   // Session fallback
   const [session] = useState(() => {
@@ -51,7 +53,7 @@ export default function OfficerPostActivityReports() {
   });
 
   const orgId = profile?.activeOrganizationId || session?.activeOrganizationId || '';
-  const orgName = profile?.studentName || session?.studentName ? `${profile?.studentName || session?.studentName}'s Org` : 'Student Organization';
+  const orgName = activeOrgName || session?.activeOrgName || (profile?.studentName ? `${profile.studentName}'s Org` : 'Student Organization');
   const userUid = profile?.studentId || session?.studentId || 'officer_user';
   const userName = profile?.studentName || session?.studentName || 'Officer';
   const userEmail = profile?.email || session?.email || '';
@@ -71,6 +73,8 @@ export default function OfficerPostActivityReports() {
   const [editingReport, setEditingReport] = useState<PostActivityReportDocument | null>(null);
   const [viewingReport, setViewingReport] = useState<PostActivityReportDocument | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [deletingReport, setDeletingReport] = useState<PostActivityReportDocument | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Counts
   const counts = useMemo(() => {
@@ -141,6 +145,20 @@ export default function OfficerPostActivityReports() {
     setEditingReport(rep);
     setWizardEventId(rep.eventId);
     setShowWizardModal(true);
+  };
+
+  const handleDeleteReport = async () => {
+    if (!deletingReport) return;
+    setIsDeleting(true);
+    try {
+      await deletePAR(deletingReport.id);
+      toast.success(`Draft Post-Activity Report (${deletingReport.referenceNo}) discarded successfully.`);
+      setDeletingReport(null);
+    } catch (err: any) {
+      toast.error('Failed to discard report: ' + (err?.message || 'Error'));
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const renderStatusBadge = (status: string) => {
@@ -471,10 +489,19 @@ export default function OfficerPostActivityReports() {
                           {(r.status === 'draft' || r.status === 'returned') && (
                             <button
                               onClick={() => handleEditReport(r)}
-                              title="Edit Report"
+                              title={r.status === 'returned' ? 'Revise Returned Report' : 'Edit Draft Report'}
                               className="p-1.5 rounded-lg text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
                             >
                               <Edit3 className="w-4 h-4" />
+                            </button>
+                          )}
+                          {r.status === 'draft' && (
+                            <button
+                              onClick={() => setDeletingReport(r)}
+                              title="Discard Draft Report"
+                              className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
                             </button>
                           )}
                         </div>
@@ -540,6 +567,46 @@ export default function OfficerPostActivityReports() {
         currentUserId={userUid}
         currentUserName={userName}
       />
+
+      {/* Discard Confirmation Modal */}
+      {deletingReport && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-gray-200 space-y-4 animate-scale-up">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-base">Discard Draft Report?</h3>
+                <p className="text-xs text-gray-500">Unlinks and permanently removes this draft Post-Activity Report.</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-xl border border-gray-100">
+              Are you sure you want to discard draft <strong>{deletingReport.referenceNo}</strong> for <strong>"{deletingReport.eventTitle}"</strong>? The event will become eligible to start a fresh Post-Activity Report under the 1:1:1 invariant.
+            </p>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeletingReport(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteReport}
+                disabled={isDeleting}
+                className="px-4 py-2 text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white rounded-xl shadow-xs transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isDeleting ? 'Discarding...' : 'Discard Report'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

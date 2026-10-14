@@ -23,7 +23,7 @@ import {
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
-import { getEventTimingStatus } from '../../modules/events/utils/event-lifecycle.utils';
+import { getEventTimingStatus, isSasInstitutionalActivity } from '../../modules/events/utils/event-lifecycle.utils';
 import {
   createLiquidationReport,
   updateLiquidationReport,
@@ -79,6 +79,33 @@ function getFileTypeCategory(fileName: string, mimeType?: string): 'image' | 'pd
   return 'other';
 }
 
+function reindexLiquidationSteps(steps: LiquidationApprovalStep[]): LiquidationApprovalStep[] {
+  const stageMap = new Map<number, LiquidationApprovalStep[]>();
+  steps.forEach((s) => {
+    const idx = s.stageIndex ?? 1;
+    if (!stageMap.has(idx)) stageMap.set(idx, []);
+    stageMap.get(idx)!.push(s);
+  });
+  const sortedKeys = Array.from(stageMap.keys()).sort((a, b) => a - b);
+  let stepNum = 1;
+  const reindexed: LiquidationApprovalStep[] = [];
+  sortedKeys.forEach((oldIdx, newIdxMinusOne) => {
+    const newStageNum = newIdxMinusOne + 1;
+    const stageSteps = stageMap.get(oldIdx)!;
+    const stageName = stageSteps[0]?.stageName || `Stage ${newStageNum}`;
+    stageSteps.forEach((st) => {
+      reindexed.push({
+        ...st,
+        step: stepNum++,
+        stageIndex: newStageNum,
+        stageName,
+        status: newStageNum === 1 ? 'current' : 'waiting',
+      });
+    });
+  });
+  return reindexed;
+}
+
 function formatFileSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return '';
   if (bytes < 1024) return `${bytes} B`;
@@ -131,6 +158,13 @@ export default function OfficerLiquidationModal({
 }: OfficerLiquidationModalProps) {
   const { profile: officerProfile } = useOfficerProfile();
   const effectiveIsAdviser = Boolean(isAdviser ?? officerProfile?.isAdviser ?? (userRole === 'admin'));
+  const isSasCreator =
+    userRole === 'admin' ||
+    orgId === 'sao_admin' ||
+    orgId === 'sas' ||
+    ['sas', 'sao', 'sas_admin', 'sao_admin', 'student affairs office', 'student affairs services'].includes(
+      (orgId || '').toString().trim().toLowerCase()
+    );
 
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
@@ -204,43 +238,30 @@ export default function OfficerLiquidationModal({
 
       if (!isCompleted) return false;
 
-      // Role & Organization ownership scoping
-      if (userRole === 'admin') {
-        // Admin events only: must not be an officer proposal, must be institutional/SAO
-        if (e.isOfficerProposal === true || e.submittedByOfficer === true) return false;
+      // Role & Organization ownership scoping:
+      // STRICT AUTHORING ISOLATION:
+      // - SAS / Admin can ONLY create Financial Liquidation for SAS / Institutional activities!
+      //   (Student Organization activities MUST NOT show in SAS!)
+      // Role & Organization ownership scoping:
+      // STRICT AUTHORING ISOLATION:
+      // - SAS / Admin can ONLY create Financial Liquidation for SAS / Institutional activities!
+      //   (Student Organization activities MUST NEVER show in SAS!)
+      // - Student Organizations can ONLY create Financial Liquidation for their own organization activities!
+      //   (SAS activities MUST NEVER show in Student Org!)
+      const isSasActivity = isSasInstitutionalActivity(e);
 
-        const isInstitutional =
-          e.isOfficerProposal === false ||
-          (e as any).isInstitutional === true ||
-          (e as any).isDirectPublished === true ||
-          e.createdByRole === 'admin' ||
-          !e.hostingOrgId ||
-          ['sas', 'sao', 'sas_admin', 'sao_admin', 'student affairs office', 'student affairs services'].includes(
-            (e.hostingOrgId || '').toString().trim().toLowerCase()
-          );
-
-        if (!isInstitutional) return false;
-
-        // Exclude events that originated from student club proposals
-        const hasSubmittedHistory =
-          Array.isArray(e.proposalHistory) &&
-          e.proposalHistory.some((h: any) => h?.action === 'submitted' || h?.action === 'resubmitted');
-        if (hasSubmittedHistory && e.isOfficerProposal !== false) return false;
+      if (userRole === 'admin' || orgId === 'sao_admin' || orgId === 'sas') {
+        // SAS Admin: ONLY show SAS / Institutional events!
+        // Student org events must NEVER show in SAS!
+        if (!isSasActivity) return false;
       } else {
-        // Officer events only: must belong to the officer's organization
+        // Officer: strictly student organization events only!
+        // SAS events must NEVER show in Officer!
+        if (isSasActivity) return false;
+
         const cleanOrgId = (orgId || '').trim().toLowerCase();
         const cleanOrgName = (orgName || '').trim().toLowerCase();
 
-        // Must not be an institutional / admin event
-        const isInstitutional =
-          e.isOfficerProposal === false ||
-          (e as any).isInstitutional === true ||
-          ['sas', 'sao', 'sas_admin', 'sao_admin', 'student affairs office', 'student affairs services'].includes(
-            (e.hostingOrgId || '').toString().trim().toLowerCase()
-          );
-        if (isInstitutional) return false;
-
-        // Must match officer's organization ID or Name
         const eventOrgIds = [
           e.hostingOrgId,
           e.organizationId,
@@ -253,20 +274,25 @@ export default function OfficerLiquidationModal({
         const eventOrgNames = [
           e.hostingOrgName,
           e.orgName,
+          (e as any).organizationName,
         ].filter(Boolean).map((v) => String(v).trim().toLowerCase());
 
         const matchesOrg =
-          (cleanOrgId && eventOrgIds.includes(cleanOrgId)) ||
-          (cleanOrgName && eventOrgNames.includes(cleanOrgName));
+          (cleanOrgId && eventOrgIds.some((id) => id === cleanOrgId || id.includes(cleanOrgId) || cleanOrgId.includes(id))) ||
+          (cleanOrgName && eventOrgNames.some((name) => name === cleanOrgName || name.includes(cleanOrgName) || cleanOrgName.includes(name))) ||
+          (!cleanOrgId && !cleanOrgName);
 
         if (!matchesOrg) return false;
       }
 
-      // Liquidation exclusivity check: if already liquidated or has a liquidation, exclude
+      // Liquidation exclusivity check (1:1 invariant): if already liquidated or has an active/approved liquidation, exclude
+      // NOTE: 'pending' means liquidation is pending to be created for this concluded event, so it is ELIGIBLE!
+      const liqStatus = ((e as any).liquidationStatus || '').toString().toLowerCase();
       const hasLiquidation =
         liquidatedEventIds.has(e.id) ||
+        Boolean((e as any).liquidationReportId) ||
         (e as any).isLiquidated === true ||
-        (e as any).liquidationStatus === 'approved' ||
+        ['submitted', 'under_review', 'approved'].includes(liqStatus) ||
         (e as any).hasLiquidation === true;
 
       if (hasLiquidation && !isEditingThisEvent) {
@@ -313,10 +339,22 @@ export default function OfficerLiquidationModal({
       setLineItems(normalizeLineItems(editingReport.lineItems || []));
       if (editingReport.approvalChain && editingReport.approvalChain.length > 0) {
         // Strip out any legacy placeholder steps with empty UIDs
-        const validSteps = editingReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
-        setApprovalChain(validSteps);
+        let validSteps = editingReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
+        if (isSasCreator) {
+          // If created by SAS/admin, omit redundant Stage 1 SAS clearance step
+          validSteps = validSteps.filter(
+            (s) =>
+              !(
+                (s.stageIndex ?? 1) === 1 &&
+                (s.role === 'sas_head' ||
+                  (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
+                  (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')))
+              )
+          );
+        }
+        setApprovalChain(reindexLiquidationSteps(validSteps));
       } else {
-        generateDefaultLiquidationChain(orgId, orgName, editingReport.allocatedBudget || 0, activeSignatories).then((chain) => {
+        generateDefaultLiquidationChain(orgId, orgName, editingReport.allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
           setApprovalChain(chain);
         });
       }
@@ -338,11 +376,11 @@ export default function OfficerLiquidationModal({
           receiptFiles: [],
         },
       ]);
-      generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories).then((chain) => {
+      generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories, isSasCreator).then((chain) => {
         setApprovalChain(chain);
       });
     }
-  }, [editingReport, isOpen, orgId, orgName, activeSignatories]);
+  }, [editingReport, isOpen, orgId, orgName, activeSignatories, isSasCreator]);
 
   // Update budget & auto-fetch budgetItems when event is selected
   const handleEventSelect = async (eventId: string) => {
@@ -352,13 +390,16 @@ export default function OfficerLiquidationModal({
       const budget = calculateEventBudget(event);
       setAllocatedBudget(budget);
 
+      const eventIsSas = isSasCreator || isSasInstitutionalActivity(event);
+
       // Auto-load liquidation approval chain dynamically from active maintenance signatories
       if (!editingReport || !editingReport.approvalChain || editingReport.approvalChain.length === 0) {
         const defaultChain = await generateDefaultLiquidationChain(
           event.hostingOrgId || orgId,
           event.hostingOrgName || orgName,
           budget,
-          activeSignatories
+          activeSignatories,
+          eventIsSas
         );
         setApprovalChain(defaultChain);
       }
@@ -607,8 +648,8 @@ export default function OfficerLiquidationModal({
       const payload: Omit<LiquidationDocument, 'id' | 'createdAt' | 'updatedAt'> = {
         eventId: selectedEventId,
         eventTitle,
-        organizationId: orgId,
-        organizationName: orgName,
+        organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId,
+        organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName,
         createdById: userUid,
         createdByRole: userRole,
         createdByName: userName,
@@ -1243,6 +1284,7 @@ export default function OfficerLiquidationModal({
                 orgId={orgId}
                 orgName={orgName}
                 allocatedBudget={allocatedBudget}
+                isSasCreator={isSasCreator}
               />
 
               {/* If report is already in review or concluded, show visual tracker */}

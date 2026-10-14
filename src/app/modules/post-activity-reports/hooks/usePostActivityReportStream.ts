@@ -11,6 +11,7 @@ import { PAR_COLLECTION } from '../services/par.service';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import type { PostActivityReportDocument } from '../types/par.types';
 import type { EventDocument } from '../../events/types/event.types';
+import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 
 /**
  * Stream hook for Officer: fetches only the PARs authored by this specific organization.
@@ -190,11 +191,13 @@ export function useEligibleEventsForPAR(
     return () => unsub();
   }, []);
 
-  // Set of event IDs that already have non-returned PARs
+  // Set of event IDs that already have an existing PAR (draft, under_review, returned, approved)
+  // Enforces strict 1:1 invariant: an event can only have at most 1 Post-Activity Report
   const takenEventIds = useMemo(() => {
     const map = new Map<string, PostActivityReportDocument>();
     existingPars.forEach((p) => {
-      if (p.eventId && p.status !== 'returned') {
+      const st = (p.status || '').toLowerCase();
+      if (p.eventId && st !== 'cancelled' && st !== 'voided') {
         map.set(p.eventId, p);
       }
     });
@@ -222,36 +225,38 @@ export function useEligibleEventsForPAR(
 
       if (!isLiquidationSatisfied) return false;
 
-      // 3. Check if an active PAR already exists for this event
-      if (takenEventIds.has(e.id)) {
+      // 3. Strict 1:1 Invariant: Check if a PAR already exists for this event
+      if (takenEventIds.has(e.id) || Boolean((e as any).parId)) {
         return false;
       }
 
       // 4. Strict Authoring Rights:
-      const cleanOrgId = (orgId || '').trim().toLowerCase();
-      const cleanOrgName = (orgName || '').trim().toLowerCase();
-
-      const isSasEvent =
-        e.isOfficerProposal === false ||
-        (e as any).isInstitutional === true ||
-        (e as any).creatorRole === 'sas_admin' ||
-        ['sas', 'sao', 'sas_admin', 'sao_admin', 'student affairs office', 'student affairs services'].includes(
-          (e.hostingOrgId || '').toString().trim().toLowerCase()
-        ) ||
-        !e.hostingOrgId;
+      // STRICT AUTHORING ISOLATION:
+      // - SAS / Admin can ONLY create PAR for SAS / Institutional activities!
+      //   (Student Organization activities MUST NEVER show in SAS!)
+      // - Student Organizations can ONLY create PAR for their own organization activities!
+      //   (SAS activities MUST NEVER show in Student Org!)
+      const isSasEvent = isSasInstitutionalActivity(e);
 
       if (userRole === 'admin') {
         // SAS Admin can ONLY create PAR for SAS-created events
+        // Student org events must NEVER show in SAS!
         return isSasEvent;
       } else {
         // Student Org Officer can ONLY create PAR for their own org's events
+        // SAS events must NEVER show in Student Org!
         if (isSasEvent) return false;
+
+        const cleanOrgId = (orgId || '').trim().toLowerCase();
+        const cleanOrgName = (orgName || '').trim().toLowerCase();
 
         const eventOrgIds = [
           e.hostingOrgId,
           (e as any).organizationId,
           (e as any).createdByOrgId,
           (e as any).orgId,
+          (e as any).org,
+          (e as any).organization,
         ]
           .filter(Boolean)
           .map((v) => String(v).trim().toLowerCase());
@@ -259,13 +264,15 @@ export function useEligibleEventsForPAR(
         const eventOrgNames = [
           (e as any).hostingOrgName,
           (e as any).orgName,
+          (e as any).organizationName,
         ]
           .filter(Boolean)
           .map((v) => String(v).trim().toLowerCase());
 
         const matchesOrg =
-          (cleanOrgId && eventOrgIds.includes(cleanOrgId)) ||
-          (cleanOrgName && eventOrgNames.includes(cleanOrgName));
+          (cleanOrgId && eventOrgIds.some((id) => id === cleanOrgId || id.includes(cleanOrgId) || cleanOrgId.includes(id))) ||
+          (cleanOrgName && eventOrgNames.some((name) => name === cleanOrgName || name.includes(cleanOrgName) || cleanOrgName.includes(name))) ||
+          (!cleanOrgId && !cleanOrgName);
 
         return matchesOrg;
       }

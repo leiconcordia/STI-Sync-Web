@@ -1,0 +1,74 @@
+Page Size: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': '12240', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h': '15840'}
+Page Margins: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}top': '1440', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}right': '1440', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}bottom': '1440', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}left': '1440', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}header': '720', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}footer': '720', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}gutter': '0'}
+Total tables: 4
+
+--- TABLE 1 ---
+Table Width: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': '3168', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type': 'dxa'}
+Grid Cols: ['720', '2448']
+Total Rows: 1
+  R1: W=720: Date:[B](16) | W=2448: January 28, 2026(20)
+
+--- TABLE 2 ---
+Table Width: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': '9648', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type': 'dxa'}
+Grid Cols: ['1818', '7830']
+Total Rows: 23
+  R1: W=1818: Activity title:[B](16) | W=7830: CYBERSECURITY AWARENESS SEMINAR(default)
+  R2: W=1818: Description:[B](16) | W=7830: A seminar aimed at educating students, faculty, and staff on cybersecurity threats, safe online practices.(default)This activity will be conducted [B](default)in line with the College Fair[B][I](default) scheduled on November 20–22, 2025, to support the event’s goal of promoting digital responsibility and awareness.[B](default)
+  R3: W=1818: Organizer/s:[B](16) | W=7830: IT Department(default)
+  R4: W=1818: Mechanics:[B](16) | W=7830: (Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)[I](16)
+  R5: W=1818:  | W=7830: Opening remarks and introduction of speakers.[I](20) // Cybersecurity lecture covering threats, prevention, and best practices.[I](20) // Live demonstration of common cyberattacks (phishing, password attacks).[I](20) // Open forum / Q&A.[I](20) // Closing message and distribution of certificates.(20)
+  R6: W=1818: Materials:[B](16) | W=7830: Computer Unit and projector/TV(default) // Sound system and microphone(default) // Internet connect(default)ion(default) // Printed certificates(default) // Tarpaulin / digital poster(default) // Attendance sheets(default)
+  R7: W=1818: Attendance:[B](16) | W=7830: (Attach attendance list, if available.)[I](16)
+  R8: W=1818:  | W=7830: 
+  R9: W=1818: Marketing:[B](16) | W=7830: Posting of dig(default)ital posters on official pages(default) //  Announ(default)cement through class advisers(default) // Display of(default) tarpaulin at the campus lobby(default) // Inclusion in (default)College Fair announcements (Nov. 20–22, 2025)[B](default)
+  R10: W=1818: Documentation:[B](16) | W=7830: P(default)hotos and videos of the event(default) // Attenda(default)nce summary(default) // Post-evaluation forms(default)
+  R11: W=1818: Date & time:[B](16) | W=7830: November 24, 2025[B](20), 9:00 AM – 3:00 PM[B](20)
+  R12: W=1818: Venue:[B](16) | W=7830:  (20)STI College Ormoc – NEW ROOMS(20)
+  R13: W=1818:  | W=7830: 
+  R14: W=1818: Results of activity:[B](16) | W=7830: (Include assessment of success based on indicators. Attach a sheet, if necessary.)[I](16)
+  R15: W=1818:  | W=7830:  (20)Results of the Activity(22) // Achievement of Objectives:[B](20) [B](20)The objectives were partially achieved as the 2(20)nd(20) objectives “(20)To educate participants on data privacy principles and safe digital practices.(20)” (20)The speaker clarified that (20)data privacy[B](20)—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be (20)handled by a lawyer. As a result, this portion of the objective was not covered.(20)➤(20) (20)Action:[B](20) A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional.(20) // qualified to have a lecture about data privacy.(20) Will conduct another seminar for these objective. (20) // Key Learnings / Insights Gained:[B](20) [B](20) // A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior.(20) // Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence. (20) // Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment.(20) // Enrichment of Learning Beyond the Classroom:[B](20)(Explain how the activity complemented or enhanced classroom learning)(20)Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training.(20) // Reason for Venue Selection:[B](20) [B](20)(State justification if questioned or compared to another venue)(20) // It provided convenient and immediate access for IT students who were the primary audience of the seminar.(20) // The setup supported the required audio‑visual presentations and ensured a conducive learning environment.(20) // Food / Logistics Assessment:[B](20) [B](20) // The food provided during the activity was:(20) // Adequate in quantity(20) //  Acceptable in quality(20) // Served on time and properly coordinated(20) // The logistics were well-handled, with materials, equipment, and support personnel readily available as needed.(20) // Schedule Compliance:[B](20) [B](20)The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.(20)(State if program followed as planned; mention delays or adjustments if any)(20) // Issues / Problems Encountered and Actions Taken:[B](20) [B](20)No major issues encountered(20)(If none, state “No major issues encountered.”)(20)
+  R16: W=1818:  | W=7830: 
+  R17: W=1818: Financial report:[B](16) | W=7830: (Attach supporting receipts and list of participants who have/haven’t paid.)[I](16) // Attached also the liquidation.[I](16)
+  R18: W=1818:  | W=7830: 
+  R19: W=1818:  | W=7830: 
+  R20: W=1818: Remarks:[B](16) // VIII. Attachments (if applicable)(16) | W=7830: (For future activity improvements.)[I](18) // 1. Program Flow and Time Management[B](18) // Observations:[B](18) // The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly.(18) (18) // Recommendations:[B](18) // Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather.(18) // Provide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly.(18) // 2. Participant Engagement and Interaction[B](18) // Observations:[B](18) // Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decision(18)making.(18) // Hands(18)on or scenario(18)based portions received the strongest engagement.(18) // Recommendations:[B](18) // Consider integrating more interactive components such as short demos, simulations, or quick-response activities.(18) // Include structured Q&A portions after each section to maximize learning while maintaining order.(18) // Use digital tools (QR polls, live questions, etc.) to encourage real-time interaction.(18) // 3. Technical Setup and Venue Preparation[B](18) // Observations:[B](18) // Audio(18)visual equipment was generally functional, though minor adjustments to sound clarity were noted.(18) // Seating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge.(18) // Recommendations:[B](18) // Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone.(18) // Assign a technical support team to stand by throughout the event.(18) // Consider improving screen visibility through additional displays or adjusted seating layout.(18) // 4. Participant Preparedness and Expectations[B](18) // Observations:[B](18) // Majority of students arrived on time and were well-oriented about the seminar’s objective.(18) // Recommendations:[B](18) // Encourage students to prepare questions beforehand to enrich discussions.(18) // Please see attached documents.(18)
+  R21: W=1818:  | W=7830: 
+  R22: W=1818: Prepared by:[B](16) | W=7830: Rona Mira B. (20)Lucañas(20)
+  R23: W=1818: Noted by:[B](16) | W=7830: Humabona(20) l. Gonzales, Engr. Sheena Joy S. (20)Muyuela(20), (20)Atty. Antonio R. Lucero Jr.(20)
+
+--- TABLE 3 ---
+Table Width: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': '7437', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type': 'dxa'}
+Grid Cols: ['2052', '5385']
+Total Rows: 2
+  R1: W=2052: How many attended?[B](16) | W=5385: 110 IT students(20)
+  R2: W=2052: Who attended?[B](16) | W=5385: BSIT all year level(20)
+
+--- TABLE 4 ---
+Table Width: {'{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': '7437', '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}type': 'dxa'}
+Grid Cols: ['4567', '888', '1982']
+Total Rows: 25
+  R1: W=4567: Description[B](14) | W=888: Unit Amount[B](14) | W=1982: Total Amount[B](14)
+  R2: W=5455: Revenue:  10, 900[B](14) | W=1982: 
+  R3: W=4567: Snack (20 (18)pax(18) )(18) | W=888:  600.00 (18) | W=1982: 
+  R4: W=4567: Snack (2pax Speaker)(18) | W=888:  116.00 (18) | W=1982: 
+  R5: W=4567: Snack (2pax Speaker)(18) | W=888:  53.00 (18) | W=1982: 
+  R6: W=4567: Snack (22 (18)pax(18) )(18) | W=888:  1,109.00 (18) | W=1982: 
+  R7: W=4567: Lunch (22pax)(18) | W=888:  2,530.00 (18) | W=1982: 
+  R8: W=4567: TARP PRINT A(18) | W=888:  720.00 (18) | W=1982: 
+  R9: W=4567: TARP PRINT B(18) | W=888:  720.00 (18) | W=1982: 
+  R10: W=4567: Certificate Paper 32x15(18) | W=888:  480.00 (18) | W=1982: 
+  R11: W=4567: Certificate Paper Add 32x4(18) | W=888:  128.00 (18) | W=1982: 
+  R12: W=4567: Certificate Holder 200x2(18) | W=888:  400.00 (18) | W=1982: 
+  R13: W=4567: Token 990x2(18) | W=888:  1,980.00 (18) | W=1982: 
+  R14: W=4567: Necklace [Lay] x2(18) | W=888:  80.00 (18) | W=1982: 
+  R15: W=4567: Tapex2(18) | W=888:  40.00 (18) | W=1982: 
+  R16: W=4567: SM to STI VV(18) | W=888:  20.00 (18) | W=1982: 
+  R17: W=4567: SM to STI VV(18) | W=888:  20.00 (18) | W=1982: 
+  R18: W=4567: Jollibee to STI VV [2person](18) | W=888:  40.00 (18) | W=1982: 
+  R19: W=4567: R and C Native Product to STI VV(18) | W=888:  20.00 (18) | W=1982: 
+  R20: W=4567: AM Snack [Sophia to STI 2 person](18) | W=888:  40.00 (18) | W=1982: 
+  R21: W=4567: Egarage(18) STI VV(18) | W=888:  20.00 (18) | W=1982: 
+  R22: W=4567: Token Bag(18) | W=888:  89.00 (18) | W=1982: 
+  R23: W=4567: TOTAL[B](14) | W=888: 9,205.00[B](14) | W=1982: 
+  R24: W=4567:  | W=888:  | W=1982: 
+  R25: W=5455: Balance (Revenue less Expenses)[B](14)  [B](14)₱1,695.00[B](14) | W=1982: 

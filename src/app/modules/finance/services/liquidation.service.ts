@@ -28,6 +28,7 @@ import {
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
+import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 
 export const LIQUIDATIONS_COLLECTION = 'liquidations';
 
@@ -246,6 +247,60 @@ export async function generateDefaultLiquidationChain(
 export const createLiquidationReport = async (
   data: Omit<LiquidationDocument, 'id' | 'createdAt' | 'updatedAt'>
 ): Promise<string> => {
+  // ── STRICT 1:1:1 LIFECYCLE INVARIANT ──
+  // An activity proposal can have at most ONE Financial Liquidation.
+  if (data.eventId) {
+    // 1. Check existing liquidations in Firestore for this eventId
+    const existingLiqSnap = await getDocs(
+      query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', data.eventId))
+    );
+    const activeExisting = existingLiqSnap.docs.filter((d) => {
+      const st = (d.data().status || '').toLowerCase();
+      return st !== 'voided' && st !== 'cancelled';
+    });
+
+    if (activeExisting.length > 0) {
+      throw new Error(
+        'A Financial Liquidation already exists for this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
+      );
+    }
+
+    // 2. Cross-verify parent event document
+    const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+    const eventSnap = await getDoc(eventRef);
+    if (eventSnap.exists()) {
+      const evData = eventSnap.data() as any;
+
+      // Authoring isolation:
+      // SAS Admin can only liquidate SAS activities; Student Org officers can only liquidate their own org's activities.
+      const isSasActivity = isSasInstitutionalActivity(evData);
+
+      const isSubmitterSas =
+        data.createdByRole === 'admin' ||
+        data.organizationId === 'sao_admin' ||
+        data.organizationId === 'sas';
+
+      if (isSasActivity && !isSubmitterSas) {
+        throw new Error('This is an internal SAS activity. Only SAS administrators can create its Financial Liquidation.');
+      }
+      if (!isSasActivity && isSubmitterSas) {
+        throw new Error('This activity was organized by a student organization. The Financial Liquidation must be authored and submitted by the officers of that specific organization.');
+      }
+
+      if (evData.liquidationReportId) {
+        const oldLiqSnap = await getDoc(doc(db, LIQUIDATIONS_COLLECTION, evData.liquidationReportId));
+        if (oldLiqSnap.exists()) {
+          const oldSt = (oldLiqSnap.data().status || '').toLowerCase();
+          if (oldSt !== 'voided' && oldSt !== 'cancelled') {
+            throw new Error(
+              'A Financial Liquidation is already linked to this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
+            );
+          }
+        }
+      }
+    }
+  }
+
   const lineItems = data.lineItems || [];
   const totalActualSpending = lineItems.reduce((sum, item) => sum + (item.totalCost || 0), 0);
   const surplusOrDeficit = (data.allocatedBudget || 0) - totalActualSpending;
@@ -259,7 +314,8 @@ export const createLiquidationReport = async (
   const isSasCreator =
     data.createdByRole === 'admin' ||
     data.organizationId === 'sao_admin' ||
-    data.organizationId === 'sas';
+    data.organizationId === 'sas' ||
+    (data.organizationName && data.organizationName.toLowerCase().includes('student affairs'));
 
   let chain = data.approvalChain;
   if (!chain || chain.length === 0) {
@@ -270,6 +326,52 @@ export const createLiquidationReport = async (
       undefined,
       isSasCreator
     );
+  } else if (isSasCreator) {
+    // If created by SAS/admin, ensure Stage 1 SAS clearance is stripped and reindexed
+    const hasSasStage1 = chain.some(
+      (s) =>
+        (s.stageIndex ?? 1) === 1 &&
+        (s.role === 'sas_head' ||
+          (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
+          (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
+          (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
+    );
+    if (hasSasStage1) {
+      const filtered = chain.filter(
+        (s) =>
+          !(
+            (s.stageIndex ?? 1) === 1 &&
+            (s.role === 'sas_head' ||
+              (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
+              (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
+              (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
+          )
+      );
+      const stageMap = new Map<number, LiquidationApprovalStep[]>();
+      filtered.forEach((s) => {
+        const idx = s.stageIndex ?? 1;
+        if (!stageMap.has(idx)) stageMap.set(idx, []);
+        stageMap.get(idx)!.push(s);
+      });
+      const sortedKeys = Array.from(stageMap.keys()).sort((a, b) => a - b);
+      let stepNum = 1;
+      const reindexed: LiquidationApprovalStep[] = [];
+      sortedKeys.forEach((oldIdx, newIdxMinusOne) => {
+        const newStageNum = newIdxMinusOne + 1;
+        const steps = stageMap.get(oldIdx)!;
+        const stageName = steps[0]?.stageName || `Stage ${newStageNum}`;
+        steps.forEach((st) => {
+          reindexed.push({
+            ...st,
+            step: stepNum++,
+            stageIndex: newStageNum,
+            stageName,
+            status: newStageNum === 1 ? 'current' : 'waiting',
+          });
+        });
+      });
+      chain = reindexed;
+    }
   }
 
   // If submitting right away, activate Stage 1 steps and ensure subsequent stages are waiting
@@ -316,6 +418,7 @@ export const createLiquidationReport = async (
       await updateDoc(eventRef, {
         liquidationStatus: initialStatus,
         liquidationReportId: docRef.id,
+        liquidationRefNumber: (data as any).referenceNo || (payload as any).referenceNo || '',
         updatedAt: serverTimestamp(),
       });
     } catch (evtErr) {
@@ -543,6 +646,7 @@ export async function deleteLiquidationReport(
       await updateDoc(eventRef, {
         liquidationStatus: null,
         liquidationReportId: null,
+        liquidationRefNumber: null,
         updatedAt: serverTimestamp(),
       });
     } catch (e) {
@@ -956,6 +1060,7 @@ export async function endorseLiquidationStep(
       await updateDoc(eventRef, {
         liquidationStatus: isFullyApproved ? 'approved' : 'under_review',
         liquidationReportId: liquidationId,
+        liquidationRefNumber: data.referenceNo || '',
         updatedAt: serverTimestamp(),
       });
     } catch (evtErr) {

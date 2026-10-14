@@ -733,6 +733,17 @@ export function FinancialLiquidations() {
                                     </button>
                                   </>
                                 )}
+
+                                {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
+                                  <button
+                                    onClick={() => setDeletingReport(liq)}
+                                    className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title="Delete draft report and purge ledger entries"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                    <span>Delete</span>
+                                  </button>
+                                )}
                               </>
                             );
                           })()}
@@ -759,15 +770,6 @@ export function FinancialLiquidations() {
                           >
                             <Eye className="w-3 h-3" />
                             <span>View</span>
-                          </button>
-
-                          <button
-                            onClick={() => setDeletingReport(liq)}
-                            className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="Delete report and purge ledger entries"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                            <span>Delete</span>
                           </button>
                         </div>
                       </td>
@@ -1029,7 +1031,7 @@ export function FinancialLiquidations() {
               )}
 
               {/* SAO Adviser Remarks - Only for pending submissions under review */}
-              {selectedReport.status === 'pending' && (
+              {(selectedReport.status === 'pending' || selectedReport.status === 'under_review') && (
                 <div>
                   <label className="block text-sm font-bold text-[#001A4D] mb-1.5">
                     SAO Adviser Remarks / Revision Notes
@@ -1071,7 +1073,7 @@ export function FinancialLiquidations() {
                 </div>
               )}
 
-              {selectedReport.status === 'pending' && (
+              {(selectedReport.status === 'pending' || selectedReport.status === 'under_review') && (
                 <div className="flex items-center gap-3">
                   {permissions.isOwner ? (
                     // SAS Created this report: They CANNOT approve or return!

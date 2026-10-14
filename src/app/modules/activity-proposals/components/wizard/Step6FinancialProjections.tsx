@@ -87,37 +87,28 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     revenues: [
       {
         id: 'rev-1',
-        description: 'Student Affairs & Services (SAS) Activity Subsidy',
+        description: '',
         lastYearActual: 0,
-        thisYearProposed: 5000,
-        totalAmount: 5000,
+        thisYearProposed: 0,
+        totalAmount: 0,
         adjustment: 0,
-        remarks: 'Funded from Institutional Activity Fund',
+        remarks: '',
       },
     ],
     expenses: [
       {
         id: 'exp-1',
-        description: 'Resource Speaker Honorarium',
+        description: '',
         lastYearActual: 0,
-        thisYearProposed: 2000,
-        totalAmount: 2000,
+        thisYearProposed: 0,
+        totalAmount: 0,
         adjustment: 0,
-        remarks: 'Direct token',
-      },
-      {
-        id: 'exp-2',
-        description: 'Working Committee Refreshments',
-        lastYearActual: 0,
-        thisYearProposed: 1500,
-        totalAmount: 1500,
-        adjustment: 0,
-        remarks: 'For volunteers & staff',
+        remarks: '',
       },
     ],
-    totalRevenue: 5000,
-    totalExpenses: 3500,
-    balance: 1500,
+    totalRevenue: 0,
+    totalExpenses: 0,
+    balance: 0,
   };
 
   const handleUpdateLineItem = (

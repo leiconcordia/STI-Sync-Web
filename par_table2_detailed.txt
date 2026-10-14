@@ -1,0 +1,131 @@
+=== ROW 1 (cells: 2) ===
+  Cell 1: [B|8.0pt]Activity title:
+  Cell 2: [|10pt]CYBERSECURITY AWARENESS SEMINAR
+=== ROW 2 (cells: 2) ===
+  Cell 1: [B|8.0pt]Description:
+  Cell 2: [|10pt]A seminar aimed at educating students, faculty, and staff on cybersecurity threats, safe online practices.[B|10pt]This activity will be conducted [BI|10pt]in line with the College Fair[B|10pt] scheduled on November 20–22, 2025, to support the event’s goal of promoting digital responsibility and awareness.
+=== ROW 3 (cells: 2) ===
+  Cell 1: [B|8.0pt]Organizer/s:
+  Cell 2: [|10pt]IT Department
+=== ROW 4 (cells: 2) ===
+  Cell 1: [B|8.0pt]Mechanics:
+  Cell 2: [I|8.0pt](Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)
+=== ROW 5 (cells: 2) ===
+  Cell 1: 
+  Cell 2: [I|10.0pt]Opening remarks and introduction of speakers.
+    [I|10.0pt]Cybersecurity lecture covering threats, prevention, and best practices.
+    [I|10.0pt]Live demonstration of common cyberattacks (phishing, password attacks).
+    [I|10.0pt]Open forum / Q&A.
+    [|10.0pt]Closing message and distribution of certificates.
+=== ROW 6 (cells: 2) ===
+  Cell 1: [B|8.0pt]Materials:
+  Cell 2: [|10pt]Computer Unit and projector/TV
+    [|10pt]Sound system and microphone
+    [|10pt]Internet connect[|10pt]ion
+    [|10pt]Printed certificates
+    [|10pt]Tarpaulin / digital poster
+    [|10pt]Attendance sheets
+=== ROW 7 (cells: 2) ===
+  Cell 1: [B|8.0pt]Attendance:
+  Cell 2: [I|8.0pt](Attach attendance list, if available.)
+=== ROW 8 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 9 (cells: 2) ===
+  Cell 1: [B|8.0pt]Marketing:
+  Cell 2: [|10pt]Posting of dig[|10pt]ital posters on official pages
+    [|10pt] Announ[|10pt]cement through class advisers
+    [|10pt]Display of[|10pt] tarpaulin at the campus lobby
+    [|10pt]Inclusion in [B|10pt]College Fair announcements (Nov. 20–22, 2025)
+=== ROW 10 (cells: 2) ===
+  Cell 1: [B|8.0pt]Documentation:
+  Cell 2: [|10pt]P[|10pt]hotos and videos of the event
+    [|10pt]Attenda[|10pt]nce summary
+    [|10pt]Post-evaluation forms
+=== ROW 11 (cells: 2) ===
+  Cell 1: [B|8.0pt]Date & time:
+  Cell 2: [B|10.0pt]November 24, 2025[B|10.0pt], 9:00 AM – 3:00 PM
+=== ROW 12 (cells: 2) ===
+  Cell 1: [B|8.0pt]Venue:
+  Cell 2: [|10.0pt] [|10.0pt]STI College Ormoc – NEW ROOMS
+=== ROW 13 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 14 (cells: 2) ===
+  Cell 1: [B|8.0pt]Results of activity:
+  Cell 2: [I|8.0pt](Include assessment of success based on indicators. Attach a sheet, if necessary.)
+=== ROW 15 (cells: 2) ===
+  Cell 1: 
+  Cell 2: [|10.0pt] [|11.0pt]Results of the Activity
+    [B|10.0pt]Achievement of Objectives:[B|10.0pt] [|10.0pt]The objectives were partially achieved as the 2[|10.0pt]nd[|10.0pt] objectives “[|10.0pt]To educate participants on data privacy principles and safe digital practices.[|10.0pt]” [|10.0pt]The speaker clarified that [B|10.0pt]data privacy[|10.0pt]—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be [|10.0pt]handled by a lawyer. As a result, this portion of the objective was not covered.[|10.0pt]➤[|10.0pt] [B|10.0pt]Action:[|10.0pt] A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional.
+    [|10.0pt]qualified to have a lecture about data privacy.[|10.0pt] Will conduct another seminar for these objective. 
+    [B|10.0pt]Key Learnings / Insights Gained:[B|10.0pt] 
+    [|10.0pt]A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior.
+    [|10.0pt]Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence. 
+    [|10.0pt]Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment.
+    [B|10.0pt]Enrichment of Learning Beyond the Classroom:[|10.0pt](Explain how the activity complemented or enhanced classroom learning)[|10.0pt]Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training.
+    [B|10.0pt]Reason for Venue Selection:[B|10.0pt] [|10.0pt](State justification if questioned or compared to another venue)
+    [|10.0pt]It provided convenient and immediate access for IT students who were the primary audience of the seminar.
+    [|10.0pt]The setup supported the required audio‑visual presentations and ensured a conducive learning environment.
+    [B|10.0pt]Food / Logistics Assessment:[B|10.0pt] 
+    [|10.0pt]The food provided during the activity was:
+    [|10.0pt]Adequate in quantity
+    [|10.0pt] Acceptable in quality
+    [|10.0pt]Served on time and properly coordinated
+    [|10.0pt]The logistics were well-handled, with materials, equipment, and support personnel readily available as needed.
+    [B|10.0pt]Schedule Compliance:[B|10.0pt] [|10.0pt]The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.[|10.0pt](State if program followed as planned; mention delays or adjustments if any)
+    [B|10.0pt]Issues / Problems Encountered and Actions Taken:[B|10.0pt] [|10.0pt]No major issues encountered[|10.0pt](If none, state “No major issues encountered.”)
+=== ROW 16 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 17 (cells: 2) ===
+  Cell 1: [B|8.0pt]Financial report:
+  Cell 2: [I|8.0pt](Attach supporting receipts and list of participants who have/haven’t paid.)
+    [I|8.0pt]Attached also the liquidation.
+=== ROW 18 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 19 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 20 (cells: 2) ===
+  Cell 1: [B|8.0pt]Remarks:
+    [|8.0pt]VIII. Attachments (if applicable)
+  Cell 2: [I|9.0pt](For future activity improvements.)
+    [B|9.0pt]1. Program Flow and Time Management
+    [B|9.0pt]Observations:
+    [|9.0pt]The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly.[|9.0pt] 
+    [B|9.0pt]Recommendations:
+    [|9.0pt]Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather.
+    [|9.0pt]Provide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly.
+    [B|9.0pt]2. Participant Engagement and Interaction
+    [B|9.0pt]Observations:
+    [|9.0pt]Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decision[|9.0pt]making.
+    [|9.0pt]Hands[|9.0pt]on or scenario[|9.0pt]based portions received the strongest engagement.
+    [B|9.0pt]Recommendations:
+    [|9.0pt]Consider integrating more interactive components such as short demos, simulations, or quick-response activities.
+    [|9.0pt]Include structured Q&A portions after each section to maximize learning while maintaining order.
+    [|9.0pt]Use digital tools (QR polls, live questions, etc.) to encourage real-time interaction.
+    [B|9.0pt]3. Technical Setup and Venue Preparation
+    [B|9.0pt]Observations:
+    [|9.0pt]Audio[|9.0pt]visual equipment was generally functional, though minor adjustments to sound clarity were noted.
+    [|9.0pt]Seating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge.
+    [B|9.0pt]Recommendations:
+    [|9.0pt]Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone.
+    [|9.0pt]Assign a technical support team to stand by throughout the event.
+    [|9.0pt]Consider improving screen visibility through additional displays or adjusted seating layout.
+    [B|9.0pt]4. Participant Preparedness and Expectations
+    [B|9.0pt]Observations:
+    [|9.0pt]Majority of students arrived on time and were well-oriented about the seminar’s objective.
+    [B|9.0pt]Recommendations:
+    [|9.0pt]Encourage students to prepare questions beforehand to enrich discussions.
+    [|9.0pt]Please see attached documents.
+=== ROW 21 (cells: 2) ===
+  Cell 1: 
+  Cell 2: 
+=== ROW 22 (cells: 2) ===
+  Cell 1: [B|8.0pt]Prepared by:
+  Cell 2: [|10.0pt]Rona Mira B. [|10.0pt]Lucañas
+=== ROW 23 (cells: 2) ===
+  Cell 1: [B|8.0pt]Noted by:
+  Cell 2: [|10.0pt]Humabona[|10.0pt] l. Gonzales, Engr. Sheena Joy S. [|10.0pt]Muyuela[|10.0pt], [|10.0pt]Atty. Antonio R. Lucero Jr.

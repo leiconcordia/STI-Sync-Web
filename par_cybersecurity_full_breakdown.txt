@@ -1,0 +1,377 @@
+
+==================== ROW 1 ====================
+--- CELL 1 ---
+  P: Activity title:
+     Runs: <BOLD 8.0pt: 'Activity title:'>
+--- CELL 2 ---
+  P: CYBERSECURITY AWARENESS SEMINAR
+     Runs: <10pt: 'CYBERSECURITY AWARENESS SEMINAR'>
+
+==================== ROW 2 ====================
+--- CELL 1 ---
+  P: Description:
+     Runs: <BOLD 8.0pt: 'Description:'>
+--- CELL 2 ---
+  P: A seminar aimed at educating students, faculty, and staff on cybersecurity threats, safe online practices.This activity will be conducted in line with the College Fair scheduled on November 20–22, 2025, to support the event’s goal of promoting digital responsibility and awareness.
+     Runs: <10pt: 'A seminar aimed at educating students, faculty, and staff on cybersecurity threats, safe online practices.'> <BOLD 10pt: 'This activity will be conducted '> <BOLD ITALIC 10pt: 'in line with the College Fair'> <BOLD 10pt: ' scheduled on November 20–22, 2025, to support the event’s goal of promoting digital responsibility and awareness.'>
+
+==================== ROW 3 ====================
+--- CELL 1 ---
+  P: Organizer/s:
+     Runs: <BOLD 8.0pt: 'Organizer/s:'>
+--- CELL 2 ---
+  P: IT Department
+     Runs: <10pt: 'IT Department'>
+
+==================== ROW 4 ====================
+--- CELL 1 ---
+  P: Mechanics:
+     Runs: <BOLD 8.0pt: 'Mechanics:'>
+--- CELL 2 ---
+  P: (Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)
+     Runs: <ITALIC 8.0pt: '(Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)'>
+
+==================== ROW 5 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: Opening remarks and introduction of speakers.
+     Runs: <ITALIC 10.0pt: 'Opening remarks and introduction of speakers.'>
+  P: Cybersecurity lecture covering threats, prevention, and best practices.
+     Runs: <ITALIC 10.0pt: 'Cybersecurity lecture covering threats, prevention, and best practices.'>
+  P: Live demonstration of common cyberattacks (phishing, password attacks).
+     Runs: <ITALIC 10.0pt: 'Live demonstration of common cyberattacks (phishing, password attacks).'>
+  P: Open forum / Q&A.
+     Runs: <ITALIC 10.0pt: 'Open forum / Q&A.'>
+  P: Closing message and distribution of certificates.
+     Runs: <10.0pt: 'Closing message and distribution of certificates.'>
+
+==================== ROW 6 ====================
+--- CELL 1 ---
+  P: Materials:
+     Runs: <BOLD 8.0pt: 'Materials:'>
+--- CELL 2 ---
+  P: Computer Unit and projector/TV
+     Runs: <10pt: 'Computer Unit and projector/TV'>
+  P: Sound system and microphone
+     Runs: <10pt: 'Sound system and microphone'>
+  P: Internet connection
+     Runs: <10pt: 'Internet connect'> <10pt: 'ion'>
+  P: Printed certificates
+     Runs: <10pt: 'Printed certificates'>
+  P: Tarpaulin / digital poster
+     Runs: <10pt: 'Tarpaulin / digital poster'>
+  P: Attendance sheets
+     Runs: <10pt: 'Attendance sheets'>
+
+==================== ROW 7 ====================
+--- CELL 1 ---
+  P: Attendance:
+     Runs: <BOLD 8.0pt: 'Attendance:'>
+--- CELL 2 ---
+  P: (Attach attendance list, if available.)
+     Runs: <ITALIC 8.0pt: '(Attach attendance list, if available.)'>
+
+==================== ROW 8 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+  P: 
+  [NESTED TABLE IN CELL 2]
+    Nested R1: How many attended? | 110 IT students
+    Nested R2: Who attended? | BSIT all year level
+
+==================== ROW 9 ====================
+--- CELL 1 ---
+  P: Marketing:
+     Runs: <BOLD 8.0pt: 'Marketing:'>
+--- CELL 2 ---
+  P: Posting of digital posters on official pages
+     Runs: <10pt: 'Posting of dig'> <10pt: 'ital posters on official pages'>
+  P: Announcement through class advisers
+     Runs: <10pt: ' Announ'> <10pt: 'cement through class advisers'>
+  P: Display of tarpaulin at the campus lobby
+     Runs: <10pt: 'Display of'> <10pt: ' tarpaulin at the campus lobby'>
+  P: Inclusion in College Fair announcements (Nov. 20–22, 2025)
+     Runs: <10pt: 'Inclusion in '> <BOLD 10pt: 'College Fair announcements (Nov. 20–22, 2025)'>
+
+==================== ROW 10 ====================
+--- CELL 1 ---
+  P: Documentation:
+     Runs: <BOLD 8.0pt: 'Documentation:'>
+--- CELL 2 ---
+  P: Photos and videos of the event
+     Runs: <10pt: 'P'> <10pt: 'hotos and videos of the event'>
+  P: Attendance summary
+     Runs: <10pt: 'Attenda'> <10pt: 'nce summary'>
+  P: Post-evaluation forms
+     Runs: <10pt: 'Post-evaluation forms'>
+
+==================== ROW 11 ====================
+--- CELL 1 ---
+  P: Date & time:
+     Runs: <BOLD 8.0pt: 'Date & time:'>
+--- CELL 2 ---
+  P: November 24, 2025, 9:00 AM – 3:00 PM
+     Runs: <BOLD 10.0pt: 'November 24, 2025'> <BOLD 10.0pt: ', 9:00 AM – 3:00 PM'>
+
+==================== ROW 12 ====================
+--- CELL 1 ---
+  P: Venue:
+     Runs: <BOLD 8.0pt: 'Venue:'>
+--- CELL 2 ---
+  P: STI College Ormoc – NEW ROOMS
+     Runs: <10.0pt: ' '> <10.0pt: 'STI College Ormoc – NEW ROOMS'>
+
+==================== ROW 13 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+
+==================== ROW 14 ====================
+--- CELL 1 ---
+  P: Results of activity:
+     Runs: <BOLD 8.0pt: 'Results of activity:'>
+--- CELL 2 ---
+  P: (Include assessment of success based on indicators. Attach a sheet, if necessary.)
+     Runs: <ITALIC 8.0pt: '(Include assessment of success based on indicators. Attach a sheet, if necessary.)'>
+
+==================== ROW 15 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: Results of the Activity
+     Runs: <10.0pt: ' '> <11.0pt: 'Results of the Activity'>
+  P: Achievement of Objectives: The objectives were partially achieved as the 2nd objectives “To educate participants on data privacy principles and safe digital practices.” The speaker clarified that data privacy—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be handled by a lawyer. As a result, this portion of the objective was not covered.➤ Action: A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional.
+     Runs: <BOLD 10.0pt: 'Achievement of Objectives:'> <BOLD 10.0pt: ' '> <10.0pt: 'The objectives were partially achieved as the 2'> <10.0pt: 'nd'> <10.0pt: ' objectives “'> <10.0pt: 'To educate participants on data privacy principles and safe digital practices.'> <10.0pt: '” '> <10.0pt: 'The speaker clarified that '> <BOLD 10.0pt: 'data privacy'> <10.0pt: '—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be '> <10.0pt: 'handled by a lawyer. As a result, this portion of the objective was not covered.'> <10.0pt: '➤'> <10.0pt: ' '> <BOLD 10.0pt: 'Action:'> <10.0pt: ' A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional.'>
+  P: qualified to have a lecture about data privacy. Will conduct another seminar for these objective.
+     Runs: <10.0pt: 'qualified to have a lecture about data privacy.'> <10.0pt: ' Will conduct another seminar for these objective. '>
+  P: Key Learnings / Insights Gained:
+     Runs: <BOLD 10.0pt: 'Key Learnings / Insights Gained:'> <BOLD 10.0pt: ' '>
+  P: A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior.
+     Runs: <10.0pt: 'A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior.'>
+  P: Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence.
+     Runs: <10.0pt: 'Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence. '>
+  P: Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment.
+     Runs: <10.0pt: 'Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment.'>
+  P: Enrichment of Learning Beyond the Classroom:(Explain how the activity complemented or enhanced classroom learning)Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training.
+     Runs: <BOLD 10.0pt: 'Enrichment of Learning Beyond the Classroom:'> <10.0pt: '(Explain how the activity complemented or enhanced classroom learning)'> <10.0pt: 'Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training.'>
+  P: Reason for Venue Selection: (State justification if questioned or compared to another venue)
+     Runs: <BOLD 10.0pt: 'Reason for Venue Selection:'> <BOLD 10.0pt: ' '> <10.0pt: '(State justification if questioned or compared to another venue)'>
+  P: It provided convenient and immediate access for IT students who were the primary audience of the seminar.
+     Runs: <10.0pt: 'It provided convenient and immediate access for IT students who were the primary audience of the seminar.'>
+  P: The setup supported the required audio‑visual presentations and ensured a conducive learning environment.
+     Runs: <10.0pt: 'The setup supported the required audio‑visual presentations and ensured a conducive learning environment.'>
+  P: Food / Logistics Assessment:
+     Runs: <BOLD 10.0pt: 'Food / Logistics Assessment:'> <BOLD 10.0pt: ' '>
+  P: The food provided during the activity was:
+     Runs: <10.0pt: 'The food provided during the activity was:'>
+  P: Adequate in quantity
+     Runs: <10.0pt: 'Adequate in quantity'>
+  P: Acceptable in quality
+     Runs: <10.0pt: ' Acceptable in quality'>
+  P: Served on time and properly coordinated
+     Runs: <10.0pt: 'Served on time and properly coordinated'>
+  P: The logistics were well-handled, with materials, equipment, and support personnel readily available as needed.
+     Runs: <10.0pt: 'The logistics were well-handled, with materials, equipment, and support personnel readily available as needed.'>
+  P: Schedule Compliance: The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.(State if program followed as planned; mention delays or adjustments if any)
+     Runs: <BOLD 10.0pt: 'Schedule Compliance:'> <BOLD 10.0pt: ' '> <10.0pt: 'The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.'> <10.0pt: '(State if program followed as planned; mention delays or adjustments if any)'>
+  P: Issues / Problems Encountered and Actions Taken: No major issues encountered(If none, state “No major issues encountered.”)
+     Runs: <BOLD 10.0pt: 'Issues / Problems Encountered and Actions Taken:'> <BOLD 10.0pt: ' '> <10.0pt: 'No major issues encountered'> <10.0pt: '(If none, state “No major issues encountered.”)'>
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+
+==================== ROW 16 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+
+==================== ROW 17 ====================
+--- CELL 1 ---
+  P: Financial report:
+     Runs: <BOLD 8.0pt: 'Financial report:'>
+--- CELL 2 ---
+  P: (Attach supporting receipts and list of participants who have/haven’t paid.)
+     Runs: <ITALIC 8.0pt: '(Attach supporting receipts and list of participants who have/haven’t paid.)'>
+  P: Attached also the liquidation.
+     Runs: <ITALIC 8.0pt: 'Attached also the liquidation.'>
+
+==================== ROW 18 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+  P: 
+  [NESTED TABLE IN CELL 2]
+    Nested R1: Description | Unit Amount | Total Amount
+    Nested R2: Revenue:  10, 900 | 
+    Nested R3: Snack (20 pax ) | 600.00 | 
+    Nested R4: Snack (2pax Speaker) | 116.00 | 
+    Nested R5: Snack (2pax Speaker) | 53.00 | 
+    Nested R6: Snack (22 pax ) | 1,109.00 | 
+    Nested R7: Lunch (22pax) | 2,530.00 | 
+    Nested R8: TARP PRINT A | 720.00 | 
+    Nested R9: TARP PRINT B | 720.00 | 
+    Nested R10: Certificate Paper 32x15 | 480.00 | 
+    Nested R11: Certificate Paper Add 32x4 | 128.00 | 
+    Nested R12: Certificate Holder 200x2 | 400.00 | 
+    Nested R13: Token 990x2 | 1,980.00 | 
+    Nested R14: Necklace [Lay] x2 | 80.00 | 
+    Nested R15: Tapex2 | 40.00 | 
+    Nested R16: SM to STI VV | 20.00 | 
+    Nested R17: SM to STI VV | 20.00 | 
+    Nested R18: Jollibee to STI VV [2person] | 40.00 | 
+    Nested R19: R and C Native Product to STI VV | 20.00 | 
+    Nested R20: AM Snack [Sophia to STI 2 person] | 40.00 | 
+    Nested R21: Egarage STI VV | 20.00 | 
+    Nested R22: Token Bag | 89.00 | 
+    Nested R23: TOTAL | 9,205.00 | 
+    Nested R24:  |  | 
+    Nested R25: Balance (Revenue less Expenses)  ₱1,695.00 | 
+
+==================== ROW 19 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+
+==================== ROW 20 ====================
+--- CELL 1 ---
+  P: Remarks:
+     Runs: <BOLD 8.0pt: 'Remarks:'>
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: 
+  P: VIII. Attachments (if applicable)
+     Runs: <8.0pt: 'VIII. Attachments (if applicable)'>
+  P: 
+  P: 
+--- CELL 2 ---
+  P: (For future activity improvements.)
+     Runs: <ITALIC 9.0pt: '(For future activity improvements.)'>
+  P: 1. Program Flow and Time Management
+     Runs: <BOLD 9.0pt: '1. Program Flow and Time Management'>
+  P: Observations:
+     Runs: <BOLD 9.0pt: 'Observations:'>
+  P: The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly.
+     Runs: <9.0pt: 'The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly.'> <9.0pt: ' '>
+  P: Recommendations:
+     Runs: <BOLD 9.0pt: 'Recommendations:'>
+  P: Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather.
+     Runs: <9.0pt: 'Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather.'>
+  P: Provide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly.
+     Runs: <9.0pt: 'Provide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly.'>
+  P: 2. Participant Engagement and Interaction
+     Runs: <BOLD 9.0pt: '2. Participant Engagement and Interaction'>
+  P: Observations:
+     Runs: <BOLD 9.0pt: 'Observations:'>
+  P: Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decisionmaking.
+     Runs: <9.0pt: 'Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decision'> <9.0pt: 'making.'>
+  P: Handson or scenariobased portions received the strongest engagement.
+     Runs: <9.0pt: 'Hands'> <9.0pt: 'on or scenario'> <9.0pt: 'based portions received the strongest engagement.'>
+  P: Recommendations:
+     Runs: <BOLD 9.0pt: 'Recommendations:'>
+  P: Consider integrating more interactive components such as short demos, simulations, or quick-response activities.
+     Runs: <9.0pt: 'Consider integrating more interactive components such as short demos, simulations, or quick-response activities.'>
+  P: Include structured Q&A portions after each section to maximize learning while maintaining order.
+     Runs: <9.0pt: 'Include structured Q&A portions after each section to maximize learning while maintaining order.'>
+  P: Use digital tools (QR polls, live questions, etc.) to encourage real-time interaction.
+     Runs: <9.0pt: 'Use digital tools (QR polls, live questions, etc.) to encourage real-time interaction.'>
+  P: 3. Technical Setup and Venue Preparation
+     Runs: <BOLD 9.0pt: '3. Technical Setup and Venue Preparation'>
+  P: Observations:
+     Runs: <BOLD 9.0pt: 'Observations:'>
+  P: Audiovisual equipment was generally functional, though minor adjustments to sound clarity were noted.
+     Runs: <9.0pt: 'Audio'> <9.0pt: 'visual equipment was generally functional, though minor adjustments to sound clarity were noted.'>
+  P: Seating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge.
+     Runs: <9.0pt: 'Seating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge.'>
+  P: Recommendations:
+     Runs: <BOLD 9.0pt: 'Recommendations:'>
+  P: Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone.
+     Runs: <9.0pt: 'Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone.'>
+  P: Assign a technical support team to stand by throughout the event.
+     Runs: <9.0pt: 'Assign a technical support team to stand by throughout the event.'>
+  P: Consider improving screen visibility through additional displays or adjusted seating layout.
+     Runs: <9.0pt: 'Consider improving screen visibility through additional displays or adjusted seating layout.'>
+  P: 4. Participant Preparedness and Expectations
+     Runs: <BOLD 9.0pt: '4. Participant Preparedness and Expectations'>
+  P: Observations:
+     Runs: <BOLD 9.0pt: 'Observations:'>
+  P: Majority of students arrived on time and were well-oriented about the seminar’s objective.
+     Runs: <9.0pt: 'Majority of students arrived on time and were well-oriented about the seminar’s objective.'>
+  P: Recommendations:
+     Runs: <BOLD 9.0pt: 'Recommendations:'>
+  P: Encourage students to prepare questions beforehand to enrich discussions.
+     Runs: <9.0pt: 'Encourage students to prepare questions beforehand to enrich discussions.'>
+  P: 
+  P: 
+  P: Please see attached documents.
+     Runs: <9.0pt: 'Please see attached documents.'>
+  P: 
+
+==================== ROW 21 ====================
+--- CELL 1 ---
+  P: 
+--- CELL 2 ---
+  P: 
+
+==================== ROW 22 ====================
+--- CELL 1 ---
+  P: Prepared by:
+     Runs: <BOLD 8.0pt: 'Prepared by:'>
+--- CELL 2 ---
+  P: Rona Mira B. Lucañas
+     Runs: <10.0pt: 'Rona Mira B. '> <10.0pt: 'Lucañas'>
+
+==================== ROW 23 ====================
+--- CELL 1 ---
+  P: Noted by:
+     Runs: <BOLD 8.0pt: 'Noted by:'>
+--- CELL 2 ---
+  P: Humabona l. Gonzales, Engr. Sheena Joy S. Muyuela, Atty. Antonio R. Lucero Jr.
+     Runs: <10.0pt: 'Humabona'> <10.0pt: ' l. Gonzales, Engr. Sheena Joy S. '> <10.0pt: 'Muyuela'> <10.0pt: ', '> <10.0pt: 'Atty. Antonio R. Lucero Jr.'>

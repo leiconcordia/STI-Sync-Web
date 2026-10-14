@@ -27,6 +27,7 @@ import type {
   PostActivityReportStatus,
 } from '../types/par.types';
 import { autoArchiveApprovedPAR } from '../../documents/services/document_archive_bridge.service';
+import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 
 export const PAR_COLLECTION = 'post_activity_reports';
 
@@ -51,6 +52,9 @@ function cleanPayload<T extends Record<string, any>>(obj: T): T {
 /**
  * Automatically builds the standard STI Post-Activity Report signatory approval chain
  * populated with active institutional signatories from Firestore.
+ * In accordance with institutional policy:
+ * - Recommended: 1 Stage Only
+ * - All signatories sign simultaneously in parallel
  */
 export async function generateDefaultPARSignatoryChain(
   orgId?: string,
@@ -77,60 +81,47 @@ export async function generateDefaultPARSignatoryChain(
     return [];
   }
 
-  const stageGroups: {
-    stageName: string;
-    stageIndex: number;
-    signers: InstitutionalSignatory[];
-    defaultAction: 'check' | 'endorse' | 'approve';
+  const stageSigners: {
+    signer: InstitutionalSignatory;
+    action: 'check' | 'endorse' | 'approve';
   }[] = [];
 
   const accountedSignatoryIds = new Set<string>();
 
-  // ── Stage 1 Gatekeeper for Student Organizations: Student Affairs & Services (SAS) Clearance ──
-  // If created by an organization, SAS must review and clear it first before academic/executive review!
-  // If created by SAS internally, this stage is omitted.
+  // 1. For Student Organizations: SAS Head Reviewer
   if (!isSasCreator) {
     const sasConfig = getCachedSasSignatoryConfig();
-    stageGroups.push({
-      stageName: 'Student Affairs & Services (SAS) Clearance',
-      stageIndex: 1,
-      signers: [
-        {
-          id: sasConfig.employeeId || 'sas_admin',
-          name: sasConfig.name || 'Student Affairs & Services Head',
-          email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
-          role: 'sas_head' as any,
-          roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
-          department: sasConfig.department || 'Student Affairs & Services',
-          isActive: true,
-          isPermanentSigner: true,
-          applicableScope: 'all',
-          actionType: 'approver',
-        },
-      ],
-      defaultAction: 'approve',
-    });
+    const sasSigner: InstitutionalSignatory = {
+      id: sasConfig.employeeId || 'sas_admin',
+      name: sasConfig.name || 'Student Affairs & Services Head',
+      email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+      role: 'sas_head' as any,
+      roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
+      department: sasConfig.department || 'Student Affairs & Services',
+      isActive: true,
+      isPermanentSigner: true,
+      applicableScope: 'all',
+      actionType: 'approver',
+    };
+    stageSigners.push({ signer: sasSigner, action: 'approve' });
+    accountedSignatoryIds.add(sasSigner.id);
   }
 
-  // 1. Department & Program Endorsement (Adviser, Program Head)
+  // 2. Department & Program Endorsement (Adviser, Program Head, Coordinator)
   const programHeads = activeSignatories.filter(
     (s) =>
-      s.role === 'program_head' ||
-      (s.roleTitle && s.roleTitle.toLowerCase().includes('program head')) ||
-      (s.roleTitle && s.roleTitle.toLowerCase().includes('adviser')) ||
-      (s.roleTitle && s.roleTitle.toLowerCase().includes('coordinator'))
+      !accountedSignatoryIds.has(s.id) &&
+      (s.role === 'program_head' ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('program head')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('adviser')) ||
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('coordinator')))
   );
-  if (programHeads.length > 0) {
-    stageGroups.push({
-      stageName: 'Department & Program Endorsement',
-      stageIndex: stageGroups.length + 1,
-      signers: programHeads,
-      defaultAction: 'endorse',
-    });
-    programHeads.forEach((s) => accountedSignatoryIds.add(s.id));
-  }
+  programHeads.forEach((sig) => {
+    stageSigners.push({ signer: sig, action: 'endorse' });
+    accountedSignatoryIds.add(sig.id);
+  });
 
-  // 2. Academic Affairs Clearance (Academic Head, Dean, SHS Principal)
+  // 3. Academic Affairs Clearance (Academic Head, Dean, SHS Principal)
   const academicHeads = activeSignatories.filter(
     (s) =>
       !accountedSignatoryIds.has(s.id) &&
@@ -140,69 +131,55 @@ export async function generateDefaultPARSignatoryChain(
         (s.roleTitle && s.roleTitle.toLowerCase().includes('dean')) ||
         (s.roleTitle && s.roleTitle.toLowerCase().includes('principal')))
   );
-  if (academicHeads.length > 0) {
-    stageGroups.push({
-      stageName: 'Academic Affairs Clearance',
-      stageIndex: stageGroups.length + 1,
-      signers: academicHeads,
-      defaultAction: 'endorse',
-    });
-    academicHeads.forEach((s) => accountedSignatoryIds.add(s.id));
-  }
+  academicHeads.forEach((sig) => {
+    stageSigners.push({ signer: sig, action: 'endorse' });
+    accountedSignatoryIds.add(sig.id);
+  });
 
-  // 3. Administrative Review & Executive Approval (School Admin, School President, SAS Head)
+  // 4. Executive Clearance & Final Approval (School Administrator, School President)
   const executiveHeads = activeSignatories.filter(
     (s) =>
       !accountedSignatoryIds.has(s.id) &&
       (s.role === 'school_administrator' ||
         s.role === 'school_president' ||
         (s.roleTitle && s.roleTitle.toLowerCase().includes('administrator')) ||
-        (s.roleTitle && s.roleTitle.toLowerCase().includes('president')) ||
-        (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')))
+        (s.roleTitle && s.roleTitle.toLowerCase().includes('president')))
   );
-  if (executiveHeads.length > 0) {
-    stageGroups.push({
-      stageName: 'Executive Clearance & Approval',
-      stageIndex: stageGroups.length + 1,
-      signers: executiveHeads,
-      defaultAction: 'approve',
-    });
-    executiveHeads.forEach((s) => accountedSignatoryIds.add(s.id));
-  }
-
-  // Fallback: If no recognized roles matched, add remaining active signers in single stage
-  if (stageGroups.length === 0) {
-    stageGroups.push({
-      stageName: 'Institutional Endorsement',
-      stageIndex: 1,
-      signers: activeSignatories,
-      defaultAction: 'approve',
-    });
-  }
-
-  const chain: PARApprovalStep[] = [];
-  let stepCounter = 1;
-
-  stageGroups.forEach((group, gIdx) => {
-    const isFirstStage = gIdx === 0;
-    group.signers.forEach((sig) => {
-      chain.push({
-        step: stepCounter++,
-        stageIndex: group.stageIndex,
-        stageName: group.stageName,
-        role: sig.role || 'signatory',
-        roleTitle: sig.roleTitle || sig.title || 'Institutional Signatory',
-        actionType: group.defaultAction,
-        signatoryUid: sig.uid || sig.id,
-        signatoryName: sig.name,
-        signatoryEmail: sig.email,
-        department: sig.department || '',
-        status: isFirstStage ? 'current' : 'waiting',
-        isMandatory: sig.isMandatory !== false,
-        isPermanent: sig.isPermanentSigner ?? true,
-      });
-    });
+  executiveHeads.forEach((sig) => {
+    stageSigners.push({ signer: sig, action: 'approve' });
+    accountedSignatoryIds.add(sig.id);
   });
+
+  // Fallback: If no recognized roles matched, add remaining active signers
+  if (stageSigners.length === 0) {
+    activeSignatories.forEach((sig) => {
+      stageSigners.push({ signer: sig, action: 'approve' });
+    });
+  }
+
+  // Ensure there is at least one approver
+  if (!stageSigners.some((s) => s.action === 'approve') && stageSigners.length > 0) {
+    stageSigners[stageSigners.length - 1].action = 'approve';
+  }
+
+  // ── 1 STAGE ONLY: All signatories in Stage 1 sign simultaneously in parallel ──
+  const stageName = 'Stage 1: Post-Activity Review & Final Clearance';
+  const chain: PARApprovalStep[] = stageSigners.map((item, idx) => ({
+    id: `step-${Date.now()}-${idx + 1}`,
+    step: idx + 1,
+    stageIndex: 1,
+    stageName,
+    role: item.signer.role || 'signatory',
+    roleTitle: item.signer.roleTitle || item.signer.title || 'Institutional Signatory',
+    actionType: item.action,
+    signatoryUid: item.signer.uid || item.signer.id,
+    signatoryName: item.signer.name,
+    signatoryEmail: item.signer.email,
+    department: item.signer.department || '',
+    status: 'current', // ALL ACTIVE SIMULTANEOUSLY!
+    isMandatory: item.signer.isMandatory !== false,
+    isPermanent: item.signer.isPermanentSigner ?? true,
+  }));
 
   return chain;
 }
@@ -272,16 +249,50 @@ export async function saveOrSubmitPAR(
     throw new Error('A Post-Activity Report can only be created once the event has concluded.');
   }
 
-  if (eventData.liquidationStatus !== 'approved') {
+  // 1:1:1 Invariant: Liquidation clearance check
+  const liqStatus = ((eventData as any).liquidationStatus || '').toString().toLowerCase();
+  const isLiquidationSatisfied =
+    liqStatus === 'approved' ||
+    liqStatus === 'none_required' ||
+    (eventData as any).isLiquidated === true;
+
+  if (!isLiquidationSatisfied) {
     throw new Error('A Post-Activity Report requires the financial liquidation report to be approved first.');
   }
 
+  // ── STRICT 1:1:1 LIFECYCLE INVARIANT ──
+  // An activity proposal can have at most ONE Post-Activity Report.
+  if (!formData.id) {
+    // 1. Check existing PARs collection for this eventId
+    const existingParSnap = await getDocs(
+      query(collection(db, PAR_COLLECTION), where('eventId', '==', formData.eventId))
+    );
+    const activeExistingPar = existingParSnap.docs.filter((d) => {
+      const st = (d.data().status || '').toLowerCase();
+      return st !== 'cancelled' && st !== 'voided';
+    });
+    if (activeExistingPar.length > 0) {
+      throw new Error(
+        'A Post-Activity Report already exists for this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
+      );
+    }
+
+    // 2. Cross-verify parent event document
+    if (eventData.parId) {
+      const oldParSnap = await getDoc(doc(db, PAR_COLLECTION, eventData.parId));
+      if (oldParSnap.exists()) {
+        const oldSt = (oldParSnap.data().status || '').toLowerCase();
+        if (oldSt !== 'cancelled' && oldSt !== 'voided') {
+          throw new Error(
+            'A Post-Activity Report is already linked to this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
+          );
+        }
+      }
+    }
+  }
+
   // Strict Authoring Isolation Check
-  const isSasEvent =
-    eventData.isOfficerProposal === false ||
-    eventData.creatorRole === 'sas_admin' ||
-    eventData.hostingOrgId === 'sas' ||
-    !eventData.hostingOrgId;
+  const isSasEvent = isSasInstitutionalActivity(eventData);
 
   const isUserSas =
     user.role === 'sas_admin' ||
@@ -300,6 +311,39 @@ export async function saveOrSubmitPAR(
     }
     if (eventData.hostingOrgId !== user.organizationId) {
       throw new Error('Only officers of the designated hosting organization can create this Post-Activity Report.');
+    }
+  }
+
+  // Resolve linked Financial Liquidation (LF-01) for 1:1:1 consistency
+  let targetLiquidationId = eventData.liquidationReportId || formData.liquidationId || '';
+  let targetLiquidationRef = eventData.liquidationRefNumber || formData.liquidationRefNumber || '';
+
+  if (!targetLiquidationId) {
+    try {
+      const liqSnap = await getDocs(
+        query(collection(db, 'liquidations'), where('eventId', '==', formData.eventId))
+      );
+      const activeLiq = liqSnap.docs.find((d) => {
+        const st = (d.data().status || '').toLowerCase();
+        return st !== 'voided' && st !== 'cancelled';
+      });
+      if (activeLiq) {
+        targetLiquidationId = activeLiq.id;
+        targetLiquidationRef = activeLiq.data().referenceNo || targetLiquidationRef;
+      }
+    } catch (err) {
+      console.warn('[saveOrSubmitPAR] Notice resolving liquidation by eventId:', err);
+    }
+  }
+
+  if (targetLiquidationId && !targetLiquidationRef) {
+    try {
+      const liqDoc = await getDoc(doc(db, 'liquidations', targetLiquidationId));
+      if (liqDoc.exists()) {
+        targetLiquidationRef = liqDoc.data().referenceNo || '';
+      }
+    } catch (err) {
+      console.warn('[saveOrSubmitPAR] Notice fetching liquidation reference:', err);
     }
   }
 
@@ -346,6 +390,17 @@ export async function saveOrSubmitPAR(
     }
   }
 
+  if (submit && approvalChain && approvalChain.length > 0) {
+    approvalChain = approvalChain.map((step: any) => {
+      const inStageOne = (step.stageIndex ?? 1) === 1;
+      const isAlreadySigned = step.status === 'endorsed' || step.status === 'approved';
+      return {
+        ...step,
+        status: isAlreadySigned ? step.status : inStageOne ? 'current' : 'waiting',
+      };
+    });
+  }
+
   const payload: any = cleanPayload({
     ...formData,
     id: docId,
@@ -353,8 +408,8 @@ export async function saveOrSubmitPAR(
     eventId: formData.eventId,
     eventTitle: eventData.title || formData.eventTitle || '',
     eventReferenceId: eventData.referenceId || '',
-    liquidationId: eventData.liquidationReportId || formData.liquidationId || '',
-    liquidationRefNumber: eventData.liquidationRefNumber || formData.liquidationRefNumber || '',
+    liquidationId: targetLiquidationId,
+    liquidationRefNumber: targetLiquidationRef,
     semesterId: eventData.semesterId || formData.semesterId || '',
     schoolYear: eventData.schoolYear || formData.schoolYear || '',
     semester: eventData.semester || formData.semester || '',
@@ -710,4 +765,41 @@ export async function approvePAR(
   } catch (archErr) {
     console.warn('[approvePAR] Auto-archive to EDMS notice:', archErr);
   }
+}
+
+/**
+ * Deletes a draft or unapproved Post-Activity Report document completely.
+ * Also cleans up the parId, parReferenceNo, and parStatus references on the parent event,
+ * allowing the event to be cleanly re-processed under the 1:1:1 invariant.
+ */
+export async function deletePAR(parId: string): Promise<boolean> {
+  if (!parId) throw new Error('PAR ID is required.');
+  const parRef = doc(db, PAR_COLLECTION, parId);
+  const snap = await getDoc(parRef);
+  if (!snap.exists()) return true;
+
+  const data = snap.data() as PostActivityReportDocument;
+  if (data.status === 'approved') {
+    throw new Error('Approved Post-Activity Reports cannot be deleted.');
+  }
+
+  // 1. Delete document
+  await deleteDoc(parRef);
+
+  // 2. Cleanly reset references on parent event
+  if (data.eventId) {
+    try {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      await updateDoc(eventRef, {
+        parId: null,
+        parReferenceNo: null,
+        parStatus: null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('[deletePAR] Event unlink notice:', e);
+    }
+  }
+
+  return true;
 }
