@@ -204,7 +204,16 @@ export default function EventManagement() {
     }
   };
 
+  const isItemReturnedCheck = (e: any) =>
+    e.proposalStatus === 'returned' ||
+    e.proposalStatus === 'returned_for_revision' ||
+    e.status === 'returned' ||
+    (e as any).lifecycleStatus === 'returned' ||
+    Boolean(e.isReturned) ||
+    Boolean(e.stepRevisionRemarks && Object.keys(e.stepRevisionRemarks).length > 0);
+
   const isEventApproved = (e: EventDocument) => {
+    if (isItemReturnedCheck(e)) return false;
     const chain = (e as any).approvalChain || [];
     const hasChain = Array.isArray(chain) && chain.length > 0;
     if (hasChain) {
@@ -231,13 +240,6 @@ export default function EventManagement() {
     }
     return false;
   };
-
-
-  const isItemReturnedCheck = (e: any) =>
-    e.proposalStatus === 'returned' ||
-    e.status === 'returned' ||
-    Boolean(e.isReturned) ||
-    Boolean(e.stepRevisionRemarks && Object.keys(e.stepRevisionRemarks).length > 0);
 
   const statusCounts = {
     all: events.filter((e) => !e.isArchived && !e.isDeleted).length,

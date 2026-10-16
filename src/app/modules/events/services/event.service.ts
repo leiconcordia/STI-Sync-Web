@@ -723,8 +723,11 @@ export const returnEvent = async (
     updatedChain = updatedChain.map((step: any, idx: number) => {
       const isTarget = step.stageIndex ? step.stageIndex === currentStageIdx : idx === currentStepIdx;
       if (isTarget) {
+        const cleanStep = { ...step };
+        delete cleanStep.signatureUrl;
+        delete cleanStep.signedAt;
         return cleanUndefined({
-          ...step,
+          ...cleanStep,
           status: 'returned',
           remarks: remarks?.trim() || step.remarks,
         });
@@ -739,6 +742,9 @@ export const returnEvent = async (
     status: 'returned',
     lifecycleStatus: 'returned',
     isReturned: true,
+    isApproved: false,
+    approvedAt: null,
+    approvedBy: null,
     returnedBy: adminUserId,
     returnedByName: adminUserName || null,
     returnedAt: serverTimestamp(),

@@ -58,10 +58,20 @@ export function useSignatoryDocuments(session: any) {
       const currentIdx = p.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
+      const isReturnedStatus =
+        p.status === 'returned_for_revision' ||
+        p.status === 'returned' ||
+        (p as any).proposalStatus === 'returned' ||
+        (p as any).proposalStatus === 'returned_for_revision' ||
+        (p as any).lifecycleStatus === 'returned' ||
+        Boolean(p.isReturned) ||
+        Boolean((p as any).stepRevisionRemarks && Object.keys((p as any).stepRevisionRemarks).length > 0);
+
       const isUnderReview =
-        p.status === 'under_review' ||
+        !isReturnedStatus &&
+        (p.status === 'under_review' ||
         (p as any).proposalStatus === 'pending' ||
-        (p as any).proposalStatus === 'pending_review';
+        (p as any).proposalStatus === 'pending_review');
 
       if (isUnderReview) {
         const currentStage = p.currentStageIndex ?? 1;
@@ -85,22 +95,19 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = chain.some(
+      const hasEndorsedStep = !isReturnedStatus && chain.some(
         (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
       );
       if (hasEndorsedStep) {
         endorsed.push(p);
       }
 
-      const isReturnedStatus =
-        p.status === 'returned_for_revision' ||
-        (p as any).proposalStatus === 'returned';
-
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
-          (s) => s.status === 'returned' && matchesSignatory(s)
+          (s) => (s.status === 'returned' || s.status === 'returned_for_revision') && matchesSignatory(s)
         );
-        if (hasReturnedStep) {
+        const isInvolvedInChain = chain.some(matchesSignatory);
+        if (hasReturnedStep || isInvolvedInChain) {
           returned.push(p);
         }
       }

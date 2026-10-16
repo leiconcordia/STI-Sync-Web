@@ -69,6 +69,17 @@ export default function ProposalEndorsementModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
+  const returnBoxRef = React.useRef<HTMLDivElement | null>(null);
+  const returnTextareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+
+  React.useEffect(() => {
+    if (isReturning) {
+      setTimeout(() => {
+        returnBoxRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        returnTextareaRef.current?.focus();
+      }, 50);
+    }
+  }, [isReturning]);
 
   // Compute latest snapshot and differences if proposal was revised
   const latestSnapshot = useMemo(() => {
@@ -870,23 +881,24 @@ export default function ProposalEndorsementModal({
 
             {/* Return Mode Textarea if toggled */}
             {isReturning && (
-              <div className="p-4 bg-amber-50/80 border border-amber-300 rounded-2xl space-y-2">
+              <div ref={returnBoxRef} className="p-4 bg-amber-50/90 border-2 border-amber-400 rounded-2xl space-y-2.5 shadow-sm">
                 <label className="block text-xs font-bold text-amber-950 flex items-center gap-1.5">
-                  <RotateCcw className="w-3.5 h-3.5 text-amber-700" />
+                  <RotateCcw className="w-4 h-4 text-amber-700" />
                   <span>Return Feedback Remarks (Required)</span>
                 </label>
                 <textarea
+                  ref={returnTextareaRef}
                   rows={3}
                   value={returnRemarks}
                   onChange={(e) => setReturnRemarks(e.target.value)}
                   placeholder="Detail the corrections needed (e.g. adjust honorarium line item, add detailed speaker itinerary, update target attendance)..."
-                  className="w-full px-3 py-2 bg-white border border-amber-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500/30"
+                  className="w-full px-3.5 py-2.5 bg-white border border-amber-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500/40 text-slate-800"
                 />
                 <div className="flex justify-end gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() => setIsReturning(false)}
-                    className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                    className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -894,9 +906,10 @@ export default function ProposalEndorsementModal({
                     type="button"
                     onClick={handleReturn}
                     disabled={isSubmitting || !returnRemarks.trim()}
-                    className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg shadow-xs disabled:opacity-50"
+                    className="px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold rounded-lg shadow-xs disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                   >
-                    {isSubmitting ? 'Returning...' : 'Confirm Return for Revision'}
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>{isSubmitting ? 'Returning...' : 'Confirm Return for Revision'}</span>
                   </button>
                 </div>
               </div>
@@ -904,9 +917,9 @@ export default function ProposalEndorsementModal({
 
             {/* Reject Mode Textarea if toggled (Approver only) */}
             {isRejecting && (
-              <div className="p-4 bg-rose-50/90 border border-rose-300 rounded-2xl space-y-2">
+              <div className="p-4 bg-rose-50/90 border-2 border-rose-400 rounded-2xl space-y-2.5 shadow-sm">
                 <label className="block text-xs font-bold text-rose-950 flex items-center gap-1.5">
-                  <X className="w-3.5 h-3.5 text-rose-700" />
+                  <X className="w-4 h-4 text-rose-700" />
                   <span>Official Reason for Rejection / Decline (Required)</span>
                 </label>
                 <textarea
@@ -914,13 +927,13 @@ export default function ProposalEndorsementModal({
                   value={rejectionReason}
                   onChange={(e) => setRejectionReason(e.target.value)}
                   placeholder="State the institutional reason for declining this proposal (e.g. unapproved venue risk, scheduling conflict with institutional exams, or policy violation)..."
-                  className="w-full px-3 py-2 bg-white border border-rose-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-rose-500/30"
+                  className="w-full px-3.5 py-2.5 bg-white border border-rose-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-rose-500/40 text-slate-800"
                 />
                 <div className="flex justify-end gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() => setIsRejecting(false)}
-                    className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                    className="px-3.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
                   >
                     Cancel
                   </button>
@@ -928,9 +941,10 @@ export default function ProposalEndorsementModal({
                     type="button"
                     onClick={handleReject}
                     disabled={isSubmitting || !rejectionReason.trim()}
-                    className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-xs disabled:opacity-50"
+                    className="px-4 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-lg shadow-xs disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
                   >
-                    {isSubmitting ? 'Rejecting...' : 'Confirm Proposal Rejection'}
+                    <X className="w-3.5 h-3.5" />
+                    <span>{isSubmitting ? 'Rejecting...' : 'Confirm Proposal Rejection'}</span>
                   </button>
                 </div>
               </div>
@@ -947,7 +961,7 @@ export default function ProposalEndorsementModal({
                   type="button"
                   onClick={() => setIsReturning(true)}
                   disabled={isSubmitting}
-                  className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors"
+                  className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors cursor-pointer"
                 >
                   <RotateCcw className="w-4 h-4" />
                   <span>Return for Revision</span>
@@ -957,7 +971,7 @@ export default function ProposalEndorsementModal({
                     type="button"
                     onClick={() => setIsRejecting(true)}
                     disabled={isSubmitting}
-                    className="text-xs text-rose-700 hover:text-rose-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-rose-100/50 transition-colors"
+                    className="text-xs text-rose-700 hover:text-rose-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-rose-100/50 transition-colors cursor-pointer"
                   >
                     <X className="w-4 h-4" />
                     <span>Reject</span>
@@ -972,51 +986,95 @@ export default function ProposalEndorsementModal({
               type="button"
               onClick={handleExportPdf}
               disabled={isExportingPdf}
-              className="px-3.5 py-2 border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all disabled:opacity-50"
+              className="px-3.5 py-2 border border-slate-300 text-slate-700 bg-white hover:bg-slate-100 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
               title="Download official PDF copy of proposal"
             >
               <Download className="w-3.5 h-3.5 text-blue-600" />
               <span>{isExportingPdf ? 'Generating...' : 'Download PDF'}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors"
-            >
-              Close
-            </button>
-
-            {hasSubsequentApprover ? (
-              <button
-                type="button"
-                onClick={() => handleEndorse('endorse')}
-                disabled={isSubmitting || !hasSignature}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <ArrowRight className="w-4 h-4 text-[#FFD41C]" />
-                <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
-              </button>
-            ) : isFinalApprover ? (
-              <button
-                type="button"
-                onClick={() => handleEndorse('approve')}
-                disabled={isSubmitting || !hasSignature}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                <span>{isSubmitting ? 'Processing...' : 'Grant Final Approval'}</span>
-              </button>
+            {isReturning ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsReturning(false)}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel Return
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReturn}
+                  disabled={isSubmitting || !returnRemarks.trim()}
+                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  <span>{isSubmitting ? 'Returning Proposal...' : 'Confirm Return for Revision'}</span>
+                </button>
+              </>
+            ) : isRejecting ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsRejecting(false)}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel Rejection
+                </button>
+                <button
+                  type="button"
+                  onClick={handleReject}
+                  disabled={isSubmitting || !rejectionReason.trim()}
+                  className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/20 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                  <span>{isSubmitting ? 'Rejecting Proposal...' : 'Confirm Proposal Rejection'}</span>
+                </button>
+              </>
             ) : (
-              <button
-                type="button"
-                onClick={() => handleEndorse('endorse')}
-                disabled={isSubmitting || !hasSignature}
-                className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <Send className="w-4 h-4" />
-                <span>{isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse Proposal'}</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+
+                {hasSubsequentApprover ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('endorse')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <ArrowRight className="w-4 h-4 text-[#FFD41C]" />
+                    <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
+                  </button>
+                ) : isFinalApprover ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('approve')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                    <span>{isSubmitting ? 'Processing...' : 'Grant Final Approval'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('endorse')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse Proposal'}</span>
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

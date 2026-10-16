@@ -270,6 +270,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       const hasChain = Array.isArray(chain) && chain.length > 0;
       const fullySigned = isProposalFullySigned(chain);
 
+      // Explicit returned marker prevents forced approval under any circumstances
+      const isExplicitReturned =
+        merged.proposalStatus === 'returned' ||
+        merged.status === 'returned' ||
+        merged.lifecycleStatus === 'returned' ||
+        Boolean(merged.isReturned) ||
+        Boolean(actData?.isReturned) ||
+        Boolean(evtData?.isReturned) ||
+        actData?.proposalStatus === 'returned' ||
+        evtData?.proposalStatus === 'returned';
+
       // Explicit pending/review markers prevent forced approval unless fully signed
       const isExplicitPending =
         merged.proposalStatus === 'pending' ||
@@ -279,7 +290,18 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         merged.status === 'pending' ||
         merged.lifecycleStatus === 'pending_review';
 
-      if (hasChain) {
+      if (isExplicitReturned) {
+        merged.proposalStatus = 'returned';
+        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+          merged.status = 'returned';
+        }
+        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+          merged.lifecycleStatus = 'returned';
+        }
+        merged.isReturned = true;
+        delete merged.approvedAt;
+        delete merged.approvedBy;
+      } else if (hasChain) {
         if (fullySigned) {
           merged.proposalStatus = 'approved';
           if (merged.status !== 'completed' && merged.status !== 'cancelled') {
@@ -536,16 +558,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   // Multi-tiered check: Officially approved activities are unlocked
   const isApproved = useMemo(() => {
     if (isCancelled) return false;
-    if (isCompleted) return true;
-
-    const chain: any[] = displayApprovalChain || [];
-    const hasChain = Array.isArray(chain) && chain.length > 0;
-    const fullySigned = isProposalFullySigned(chain);
-
-    // If an approval chain is configured, it MUST be fully signed before the activity is considered approved
-    if (hasChain) {
-      return fullySigned;
-    }
 
     // Check all candidates (activeEvent, liveEvent, original event prop, fullProposal)
     const candidates = [activeEvent, liveEvent, event, fullProposal].filter(Boolean);
@@ -555,11 +567,16 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       const pStatus = ((c as any).proposalStatus || '').toLowerCase().trim();
       const st = ((c as any).status || '').toLowerCase().trim();
       const lc = ((c as any).lifecycleStatus || '').toLowerCase().trim();
+      const isRet = Boolean((c as any).isReturned);
       if (
         pStatus === 'rejected' ||
         st === 'rejected' ||
+        lc === 'rejected' ||
         pStatus === 'returned' ||
+        pStatus === 'returned_for_revision' ||
         st === 'returned' ||
+        lc === 'returned' ||
+        isRet ||
         pStatus === 'draft' ||
         st === 'draft' ||
         pStatus === 'pending' ||
@@ -570,6 +587,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       ) {
         return false;
       }
+    }
+
+    if (isCompleted) return true;
+
+    const chain: any[] = displayApprovalChain || [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    const fullySigned = isProposalFullySigned(chain);
+
+    // If an approval chain is configured, it MUST be fully signed before the activity is considered approved
+    if (hasChain) {
+      return fullySigned;
     }
 
     for (const c of candidates) {

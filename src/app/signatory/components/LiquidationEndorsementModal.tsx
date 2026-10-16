@@ -1055,54 +1055,78 @@ export default function LiquidationEndorsementModal({
               </div>
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                >
-                  Close
-                </button>
-
-                {hasSubsequentApprover ? (
-                  <button
-                    type="button"
-                    onClick={() => handleEndorse('endorse')}
-                    disabled={isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    <Send className="w-4 h-4 text-[#FFD41C]" />
-                    <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
-                  </button>
-                ) : isFinalApprover ? (
-                  <button
-                    type="button"
-                    onClick={() => handleEndorse('approve')}
-                    disabled={isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                    <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation'}</span>
-                  </button>
+                {isReturning ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setIsReturning(false)}
+                      disabled={isSubmitting}
+                      className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Cancel Return
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleReturn}
+                      disabled={isSubmitting || !returnRemarks.trim()}
+                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20 transition-all disabled:opacity-50 cursor-pointer"
+                    >
+                      <RotateCcw className="w-4 h-4" />
+                      <span>{isSubmitting ? 'Returning Liquidation...' : 'Confirm Return for Revision'}</span>
+                    </button>
+                  </>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleEndorse(isChecker ? 'check' : 'endorse')}
-                    disabled={isSubmitting || !hasSignature}
-                    className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                      isChecker
-                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-                    }`}
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>
-                      {isSubmitting
-                        ? 'Processing...'
-                        : isChecker
-                        ? 'Audit & Endorse Liquidation'
-                        : 'Stamp E-Signature & Endorse Liquidation'}
-                    </span>
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Close
+                    </button>
+
+                    {hasSubsequentApprover ? (
+                      <button
+                        type="button"
+                        onClick={() => handleEndorse('endorse')}
+                        disabled={isSubmitting || !hasSignature}
+                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        <Send className="w-4 h-4 text-[#FFD41C]" />
+                        <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
+                      </button>
+                    ) : isFinalApprover ? (
+                      <button
+                        type="button"
+                        onClick={() => handleEndorse('approve')}
+                        disabled={isSubmitting || !hasSignature}
+                        className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                      >
+                        <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                        <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleEndorse(isChecker ? 'check' : 'endorse')}
+                        disabled={isSubmitting || !hasSignature}
+                        className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
+                          isChecker
+                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                            : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                        }`}
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>
+                          {isSubmitting
+                            ? 'Processing...'
+                            : isChecker
+                            ? 'Audit & Endorse Liquidation'
+                            : 'Stamp E-Signature & Endorse Liquidation'}
+                        </span>
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </>

@@ -281,8 +281,13 @@ export function EventApprovals() {
         // Draft isolation: Drafts do not appear in active approval tables
         if (event.proposalStatus === "draft" || event.status === "draft" || (event as any).lifecycleStatus === "draft") return false;
 
-        // Returned student org proposals belong to the student organization for revision in draft status
-        if (isOfficerProposal(event) && (Boolean((event as any).isReturned) || event.proposalStatus === "returned")) return false;
+        const isRet =
+          event.proposalStatus === "returned" ||
+          event.proposalStatus === "returned_for_revision" ||
+          event.status === "returned" ||
+          (event as any).lifecycleStatus === "returned" ||
+          Boolean((event as any).isReturned) ||
+          Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
 
         // Tab filter
         const isCancelled = event.status === "cancelled" || event.proposalStatus === "cancelled";
@@ -295,16 +300,15 @@ export function EventApprovals() {
         const chain = (event as any).approvalChain || [];
         const hasChain = Array.isArray(chain) && chain.length > 0;
         const fullySigned = isProposalFullySigned(chain);
-        const isApprovedStatus = hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved");
+        const isApprovedStatus = !isRet && (hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved"));
 
-        if (activeTab === "pending" && (isApprovedStatus || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
+        if (activeTab === "pending" && (isApprovedStatus || isRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
         if (activeTab === "returned") {
-          if (isOfficerProposal(event)) return false;
-          if (event.proposalStatus !== "returned" && !Boolean((event as any).isReturned)) return false;
+          if (!isRet) return false;
         }
         if (activeTab === "approved") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || isEventPast(event);
-          if (!isApprovedStatus || isDone) return false;
+          if (!isApprovedStatus || isDone || isRet) return false;
         }
         if (activeTab === "completed") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || (isApprovedStatus && isEventPast(event));
@@ -564,6 +568,22 @@ export function EventApprovals() {
         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
           <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
           Draft
+        </span>
+      );
+    }
+
+    const isReturned =
+      status === "returned" ||
+      status === "returned_for_revision" ||
+      event?.proposalStatus === "returned" ||
+      event?.status === "returned" ||
+      Boolean((event as any)?.isReturned);
+
+    if (isReturned) {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200/80">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+          Returned for Revision
         </span>
       );
     }
@@ -1085,11 +1105,17 @@ export function EventApprovals() {
                     const orgAcronym = getOrgAcronym(event.hostingOrgId);
                     const orgLogo = getOrgLogo(event.hostingOrgId);
                     const isRejected = event.proposalStatus === "rejected";
-                    const isReturned = event.proposalStatus === "returned";
+                    const isReturned =
+                      event.proposalStatus === "returned" ||
+                      event.proposalStatus === "returned_for_revision" ||
+                      (event as any).status === "returned" ||
+                      (event as any).lifecycleStatus === "returned" ||
+                      Boolean((event as any).isReturned) ||
+                      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
                     const chain = (event as any).approvalChain || [];
                     const hasChain = Array.isArray(chain) && chain.length > 0;
                     const fullySigned = isProposalFullySigned(chain);
-                    const isApproved = hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved");
+                    const isApproved = !isReturned && (hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved"));
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
                     const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;

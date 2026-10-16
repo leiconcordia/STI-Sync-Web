@@ -875,6 +875,10 @@ export async function returnProposalForRevision(
       ...chain[targetStepIdx],
       status: 'returned',
     };
+    // Strip electronic signatures and timestamps from returned step
+    delete s.signatureUrl;
+    delete s.signedAt;
+
     if (remarks) {
       s.remarks = remarks;
     } else {
@@ -886,8 +890,13 @@ export async function returnProposalForRevision(
     chain[targetStepIdx] = s as ProposalApprovalStep;
   }
 
-  const sanitizedChain = chain.map((step) => {
+  const sanitizedChain = chain.map((step, idx) => {
     const s: Record<string, any> = { ...step };
+    if (idx === targetStepIdx) {
+      delete s.signatureUrl;
+      delete s.signedAt;
+      s.status = 'returned';
+    }
     Object.keys(s).forEach((k) => {
       if (s[k] === undefined) delete s[k];
     });
@@ -899,6 +908,9 @@ export async function returnProposalForRevision(
     proposalStatus: 'returned',
     lifecycleStatus: 'returned',
     isReturned: true,
+    isApproved: false,
+    approvedAt: null,
+    approvedBy: null,
     returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     adviserRemarks: remarks || null,
     approvalChain: sanitizedChain,
@@ -913,6 +925,12 @@ export async function returnProposalForRevision(
     'returned',
     {
       isReturned: true,
+      isApproved: false,
+      approvedAt: null,
+      approvedBy: null,
+      status: 'returned',
+      proposalStatus: 'returned',
+      lifecycleStatus: 'returned',
       adviserRemarks: remarks,
       returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     }
