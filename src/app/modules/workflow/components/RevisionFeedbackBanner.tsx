@@ -19,9 +19,11 @@ import {
   Edit3,
   CheckCircle2,
   FileText,
+  GitCompare,
 } from 'lucide-react';
 import type { RevisionHistoryEntry } from '../types/approval.types';
 import { formatAppDateTime } from '../../../utils/date';
+import RevisionDiffViewerModal from './RevisionDiffViewerModal';
 
 interface RevisionFeedbackBannerProps {
   returnedBy?: {
@@ -39,6 +41,9 @@ interface RevisionFeedbackBannerProps {
   onEditClick?: () => void;
   documentTitle?: string;
   versionLabel?: string;
+  currentDocument?: Record<string, any>;
+  documentType?: 'AP' | 'FL' | 'PAR';
+  previousSnapshot?: any;
 }
 
 export default function RevisionFeedbackBanner({
@@ -53,8 +58,12 @@ export default function RevisionFeedbackBanner({
   onEditClick,
   documentTitle,
   versionLabel,
+  currentDocument,
+  documentType = 'AP',
+  previousSnapshot,
 }: RevisionFeedbackBannerProps) {
   const [showHistory, setShowHistory] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
 
   // Normalize all past revision cycles
   const pastCycles: RevisionHistoryEntry[] = [];
@@ -124,16 +133,28 @@ export default function RevisionFeedbackBanner({
           </div>
         </div>
 
-        {canEdit && onEditClick && (
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0 flex-wrap">
           <button
             type="button"
-            onClick={onEditClick}
-            className="self-start sm:self-auto px-4 py-2 bg-gradient-to-r from-[#001A4D] to-[#002B7F] hover:from-[#002B7F] hover:to-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all flex items-center gap-2 cursor-pointer flex-shrink-0"
+            onClick={() => setShowDiffModal(true)}
+            className="px-3.5 py-2 bg-white hover:bg-amber-100/80 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+            title="Compare what was changed between revisions"
           >
-            <Edit3 className="w-3.5 h-3.5" />
-            <span>Edit & Resubmit</span>
+            <GitCompare className="w-3.5 h-3.5 text-amber-700" />
+            <span>Compare Changes</span>
           </button>
-        )}
+
+          {canEdit && onEditClick && (
+            <button
+              type="button"
+              onClick={onEditClick}
+              className="px-4 py-2 bg-gradient-to-r from-[#001A4D] to-[#002B7F] hover:from-[#002B7F] hover:to-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all flex items-center gap-2 cursor-pointer"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Edit & Resubmit</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Main Feedback Remarks Card */}
@@ -234,6 +255,18 @@ export default function RevisionFeedbackBanner({
           )}
         </div>
       )}
+
+      {/* Interactive Visual Diff Comparison Studio */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={documentTitle}
+        documentType={documentType}
+        currentDocument={currentDocument || null}
+        previousSnapshot={previousSnapshot}
+        revisionHistory={pastCycles}
+        versionHistory={versionHistory}
+      />
     </div>
   );
 }

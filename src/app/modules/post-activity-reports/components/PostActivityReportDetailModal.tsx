@@ -18,6 +18,7 @@ import {
   Eye,
   MessageSquare,
   Undo2,
+  GitCompare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PostActivityReportDocument } from '../types/par.types';
@@ -27,6 +28,9 @@ import { approvePAR, returnPAR, withdrawPostActivityReport } from '../services/p
 import { resolveApprovalPermissions } from '../../workflow/utils/approval-permissions.utils';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../workflow/components/WithdrawConfirmModal';
+import InlineRevisionBadge from '../../workflow/components/InlineRevisionBadge';
+import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewerModal';
+import { diffPostActivityReport } from '../../workflow/utils/document-diff-engine';
 
 interface PostActivityReportDetailModalProps {
   isOpen: boolean;
@@ -65,6 +69,36 @@ export default function PostActivityReportDetailModal({
   const [returnRemarks, setReturnRemarks] = useState('');
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
+
+  // Compute latest snapshot and differences if report was revised
+  const latestSnapshot = useMemo(() => {
+    const history = report?.revisionHistory || [];
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+    }
+    return null;
+  }, [report]);
+
+  const parDiffs = useMemo(() => {
+    if (!report || !latestSnapshot) return [];
+    return diffPostActivityReport(latestSnapshot, report);
+  }, [report, latestSnapshot]);
+
+  const diffByPath = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const d of parDiffs) {
+      map.set(d.path, d);
+    }
+    return map;
+  }, [parDiffs]);
+
+  const hasRevisions = Boolean(
+    (report?.revisionCount && report.revisionCount > 1) ||
+    (report?.revisionHistory && report.revisionHistory.length > 0) ||
+    report?.status === 'returned'
+  );
 
   const effectiveUser = useMemo(() => {
     return currentUser || {
@@ -203,6 +237,22 @@ export default function PostActivityReportDetailModal({
           </div>
           <div className="flex items-center gap-2">
             {statusBadge()}
+            {hasRevisions && (
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(true)}
+                className="px-3 py-1 rounded-full bg-amber-400 text-slate-950 hover:bg-amber-300 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                title="Compare what was revised in this Post-Activity Report"
+              >
+                <GitCompare className="w-3.5 h-3.5" />
+                <span>Compare Changes</span>
+                {parDiffs.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-900 text-amber-300 text-[10px] font-black">
+                    {parDiffs.length}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               onClick={onClose}
               className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors ml-2"
@@ -215,7 +265,7 @@ export default function PostActivityReportDetailModal({
         {/* Body Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {/* Returned Alert Notice with full history if applicable */}
-          {report.status === 'returned' && (
+          {hasRevisions && (
             <RevisionFeedbackBanner
               returnedBy={{
                 name: (report as any).returnedByName || (report as any).returnedBy || 'Institutional Signatory',
@@ -231,6 +281,9 @@ export default function PostActivityReportDetailModal({
                 if (onEdit) onEdit(report);
               }}
               documentTitle={report.eventTitle}
+              documentType="PAR"
+              currentDocument={report}
+              previousSnapshot={latestSnapshot}
               versionLabel={`v${report.revisionCount || 1}.0`}
             />
           )}
@@ -274,9 +327,14 @@ export default function PostActivityReportDetailModal({
                 </div>
                 <div className="bg-blue-50 p-2.5 rounded-lg border border-blue-200">
                   <span className="text-[11px] text-blue-700 block font-semibold">Attended (Scanned)</span>
-                  <span className="text-base font-black text-blue-800">
-                    {report.attendanceSummary?.attendedCount || 0}
-                  </span>
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span className="text-base font-black text-blue-800">
+                      {report.attendanceSummary?.attendedCount || 0}
+                    </span>
+                    {diffByPath.get('attendanceSummary.attendedCount') && (
+                      <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.attendedCount')} />
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="text-xs space-y-1 text-slate-600">
@@ -589,6 +647,17 @@ export default function PostActivityReportDetailModal({
           </div>
         </div>
       )}
+      {/* Visual Diff Comparison Modal */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={report.eventTitle || 'Post-Activity Report'}
+        documentType="PAR"
+        currentDocument={report}
+        previousSnapshot={latestSnapshot}
+        customDiffs={parDiffs}
+        revisionNumber={report.revisionCount || ((report.revisionHistory?.length || 0) + 1)}
+      />
     </div>
   );
 }

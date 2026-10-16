@@ -719,6 +719,8 @@ export default function PostActivityReportWizardModal({
               returnRemarks={initialReport.returnRemarks}
               revisionHistory={initialReport.revisionHistory}
               documentTitle={initialReport.eventTitle}
+              documentType="PAR"
+              currentDocument={initialReport}
               versionLabel={`v${initialReport.revisionCount || 1}.0`}
             />
           )}

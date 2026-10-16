@@ -420,6 +420,23 @@ export async function submitProposalForReview(
   };
 
   if (isResubmission) {
+    let existingSnapshotData: any = null;
+    try {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        const d = existingSnap.data();
+        existingSnapshotData = {
+          title: d.title || formData.title,
+          description: d.description || formData.description,
+          targetAudience: d.targetAudience || formData.targetAudience,
+          sessions: d.sessions || formData.sessions,
+          lineItems: d.lineItems || formData.lineItems,
+          allocatedBudget: d.allocatedBudget ?? d.totalAllocatedBudget ?? formData.allocatedBudget,
+          objectives: d.objectives || formData.objectives,
+        };
+      }
+    } catch (_) {}
+
     const versionSnapshot = {
       version: currentVersion - 1,
       versionLabel: `v${currentVersion - 1}.0`,
@@ -429,6 +446,15 @@ export async function submitProposalForReview(
       stepRevisionRemarks: formData.stepRevisionRemarks || {},
       resubmittedBy: user.name,
       resubmittedByUid: user.uid,
+      dataSnapshot: existingSnapshotData || {
+        title: formData.title,
+        description: formData.description,
+        targetAudience: formData.targetAudience,
+        sessions: formData.sessions,
+        lineItems: formData.lineItems,
+        allocatedBudget: formData.allocatedBudget,
+        objectives: formData.objectives,
+      },
     };
 
     payload.versionHistory = arrayUnion(versionSnapshot);

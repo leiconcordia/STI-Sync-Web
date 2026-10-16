@@ -642,6 +642,13 @@ export async function returnPAR(
     returnedByRoleTitle: adminRoleTitle,
     returnedByEmail: adminEmail,
     returnRemarks: remarks,
+    dataSnapshot: {
+      actualAttendeesCount: data.actualAttendeesCount ?? (data as any).attendanceCount,
+      executiveSummary: data.executiveSummary || '',
+      achievedObjectives: data.achievedObjectives || '',
+      documentationPhotos: data.documentationPhotos || [],
+      ratings: (data as any).ratings || null,
+    },
   };
 
   await updateDoc(parRef, {

@@ -28,6 +28,7 @@ import {
   Download,
   Layers,
   ArrowRight,
+  GitCompare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
@@ -38,6 +39,10 @@ import {
 } from '../../modules/activity-proposals/services/proposal.service';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
+import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
+import { diffActivityProposal } from '../../modules/workflow/utils/document-diff-engine';
 
 interface ProposalEndorsementModalProps {
   isOpen?: boolean;
@@ -58,11 +63,34 @@ export default function ProposalEndorsementModal({
 }: ProposalEndorsementModalProps) {
   const [remarks, setRemarks] = useState('');
   const [returnRemarks, setReturnRemarks] = useState('');
+  const [rejectionReason, setRejectionReason] = useState('');
   const [isReturning, setIsReturning] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
-  const [rejectionReason, setRejectionReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
+
+  // Compute latest snapshot and differences if proposal was revised
+  const latestSnapshot = useMemo(() => {
+    const history = proposal?.versionHistory || proposal?.revisionHistory || [];
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+    }
+    return null;
+  }, [proposal]);
+
+  const proposalDiffs = useMemo(() => {
+    if (!proposal || !latestSnapshot) return [];
+    return diffActivityProposal(latestSnapshot, proposal);
+  }, [proposal, latestSnapshot]);
+
+  const hasRevisions = Boolean(
+    (proposal?.version && proposal.version > 1) ||
+    (proposal?.versionHistory && proposal.versionHistory.length > 0) ||
+    proposal?.isReturned ||
+    proposal?.adviserRemarks
+  );
 
   const handleExportPdf = async () => {
     if (!proposal) return;
@@ -274,6 +302,18 @@ export default function ProposalEndorsementModal({
           </div>
 
           <div className="flex items-center gap-2">
+            {hasRevisions && (
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                title="Compare what was revised in this proposal"
+              >
+                <GitCompare className="w-3.5 h-3.5 text-[#FFD41C]" />
+                <span>Compare Changes</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={handleExportPdf}
@@ -297,6 +337,25 @@ export default function ProposalEndorsementModal({
 
         {/* ── BODY: SCROLLABLE PROPOSAL CONTENT ── */}
         <div className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-6 text-slate-800">
+          {/* Revision Banner if proposal has past revision history */}
+          {hasRevisions && (
+            <RevisionFeedbackBanner
+              returnedBy={{
+                name: proposal.returnedByName || (proposal.versionHistory?.[0] as any)?.returnedBy || 'Institutional Reviewer',
+                roleTitle: (proposal.versionHistory?.[0] as any)?.returnedByRoleTitle || 'Signatory Reviewer',
+              }}
+              returnedAt={proposal.returnedAt || (proposal.versionHistory?.[0] as any)?.returnedAt}
+              returnRemarks={proposal.adviserRemarks || (proposal.versionHistory?.[0] as any)?.returnRemarks}
+              returnFlags={proposal.returnFlags}
+              stepRevisionRemarks={proposal.stepRevisionRemarks}
+              versionHistory={proposal.versionHistory}
+              revisionHistory={proposal.revisionHistory}
+              versionLabel={proposal.versionLabel || (proposal.version ? `v${proposal.version}.0` : undefined)}
+              documentTitle={proposal.title}
+              documentType="AP"
+              currentDocument={proposal}
+            />
+          )}
           {/* Urgent Warning if applicable */}
           {proposal.isUrgent && (
             <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl flex items-start gap-3 shadow-xs">
@@ -314,9 +373,14 @@ export default function ProposalEndorsementModal({
 
           {/* Proposal Title & Metadata Header */}
           <div className="pb-5 border-b border-slate-200">
-            <span className="text-xs text-slate-400 font-mono uppercase tracking-wider block">
-              1. Activity title
-            </span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs text-slate-400 font-mono uppercase tracking-wider block">
+                1. Activity title
+              </span>
+              {proposalDiffs.some((d) => d.fieldPath === 'title') && (
+                <InlineRevisionBadge changeType="modified" label="Title Revised" />
+              )}
+            </div>
             <h1 className="text-2xl font-black text-slate-900 mt-1">{proposal.title}</h1>
             <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-600">
               <div>
@@ -535,9 +599,14 @@ export default function ProposalEndorsementModal({
           {/* 14. Financial projections */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                14. Financial projections
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  14. Financial projections
+                </h3>
+                {proposalDiffs.some((d) => d.fieldPath.includes('budget') || d.fieldPath.includes('allocatedBudget')) && (
+                  <InlineRevisionBadge changeType="modified" label="Budget Revised" />
+                )}
+              </div>
               <div className="text-xs font-bold">
                 Projected Balance: <span className="text-emerald-700">{formatPHP(proposal.financialProjections?.balance || 0)}</span>
               </div>
@@ -952,6 +1021,17 @@ export default function ProposalEndorsementModal({
           </div>
         </div>
       </div>
+
+      {/* Visual Diff Comparison Modal */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={proposal.title}
+        documentType="AP"
+        currentDocument={proposal}
+        versionHistory={proposal.versionHistory}
+        revisionHistory={proposal.revisionHistory}
+      />
     </div>
   );
 }

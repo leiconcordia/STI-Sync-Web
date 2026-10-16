@@ -7,7 +7,7 @@ import {
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
-  PenTool, ShieldCheck, Undo2
+  PenTool, ShieldCheck, Undo2, GitCompare
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -16,6 +16,9 @@ import type { FinancialLineItem, ProposalApprovalStep } from '../../modules/acti
 import { approveEvent, rejectEvent, returnEvent, updateAdviserRemarks, withdrawProposal } from '../../modules/events/services/event.service';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { getProposalById, endorseProposal } from '../../modules/activity-proposals/services/proposal.service';
+import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
+import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
+import { diffActivityProposal } from '../../modules/workflow/utils/document-diff-engine';
 import {
   getSasSignatoryConfig,
   getCachedSasSignatoryConfig,
@@ -141,6 +144,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const [activeModal, setActiveModal] = useState<ActiveModal>('none');
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
 
   // Return modal state & granular per-step remarks
   const [returnFlags, setReturnFlags] = useState<string[]>(event.returnFlags || []);
@@ -338,6 +342,42 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   }, [event?.id]);
 
   const activeEvent = liveEvent || event;
+
+  // Compute latest snapshot and differences if proposal was revised
+  const latestSnapshot = useMemo(() => {
+    const history =
+      fullProposal?.versionHistory ||
+      fullProposal?.revisionHistory ||
+      (event as any)?.versionHistory ||
+      (event as any)?.revisionHistory ||
+      [];
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+    }
+    return null;
+  }, [fullProposal, event]);
+
+  const proposalDiffs = useMemo(() => {
+    if (!fullProposal || !latestSnapshot) return [];
+    return diffActivityProposal(latestSnapshot, fullProposal);
+  }, [fullProposal, latestSnapshot]);
+
+  const diffByPath = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const d of proposalDiffs) {
+      map.set(d.path, d);
+    }
+    return map;
+  }, [proposalDiffs]);
+
+  const hasRevisions = Boolean(
+    (fullProposal?.version && fullProposal.version > 1) ||
+    (fullProposal?.versionHistory && fullProposal.versionHistory.length > 0) ||
+    (event as any)?.versionHistory?.length > 0 ||
+    (event as any)?.isReturned ||
+    activeEvent?.proposalStatus === 'returned'
+  );
 
   const { data: orgs } = useOrganizationStream();
   const { eventTypes } = useEventTypesStream();
@@ -1098,6 +1138,24 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <span>{currentStatus.label}</span>
           </div>
 
+          {/* Compare Changes Button if revised */}
+          {hasRevisions && (
+            <button
+              type="button"
+              onClick={() => setShowDiffModal(true)}
+              className="px-3.5 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
+              title="Compare what was revised in this activity proposal"
+            >
+              <GitCompare className="w-3.5 h-3.5" />
+              <span>Compare Changes</span>
+              {proposalDiffs.length > 0 && (
+                <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-900 text-amber-300 text-[10px] font-black">
+                  {proposalDiffs.length}
+                </span>
+              )}
+            </button>
+          )}
+
           {/* Export PDF (Form AP-01 Official Engine) */}
           <button
             onClick={handleExportPDF}
@@ -1522,9 +1580,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 {/* Title Banner */}
                 <div className="p-4 bg-gradient-to-r from-blue-50/80 via-white to-amber-50/40 rounded-xl border-l-4 border-[#0E4EBD] shadow-xs">
                   <div className="flex items-center justify-between gap-3 mb-1">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#0E4EBD]">
-                      Official Activity Title
-                    </span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-[#0E4EBD]">
+                        Official Activity Title
+                      </span>
+                      {diffByPath.get('title') && (
+                        <InlineRevisionBadge diff={diffByPath.get('title')} />
+                      )}
+                    </div>
                     <span className="text-xs font-mono font-bold px-2.5 py-0.5 bg-[#FFD41C] text-[#001A4D] rounded-md">
                       {fullProposal.referenceNo || event.referenceId || 'AP-2026-REF'}
                     </span>
@@ -3518,6 +3581,18 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         documentType="Activity Proposal"
         documentTitle={event.title}
         isProcessing={isWithdrawing}
+      />
+
+      {/* Visual Diff Comparison Modal */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={fullProposal.title || event.title}
+        documentType="AP"
+        currentDocument={fullProposal}
+        previousSnapshot={latestSnapshot}
+        customDiffs={proposalDiffs}
+        revisionNumber={fullProposal.version || ((fullProposal.versionHistory?.length || 0) + 1)}
       />
     </div>
   );

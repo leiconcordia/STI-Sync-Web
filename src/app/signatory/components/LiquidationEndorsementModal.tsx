@@ -36,8 +36,13 @@ import {
   ChevronRight,
   ShieldAlert,
   ArrowRight,
+  GitCompare,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
+import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import { diffFinancialLiquidation } from '../../modules/workflow/utils/document-diff-engine';
 import type {
   LiquidationDocument,
   ExpenseLineItem,
@@ -104,6 +109,7 @@ export default function LiquidationEndorsementModal({
   const [returnRemarks, setReturnRemarks] = useState('');
   const [isReturning, setIsReturning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
   const [lightboxData, setLightboxData] = useState<{
     url: string;
     title: string;
@@ -126,6 +132,35 @@ export default function LiquidationEndorsementModal({
   const selectedItem: ExpenseLineItem | undefined = lineItems[selectedItemIndex] || lineItems[0];
   const selectedItemAttachments = normalizeItemAttachments(selectedItem);
   const activeReceiptFile = selectedItemAttachments[activeFileIndex] || selectedItemAttachments[0] || null;
+
+  // Compute previous snapshot and line item diffs if liquidation was revised
+  const latestSnapshot = useMemo(() => {
+    const history = liquidation?.revisionHistory || [];
+    if (history.length > 0) {
+      const last = history[history.length - 1];
+      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+    }
+    return null;
+  }, [liquidation]);
+
+  const liquidationDiffs = useMemo(() => {
+    if (!liquidation || !latestSnapshot) return [];
+    return diffFinancialLiquidation(latestSnapshot, liquidation);
+  }, [liquidation, latestSnapshot]);
+
+  const diffByPath = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const d of liquidationDiffs) {
+      map.set(d.path, d);
+    }
+    return map;
+  }, [liquidationDiffs]);
+
+  const hasRevisions = Boolean(
+    (liquidation?.revisionCount && liquidation.revisionCount > 1) ||
+    (liquidation?.revisionHistory && liquidation.revisionHistory.length > 0) ||
+    liquidation?.status === 'returned'
+  );
 
   const userUid = signatorySession?.id || signatorySession?.uid;
   const userEmail = (signatorySession?.email || '').toLowerCase();
@@ -333,13 +368,32 @@ export default function LiquidationEndorsementModal({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-9 h-9 rounded-xl text-slate-300 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {hasRevisions && (
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/30 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                title="Compare what was revised in this financial liquidation"
+              >
+                <GitCompare className="w-3.5 h-3.5 text-[#FFD41C]" />
+                <span>Compare Changes</span>
+                {liquidationDiffs.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-900 text-amber-300 text-[10px] font-black">
+                    {liquidationDiffs.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-9 h-9 rounded-xl text-slate-300 hover:text-white hover:bg-white/10 flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* ── SPLIT VIEW BODY (55% LEFT / 45% RIGHT) ── */}
@@ -348,6 +402,24 @@ export default function LiquidationEndorsementModal({
           {/* LEFT PANE: LINE ITEMS & FINANCIAL AUDIT (COL-SPAN-7) */}
           {/* ═════════════════════════════════════════════════════════════ */}
           <div className="lg:col-span-7 flex flex-col h-full overflow-y-auto p-5 sm:p-6 space-y-5 border-r border-slate-200 bg-white">
+            {/* Revision Banner if liquidation has past revision history */}
+            {hasRevisions && (
+              <RevisionFeedbackBanner
+                returnedBy={{
+                  name: (liquidation as any).returnedByName || (liquidation.revisionHistory?.[0] as any)?.returnedByName || 'Institutional Signatory',
+                  roleTitle: (liquidation as any).returnedByRoleTitle || (liquidation.revisionHistory?.[0] as any)?.returnedByRoleTitle || 'Signatory Reviewer',
+                  email: (liquidation as any).returnedByEmail || (liquidation.revisionHistory?.[0] as any)?.returnedByEmail,
+                }}
+                returnedAt={liquidation.returnedAt || (liquidation.revisionHistory?.[0] as any)?.returnedAt}
+                returnRemarks={liquidation.returnRemarks || (liquidation.revisionHistory?.[0] as any)?.returnRemarks}
+                revisionHistory={liquidation.revisionHistory}
+                versionLabel={liquidation.revisionCount ? `v${liquidation.revisionCount}.0` : undefined}
+                documentTitle={liquidation.eventTitle}
+                documentType="FL"
+                currentDocument={liquidation}
+                previousSnapshot={latestSnapshot}
+              />
+            )}
             {/* KPI Cards: Budget Ceiling vs Actual Spending vs Variance */}
             <div className="grid grid-cols-3 gap-3">
               <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl">
@@ -364,9 +436,14 @@ export default function LiquidationEndorsementModal({
                 <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider block">
                   Total Actual Spending
                 </span>
-                <span className="text-lg font-black text-blue-950 mt-0.5 block">
-                  {formatCurrency(totalActualSpending)}
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-lg font-black text-blue-950 mt-0.5 block">
+                    {formatCurrency(totalActualSpending)}
+                  </span>
+                  {diffByPath.get('totalActualSpending') && (
+                    <InlineRevisionBadge diff={diffByPath.get('totalActualSpending')} />
+                  )}
+                </div>
                 <span className="text-[10px] text-blue-600 font-medium">
                   {lineItems.length} Itemized Expense Line{lineItems.length === 1 ? '' : 's'}
                 </span>
@@ -454,7 +531,16 @@ export default function LiquidationEndorsementModal({
                               <span className="text-[10px] font-semibold px-2 py-0.2 bg-slate-100 text-slate-700 rounded border border-slate-200">
                                 {item.category}
                               </span>
-                              {item.wasModifiedInRev && (
+                              {diffByPath.get(`lineItems.${idx}.totalCost`) && (
+                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.totalCost`)} />
+                              )}
+                              {diffByPath.get(`lineItems.${idx}.receiptNumber`) && (
+                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.receiptNumber`)} />
+                              )}
+                              {diffByPath.get(`lineItems.${idx}.receiptUrls`) && (
+                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.receiptUrls`)} />
+                              )}
+                              {!diffByPath.get(`lineItems.${idx}.totalCost`) && item.wasModifiedInRev && (
                                 <span className="text-[10px] font-bold px-2 py-0.2 bg-amber-100 text-amber-900 rounded border border-amber-300">
                                   ✏️ Revised
                                 </span>
@@ -1037,6 +1123,18 @@ export default function LiquidationEndorsementModal({
           fileType={lightboxData.fileType}
         />
       )}
+
+      {/* Visual Diff Comparison Modal */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={liquidation.eventTitle || 'Financial Liquidation'}
+        documentType="FL"
+        currentDocument={liquidation}
+        previousSnapshot={latestSnapshot}
+        customDiffs={liquidationDiffs}
+        revisionNumber={liquidation.revisionCount || ((liquidation.revisionHistory?.length || 0) + 1)}
+      />
     </div>
   );
 }

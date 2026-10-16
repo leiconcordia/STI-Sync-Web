@@ -20,6 +20,7 @@ import ActivitySignatoryTracker from '../../activity-proposals/components/workfl
 import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
 import CashCustodiansModal from './CashCustodiansModal';
+import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
 import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../utils/event-lifecycle.utils';
@@ -1061,42 +1062,25 @@ export default function OfficerEventDetailView({
             </div>
           )}
 
-          {event.proposalStatus === 'returned' && (
-            <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-amber-800 font-bold text-sm">
-                  <RotateCcw className="w-5 h-5" />
-                  <span>Proposal Returned for Revision by SAS Adviser</span>
-                </div>
-                {onEdit && (
-                  <button
-                    onClick={onEdit}
-                    className="px-3.5 py-1.5 bg-[#FFC107] text-[#001A4D] hover:bg-[#F59E0B] rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer"
-                  >
-                    <Edit className="w-3.5 h-3.5" />
-                    <span>Open Editor & Revise</span>
-                  </button>
-                )}
-              </div>
-              {event.adviserRemarks && (
-                <div className="bg-white p-3.5 rounded-xl border border-amber-100 text-xs text-gray-800 leading-relaxed shadow-2xs">
-                  <strong className="text-amber-800">Adviser Feedback:</strong> {event.adviserRemarks}
-                </div>
-              )}
-              {event.returnFlags && event.returnFlags.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <span className="text-xs font-semibold text-amber-900">Flagged Sections to Revise:</span>
-                  {event.returnFlags.map((flag, idx) => (
-                    <span
-                      key={idx}
-                      className="px-2.5 py-0.5 bg-amber-200 text-amber-900 text-xs rounded-full font-bold"
-                    >
-                      ⚠ {flag}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
+          {(event.proposalStatus === 'returned' || (fullProposal.versionHistory && fullProposal.versionHistory.length > 0)) && (
+            <RevisionFeedbackBanner
+              returnedBy={{
+                name: (event as any).returnedByName || (fullProposal.versionHistory?.[0] as any)?.returnedBy || 'Institutional Reviewer',
+                roleTitle: (fullProposal.versionHistory?.[0] as any)?.returnedByRoleTitle || 'Signatory Reviewer',
+              }}
+              returnedAt={event.returnedAt || (fullProposal.versionHistory?.[0] as any)?.returnedAt}
+              returnRemarks={event.adviserRemarks || (fullProposal.versionHistory?.[0] as any)?.returnRemarks}
+              returnFlags={event.returnFlags}
+              stepRevisionRemarks={(event as any).stepRevisionRemarks}
+              versionHistory={fullProposal.versionHistory}
+              revisionHistory={fullProposal.revisionHistory}
+              canEdit={Boolean(onEdit)}
+              onEditClick={onEdit}
+              documentTitle={fullProposal.title || event.title}
+              documentType="AP"
+              currentDocument={fullProposal}
+              versionLabel={fullProposal.version ? `v${fullProposal.version}.0` : undefined}
+            />
           )}
 
           {event.proposalStatus === 'rejected' && (

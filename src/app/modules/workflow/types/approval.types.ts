@@ -18,6 +18,18 @@ export type UnifiedApprovalStatus =
   | 'cancelled'
   | 'voided';
 
+export type DiffChangeType = 'added' | 'removed' | 'modified' | 'unchanged';
+
+export interface FieldDiffEntry {
+  fieldPath: string;           // e.g. "budget.lineItems[0].totalCost" or "sessions[0].venue"
+  label: string;               // e.g. "Session 1 Venue" or "Speaker Honorarium"
+  section: string;             // "General Info" | "Schedule & Sessions" | "Financials & Budget" | "Target Audience" | "Objectives" | "Receipts & Vouchers"
+  changeType: DiffChangeType;  // 'added' | 'removed' | 'modified'
+  oldValue: any;
+  newValue: any;
+  diffSummary?: string;        // Human readable e.g. "Changed from Lab 2 to Lab 1"
+}
+
 export interface RevisionHistoryEntry {
   version: number;
   versionLabel: string;
@@ -33,6 +45,9 @@ export interface RevisionHistoryEntry {
   stepRevisionRemarks?: Record<string, string>;
   resubmittedAt?: string;
   resubmissionNote?: string;
+  // Deep snapshot of document data before this revision cycle:
+  dataSnapshot?: Record<string, any>;
+  detectedDiffs?: FieldDiffEntry[];
 }
 
 export interface UnifiedApprovalStep {

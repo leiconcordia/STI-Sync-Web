@@ -823,7 +823,7 @@ export function FinancialLiquidations() {
               )}
 
               {/* Revision Feedback Banner */}
-              {selectedReport.status === 'returned' && (
+              {(selectedReport.status === 'returned' || (selectedReport.revisionHistory && selectedReport.revisionHistory.length > 0)) && (
                 <RevisionFeedbackBanner
                   returnedBy={{
                     name: (selectedReport as any).returnedByName || (selectedReport as any).returnedBy || 'Institutional Signatory',
@@ -838,6 +838,8 @@ export function FinancialLiquidations() {
                     handleOpenEditDraft(selectedReport);
                   }}
                   documentTitle={selectedReport.eventTitle}
+                  documentType="FL"
+                  currentDocument={selectedReport}
                   versionLabel={`v${selectedReport.revisionCount || 1}.0`}
                 />
               )}

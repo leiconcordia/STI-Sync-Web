@@ -737,6 +737,8 @@ export default function OfficerLiquidationModal({
               returnRemarks={editingReport.returnRemarks}
               revisionHistory={editingReport.revisionHistory}
               documentTitle={editingReport.eventTitle}
+              documentType="FL"
+              currentDocument={editingReport}
               versionLabel={`v${editingReport.revisionCount || 1}.0`}
             />
           )}

@@ -703,7 +703,7 @@ export default function FinancialLiquidation() {
                 </div>
               </div>
 
-              {viewingDetailReport.status === 'returned' && (
+              {(viewingDetailReport.status === 'returned' || (viewingDetailReport.revisionHistory && viewingDetailReport.revisionHistory.length > 0)) && (
                 <RevisionFeedbackBanner
                   returnedBy={{
                     name: (viewingDetailReport as any).returnedByName || (viewingDetailReport as any).returnedBy || 'Institutional Signatory',
@@ -720,6 +720,8 @@ export default function FinancialLiquidation() {
                     handleOpenEdit(toEdit);
                   }}
                   documentTitle={viewingDetailReport.eventTitle}
+                  documentType="FL"
+                  currentDocument={viewingDetailReport}
                   versionLabel={`v${viewingDetailReport.revisionCount || 1}.0`}
                 />
               )}

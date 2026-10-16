@@ -525,6 +525,13 @@ export const updateLiquidationReport = async (
       returnRemarks: existingData.returnRemarks || 'Revision requested.',
       resubmittedAt: new Date().toISOString(),
       resubmissionNote: `Resubmitted as v${newRevCount}.0`,
+      dataSnapshot: {
+        lineItems: (existingData.lineItems || []).map((it: any) => ({ ...it })),
+        totalActualSpending: existingData.totalActualSpending || 0,
+        allocatedBudget: existingData.allocatedBudget || 0,
+        surplusOrDeficit: existingData.surplusOrDeficit || 0,
+        notes: existingData.notes || '',
+      },
     };
     payload.revisionHistory = arrayUnion(revisionEntry);
 
