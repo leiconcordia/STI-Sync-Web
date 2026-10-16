@@ -209,6 +209,7 @@ export interface EventScanner {
   canViewList: boolean;
   canEditRecords: boolean;
   allowManualAttendance: boolean;
+  assignedSessionIds?: string[]; // IDs of sessions this officer scans for (empty/omitted means all sessions)
 }
 
 export interface BudgetLineItem {

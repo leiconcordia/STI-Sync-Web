@@ -23,7 +23,7 @@ import { useAdviserProfile } from '../../modules/auth';
 
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
-import { useAllEvents } from '../../modules/events/hooks/useEventStream';
+import { useAllActivities } from '../../modules/events/hooks/useEventStream';
 import { OrganizationDetailModal } from '../components/OrganizationDetailModal';
 import { EditOrganizationModal } from '../components/EditOrganizationModal';
 import { OrganizationStatusModal } from '../components/OrganizationStatusModal';
@@ -49,7 +49,7 @@ export function Organizations() {
   const { countsMap = {}, loading: loadingCounts } = useOrgMemberCountsStream();
   const { data: orgTypes = [] } = useOrganizationTypes();
   const { data: departments = [] } = useDepartments();
-  const { events = [], loading: loadingEvents } = useAllEvents();
+  const { events: activities = [], loading: loadingActivities } = useAllActivities();
 
   const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
 
@@ -78,29 +78,29 @@ export function Organizations() {
     return () => unsubscribe();
   }, []);
 
-  const loading = loadingOrgs || loadingCounts || loadingEvents || loadingPendingApps;
+  const loading = loadingOrgs || loadingCounts || loadingActivities || loadingPendingApps;
 
-  // Real Event counts mapped per organization from Firestore
-  const orgEventsStats = useMemo(() => {
+  // Real Activity counts mapped per organization from Firestore
+  const orgActivitiesStats = useMemo(() => {
     const totalMap: Record<string, number> = {};
     const approvedMap: Record<string, number> = {};
 
-    events.forEach((evt) => {
-      const orgId = evt.hostingOrgId || evt.organizationId || evt.organizerId;
+    activities.forEach((act) => {
+      const orgId = act.hostingOrgId || act.organizationId || act.organizerId;
       if (orgId) {
         totalMap[orgId] = (totalMap[orgId] || 0) + 1;
         if (
-          evt.proposalStatus === 'approved' ||
-          evt.status === 'approved' ||
-          evt.status === 'ongoing' ||
-          evt.status === 'completed'
+          act.proposalStatus === 'approved' ||
+          act.status === 'approved' ||
+          act.status === 'ongoing' ||
+          act.status === 'completed'
         ) {
           approvedMap[orgId] = (approvedMap[orgId] || 0) + 1;
         }
       }
     });
     return { totalMap, approvedMap };
-  }, [events]);
+  }, [activities]);
 
   // Merge live member counts
   const organizations = useMemo(() => {
@@ -126,15 +126,15 @@ export function Organizations() {
     [organizations]
   );
 
-  const activeEventsCount = useMemo(() => {
-    return events.filter(
+  const activeActivitiesCount = useMemo(() => {
+    return activities.filter(
       (e) =>
         e.proposalStatus === 'approved' ||
         e.status === 'approved' ||
         e.status === 'ongoing' ||
         e.status === 'published'
     ).length;
-  }, [events]);
+  }, [activities]);
 
   // Filtered organizations list
   const filteredOrganizations = useMemo(() => {
@@ -284,12 +284,12 @@ export function Organizations() {
         <Card className="border-[#E0E0E0] shadow-xs">
           <CardHeader className="pb-2">
             <CardTitle className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Active Events</span>
+              <span>Active Activities</span>
               <CalendarCheck className="w-4 h-4 text-[#0E4EBD]" />
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-3xl font-bold font-mono text-[#0E4EBD]">{activeEventsCount}</div>
+            <div className="text-3xl font-bold font-mono text-[#0E4EBD]">{activeActivitiesCount}</div>
             <p className="text-xs text-gray-500 mt-1">
               Approved / scheduled campus activities
             </p>
@@ -448,7 +448,7 @@ export function Organizations() {
                     Members
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">
-                    Events
+                    Activities
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wide border-b border-[#E0E0E0]">
                     Status
@@ -462,7 +462,7 @@ export function Organizations() {
                 {paginatedOrganizations.map((org) => {
                   const orgType = getOrgType(org.typeId);
                   const isArchived = org.status === 'archived';
-                  const totalEvents = orgEventsStats.totalMap[org.id] || 0;
+                  const totalActivities = orgActivitiesStats.totalMap[org.id] || 0;
 
                   return (
                     <tr
@@ -530,11 +530,11 @@ export function Organizations() {
                         </div>
                       </td>
 
-                      {/* Events */}
+                      {/* Activities */}
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-1.5 text-xs text-gray-700 font-medium">
                           <Calendar className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                          <span>{totalEvents} {totalEvents === 1 ? 'event' : 'events'}</span>
+                          <span>{totalActivities} {totalActivities === 1 ? 'activity' : 'activities'}</span>
                         </div>
                       </td>
 

@@ -4,7 +4,7 @@ import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
-
+import { useDepartments } from '../../modules/academic/hooks/useAcademicStream';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useOrgOfficers } from '../../modules/organizations/hooks/useOrgOfficers';
 import { updateOrganization } from '../../modules/organizations/services/organization.service';
@@ -17,6 +17,7 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
 
   const { data: orgs, loading: orgsLoading } = useOrganizationStream();
   const { data: types, loading: typesLoading } = useOrganizationTypes();
+  const { data: departments = [], loading: deptsLoading } = useDepartments();
 
   const { data: roles } = useRoles();
   const { members, loading: membersLoading } = useOrgMembers(activeOrgId);
@@ -290,7 +291,7 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 font-bold border border-blue-200">
-                      🏛️ {activeOrg.departmentName || activeOrg.department || 'Department Specific'}
+                      🏛️ {activeOrg.departmentName || departments.find(d => d.id === activeOrg.departmentId)?.name || activeOrg.department || 'Department Specific'}
                     </span>
                   )}
                 </span>

@@ -2100,7 +2100,10 @@ export default function OfficerEventDetailView({
         <AttendanceScannersModal
           isOpen={isAttendanceModalOpen}
           onClose={() => setIsAttendanceModalOpen(false)}
-          activity={event}
+          activity={activeEvent}
+          onUpdated={() => {
+            // Live listener automatically receives updates; trigger parent refresh if applicable
+          }}
         />
       )}
 

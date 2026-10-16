@@ -17,6 +17,7 @@ import {
   isSessionCheckInPassed,
   isStudentTargetedForEvent,
   syncEventAbsenteeRecords,
+  isEventEligibleForAttendance,
 } from "../../modules/attendance/services/attendance.service";
 import { format12HourTime } from "../../utils/date";
 
@@ -506,51 +507,20 @@ export function AttendanceMonitoring() {
   }, [dbSections, students]);
 
   const mappedEvents: (Event & { hostingOrgId: string; isInstitutional: boolean })[] = useMemo(() => {
-    const validEvents = dbEvents.filter((evt) => {
-      // Must only monitor officially approved or completed events
-      const pStatus = (evt.proposalStatus || '').toString().toLowerCase();
-      const eStatus = (evt.status || '').toString().toLowerCase();
-      const lStatus = ((evt as any).lifecycleStatus || '').toString().toLowerCase();
+    // Only activities with real sessions created post-publication, attendance enabled, and scanners assigned
+    const validEvents = dbEvents.filter((evt) =>
+      isEventEligibleForAttendance(evt, { role: 'admin' })
+    );
 
-      const isApprovedOrCompleted =
-        pStatus === 'approved' ||
-        pStatus === 'completed' ||
-        eStatus === 'completed' ||
-        eStatus === 'published' ||
-        lStatus === 'completed';
+    if (validEvents.length === 0) return [];
 
-      const isUnapproved =
-        pStatus === 'draft' ||
-        pStatus === 'pending' ||
-        pStatus === 'pending_review' ||
-        pStatus === 'returned' ||
-        pStatus === 'rejected';
-
-      if (!isApprovedOrCompleted || isUnapproved) return false;
-
-      return evt.enableQRTickets !== false;
-    });
-    const eventsToUse = validEvents;
-
-    if (eventsToUse.length === 0) return [];
-
-    return eventsToUse.map(evt => {
+    return validEvents.map(evt => {
       const evtAttendance = dbAttendance.filter(a => a.eventId === evt.id || (a.event && evt.title && String(a.event).toLowerCase() === String(evt.title).toLowerCase()));
       
       // Determine targeted cohort of students for this event
       const targetedStudents = (students || []).filter(s => isStudentTargetedForEvent(s, evt, rawOrganizations));
 
-      const rawSessions = (evt.sessions && evt.sessions.length > 0) ? evt.sessions : [
-        {
-          id: `${evt.id}-main`,
-          title: 'Main Session',
-          date: (evt as any).date || 'TBA',
-          startTime: (evt as any).startTime || '08:00',
-          endTime: (evt as any).endTime || '17:00',
-        }
-      ];
-
-      const sessions: EventSession[] = rawSessions.map((s, i) => {
+      const sessions: EventSession[] = (evt.sessions || []).map((s, i) => {
         const sId = s.id || `session-${i}`;
         const sessionPassed = isSessionCheckInPassed(s, evt.gracePeriodMinutes, evt.lateThresholdMinutes) || evt.proposalStatus === 'completed' || (evt as any).status === 'Completed';
 
@@ -696,18 +666,20 @@ export function AttendanceMonitoring() {
     });
   }, [dbEvents, dbAttendance, venues, dbCategories, studentMap, departments, courses, rawOrganizations, students]);
 
-  // Automatically sync missing absent records to Firestore in the background
+  // Automatically sync missing absent records to Firestore in the background for eligible events
   useMemo(() => {
-    if (!dbEvents || dbEvents.length === 0 || !students || students.length === 0) return;
-    dbEvents.forEach((evt) => {
-      const targeted = students.filter(s => isStudentTargetedForEvent(s, evt, rawOrganizations));
+    if (!mappedEvents || mappedEvents.length === 0 || !students || students.length === 0) return;
+    mappedEvents.forEach((mEvt) => {
+      const originalEvt = dbEvents.find(e => e.id === mEvt.id);
+      if (!originalEvt) return;
+      const targeted = students.filter(s => isStudentTargetedForEvent(s, originalEvt, rawOrganizations));
       if (targeted.length > 0) {
-        syncEventAbsenteeRecords(evt, targeted).catch(err => {
-          console.warn('[AttendanceMonitoring] Auto-sync absentee error for evt:', evt.id, err);
+        syncEventAbsenteeRecords(originalEvt, targeted).catch(err => {
+          console.warn('[AttendanceMonitoring] Auto-sync absentee error for evt:', mEvt.id, err);
         });
       }
     });
-  }, [dbEvents, students, rawOrganizations]);
+  }, [mappedEvents, dbEvents, students, rawOrganizations]);
 
   // Unique options for event filter dropdowns
   const availableOrgs = useMemo(() => {

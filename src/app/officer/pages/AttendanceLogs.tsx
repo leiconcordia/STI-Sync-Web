@@ -27,6 +27,7 @@ import {
   isSessionCheckInPassed,
   isStudentTargetedForEvent,
   syncEventAbsenteeRecords,
+  isEventEligibleForAttendance,
 } from '../../modules/attendance/services/attendance.service';
 
 import { AttendanceFilterToolbar } from '../../modules/attendance/components/AttendanceFilterToolbar';
@@ -551,42 +552,14 @@ export default function AttendanceLogs() {
     return Array.from(set).sort();
   }, [dbSections, students]);
 
-  // Filter & Map Events hosted by or created by me / this particular org, with attendance
+  // Filter & Map Events strictly for officer's active organization, with real sessions, attendance enabled, and scanners
   const officerEvents: OfficerMappedEvent[] = useMemo(() => {
-    if (!dbEvents || dbEvents.length === 0) return [];
+    if (!dbEvents || dbEvents.length === 0 || !activeOrgId) return [];
 
     return dbEvents
-      .filter((evt) => {
-        // Attendance logs are strictly for officially approved or completed events
-        const pStatus = (evt.proposalStatus || '').toString().toLowerCase();
-        const eStatus = (evt.status || '').toString().toLowerCase();
-        const lStatus = ((evt as any).lifecycleStatus || '').toString().toLowerCase();
-
-        const isApprovedOrCompleted =
-          pStatus === 'approved' ||
-          pStatus === 'completed' ||
-          eStatus === 'completed' ||
-          eStatus === 'published' ||
-          lStatus === 'completed';
-
-        const isUnapproved =
-          pStatus === 'draft' ||
-          pStatus === 'pending' ||
-          pStatus === 'pending_review' ||
-          pStatus === 'returned' ||
-          pStatus === 'rejected';
-
-        if (!isApprovedOrCompleted || isUnapproved) return false;
-
-        const isMyOrg = activeOrgId ? evt.hostingOrgId === activeOrgId : false;
-        const isCreatedByMe = currentStudentId ? evt.createdBy === currentStudentId : false;
-        const isMyScope = isMyOrg || isCreatedByMe;
-
-        if (!isMyScope) return false;
-
-        const hasAttendanceConfig = evt.enableQRTickets !== false && (evt as any).enableQR !== false && evt.attendanceEnabled !== false;
-        return hasAttendanceConfig;
-      })
+      .filter((evt) =>
+        isEventEligibleForAttendance(evt, { role: 'officer', activeOrgId })
+      )
       .map((evt) => {
         const evtTitle = evt.title || (evt as any).name || '';
         const evtAttendance = (dbAttendance || []).filter(
@@ -603,27 +576,18 @@ export default function AttendanceLogs() {
         const catObj = (dbCategories || []).find(c => c.id === evt.categoryId || c.name === evt.categoryId);
         const catName = catObj ? catObj.name : (evt.category || evt.categoryId || 'General');
 
-        const rawSessions = (evt.sessions && evt.sessions.length > 0) ? evt.sessions : [
-          {
-            id: `${evt.id}-main`,
-            title: 'Main Session',
-            date: (evt as any).date || 'TBA',
-            startTime: (evt as any).startTime || '08:00',
-            endTime: (evt as any).endTime || '17:00',
-          }
-        ];
-
-        const firstSessionDate = rawSessions[0]?.date || (evt as any).date || 'TBA';
+        const realSessions = evt.sessions || [];
+        const firstSessionDate = realSessions[0]?.date || 'Date TBA';
         const targetedStudents = (students || []).filter(s => isStudentTargetedForEvent(s, evt, orgs));
 
-        const sessionsList = rawSessions.map((s, idx) => ({
+        const sessionsList = realSessions.map((s, idx) => ({
           id: s.id || `sess-${idx}`,
           title: s.title || `Session ${idx + 1}`,
         }));
 
         const allSynthesizedRecords: EnrichedAttendanceRecord[] = [];
 
-        rawSessions.forEach((s, idx) => {
+        realSessions.forEach((s, idx) => {
           const sId = s.id || `sess-${idx}`;
           const sessionPassed = isSessionCheckInPassed(s, evt.gracePeriodMinutes, evt.lateThresholdMinutes) || evt.proposalStatus === 'completed' || (evt as any).status === 'Completed';
 
@@ -861,7 +825,7 @@ export default function AttendanceLogs() {
           <QrCode className="w-12 h-12 text-gray-300 mx-auto mb-3" />
           <h3 className="text-[#001A4D] font-bold text-lg mb-1">No Attendance Logs Found</h3>
           <p className="text-gray-500 text-sm max-w-md mx-auto">
-            There are no events hosted by or created for your active organization with QR attendance enabled yet.
+            There are no approved or published activities for your organization with scheduled sessions, attendance enabled, and assigned scanners.
           </p>
         </div>
       ) : (

@@ -336,3 +336,99 @@ export async function finalizeEventAttendance(
   return { absenteesCreated, incompleteCheckoutsMarked };
 }
 
+export interface AttendanceEligibilityOptions {
+  role: 'admin' | 'officer';
+  activeOrgId?: string | null;
+}
+
+/**
+ * Checks whether an event/activity is eligible to appear in Attendance Monitoring (Admin)
+ * or Attendance Logs (Officer).
+ *
+ * Requirements:
+ * 1. Must have explicitly configured sessions created post-publication (sessions.length > 0).
+ *    Note: The date/time set during proposal creation is NOT a session.
+ * 2. Must be approved, published, ongoing, or completed (not draft, pending review, returned, or cancelled).
+ * 3. Attendance tracking must be enabled (attendanceEnabled !== false && enableQRTickets !== false).
+ * 4. At least one scanner must be assigned (scanners.length > 0 or scannerUserIds.length > 0).
+ * 5. If officer role, must strictly belong to the officer's active organization (activeOrgId).
+ *    Admin sees all eligible events across all organizations.
+ */
+export function isEventEligibleForAttendance(
+  evt: any,
+  options: AttendanceEligibilityOptions
+): boolean {
+  if (!evt) return false;
+
+  // 1. Mandatory Sessions: Must have real sessions created after publishing
+  // Note: Proposal date/time is NOT a session!
+  if (!Array.isArray(evt.sessions) || evt.sessions.length === 0) {
+    return false;
+  }
+
+  // 2. Lifecycle Status check: Must be approved, published, ongoing, or completed
+  const pStatus = (evt.proposalStatus || '').toString().toLowerCase();
+  const eStatus = (evt.status || '').toString().toLowerCase();
+  const lStatus = ((evt as any).lifecycleStatus || '').toString().toLowerCase();
+
+  const isUnapproved =
+    pStatus === 'draft' ||
+    pStatus === 'pending' ||
+    pStatus === 'pending_review' ||
+    pStatus === 'under_review' ||
+    pStatus === 'returned' ||
+    pStatus === 'rejected' ||
+    pStatus === 'cancelled' ||
+    eStatus === 'cancelled';
+
+  if (isUnapproved) return false;
+
+  const isApprovedOrPublished =
+    pStatus === 'approved' ||
+    pStatus === 'completed' ||
+    eStatus === 'published' ||
+    eStatus === 'approved' ||
+    eStatus === 'completed' ||
+    eStatus === 'ongoing' ||
+    lStatus === 'completed' ||
+    evt.isVisible === true ||
+    evt.visibleToStudents === true;
+
+  if (!isApprovedOrPublished) return false;
+
+  // 3. Attendance must be enabled
+  const isAttendanceEnabled =
+    evt.attendanceEnabled === true ||
+    (evt.attendanceEnabled !== false && evt.enableQRTickets !== false);
+
+  if (!isAttendanceEnabled) return false;
+
+  // 4. Must have at least one scanner assigned
+  const hasScanners =
+    (Array.isArray(evt.scanners) && evt.scanners.length > 0) ||
+    (Array.isArray(evt.scannerUserIds) && evt.scannerUserIds.length > 0);
+
+  if (!hasScanners) return false;
+
+  // 5. Organizational Scoping for Officer
+  if (options.role === 'officer') {
+    if (!options.activeOrgId) return false;
+    const cleanActiveId = options.activeOrgId.trim().toLowerCase();
+    const hostingId = (evt.hostingOrgId || '').trim().toLowerCase();
+    const orgId = (evt.organizationId || '').trim().toLowerCase();
+    const createdByOrg = (evt.createdByOrgId || '').trim().toLowerCase();
+    const directOrg = ((evt as any).orgId || '').trim().toLowerCase();
+
+    const isMyOrg =
+      hostingId === cleanActiveId ||
+      orgId === cleanActiveId ||
+      createdByOrg === cleanActiveId ||
+      directOrg === cleanActiveId;
+
+    if (!isMyOrg) return false;
+  }
+
+  // Admin sees all activities across all organizations
+  return true;
+}
+
