@@ -300,15 +300,16 @@ export function EventApprovals() {
         const chain = (event as any).approvalChain || [];
         const hasChain = Array.isArray(chain) && chain.length > 0;
         const fullySigned = isProposalFullySigned(chain);
-        const isApprovedStatus = !isRet && (hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved"));
+        const isApprovedStatus = (hasChain && fullySigned) || (!isRet && (event.proposalStatus === "approved" || event.status === "approved" || (event as any).status === "approved_president" || (event as any).isApproved === true));
+        const effectiveIsRet = !isApprovedStatus && isRet;
 
-        if (activeTab === "pending" && (isApprovedStatus || isRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
+        if (activeTab === "pending" && (isApprovedStatus || effectiveIsRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
         if (activeTab === "returned") {
-          if (!isRet) return false;
+          if (!effectiveIsRet) return false;
         }
         if (activeTab === "approved") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || isEventPast(event);
-          if (!isApprovedStatus || isDone || isRet) return false;
+          if (!isApprovedStatus || isDone || effectiveIsRet) return false;
         }
         if (activeTab === "completed") {
           const isDone = event.status === "completed" || event.proposalStatus === "completed" || (isApprovedStatus && isEventPast(event));
@@ -1115,7 +1116,14 @@ export function EventApprovals() {
                     const chain = (event as any).approvalChain || [];
                     const hasChain = Array.isArray(chain) && chain.length > 0;
                     const fullySigned = isProposalFullySigned(chain);
-                    const isApproved = !isReturned && (hasChain ? fullySigned : (event.proposalStatus === "approved" || event.status === "approved"));
+                    const isApproved =
+                      (hasChain && fullySigned) ||
+                      (!isReturned &&
+                        (event.proposalStatus === "approved" ||
+                          event.status === "approved" ||
+                          (event as any).status === "approved_president" ||
+                          (event as any).isApproved === true));
+                    const effectiveIsReturned = !isApproved && isReturned;
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
                     const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
@@ -1228,7 +1236,7 @@ export function EventApprovals() {
                               <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                               Rejected
                             </span>
-                          ) : isReturned ? (
+                          ) : effectiveIsReturned ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                               Revision

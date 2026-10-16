@@ -75,10 +75,25 @@ export default function PostActivityReportDetailModal({
   const latestSnapshot = useMemo(() => {
     const history = report?.revisionHistory || [];
     if (history.length > 0) {
-      const last = history[history.length - 1];
-      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const snap =
+          (item as any)?.dataSnapshot ||
+          (item as any)?.previousSnapshot ||
+          (item as any)?.snapshot ||
+          (item as any)?.returnedSnapshot;
+        if (snap && (snap.attendanceSummary || snap.results || !(report as any)?.previousSnapshot)) {
+          return snap;
+        }
+      }
     }
-    return null;
+    return (
+      (report as any)?.previousSnapshot ||
+      (report as any)?.returnedSnapshot ||
+      (report as any)?.initialSnapshot ||
+      (history.length > 0 ? (history[history.length - 1] as any)?.dataSnapshot : null) ||
+      null
+    );
   }, [report]);
 
   const parDiffs = useMemo(() => {
@@ -89,14 +104,17 @@ export default function PostActivityReportDetailModal({
   const diffByPath = useMemo(() => {
     const map = new Map<string, any>();
     for (const d of parDiffs) {
-      map.set(d.path, d);
+      map.set(d.fieldPath, d);
     }
     return map;
   }, [parDiffs]);
 
   const hasRevisions = Boolean(
+    (report?.version && report.version > 1) ||
     (report?.revisionCount && report.revisionCount > 1) ||
     (report?.revisionHistory && report.revisionHistory.length > 0) ||
+    Boolean((report as any)?.previousSnapshot) ||
+    Boolean((report as any)?.returnedSnapshot) ||
     report?.status === 'returned'
   );
 
@@ -151,7 +169,14 @@ export default function PostActivityReportDetailModal({
     }
     setIsReviewing(true);
     try {
-      await returnPAR(report.id, effectiveUser.uid, effectiveUser.name || 'Signatory Reviewer', returnRemarks);
+      await returnPAR(
+        report.id,
+        effectiveUser.uid,
+        effectiveUser.name || 'Signatory Reviewer',
+        returnRemarks,
+        effectiveUser.roleTitle || 'Institutional Signatory',
+        effectiveUser.email || undefined
+      );
       toast.success(`Post-Activity Report returned for revision.`);
       setShowReturnModal(false);
       if (onRefresh) onRefresh();
@@ -321,9 +346,14 @@ export default function PostActivityReportDetailModal({
               <div className="grid grid-cols-2 gap-3 text-center mb-3">
                 <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
                   <span className="text-[11px] text-slate-500 block">Registered</span>
-                  <span className="text-base font-black text-slate-800">
-                    {report.attendanceSummary?.registeredCount || 0}
-                  </span>
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span className="text-base font-black text-slate-800">
+                      {report.attendanceSummary?.registeredCount || 0}
+                    </span>
+                    {diffByPath.get('attendanceSummary.registeredCount') && (
+                      <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.registeredCount')} />
+                    )}
+                  </div>
                 </div>
                 <div className="bg-blue-50 p-2.5 rounded-lg border border-blue-200">
                   <span className="text-[11px] text-blue-700 block font-semibold">Attended (Scanned)</span>
@@ -341,9 +371,14 @@ export default function PostActivityReportDetailModal({
                 <p>
                   <strong>Target:</strong> {report.attendanceSummary?.targetAudience || 'Enrolled Students'}
                 </p>
-                <p>
-                  <strong>Actual:</strong> {report.attendanceSummary?.whoAttended || 'College / SHS Students'}
-                </p>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p>
+                    <strong>Actual:</strong> {report.attendanceSummary?.whoAttended || 'College / SHS Students'}
+                  </p>
+                  {diffByPath.get('attendanceSummary.whoAttended') && (
+                    <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.whoAttended')} />
+                  )}
+                </div>
               </div>
             </div>
 
@@ -383,9 +418,14 @@ export default function PostActivityReportDetailModal({
 
           {/* Section 3: Objectives & Results */}
           <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-              Evaluation of Objectives & Learning Outcomes
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                Evaluation of Objectives & Learning Outcomes
+              </h4>
+              {diffByPath.get('results.objectiveStatus') && (
+                <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
+              )}
+            </div>
             <div className="flex items-center gap-2 text-xs">
               <span className="text-slate-500 font-semibold">Status:</span>
               <span className="font-bold text-blue-700 uppercase bg-blue-50 px-2 py-0.5 rounded">
@@ -393,9 +433,16 @@ export default function PostActivityReportDetailModal({
               </span>
             </div>
             {report.results?.achievementNarrative && (
-              <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
-                {report.results.achievementNarrative}
-              </p>
+              <div className="space-y-1">
+                {diffByPath.get('results.achievementNarrative') && (
+                  <div className="mb-1">
+                    <InlineRevisionBadge diff={diffByPath.get('results.achievementNarrative')} />
+                  </div>
+                )}
+                <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  {report.results.achievementNarrative}
+                </p>
+              </div>
             )}
 
             {report.results?.keyLearnings && report.results.keyLearnings.length > 0 && (
@@ -420,7 +467,12 @@ export default function PostActivityReportDetailModal({
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">1. Program Flow</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">1. Program Flow</strong>
+                  {diffByPath.get('recommendations.programFlow') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.programFlow')} />
+                  )}
+                </div>
                 <p className="text-slate-600">
                   • <em>Obs:</em> {report.recommendations?.programFlow?.observations || '—'}
                 </p>
@@ -429,7 +481,12 @@ export default function PostActivityReportDetailModal({
                 </p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">2. Participant Engagement</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">2. Participant Engagement</strong>
+                  {diffByPath.get('recommendations.participantEngagement') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantEngagement')} />
+                  )}
+                </div>
                 <p className="text-slate-600">
                   • <em>Obs:</em> {report.recommendations?.participantEngagement?.observations || '—'}
                 </p>
@@ -438,7 +495,12 @@ export default function PostActivityReportDetailModal({
                 </p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">3. Technical Setup</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">3. Technical Setup</strong>
+                  {diffByPath.get('recommendations.technicalSetup') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.technicalSetup')} />
+                  )}
+                </div>
                 <p className="text-slate-600">
                   • <em>Obs:</em> {report.recommendations?.technicalSetup?.observations || '—'}
                 </p>
@@ -447,7 +509,12 @@ export default function PostActivityReportDetailModal({
                 </p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">4. Participant Preparedness</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">4. Participant Preparedness</strong>
+                  {diffByPath.get('recommendations.participantPreparedness') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantPreparedness')} />
+                  )}
+                </div>
                 <p className="text-slate-600">
                   • <em>Obs:</em> {report.recommendations?.participantPreparedness?.observations || '—'}
                 </p>
@@ -656,7 +723,8 @@ export default function PostActivityReportDetailModal({
         currentDocument={report}
         previousSnapshot={latestSnapshot}
         customDiffs={parDiffs}
-        revisionNumber={report.revisionCount || ((report.revisionHistory?.length || 0) + 1)}
+        revisionNumber={report.version || report.revisionCount || ((report.revisionHistory?.length || 0) + 1)}
+        revisionHistory={report.revisionHistory}
       />
     </div>
   );

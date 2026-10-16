@@ -85,10 +85,22 @@ export default function ProposalEndorsementModal({
   const latestSnapshot = useMemo(() => {
     const history = proposal?.versionHistory || proposal?.revisionHistory || [];
     if (history.length > 0) {
-      const last = history[history.length - 1];
-      return (last as any)?.dataSnapshot || (last as any)?.previousSnapshot || null;
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const snap =
+          (item as any)?.dataSnapshot ||
+          (item as any)?.previousSnapshot ||
+          (item as any)?.snapshot ||
+          (item as any)?.returnedSnapshot;
+        if (snap) return snap;
+      }
     }
-    return null;
+    return (
+      (proposal as any)?.returnedSnapshot ||
+      (proposal as any)?.previousSnapshot ||
+      (proposal as any)?.initialSnapshot ||
+      null
+    );
   }, [proposal]);
 
   const proposalDiffs = useMemo(() => {
@@ -235,10 +247,10 @@ export default function ProposalEndorsementModal({
       await returnProposalForRevision(
         proposal.id,
         {
-          uid: signatorySession.id || signatorySession.uid,
-          name: signatorySession.name,
-          email: signatorySession.email,
-          roleTitle: signatorySession.roleTitle,
+          uid: signatorySession?.id || signatorySession?.uid || userUid || '',
+          name: signatorySession?.name || (signatorySession as any)?.displayName || userRoleTitle || 'Institutional Signatory',
+          email: signatorySession?.email || userEmail || '',
+          roleTitle: signatorySession?.roleTitle || userRoleTitle || 'Signatory Reviewer',
         },
         returnRemarks
       );
@@ -265,10 +277,10 @@ export default function ProposalEndorsementModal({
       await rejectProposal(
         proposal.id,
         {
-          uid: signatorySession.id || signatorySession.uid,
-          name: signatorySession.name,
-          email: signatorySession.email,
-          roleTitle: signatorySession.roleTitle,
+          uid: signatorySession?.id || signatorySession?.uid || userUid || '',
+          name: signatorySession?.name || (signatorySession as any)?.displayName || userRoleTitle || 'Institutional Signatory',
+          email: signatorySession?.email || userEmail || '',
+          roleTitle: signatorySession?.roleTitle || userRoleTitle || 'Signatory Reviewer',
         },
         rejectionReason
       );
@@ -365,6 +377,7 @@ export default function ProposalEndorsementModal({
               documentTitle={proposal.title}
               documentType="AP"
               currentDocument={proposal}
+              previousSnapshot={latestSnapshot}
             />
           )}
           {/* Urgent Warning if applicable */}
@@ -1087,6 +1100,14 @@ export default function ProposalEndorsementModal({
         documentTitle={proposal.title}
         documentType="AP"
         currentDocument={proposal}
+        previousSnapshot={
+          latestSnapshot ||
+          (proposal as any)?.returnedSnapshot ||
+          (proposal as any)?.previousSnapshot ||
+          (proposal as any)?.initialSnapshot
+        }
+        customDiffs={proposalDiffs}
+        revisionNumber={proposal.version || ((proposal.versionHistory?.length || 0) + 1)}
         versionHistory={proposal.versionHistory}
         revisionHistory={proposal.revisionHistory}
       />

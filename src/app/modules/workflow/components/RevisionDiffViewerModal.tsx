@@ -29,6 +29,9 @@ interface RevisionDiffViewerModalProps {
   documentTitle?: string;
   documentType?: 'AP' | 'FL' | 'PAR';
   currentDocument: Record<string, any> | null;
+  previousSnapshot?: any;
+  customDiffs?: FieldDiffEntry[];
+  revisionNumber?: number;
   revisionHistory?: RevisionHistoryEntry[];
   versionHistory?: any[];
 }
@@ -39,6 +42,9 @@ export default function RevisionDiffViewerModal({
   documentTitle = 'Document',
   documentType = 'AP',
   currentDocument,
+  previousSnapshot,
+  customDiffs,
+  revisionNumber,
   revisionHistory = [],
   versionHistory = [],
 }: RevisionDiffViewerModalProps) {
@@ -49,36 +55,129 @@ export default function RevisionDiffViewerModal({
   // Normalize historical snapshot list
   const historyEntries: RevisionHistoryEntry[] = useMemo(() => {
     const list: RevisionHistoryEntry[] = [];
-    if (Array.isArray(revisionHistory) && revisionHistory.length > 0) {
-      list.push(...revisionHistory);
-    } else if (Array.isArray(versionHistory) && versionHistory.length > 0) {
-      versionHistory.forEach((v: any, idx: number) => {
+    const rawVersions = Array.isArray(versionHistory) ? versionHistory : [];
+    const rawRevisions = Array.isArray(revisionHistory) ? revisionHistory : [];
+
+    rawVersions.forEach((v: any, idx: number) => {
+      const snap =
+        v.dataSnapshot ||
+        v.previousSnapshot ||
+        (v as any).snapshot ||
+        (v as any).returnedSnapshot ||
+        previousSnapshot ||
+        (currentDocument as any)?.returnedSnapshot ||
+        (currentDocument as any)?.previousSnapshot ||
+        (currentDocument as any)?.initialSnapshot ||
+        null;
+
+      list.push({
+        version: v.version || idx + 1,
+        versionLabel: v.versionLabel || `v${v.version || idx + 1}.0`,
+        submittedAt: v.archivedAt || v.submittedAt || v.savedAt,
+        submittedBy: v.resubmittedBy || v.submittedBy || v.savedByName || 'Submitter',
+        returnedAt: v.returnedAt,
+        returnedBy: v.returnedByName || v.returnedBy || 'Reviewer',
+        returnRemarks: v.returnRemarks || v.adviserRemarks || (currentDocument as any)?.adviserRemarks || 'Revision requested.',
+        dataSnapshot: snap,
+      });
+    });
+
+    rawRevisions.forEach((r: any, idx: number) => {
+      let snap =
+        r.dataSnapshot ||
+        r.previousSnapshot ||
+        (r as any).snapshot ||
+        (r as any).returnedSnapshot ||
+        null;
+
+      if (
+        (!snap || (!snap.attendanceSummary && !snap.results && !snap.lineItems && !snap.sessions)) &&
+        (previousSnapshot || (currentDocument as any)?.previousSnapshot || (currentDocument as any)?.returnedSnapshot)
+      ) {
+        snap = previousSnapshot || (currentDocument as any)?.previousSnapshot || (currentDocument as any)?.returnedSnapshot;
+      }
+
+      if (!snap) {
+        snap =
+          previousSnapshot ||
+          (currentDocument as any)?.returnedSnapshot ||
+          (currentDocument as any)?.previousSnapshot ||
+          (currentDocument as any)?.initialSnapshot ||
+          null;
+      }
+
+      const match = list.find((item) => item.version === r.version);
+      if (match) {
+        if (!match.dataSnapshot && snap) {
+          match.dataSnapshot = snap;
+        }
+        if (r.returnRemarks && !match.returnRemarks) {
+          match.returnRemarks = r.returnRemarks;
+        }
+      } else {
         list.push({
-          version: v.version || idx + 1,
-          versionLabel: v.versionLabel || `v${v.version || idx + 1}.0`,
-          submittedAt: v.archivedAt || v.submittedAt,
-          submittedBy: v.resubmittedBy || v.submittedBy || 'Submitter',
-          returnedAt: v.returnedAt,
-          returnedBy: v.returnedByName || v.returnedBy || 'Reviewer',
-          returnRemarks: v.returnRemarks || v.adviserRemarks || 'Revision requested.',
-          dataSnapshot: v.dataSnapshot || v.previousSnapshot || null,
+          version: r.version || idx + 1,
+          versionLabel: r.versionLabel || `v${r.version || idx + 1}.0`,
+          submittedAt: r.submittedAt,
+          submittedBy: r.submittedBy || 'Submitter',
+          returnedAt: r.returnedAt,
+          returnedBy: r.returnedBy || 'Reviewer',
+          returnRemarks: r.returnRemarks || (currentDocument as any)?.adviserRemarks || 'Revision requested.',
+          dataSnapshot: snap,
         });
+      }
+    });
+
+    // Fallback if no version list found but a snapshot or baseline is available
+    if (list.length === 0) {
+      const snap =
+        previousSnapshot ||
+        (currentDocument as any)?.returnedSnapshot ||
+        (currentDocument as any)?.previousSnapshot ||
+        (currentDocument as any)?.initialSnapshot ||
+        null;
+
+      list.push({
+        version: 1,
+        versionLabel: 'v1.0 (Initial)',
+        submittedAt: (currentDocument as any)?.submissionDate || (currentDocument as any)?.createdAt || new Date().toISOString(),
+        submittedBy: (currentDocument as any)?.createdByName || 'Submitter',
+        returnRemarks: (currentDocument as any)?.adviserRemarks || 'Initial submission state',
+        dataSnapshot: snap,
       });
     }
-    // Reverse to have latest revision first
-    return list.reverse();
-  }, [revisionHistory, versionHistory]);
+
+    return list.sort((a, b) => (b.version || 0) - (a.version || 0));
+  }, [revisionHistory, versionHistory, previousSnapshot, currentDocument]);
 
   const activeEntry = historyEntries[selectedSnapshotIdx] || historyEntries[0];
-  const oldSnapshot = activeEntry?.dataSnapshot || null;
+  const oldSnapshot =
+    activeEntry?.dataSnapshot ||
+    (activeEntry as any)?.snapshot ||
+    (activeEntry as any)?.returnedSnapshot ||
+    (activeEntry as any)?.previousSnapshot ||
+    previousSnapshot ||
+    (currentDocument as any)?.returnedSnapshot ||
+    (currentDocument as any)?.previousSnapshot ||
+    (currentDocument as any)?.initialSnapshot ||
+    (versionHistory && (versionHistory[selectedSnapshotIdx]?.dataSnapshot || versionHistory[selectedSnapshotIdx]?.snapshot || versionHistory[selectedSnapshotIdx]?.returnedSnapshot || versionHistory[selectedSnapshotIdx]?.previousSnapshot)) ||
+    (versionHistory && (versionHistory[0]?.dataSnapshot || versionHistory[0]?.snapshot || versionHistory[0]?.returnedSnapshot || versionHistory[0]?.previousSnapshot)) ||
+    null;
 
   // Run diff detection
   const detectedDiffs: FieldDiffEntry[] = useMemo(() => {
-    if (!currentDocument || !oldSnapshot) {
-      return activeEntry?.detectedDiffs || [];
+    let diffs: FieldDiffEntry[] = [];
+    if (currentDocument && oldSnapshot) {
+      diffs = diffAnyDocument(oldSnapshot, currentDocument, documentType);
     }
-    return diffAnyDocument(oldSnapshot, currentDocument, documentType);
-  }, [oldSnapshot, currentDocument, documentType, activeEntry]);
+    if (diffs.length === 0 && customDiffs && customDiffs.length > 0) {
+      return customDiffs;
+    }
+    if (diffs.length === 0 && activeEntry?.detectedDiffs && activeEntry.detectedDiffs.length > 0) {
+      return activeEntry.detectedDiffs;
+    }
+    return diffs;
+  }, [oldSnapshot, currentDocument, documentType, activeEntry, customDiffs]);
 
   // Unique sections
   const sections = useMemo(() => {
@@ -156,19 +255,29 @@ export default function RevisionDiffViewerModal({
           {/* Section Filter Pills */}
           {sections.length > 1 && (
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
-              {sections.map((sec) => (
-                <button
-                  key={sec}
-                  onClick={() => setActiveSectionFilter(sec)}
-                  className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all ${
-                    activeSectionFilter === sec
-                      ? 'bg-[#001A4D] text-white shadow-xs'
-                      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-100'
-                  }`}
-                >
-                  {sec === 'all' ? 'All Sections' : sec}
-                </button>
-              ))}
+              {sections.map((sec) => {
+                const count = sec === 'all' ? detectedDiffs.length : detectedDiffs.filter((d) => d.section === sec).length;
+                return (
+                  <button
+                    key={sec}
+                    onClick={() => setActiveSectionFilter(sec)}
+                    className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                      activeSectionFilter === sec
+                        ? 'bg-[#001A4D] text-white shadow-xs'
+                        : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span>{sec === 'all' ? 'All Sections' : sec}</span>
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-black ${
+                        activeSectionFilter === sec ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -189,9 +298,29 @@ export default function RevisionDiffViewerModal({
           {/* Diff Items Breakdown */}
           {filteredDiffs.length > 0 ? (
             <div className="space-y-3">
-              <div className="flex items-center justify-between text-xs text-gray-500 font-semibold px-1">
-                <span>DETECTED MODIFICATIONS ({filteredDiffs.length})</span>
-                <span className="text-[11px] text-gray-400">Green = New / Revised · Red = Previous</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500 font-semibold px-1">
+                <div className="flex items-center gap-2">
+                  <span>DETECTED CHANGES ({filteredDiffs.length})</span>
+                  {/* Category Counter Badges */}
+                  <div className="flex items-center gap-1.5 text-[10px] font-black tracking-wider uppercase">
+                    {filteredDiffs.filter((d) => d.changeType === 'added').length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                        +{filteredDiffs.filter((d) => d.changeType === 'added').length} Added
+                      </span>
+                    )}
+                    {filteredDiffs.filter((d) => d.changeType === 'modified').length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                        ~{filteredDiffs.filter((d) => d.changeType === 'modified').length} Modified
+                      </span>
+                    )}
+                    {filteredDiffs.filter((d) => d.changeType === 'removed').length > 0 && (
+                      <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300">
+                        -{filteredDiffs.filter((d) => d.changeType === 'removed').length} Removed
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <span className="text-[11px] text-gray-400">Green = Added/Revised · Red = Struck/Removed</span>
               </div>
 
               {filteredDiffs.map((diff, index) => {
@@ -231,26 +360,38 @@ export default function RevisionDiffViewerModal({
                     {/* Side-by-Side Values Comparison */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 text-xs">
                       {/* Old Value */}
-                      <div className="p-2.5 rounded-lg bg-rose-50/60 border border-rose-200/80 text-rose-900">
+                      <div
+                        className={`p-2.5 rounded-lg border text-xs ${
+                          isAdded
+                            ? 'bg-gray-50 border-gray-200 text-gray-400 italic'
+                            : 'bg-rose-50/60 border-rose-200/80 text-rose-900'
+                        }`}
+                      >
                         <span className="block text-[10px] font-bold uppercase tracking-wider text-rose-700 mb-1">
                           Previous State
                         </span>
-                        <span className="line-through font-medium break-words">
+                        <span className={`${isAdded ? '' : 'line-through'} font-medium break-words`}>
                           {diff.oldValue !== null && diff.oldValue !== undefined
                             ? String(diff.oldValue)
-                            : '(None / Empty)'}
+                            : '(None / Newly Added)'}
                         </span>
                       </div>
 
                       {/* New Value */}
-                      <div className="p-2.5 rounded-lg bg-emerald-50/80 border border-emerald-200 text-emerald-900 font-semibold">
+                      <div
+                        className={`p-2.5 rounded-lg border text-xs font-semibold ${
+                          isRemoved
+                            ? 'bg-gray-50 border-gray-200 text-gray-400 italic'
+                            : 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                        }`}
+                      >
                         <span className="block text-[10px] font-bold uppercase tracking-wider text-emerald-700 mb-1">
                           Revised State
                         </span>
                         <span className="break-words">
                           {diff.newValue !== null && diff.newValue !== undefined
                             ? String(diff.newValue)
-                            : '(Removed)'}
+                            : '(Removed / Struck out)'}
                         </span>
                       </div>
                     </div>

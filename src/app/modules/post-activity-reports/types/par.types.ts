@@ -156,6 +156,18 @@ export interface PostActivityReportDocument {
   approvedBy?: string;
   returnRemarks?: string;
   returnedAt?: Timestamp | any;
+  returnedBy?: string;
+  returnedByName?: string;
+  returnedByRoleTitle?: string;
+  returnedByEmail?: string;
+
+  // ─── Revision Management & Diff Tracking ───
+  version?: number;
+  versionLabel?: string;
+  revisionCount?: number;
+  previousSnapshot?: Record<string, any> | null;
+  returnedSnapshot?: Record<string, any> | null;
+  revisionHistory?: any[];
 
   // ─── Cross-Module EDMS Linkage ───
   archivedDocumentId?: string;

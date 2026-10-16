@@ -39,6 +39,7 @@ import {
 } from '../services/proposal.service';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { canEditProposal } from '../../events/utils/event-lifecycle.utils';
+import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 
 import Step1GeneralInfo from './wizard/Step1GeneralInfo';
 import Step2ObjectivesMechanics from './wizard/Step2ObjectivesMechanics';
@@ -239,7 +240,7 @@ export default function CreateProposalModal({
 
   // Sync initial data or set default reference number
   useEffect(() => {
-    const isOfficer = currentUser.role === 'officer';
+    const isOfficer = currentUser.role === 'officer' || currentUser.role === 'student_officer';
     const sasCfg = getCachedSasSignatoryConfig();
 
     // For Student Org proposals, Stage 1 is mandatory SAS Review Gatekeeper (Ma'am Riselle)
@@ -327,6 +328,63 @@ export default function CreateProposalModal({
     );
   }, [initialData, currentUser.role, currentUser.uid, currentUser.organizationId]);
 
+  // Resolve returned step from approval chain (if any)
+  const returnedStep = useMemo(() => {
+    const chain = formData.approvalChain || initialData?.approvalChain || [];
+    return chain.find(
+      (s) => s.status === 'returned' || s.status === 'returned_for_revision' || (s.remarks && (s.status as any) !== 'approved')
+    );
+  }, [formData.approvalChain, initialData?.approvalChain]);
+
+  // Resolve return remarks from adviserRemarks, step remarks, or proposal history
+  const returnRemarks = useMemo(() => {
+    return (
+      (formData as any).adviserRemarks ||
+      (initialData as any)?.adviserRemarks ||
+      returnedStep?.remarks ||
+      ((initialData as any)?.versionHistory?.[0] as any)?.returnRemarks ||
+      ((initialData as any)?.versionHistory?.[0] as any)?.adviserRemarks ||
+      ((initialData as any)?.proposalHistory?.slice().reverse().find((h: any) => h.action === 'returned_for_revision')?.remarks) ||
+      null
+    );
+  }, [formData, initialData, returnedStep]);
+
+  // Resolve returned reviewer information
+  const returnedReviewer = useMemo(() => {
+    return {
+      name:
+        (formData as any).returnedByName ||
+        (initialData as any)?.returnedByName ||
+        returnedStep?.signatoryName ||
+        ((initialData as any)?.versionHistory?.[0] as any)?.returnedByName ||
+        ((initialData as any)?.versionHistory?.[0] as any)?.returnedBy ||
+        'Institutional Signatory',
+      roleTitle:
+        (formData as any).returnedByRoleTitle ||
+        (initialData as any)?.returnedByRoleTitle ||
+        returnedStep?.roleTitle ||
+        ((initialData as any)?.versionHistory?.[0] as any)?.returnedByRoleTitle ||
+        'Signatory Reviewer',
+      email:
+        (formData as any).returnedByEmail ||
+        (initialData as any)?.returnedByEmail ||
+        returnedStep?.signatoryEmail ||
+        '',
+    };
+  }, [formData, initialData, returnedStep]);
+
+  // Resolve return timestamp
+  const returnedAt = useMemo(() => {
+    return (
+      (formData as any).returnedAt ||
+      (initialData as any)?.returnedAt ||
+      returnedStep?.signedAt ||
+      ((initialData as any)?.versionHistory?.[0] as any)?.returnedAt ||
+      (initialData as any)?.updatedAt ||
+      new Date().toISOString()
+    );
+  }, [formData, initialData, returnedStep]);
+
   // Revision Tracking & Per-Step Enforcement
   const isReturnedProposal = useMemo(() => {
     const st = (
@@ -335,7 +393,18 @@ export default function CreateProposalModal({
       (initialData as any)?.status ||
       (initialData as any)?.proposalStatus ||
       ''
-    ).toLowerCase();
+    ).toLowerCase().trim();
+
+    const isReturnedStatus = st === 'returned' || st === 'returned_for_revision';
+    const isReturnedFlag = Boolean((formData as any).isReturned || (initialData as any)?.isReturned);
+    const hasChainReturn = Boolean(
+      (formData.approvalChain || initialData?.approvalChain || []).some(
+        (s) => s.status === 'returned' || s.status === 'returned_for_revision'
+      )
+    );
+    const hasAdviserRemarks = Boolean(
+      (formData as any).adviserRemarks || (initialData as any)?.adviserRemarks || returnedStep?.remarks
+    );
     const hasRemarks = Boolean(
       (formData.stepRevisionRemarks && Object.keys(formData.stepRevisionRemarks).length > 0) ||
       (initialData?.stepRevisionRemarks && Object.keys(initialData.stepRevisionRemarks).length > 0)
@@ -344,13 +413,18 @@ export default function CreateProposalModal({
       (formData.returnFlags && formData.returnFlags.length > 0) ||
       (initialData?.returnFlags && initialData.returnFlags.length > 0)
     );
-    return st === 'returned' || hasRemarks || hasFlags;
+
+    return isReturnedStatus || isReturnedFlag || hasChainReturn || hasAdviserRemarks || hasRemarks || hasFlags;
   }, [
     formData.status,
     (formData as any).proposalStatus,
+    (formData as any).isReturned,
+    (formData as any).adviserRemarks,
+    formData.approvalChain,
     formData.stepRevisionRemarks,
     formData.returnFlags,
     initialData,
+    returnedStep,
   ]);
 
   const stepRemarksDict: Record<string, string> = useMemo(() => {
@@ -713,47 +787,70 @@ export default function CreateProposalModal({
 
         {/* ── MODAL BODY / CURRENT STEP CONTENT ── */}
         <div className="flex-1 overflow-y-auto p-6 sm:p-8">
-          {/* Top returned proposal summary banner */}
+          {/* Universal Revision Feedback Banner */}
           {isReturnedProposal && !submittedReferenceNo && (
-            <div className="mb-5 bg-amber-50/80 border border-amber-200 rounded-2xl p-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
-                    <RotateCcw className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-amber-950 flex items-center gap-2">
-                      Activity Proposal Returned for Revision
-                      <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full">
-                        Per-Step Revision Enforced
-                      </span>
-                    </h4>
-                    <p className="text-[11px] text-amber-800 mt-0.5">
-                      Specific revision directives have been issued. You must modify all marked steps before advancing or submitting.
-                    </p>
+            <div className="mb-6 space-y-3">
+              <RevisionFeedbackBanner
+                returnedBy={returnedReviewer}
+                returnedAt={returnedAt}
+                returnRemarks={returnRemarks}
+                returnFlags={returnFlagsList}
+                stepRevisionRemarks={stepRemarksDict}
+                versionHistory={(initialData as any)?.versionHistory}
+                revisionHistory={(initialData as any)?.revisionHistory}
+                versionLabel={
+                  (formData as any).versionLabel ||
+                  (initialData as any)?.versionLabel ||
+                  ((formData as any).version ? `v${(formData as any).version}.0` : undefined)
+                }
+                documentTitle={formData.title || initialData?.title || 'Activity Proposal'}
+                documentType="AP"
+                currentDocument={formData}
+              />
+
+              {/* Per-step revision buttons (only shown if specific steps were flagged) */}
+              {STEPS.some((s) => isStepFlagged(s.id)) && (
+                <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 shadow-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
+                        <RotateCcw className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-amber-950 flex items-center gap-2">
+                          Flagged Step Revisions Enforced
+                          <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full">
+                            Required Modifications
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-amber-800 mt-0.5">
+                          Specific revision directives have been issued. You must modify all marked steps before advancing or submitting.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {STEPS.filter((s) => isStepFlagged(s.id)).map((s) => {
+                        const modified = isStepModified(s.id);
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            onClick={() => setCurrentStep(s.id)}
+                            className={`text-[10px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
+                              modified
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
+                                : 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 ring-1 ring-amber-300/50'
+                            }`}
+                          >
+                            {modified ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-amber-600" />}
+                            <span>Step {s.id} ({modified ? 'Modified' : 'Unmodified'})</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {STEPS.filter((s) => isStepFlagged(s.id)).map((s) => {
-                    const modified = isStepModified(s.id);
-                    return (
-                      <button
-                        key={s.id}
-                        type="button"
-                        onClick={() => setCurrentStep(s.id)}
-                        className={`text-[10px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer ${
-                          modified
-                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 hover:bg-emerald-200'
-                            : 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 ring-1 ring-amber-300/50'
-                        }`}
-                      >
-                        {modified ? <CheckCircle2 className="w-3 h-3 text-emerald-600" /> : <AlertTriangle className="w-3 h-3 text-amber-600" />}
-                        <span>Step {s.id} ({modified ? 'Modified' : 'Unmodified'})</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              )}
             </div>
           )}
 

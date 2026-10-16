@@ -12,7 +12,7 @@ import {
   deleteDoc,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
+import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import { removeLedgerTransactionsForLiquidation } from './finance.service';
 import type { 
@@ -409,18 +409,18 @@ export const createLiquidationReport = async (
     updatedAt: serverTimestamp() as any,
   };
 
-  const docRef = await addDoc(collection(db, LIQUIDATIONS_COLLECTION), payload);
+  const docRef = await addDoc(collection(db, LIQUIDATIONS_COLLECTION), sanitizeFirestorePayload(payload));
 
   // Sync event liquidationStatus on event document
   if (data.eventId) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: initialStatus,
         liquidationReportId: docRef.id,
         liquidationRefNumber: (data as any).referenceNo || (payload as any).referenceNo || '',
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (evtErr) {
       console.warn('[createLiquidationReport] Event sync notice:', evtErr);
     }
@@ -474,23 +474,26 @@ export const updateLiquidationReport = async (
         (item.receiptUrls?.length || 0) !== (prev.receiptUrls?.length || 0);
 
       if (hasChanged) {
+        const prevVals: any = {};
+        if (prev.quantity !== undefined) prevVals.quantity = prev.quantity;
+        if (prev.unitCost !== undefined) prevVals.unitCost = prev.unitCost;
+        if (prev.totalCost !== undefined) prevVals.totalCost = prev.totalCost;
+        if (prev.description !== undefined) prevVals.description = prev.description;
         return {
           ...item,
           wasModifiedInRev: true,
-          previousValues: {
-            quantity: prev.quantity,
-            unitCost: prev.unitCost,
-            totalCost: prev.totalCost,
-            description: prev.description,
-          },
+          previousValues: prevVals,
         };
       }
 
-      return {
+      const baseItem: any = {
         ...item,
         wasModifiedInRev: prev.wasModifiedInRev || false,
-        previousValues: prev.previousValues,
       };
+      if (prev.previousValues) {
+        baseItem.previousValues = prev.previousValues;
+      }
+      return baseItem;
     });
 
     payload.lineItems = enrichedItems;
@@ -513,12 +516,12 @@ export const updateLiquidationReport = async (
       return { ...step, status: 'waiting' as const, signedAt: null, signatureUrl: null };
     });
 
-    const revisionEntry = {
+    const revisionEntry = sanitizeFirestorePayload({
       version: existingData.revisionCount || 1,
       versionLabel: `v${existingData.revisionCount || 1}.0`,
       submittedAt: existingData.submittedAt || null,
       submittedBy: existingData.submittedByName || existingData.createdByName || 'Submitter',
-      submittedByUid: existingData.createdById,
+      submittedByUid: existingData.createdById || 'user',
       returnedAt: existingData.returnedAt || null,
       returnedBy: (existingData as any).returnedByName || (existingData as any).returnedBy || 'Reviewer',
       returnedByRoleTitle: (existingData as any).returnedByRoleTitle || 'Institutional Signatory',
@@ -532,17 +535,17 @@ export const updateLiquidationReport = async (
         surplusOrDeficit: existingData.surplusOrDeficit || 0,
         notes: existingData.notes || '',
       },
-    };
+    });
     payload.revisionHistory = arrayUnion(revisionEntry);
 
-    const resubmitRemark: LiquidationRemark = {
+    const resubmitRemark: LiquidationRemark = sanitizeFirestorePayload({
       id: `rem-${Date.now()}`,
       authorName: data.submittedByName || existingData.submittedByName || 'Submitter',
       authorRole: (data.submittedByRole as any) || existingData.submittedByRole || 'officer',
       action: 'submitted',
       comment: `Resubmitted revision v${newRevCount}.0 with updated line items and receipt verification. Route reset to Stage 1.`,
       timestamp: new Date().toISOString(),
-    };
+    });
     payload.remarksHistory = arrayUnion(resubmitRemark);
   }
 
@@ -555,7 +558,7 @@ export const updateLiquidationReport = async (
     payload.surplusOrDeficit = budgetCeiling - totalActualSpending;
   }
 
-  await updateDoc(docRef, payload);
+  await updateDoc(docRef, sanitizeFirestorePayload(payload));
 
   // Sync event document if eventId and status exist
   const eventId = data.eventId || existingData?.eventId;
@@ -563,11 +566,11 @@ export const updateLiquidationReport = async (
   if (eventId && statusToSync) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: statusToSync,
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (evtErr) {
       console.warn('[updateLiquidationReport] Event sync notice:', evtErr);
     }
@@ -604,24 +607,24 @@ export const submitLiquidationReport = async (
     timestamp: new Date().toISOString(),
   };
 
-  await updateDoc(docRef, {
+  await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'under_review',
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
     submittedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(newRemark),
-  });
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(newRemark)),
+  }));
 
   try {
     if (data?.eventId) {
       const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: 'under_review',
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
-      });
+      }));
     }
   } catch (evtErr) {
     console.warn('[submitLiquidationReport] Event sync notice:', evtErr);
@@ -699,22 +702,22 @@ export async function withdrawLiquidationReport(
     timestamp: new Date().toISOString(),
   };
 
-  await updateDoc(docRef, {
+  await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'draft',
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
-    remarksHistory: arrayUnion(withdrawRemark),
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(withdrawRemark)),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   if (data.eventId) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: 'draft',
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (e) {
       console.warn('[withdrawLiquidationReport] Event sync notice:', e);
     }
@@ -742,25 +745,25 @@ export const approveLiquidationReport = async (
     timestamp: new Date().toISOString(),
   };
 
-  await updateDoc(docRef, {
+  await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'approved',
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     returnRemarks: remarks || null,
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(approvalRemark),
-  });
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(approvalRemark)),
+  }));
 
   // Sync event document
   const targetEventId = liquidationData?.eventId;
   if (targetEventId) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, targetEventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: 'approved',
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (e) {
       console.warn('[approveLiquidationReport] Event sync notice:', e);
     }
@@ -769,11 +772,11 @@ export const approveLiquidationReport = async (
       const snap = await getDoc(docRef);
       if (snap.exists() && snap.data()?.eventId) {
         const eventRef = doc(db, EVENTS_COLLECTION, snap.data().eventId);
-        await updateDoc(eventRef, {
+        await updateDoc(eventRef, sanitizeFirestorePayload({
           liquidationStatus: 'approved',
           liquidationReportId: id,
           updatedAt: serverTimestamp(),
-        });
+        }));
       }
     } catch (e) {
       console.warn('[approveLiquidationReport] Event sync notice:', e);
@@ -832,7 +835,7 @@ export const returnLiquidationReport = async (
     returnRemarks: remarks,
   };
 
-  await updateDoc(docRef, {
+  await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'returned',
     returnRemarks: remarks,
     returnedBy: adminUserId,
@@ -841,18 +844,18 @@ export const returnLiquidationReport = async (
     returnedByEmail: adminEmail || null,
     returnedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(returnRemark),
-    revisionHistory: arrayUnion(revisionEntry),
-  });
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(returnRemark)),
+    revisionHistory: arrayUnion(sanitizeFirestorePayload(revisionEntry)),
+  }));
 
   try {
     if (existingData?.eventId) {
       const eventRef = doc(db, EVENTS_COLLECTION, existingData.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: 'returned',
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
-      });
+      }));
     }
   } catch (e) {
     console.warn('[returnLiquidationReport] Event sync notice:', e);
@@ -1058,18 +1061,18 @@ export async function endorseLiquidationStep(
     rawUpdates.approvedBy = signerUid || signatory.email;
   }
 
-  await updateDoc(docRef, rawUpdates);
+  await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
 
   // Sync linked event
   if (data.eventId) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: isFullyApproved ? 'approved' : 'under_review',
         liquidationReportId: liquidationId,
         liquidationRefNumber: data.referenceNo || '',
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (evtErr) {
       console.warn('[endorseLiquidationStep] Event sync note:', evtErr);
     }
@@ -1175,16 +1178,16 @@ export async function returnLiquidationStep(
     revisionHistory: arrayUnion(revisionEntry),
   };
 
-  await updateDoc(docRef, rawUpdates);
+  await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
 
   if (data.eventId) {
     try {
       const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
+      await updateDoc(eventRef, sanitizeFirestorePayload({
         liquidationStatus: 'returned',
         liquidationReportId: liquidationId,
         updatedAt: serverTimestamp(),
-      });
+      }));
     } catch (e) {
       console.warn('[returnLiquidationStep] Event sync note:', e);
     }

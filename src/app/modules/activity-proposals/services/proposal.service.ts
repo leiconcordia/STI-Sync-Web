@@ -35,34 +35,7 @@ export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
 
-/**
- * Recursively strip all undefined values from Firestore payloads (including nested arrays and objects).
- * Preserves Firestore FieldValues (such as serverTimestamp()) and Dates.
- */
-export function sanitizeFirestorePayload<T>(data: T): T {
-  if (data === null || data === undefined) {
-    return null as any;
-  }
-  if (Array.isArray(data)) {
-    return data
-      .filter((item) => item !== undefined)
-      .map((item) => sanitizeFirestorePayload(item)) as any;
-  }
-  if (typeof data === 'object' && !(data instanceof Date)) {
-    // Keep Firestore FieldValues (serverTimestamp, deleteField, etc.) intact
-    if ('_methodName' in (data as any) || (data as any).constructor?.name === 'FieldValue') {
-      return data;
-    }
-    const cleanObj: Record<string, any> = {};
-    for (const [key, value] of Object.entries(data as Record<string, any>)) {
-      if (value !== undefined) {
-        cleanObj[key] = sanitizeFirestorePayload(value);
-      }
-    }
-    return cleanObj as T;
-  }
-  return data;
-}
+export { sanitizeFirestorePayload } from '../../../../services/firebase';
 
 /**
  * Sync an Activity Proposal directly to the `events` collection.
@@ -352,8 +325,10 @@ export async function submitProposalForReview(
     formData.status === 'returned' ||
     (formData as any).proposalStatus === 'returned' ||
     (formData as any).isReturned === true ||
+    Boolean((formData as any).adviserRemarks) ||
     Boolean((formData as any).stepRevisionRemarks && Object.keys((formData as any).stepRevisionRemarks).length > 0) ||
-    Boolean((formData as any).returnFlags && (formData as any).returnFlags.length > 0);
+    Boolean((formData as any).returnFlags && (formData as any).returnFlags.length > 0) ||
+    (formData.approvalChain || []).some((s) => s.status === 'returned' || s.status === 'returned_for_revision');
 
   let currentVersion = Number((formData as any).version || 1);
   if (isResubmission) {
@@ -426,51 +401,78 @@ export async function submitProposalForReview(
       if (existingSnap.exists()) {
         const d = existingSnap.data();
         existingSnapshotData = {
+          ...d,
+          ...(d.returnedSnapshot || {}),
           title: d.title || formData.title,
           description: d.description || formData.description,
           targetAudience: d.targetAudience || formData.targetAudience,
           sessions: d.sessions || formData.sessions,
-          lineItems: d.lineItems || formData.lineItems,
-          allocatedBudget: d.allocatedBudget ?? d.totalAllocatedBudget ?? formData.allocatedBudget,
+          lineItems: d.lineItems || formData.lineItems || d.financialProjections?.expenses || [],
+          financialProjections: d.financialProjections || (formData as any).financialProjections || null,
+          allocatedBudget: d.allocatedBudget ?? d.totalAllocatedBudget ?? (formData as any).allocatedBudget ?? 0,
           objectives: d.objectives || formData.objectives,
+          venueName: d.venueName || d.customVenueName || (formData as any).venueName || '',
+          date: d.date || d.sessions?.[0]?.date || (formData as any).date || '',
         };
       }
     } catch (_) {}
 
-    const versionSnapshot = {
+    const cleanSnap = existingSnapshotData ? sanitizeFirestorePayload(existingSnapshotData) : sanitizeFirestorePayload({
+      title: formData.title || '',
+      description: formData.description || '',
+      targetAudience: formData.targetAudience || null,
+      sessions: formData.sessions || [],
+      tasks: formData.tasks || [],
+      organizers: formData.organizers || formData.proponents || [],
+      proponents: formData.proponents || [],
+      successIndicators: formData.successIndicators || [],
+      mechanics: formData.mechanics || [],
+      materials: formData.materials || [],
+      marketingPlan: formData.marketingPlan || [],
+      documentationPlan: formData.documentationPlan || [],
+      lineItems: formData.lineItems || (formData as any).financialProjections?.expenses || [],
+      financialProjections: (formData as any).financialProjections || null,
+      allocatedBudget: formData.allocatedBudget || 0,
+      objectives: formData.objectives || [],
+      venueName: (formData as any).venueName || '',
+      date: (formData as any).date || '',
+    });
+
+    const versionSnapshot = sanitizeFirestorePayload({
       version: currentVersion - 1,
       versionLabel: `v${currentVersion - 1}.0`,
       archivedAt: new Date().toISOString(),
-      approvalChainSnapshot: (formData.approvalChain || []).map((s) => ({ ...s })),
+      approvalChainSnapshot: (formData.approvalChain || []).map((s) => sanitizeFirestorePayload({ ...s })),
       returnFlags: formData.returnFlags || [],
       stepRevisionRemarks: formData.stepRevisionRemarks || {},
-      resubmittedBy: user.name,
-      resubmittedByUid: user.uid,
-      dataSnapshot: existingSnapshotData || {
-        title: formData.title,
-        description: formData.description,
-        targetAudience: formData.targetAudience,
-        sessions: formData.sessions,
-        lineItems: formData.lineItems,
-        allocatedBudget: formData.allocatedBudget,
-        objectives: formData.objectives,
-      },
-    };
+      returnRemarks: (formData as any).adviserRemarks || (formData as any).returnRemarks || '',
+      returnedByName: (formData as any).returnedByName || '',
+      returnedByRoleTitle: (formData as any).returnedByRoleTitle || '',
+      returnedAt: (formData as any).returnedAt || '',
+      resubmittedBy: user.name || 'User',
+      resubmittedByUid: user.uid || 'user',
+      dataSnapshot: cleanSnap,
+      snapshot: cleanSnap,
+      previousSnapshot: cleanSnap,
+    });
 
+    const resubmitHistoryEntry = sanitizeFirestorePayload({
+      id: `hist_resubmit_${Date.now()}`,
+      action: 'resubmitted',
+      version: currentVersion,
+      performedBy: user.uid || 'user',
+      performedByName: user.name || 'User',
+      performedAt: new Date().toISOString(),
+      remarks: `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
+    });
+
+    payload.previousSnapshot = cleanSnap;
     payload.versionHistory = arrayUnion(versionSnapshot);
     payload.stepRevisionRemarks = null;
     payload.returnFlags = [];
     payload.isReturned = false;
     payload.adviserRemarks = null;
-    payload.proposalHistory = arrayUnion({
-      id: `hist_resubmit_${Date.now()}`,
-      action: 'resubmitted',
-      version: currentVersion,
-      performedBy: user.uid,
-      performedByName: user.name,
-      performedAt: new Date().toISOString(),
-      remarks: `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
-    });
+    payload.proposalHistory = arrayUnion(resubmitHistoryEntry);
   }
 
   if (!existingId && !formData.id) {
@@ -791,7 +793,15 @@ export async function endorseProposal(
     rawUpdates.status = 'approved_president';
     rawUpdates.proposalStatus = 'approved';
     rawUpdates.lifecycleStatus = 'approved';
+    rawUpdates.isApproved = true;
+    rawUpdates.isReturned = false;
+    rawUpdates.adviserRemarks = null;
+    rawUpdates.stepRevisionRemarks = null;
+    rawUpdates.returnFlags = [];
     rawUpdates.approvedAt = serverTimestamp();
+    rawUpdates.approvedBy = signatory.name || signatory.email || 'Signatory Approver';
+  } else {
+    rawUpdates.isReturned = false;
   }
 
   const updates = sanitizeFirestorePayload(rawUpdates);
@@ -806,7 +816,15 @@ export async function endorseProposal(
       status: isFullyApproved ? 'approved' : 'pending',
       lifecycleStatus: isFullyApproved ? 'approved' : 'pending_review',
       proposalStatus: isFullyApproved ? 'approved' : 'pending',
-      ...(isFullyApproved ? { approvedAt: serverTimestamp() } : {}),
+      isApproved: isFullyApproved,
+      isReturned: false,
+      adviserRemarks: isFullyApproved ? null : ((data as any).adviserRemarks || null),
+      stepRevisionRemarks: isFullyApproved ? null : ((data as any).stepRevisionRemarks || null),
+      returnFlags: isFullyApproved ? [] : ((data as any).returnFlags || []),
+      ...(isFullyApproved ? {
+        approvedAt: serverTimestamp(),
+        approvedBy: signatory.name || signatory.email || 'Signatory Approver',
+      } : {}),
     }
   );
 
@@ -903,6 +921,20 @@ export async function returnProposalForRevision(
     return s as ProposalApprovalStep;
   });
 
+  const returnedAtStr = new Date().toISOString();
+  const signerName = signatory.name || (signatory as any).displayName || 'Institutional Signatory';
+  const signerRoleTitle = signatory.roleTitle || (signatory as any).title || 'Signatory Reviewer';
+
+  const returnHistoryEntry = sanitizeFirestorePayload({
+    id: `hist_return_${Date.now()}`,
+    action: 'returned_for_revision',
+    performedBy: signerUid || 'signatory',
+    performedByName: signerName,
+    roleTitle: signerRoleTitle,
+    performedAt: returnedAtStr,
+    remarks: remarks?.trim() || 'Returned for revision.',
+  });
+
   const rawUpdates = {
     status: 'returned' as ProposalStatus,
     proposalStatus: 'returned',
@@ -913,7 +945,14 @@ export async function returnProposalForRevision(
     approvedBy: null,
     returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     adviserRemarks: remarks || null,
+    returnedByName: signerName,
+    returnedByRoleTitle: signerRoleTitle,
+    returnedByEmail: signerEmail,
+    returnedAt: returnedAtStr,
     approvalChain: sanitizedChain,
+    proposalHistory: arrayUnion(returnHistoryEntry),
+    returnedSnapshot: sanitizeFirestorePayload({ ...data }),
+    previousSnapshot: sanitizeFirestorePayload({ ...data }),
     updatedAt: serverTimestamp(),
   };
 
@@ -932,6 +971,10 @@ export async function returnProposalForRevision(
       proposalStatus: 'returned',
       lifecycleStatus: 'returned',
       adviserRemarks: remarks,
+      returnedByName: signerName,
+      returnedByRoleTitle: signerRoleTitle,
+      returnedByEmail: signerEmail,
+      returnedAt: returnedAtStr,
       returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
     }
   );

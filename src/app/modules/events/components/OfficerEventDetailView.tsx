@@ -1079,6 +1079,17 @@ export default function OfficerEventDetailView({
               documentTitle={fullProposal.title || event.title}
               documentType="AP"
               currentDocument={fullProposal}
+              previousSnapshot={
+                (fullProposal as any)?.dataSnapshot ||
+                (fullProposal as any)?.previousSnapshot ||
+                (fullProposal as any)?.returnedSnapshot ||
+                (event as any)?.returnedSnapshot ||
+                (event as any)?.previousSnapshot ||
+                ((fullProposal.versionHistory?.[0] as any)?.dataSnapshot) ||
+                ((fullProposal.versionHistory?.[0] as any)?.snapshot) ||
+                ((fullProposal.versionHistory?.[0] as any)?.returnedSnapshot) ||
+                null
+              }
               versionLabel={fullProposal.version ? `v${fullProposal.version}.0` : undefined}
             />
           )}

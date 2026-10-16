@@ -14,7 +14,7 @@ import {
   arrayUnion,
   Timestamp,
 } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
+import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
@@ -365,12 +365,14 @@ export async function saveOrSubmitPAR(
 
   let currentVersion = Number((formData as any).version || 1);
   let isResubmission = false;
+  let existingParData: any = null;
 
   if (formData.id) {
     try {
       const existingSnap = await getDoc(parDocRef);
       if (existingSnap.exists()) {
         const existingPar = existingSnap.data() as any;
+        existingParData = existingPar;
         isResubmission = existingPar.status === 'returned';
         currentVersion = Number(existingPar.version || 1);
 
@@ -431,10 +433,14 @@ export async function saveOrSubmitPAR(
     status,
     version: currentVersion,
     versionLabel: `v${currentVersion}.0`,
+    revisionCount: currentVersion,
     updatedAt: serverTimestamp(),
   });
 
-  if (isResubmission && submit) {
+  if (isResubmission && submit && existingParData) {
+    const existingParClean = sanitizeFirestorePayload(existingParData);
+    payload.previousSnapshot = existingParData.previousSnapshot || existingParData.returnedSnapshot || existingParClean;
+    payload.returnedSnapshot = existingParData.returnedSnapshot || existingParData.previousSnapshot || existingParClean;
     payload.returnRemarks = null;
     payload.returnedAt = null;
   }
@@ -455,19 +461,19 @@ export async function saveOrSubmitPAR(
         : 'Post-Activity Report submitted for institutional clearance and approval.',
       timestamp: new Date().toISOString(),
     };
-    payload.remarksHistory = arrayUnion(submitRemark);
+    payload.remarksHistory = arrayUnion(sanitizeFirestorePayload(submitRemark));
   }
 
-  await setDoc(parDocRef, payload, { merge: true });
+  await setDoc(parDocRef, sanitizeFirestorePayload(payload), { merge: true });
 
   // Update event record to store parId and parStatus
   try {
-    await updateDoc(eventRef, {
+    await updateDoc(eventRef, sanitizeFirestorePayload({
       parId: docId,
       parReferenceNo: referenceNo,
       parStatus: status,
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch (err) {
     console.warn('[saveOrSubmitPAR] Notice updating event doc with PAR reference:', err);
   }
@@ -573,22 +579,22 @@ export async function endorsePARStep(
     currentStageIndex: nextStageIndex,
     status: isFullyApproved ? 'approved' : 'under_review',
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(endorsementRemark),
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(endorsementRemark)),
     ...(isFullyApproved
       ? { approvedAt: serverTimestamp(), approvedBy: signerUid || signatory.email }
       : {}),
   });
 
-  await updateDoc(parRef, updates);
+  await updateDoc(parRef, sanitizeFirestorePayload(updates));
 
   // Sync event document
   try {
     const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-    await updateDoc(eventRef, {
+    await updateDoc(eventRef, sanitizeFirestorePayload({
       parStatus: isFullyApproved ? 'approved' : 'under_review',
       parId,
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch (err) {
     console.warn('[endorsePARStep] Event sync note:', err);
   }
@@ -627,49 +633,52 @@ export async function returnPAR(
     authorName: adminName || 'SAS Adviser',
     authorRole: 'admin',
     action: 'returned',
-    comment: remarks,
+    comment: remarks || 'Returned for revision.',
     timestamp: new Date().toISOString(),
   };
 
-  const revisionEntry = {
-    version: (data as any).version || 1,
-    versionLabel: `v${(data as any).version || 1}.0`,
-    submittedAt: data.submittedAt || null,
-    submittedBy: data.createdByName,
-    submittedByUid: data.createdByUid,
-    returnedAt: new Date().toISOString(),
-    returnedBy: adminName,
-    returnedByRoleTitle: adminRoleTitle,
-    returnedByEmail: adminEmail,
-    returnRemarks: remarks,
-    dataSnapshot: {
-      actualAttendeesCount: data.actualAttendeesCount ?? (data as any).attendanceCount,
-      executiveSummary: data.executiveSummary || '',
-      achievedObjectives: data.achievedObjectives || '',
-      documentationPhotos: data.documentationPhotos || [],
-      ratings: (data as any).ratings || null,
-    },
-  };
+  // Capture full deep snapshot of the PAR before returning so diff comparisons have complete fidelity
+  const fullSnapshot = sanitizeFirestorePayload({
+    ...data,
+  });
 
-  await updateDoc(parRef, {
+  const currentVer = Number((data as any).version || 1);
+  const revisionEntry = sanitizeFirestorePayload({
+    version: currentVer,
+    versionLabel: `v${currentVer}.0`,
+    submittedAt: data.submittedAt || null,
+    submittedBy: data.createdByName || (data as any).submittedByName || 'Submitter',
+    submittedByUid: data.createdByUid || (data as any).submittedByUid || (data as any).createdById || 'user',
+    returnedAt: new Date().toISOString(),
+    returnedBy: adminName || 'Signatory Reviewer',
+    returnedByRoleTitle: adminRoleTitle || 'Signatory',
+    returnedByEmail: adminEmail || null,
+    returnRemarks: remarks || 'Returned for revision.',
+    dataSnapshot: fullSnapshot,
+    previousSnapshot: fullSnapshot,
+  });
+
+  await updateDoc(parRef, sanitizeFirestorePayload({
     status: 'returned',
-    returnRemarks: remarks,
-    returnedBy: adminUserId,
-    returnedByName: adminName,
-    returnedByRoleTitle: adminRoleTitle,
+    returnRemarks: remarks || 'Returned for revision.',
+    returnedBy: adminUserId || 'reviewer',
+    returnedByName: adminName || 'Signatory Reviewer',
+    returnedByRoleTitle: adminRoleTitle || 'Signatory',
     returnedByEmail: adminEmail || null,
     returnedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(returnRemark),
+    previousSnapshot: fullSnapshot,
+    returnedSnapshot: fullSnapshot,
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(returnRemark)),
     revisionHistory: arrayUnion(revisionEntry),
-  });
+  }));
 
   try {
     const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-    await updateDoc(eventRef, {
+    await updateDoc(eventRef, sanitizeFirestorePayload({
       parStatus: 'returned',
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch {}
 }
 
@@ -708,21 +717,21 @@ export async function withdrawPostActivityReport(
     timestamp: new Date().toISOString(),
   };
 
-  await updateDoc(parRef, {
+  await updateDoc(parRef, sanitizeFirestorePayload({
     status: 'draft',
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
-    remarksHistory: arrayUnion(withdrawRemark),
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(withdrawRemark)),
     updatedAt: serverTimestamp(),
-  });
+  }));
 
   try {
     const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-    await updateDoc(eventRef, {
+    await updateDoc(eventRef, sanitizeFirestorePayload({
       parStatus: 'draft',
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch {}
 }
 
@@ -750,20 +759,20 @@ export async function approvePAR(
     timestamp: new Date().toISOString(),
   };
 
-  await updateDoc(parRef, {
+  await updateDoc(parRef, sanitizeFirestorePayload({
     status: 'approved',
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(approvalRemark),
-  });
+    remarksHistory: arrayUnion(sanitizeFirestorePayload(approvalRemark)),
+  }));
 
   try {
     const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-    await updateDoc(eventRef, {
+    await updateDoc(eventRef, sanitizeFirestorePayload({
       parStatus: 'approved',
       updatedAt: serverTimestamp(),
-    });
+    }));
   } catch {}
 
   // Auto-Archive to EDMS

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   X,
   FileCheck2,
@@ -17,12 +17,17 @@ import {
   Download,
   Loader2,
   Sparkles,
+  GitCompare,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
 import { endorsePARStep, returnPAR } from '../../modules/post-activity-reports/services/par.service';
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
 import { formatCurrency, formatVariance } from '../../utils/currency';
+import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
+import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
+import { diffPostActivityReport } from '../../modules/workflow/utils/document-diff-engine';
 
 interface PAREndorsementModalProps {
   isOpen: boolean;
@@ -46,6 +51,54 @@ export default function PAREndorsementModal({
   const [showReturnDialog, setShowReturnDialog] = useState(false);
   const [returnComment, setReturnComment] = useState('');
   const [isExporting, setIsExporting] = useState(false);
+  const [showDiffModal, setShowDiffModal] = useState(false);
+
+  // Compute latest snapshot and differences if report was revised
+  const latestSnapshot = useMemo(() => {
+    const history = report?.revisionHistory || [];
+    if (history.length > 0) {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const item = history[i];
+        const snap =
+          (item as any)?.dataSnapshot ||
+          (item as any)?.previousSnapshot ||
+          (item as any)?.snapshot ||
+          (item as any)?.returnedSnapshot;
+        if (snap && (snap.attendanceSummary || snap.results || !(report as any)?.previousSnapshot)) {
+          return snap;
+        }
+      }
+    }
+    return (
+      (report as any)?.previousSnapshot ||
+      (report as any)?.returnedSnapshot ||
+      (report as any)?.initialSnapshot ||
+      (history.length > 0 ? (history[history.length - 1] as any)?.dataSnapshot : null) ||
+      null
+    );
+  }, [report]);
+
+  const parDiffs = useMemo(() => {
+    if (!report || !latestSnapshot) return [];
+    return diffPostActivityReport(latestSnapshot, report);
+  }, [report, latestSnapshot]);
+
+  const diffByPath = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const d of parDiffs) {
+      map.set(d.fieldPath, d);
+    }
+    return map;
+  }, [parDiffs]);
+
+  const hasRevisions = Boolean(
+    (report?.version && report.version > 1) ||
+    (report?.revisionCount && report.revisionCount > 1) ||
+    (report?.revisionHistory && report.revisionHistory.length > 0) ||
+    Boolean((report as any)?.previousSnapshot) ||
+    Boolean((report as any)?.returnedSnapshot) ||
+    report?.status === 'returned'
+  );
 
   if (!isOpen || !report) return null;
 
@@ -131,7 +184,9 @@ export default function PAREndorsementModal({
         report.id,
         signatorySession?.id || signatorySession?.uid || '',
         signatorySession?.name || 'Signatory',
-        returnComment
+        returnComment,
+        signatorySession?.roleTitle || 'Institutional Signatory',
+        signatorySession?.email || undefined
       );
       toast.success('Report returned to organizer for revision.');
       if (onReportUpdated) onReportUpdated();
@@ -177,6 +232,11 @@ export default function PAREndorsementModal({
                 <span className="text-xs text-blue-200 font-mono font-bold">
                   {report.referenceNo}
                 </span>
+                {hasRevisions && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 border border-amber-400/40">
+                    Revision v{report.version || 2}.0
+                  </span>
+                )}
               </div>
               <h2 className="text-lg font-black tracking-tight text-white mt-0.5">
                 {report.eventTitle}
@@ -185,6 +245,22 @@ export default function PAREndorsementModal({
           </div>
 
           <div className="flex items-center gap-2">
+            {hasRevisions && (
+              <button
+                type="button"
+                onClick={() => setShowDiffModal(true)}
+                className="px-3 py-1.5 rounded-xl bg-amber-400 text-slate-950 hover:bg-amber-300 font-bold text-xs flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                title="Compare what was revised in this Post-Activity Report"
+              >
+                <GitCompare className="w-3.5 h-3.5" />
+                <span>Compare Changes</span>
+                {parDiffs.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-900 text-amber-300 text-[10px] font-black">
+                    {parDiffs.length}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               onClick={onClose}
               className="p-1.5 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors"
@@ -196,6 +272,25 @@ export default function PAREndorsementModal({
 
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Revision Banner if report has past revision history */}
+          {hasRevisions && (
+            <RevisionFeedbackBanner
+              returnedBy={{
+                name: (report as any).returnedByName || (report as any).returnedBy || 'Institutional Signatory',
+                roleTitle: (report as any).returnedByRoleTitle || 'Signatory Reviewer',
+                email: (report as any).returnedByEmail,
+              }}
+              returnedAt={report.returnedAt}
+              returnRemarks={report.returnRemarks}
+              revisionHistory={report.revisionHistory}
+              versionLabel={report.version ? `v${report.version}.0` : undefined}
+              documentTitle={report.eventTitle}
+              documentType="PAR"
+              currentDocument={report}
+              previousSnapshot={latestSnapshot}
+            />
+          )}
+
           {/* Key Facts Summary */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs">
             <div>
@@ -229,20 +324,33 @@ export default function PAREndorsementModal({
               <div className="grid grid-cols-2 gap-2 text-center my-2">
                 <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
                   <span className="text-[10px] text-slate-500 block">Registered</span>
-                  <span className="text-base font-bold text-slate-800">
-                    {report.attendanceSummary?.registeredCount || 0}
-                  </span>
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span className="text-base font-bold text-slate-800">
+                      {report.attendanceSummary?.registeredCount || 0}
+                    </span>
+                    {diffByPath.get('attendanceSummary.registeredCount') && (
+                      <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.registeredCount')} />
+                    )}
+                  </div>
                 </div>
                 <div className="bg-blue-50 p-2 rounded-lg border border-blue-200">
                   <span className="text-[10px] text-blue-700 block font-medium">Verified (Scanned)</span>
-                  <span className="text-base font-bold text-blue-800">
-                    {report.attendanceSummary?.attendedCount || 0}
-                  </span>
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span className="text-base font-bold text-blue-800">
+                      {report.attendanceSummary?.attendedCount || 0}
+                    </span>
+                    {diffByPath.get('attendanceSummary.attendedCount') && (
+                      <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.attendedCount')} />
+                    )}
+                  </div>
                 </div>
               </div>
-              <p className="text-[11px] text-slate-600">
-                <strong>Participants:</strong> {report.attendanceSummary?.whoAttended || 'College students'}
-              </p>
+              <div className="text-[11px] text-slate-600 flex items-center gap-1.5 flex-wrap">
+                <span><strong>Participants:</strong> {report.attendanceSummary?.whoAttended || 'College students'}</span>
+                {diffByPath.get('attendanceSummary.whoAttended') && (
+                  <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.whoAttended')} />
+                )}
+              </div>
             </div>
 
             {/* Financial Clearance Summary */}
@@ -281,9 +389,14 @@ export default function PAREndorsementModal({
 
           {/* Objectives Narrative & Key Learnings */}
           <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-              Objectives Achievement & Key Learnings
-            </h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                Objectives Achievement & Key Learnings
+              </h4>
+              {diffByPath.get('results.objectiveStatus') && (
+                <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
+              )}
+            </div>
             <div className="flex items-center gap-2 text-xs">
               <span className="text-slate-500">Status:</span>
               <span className="font-bold text-blue-700 uppercase bg-blue-50 px-2 py-0.5 rounded">
@@ -291,9 +404,16 @@ export default function PAREndorsementModal({
               </span>
             </div>
             {report.results?.achievementNarrative && (
-              <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
-                {report.results.achievementNarrative}
-              </p>
+              <div className="space-y-1">
+                {diffByPath.get('results.achievementNarrative') && (
+                  <div className="mb-1">
+                    <InlineRevisionBadge diff={diffByPath.get('results.achievementNarrative')} />
+                  </div>
+                )}
+                <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
+                  {report.results.achievementNarrative}
+                </p>
+              </div>
             )}
 
             {report.results?.keyLearnings && report.results.keyLearnings.length > 0 && (
@@ -318,22 +438,42 @@ export default function PAREndorsementModal({
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">1. Program Flow</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">1. Program Flow</strong>
+                  {diffByPath.get('recommendations.programFlow') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.programFlow')} />
+                  )}
+                </div>
                 <p className="text-slate-600">• Obs: {report.recommendations?.programFlow?.observations || '—'}</p>
                 <p className="text-slate-700 mt-1">• Rec: {report.recommendations?.programFlow?.recommendations || '—'}</p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">2. Participant Engagement</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">2. Participant Engagement</strong>
+                  {diffByPath.get('recommendations.participantEngagement') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantEngagement')} />
+                  )}
+                </div>
                 <p className="text-slate-600">• Obs: {report.recommendations?.participantEngagement?.observations || '—'}</p>
                 <p className="text-slate-700 mt-1">• Rec: {report.recommendations?.participantEngagement?.recommendations || '—'}</p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">3. Technical Setup</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">3. Technical Setup</strong>
+                  {diffByPath.get('recommendations.technicalSetup') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.technicalSetup')} />
+                  )}
+                </div>
                 <p className="text-slate-600">• Obs: {report.recommendations?.technicalSetup?.observations || '—'}</p>
                 <p className="text-slate-700 mt-1">• Rec: {report.recommendations?.technicalSetup?.recommendations || '—'}</p>
               </div>
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <strong className="text-slate-900 block mb-1">4. Participant Preparedness</strong>
+                <div className="flex items-center justify-between mb-1">
+                  <strong className="text-slate-900 block">4. Participant Preparedness</strong>
+                  {diffByPath.get('recommendations.participantPreparedness') && (
+                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantPreparedness')} />
+                  )}
+                </div>
                 <p className="text-slate-600">• Obs: {report.recommendations?.participantPreparedness?.observations || '—'}</p>
                 <p className="text-slate-700 mt-1">• Rec: {report.recommendations?.participantPreparedness?.recommendations || '—'}</p>
               </div>
@@ -343,9 +483,14 @@ export default function PAREndorsementModal({
           {/* Attached Photos */}
           {report.photos && report.photos.length > 0 && (
             <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                Photo Documentation ({report.photos.length})
-              </h4>
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                  Photo Documentation ({report.photos.length})
+                </h4>
+                {diffByPath.get('photos') && (
+                  <InlineRevisionBadge diff={diffByPath.get('photos')} />
+                )}
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {report.photos.map((p) => (
                   <div key={p.id} className="rounded-lg overflow-hidden border border-slate-200 aspect-video relative group">
@@ -501,6 +646,19 @@ export default function PAREndorsementModal({
           </div>
         </div>
       )}
+
+      {/* Visual Diff Comparison Modal */}
+      <RevisionDiffViewerModal
+        isOpen={showDiffModal}
+        onClose={() => setShowDiffModal(false)}
+        documentTitle={report.eventTitle || 'Post-Activity Report'}
+        documentType="PAR"
+        currentDocument={report}
+        previousSnapshot={latestSnapshot}
+        customDiffs={parDiffs}
+        revisionNumber={report.version || report.revisionCount || ((report.revisionHistory?.length || 0) + 1)}
+        revisionHistory={report.revisionHistory}
+      />
     </div>
   );
 }

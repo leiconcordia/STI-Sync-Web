@@ -200,6 +200,11 @@ export default function SignatoryPARsPage() {
                     <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-indigo-700 text-white">
                       Post-Activity Report
                     </span>
+                    {((par as any).version > 1 || (par as any).revisionCount > 1 || (par as any).revisionHistory?.length > 0 || (par as any).previousSnapshot) && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                        Revision v{(par as any).version || (par as any).revisionCount || 2}.0
+                      </span>
+                    )}
                     <span className="text-xs font-bold text-slate-600 flex items-center gap-1">
                       <Building className="w-3.5 h-3.5 text-slate-400" />
                       {par.organizationName || 'Student Club'}

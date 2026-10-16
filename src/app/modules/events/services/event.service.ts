@@ -362,15 +362,51 @@ export const createEvent = async (
     ? data.proposalStatus
     : 'pending_review';
 
-  const versionSnapshot: any = cleanUndefined({
-    version: newVersion,
-    versionLabel,
-    savedAt: Timestamp.now(),
-    savedBy: uid,
-    savedByName: userName || (isOfficerProposal ? 'Student Officer' : 'SAS / SAO Administrator'),
-    proposalStatus: initialProposalStatus,
-    snapshot: buildEventSnapshot(data),
-  });
+  // Build baseline snapshot of previous document version on resubmissions
+  let versionSnapshot: any = null;
+  let archivedSnapshot: any = null;
+  if (isResubmission && existingDocData) {
+    archivedSnapshot = cleanUndefined({
+      ...existingDocData,
+      ...(existingDocData.returnedSnapshot || {}),
+      title: existingDocData.title || data.title,
+      description: existingDocData.description || data.description,
+      objectives: existingDocData.objectives || data.objectives,
+      sessions: existingDocData.sessions || data.sessions,
+      budgetItems: existingDocData.budgetItems || data.budgetItems,
+      lineItems: existingDocData.lineItems || existingDocData.budgetItems || data.lineItems || data.budgetItems,
+      financialProjections: existingDocData.financialProjections || (data as any).financialProjections || null,
+      venueName: existingDocData.venueName || existingDocData.customVenueName || data.venueName,
+      customVenueName: existingDocData.customVenueName || data.customVenueName,
+      totalRequestedBudget: existingDocData.totalRequestedBudget ?? data.totalRequestedBudget,
+      totalApprovedBudget: existingDocData.totalApprovedBudget ?? data.totalApprovedBudget,
+      allocatedBudget: existingDocData.allocatedBudget ?? (data as any).allocatedBudget ?? existingDocData.totalApprovedBudget ?? data.totalApprovedBudget,
+      expectedParticipantCount: existingDocData.expectedParticipantCount ?? data.expectedParticipantCount,
+      targetAudience: existingDocData.targetAudience || (data as any).targetAudience || null,
+      date: existingDocData.date || existingDocData.sessions?.[0]?.date || data.date || '',
+    });
+
+    versionSnapshot = cleanUndefined({
+      version: currentVersion,
+      versionLabel: `v${currentVersion}.0`,
+      archivedAt: new Date().toISOString(),
+      savedAt: Timestamp.now(),
+      savedBy: uid,
+      savedByName: userName || (isOfficerProposal ? 'Student Officer' : 'SAS / SAO Administrator'),
+      resubmittedBy: userName || (isOfficerProposal ? 'Student Officer' : 'SAS / SAO Administrator'),
+      resubmittedByUid: uid,
+      returnRemarks: existingDocData?.adviserRemarks || existingDocData?.returnRemarks || '',
+      returnedByName: existingDocData?.returnedByName || '',
+      returnedByRoleTitle: existingDocData?.returnedByRoleTitle || '',
+      returnedAt: existingDocData?.returnedAt || '',
+      returnFlags: existingDocData?.returnFlags || [],
+      stepRevisionRemarks: existingDocData?.stepRevisionRemarks || {},
+      approvalChainSnapshot: (existingDocData?.approvalChain || []).map((s: any) => cleanUndefined({ ...s })),
+      dataSnapshot: archivedSnapshot,
+      snapshot: archivedSnapshot,
+      previousSnapshot: archivedSnapshot,
+    });
+  }
 
   const isVisibleVal = data.isVisible !== false;
   let formattedVisibilityStart: any = null;
@@ -393,6 +429,13 @@ export const createEvent = async (
     versionLabel,
     createdBy: uid,
     updatedAt: serverTimestamp() as any,
+    ...(isResubmission && archivedSnapshot ? {
+      previousSnapshot: archivedSnapshot,
+      isReturned: false,
+      adviserRemarks: null as any,
+      stepRevisionRemarks: null as any,
+      returnFlags: [],
+    } : {}),
   });
 
   let docId = draftId;
@@ -401,7 +444,7 @@ export const createEvent = async (
     const docRef = doc(db, EVENTS_COLLECTION, draftId);
 
     // If resubmitting a returned proposal, record version history & history log
-    if (isResubmission) {
+    if (isResubmission && versionSnapshot) {
       await setDoc(docRef, {
         ...eventPayload,
         proposalHistory: arrayUnion(historyEntry),
@@ -416,7 +459,7 @@ export const createEvent = async (
   } else {
     eventPayload.createdAt = serverTimestamp() as any;
     eventPayload.proposalHistory = [historyEntry];
-    if (isResubmission) {
+    if (isResubmission && versionSnapshot) {
       eventPayload.versionHistory = [versionSnapshot];
     }
     const docRef = await addDoc(collection(db, EVENTS_COLLECTION), eventPayload);
@@ -514,6 +557,10 @@ export const approveEvent = async (
     proposalStatus: 'approved',
     status: 'approved',
     lifecycleStatus: 'approved',
+    isApproved: true,
+    isReturned: false,
+    returnFlags: [],
+    stepRevisionRemarks: null,
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     adviserRemarks: remarks?.trim() || null,
@@ -600,9 +647,26 @@ const buildEventSnapshot = (data: any) => {
     sourceOfFunds: data.sourceOfFunds || '',
     totalRequestedBudget: data.totalRequestedBudget || 0,
     totalApprovedBudget: data.totalApprovedBudget || 0,
+    allocatedBudget: data.allocatedBudget ?? data.totalApprovedBudget ?? data.totalRequestedBudget ?? 0,
     studentPayablesEnabled: Boolean(data.studentPayablesEnabled),
     adminFeeOverride: data.adminFeeOverride || 0,
     budgetItems: data.budgetItems || [],
+    lineItems: data.lineItems || data.budgetItems || data.financialProjections?.expenses || [],
+    financialProjections: data.financialProjections || null,
+    targetAudience: data.targetAudience || null,
+    venueName: data.venueName || data.customVenueName || '',
+    date: data.date || data.startDate || (data.sessions && data.sessions[0]?.date) || '',
+    tasks: data.tasks || [],
+    organizers: data.organizers || data.proponents || [],
+    proponents: data.proponents || [],
+    successIndicators: data.successIndicators || [],
+    mechanics: data.mechanics || [],
+    materials: data.materials || data.materialsUtilized || [],
+    marketingPlan: data.marketingPlan || [],
+    documentationPlan: data.documentationPlan || [],
+    theme: data.theme || data.tagline || '',
+    isUrgent: Boolean(data.isUrgent),
+    urgentJustification: data.urgentJustification || '',
     documents: data.documents || [],
     attachedDocumentUrls: data.attachedDocumentUrls || [],
     documentIds: data.documentIds || [],
@@ -753,6 +817,8 @@ export const returnEvent = async (
     adviserRemarks: remarks?.trim() || null,
     stepRevisionRemarks: stepRevisionRemarks || {},
     returnedSnapshot,
+    previousSnapshot: returnedSnapshot,
+    dataSnapshot: returnedSnapshot,
     approvalChain: updatedChain || undefined,
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),

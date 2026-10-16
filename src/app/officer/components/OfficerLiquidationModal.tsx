@@ -21,6 +21,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { uploadToCloudinary } from '../../../services/cloudinary';
+import { sanitizeFirestorePayload } from '../../../services/firebase';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { getEventTimingStatus, isSasInstitutionalActivity } from '../../modules/events/utils/event-lifecycle.utils';
@@ -646,18 +647,18 @@ export default function OfficerLiquidationModal({
       }
 
       const payload: Omit<LiquidationDocument, 'id' | 'createdAt' | 'updatedAt'> = {
-        eventId: selectedEventId,
-        eventTitle,
-        organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId,
-        organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName,
-        createdById: userUid,
-        createdByRole: userRole,
-        createdByName: userName,
-        submittedByName: userName,
-        submittedByRole: submitterRole,
-        allocatedBudget,
-        totalActualSpending,
-        surplusOrDeficit,
+        eventId: selectedEventId || '',
+        eventTitle: eventTitle || '',
+        organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId || '',
+        organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName || '',
+        createdById: userUid || 'user',
+        createdByRole: userRole || 'officer',
+        createdByName: userName || 'Officer',
+        submittedByName: userName || 'Officer',
+        submittedByRole: submitterRole || 'officer',
+        allocatedBudget: Number(allocatedBudget || 0),
+        totalActualSpending: Number(totalActualSpending || 0),
+        surplusOrDeficit: Number(surplusOrDeficit || 0),
         status: nextStatus,
         approvalChain: finalizedChain,
         currentStageIndex: 1,
@@ -665,9 +666,11 @@ export default function OfficerLiquidationModal({
         lineItems,
       };
 
+      const sanitizedPayload = sanitizeFirestorePayload(payload);
+
       if (editingReport) {
         await updateLiquidationReport(editingReport.id, {
-          ...payload,
+          ...sanitizedPayload,
           status: nextStatus,
           ...(shouldSubmit ? { submittedAt: new Date() } : {}),
         });
@@ -677,7 +680,7 @@ export default function OfficerLiquidationModal({
             : 'Draft liquidation report updated successfully.'
         );
       } else {
-        await createLiquidationReport(payload);
+        await createLiquidationReport(sanitizedPayload);
         toast.success(
           shouldSubmit
             ? 'Liquidation report submitted successfully for institutional review.'

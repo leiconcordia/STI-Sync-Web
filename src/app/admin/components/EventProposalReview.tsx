@@ -270,16 +270,29 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       const hasChain = Array.isArray(chain) && chain.length > 0;
       const fullySigned = isProposalFullySigned(chain);
 
-      // Explicit returned marker prevents forced approval under any circumstances
+      // Check if chain is fully signed or document is approved in Firestore
+      const isApprovedInFirestore =
+        (hasChain && fullySigned) ||
+        actData?.proposalStatus === 'approved' ||
+        actData?.status === 'approved' ||
+        actData?.status === 'approved_president' ||
+        actData?.isApproved === true ||
+        evtData?.proposalStatus === 'approved' ||
+        evtData?.status === 'approved' ||
+        evtData?.isApproved === true;
+
+      // Explicit returned marker (only applies if document is NOT already approved)
       const isExplicitReturned =
-        merged.proposalStatus === 'returned' ||
-        merged.status === 'returned' ||
-        merged.lifecycleStatus === 'returned' ||
-        Boolean(merged.isReturned) ||
-        Boolean(actData?.isReturned) ||
-        Boolean(evtData?.isReturned) ||
-        actData?.proposalStatus === 'returned' ||
-        evtData?.proposalStatus === 'returned';
+        !isApprovedInFirestore && (
+          merged.proposalStatus === 'returned' ||
+          merged.status === 'returned' ||
+          merged.lifecycleStatus === 'returned' ||
+          Boolean(merged.isReturned) ||
+          Boolean(actData?.isReturned) ||
+          Boolean(evtData?.isReturned) ||
+          actData?.proposalStatus === 'returned' ||
+          evtData?.proposalStatus === 'returned'
+        );
 
       // Explicit pending/review markers prevent forced approval unless fully signed
       const isExplicitPending =
@@ -290,7 +303,22 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         merged.status === 'pending' ||
         merged.lifecycleStatus === 'pending_review';
 
-      if (isExplicitReturned) {
+      if (isApprovedInFirestore) {
+        merged.proposalStatus = 'approved';
+        if (merged.status !== 'completed' && merged.status !== 'cancelled') {
+          merged.status = 'approved';
+        }
+        if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
+          merged.lifecycleStatus = 'approved';
+        }
+        merged.isApproved = true;
+        merged.isReturned = false;
+        merged.adviserRemarks = null;
+        merged.stepRevisionRemarks = null;
+        merged.returnFlags = [];
+        merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt || new Date();
+        merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
+      } else if (isExplicitReturned) {
         merged.proposalStatus = 'returned';
         if (merged.status !== 'completed' && merged.status !== 'cancelled') {
           merged.status = 'returned';
@@ -310,6 +338,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           if (merged.lifecycleStatus !== 'completed' && merged.lifecycleStatus !== 'cancelled') {
             merged.lifecycleStatus = 'approved';
           }
+          merged.isApproved = true;
+          merged.isReturned = false;
           merged.approvedAt = actData?.approvedAt || evtData?.approvedAt || (event as any)?.approvedAt || merged.approvedAt;
           merged.approvedBy = actData?.approvedBy || evtData?.approvedBy || (event as any)?.approvedBy || merged.approvedBy;
         } else if (isExplicitPending) {
@@ -558,12 +588,60 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   // Multi-tiered check: Officially approved activities are unlocked
   const isApproved = useMemo(() => {
     if (isCancelled) return false;
+    if (isCompleted) return true;
 
-    // Check all candidates (activeEvent, liveEvent, original event prop, fullProposal)
-    const candidates = [activeEvent, liveEvent, event, fullProposal].filter(Boolean);
+    const chain: any[] = displayApprovalChain || [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    const fullySigned = isProposalFullySigned(chain);
 
-    // Explicit rejection, return, or pending states NEVER count as approved
-    for (const c of candidates) {
+    // 1. If an approval chain is configured and fully signed, the proposal is officially approved
+    if (hasChain && fullySigned) {
+      return true;
+    }
+
+    // 2. Direct explicit approval on activeEvent, liveEvent, or fullProposal
+    const activeSt = (activeEvent.status || '').toLowerCase().trim();
+    const activePropSt = (activeEvent.proposalStatus || '').toLowerCase().trim();
+    const activeLc = (activeEvent.lifecycleStatus || '').toLowerCase().trim();
+    if (
+      activeSt === 'approved' ||
+      activeSt === 'approved_president' ||
+      activePropSt === 'approved' ||
+      activeLc === 'approved' ||
+      activeLc === 'published' ||
+      activeEvent.isApproved === true ||
+      Boolean(activeEvent.approvedAt)
+    ) {
+      return true;
+    }
+
+    const liveSt = ((liveEvent as any)?.status || '').toLowerCase().trim();
+    const livePropSt = ((liveEvent as any)?.proposalStatus || '').toLowerCase().trim();
+    if (liveSt === 'approved' || liveSt === 'approved_president' || livePropSt === 'approved' || (liveEvent as any)?.isApproved === true) {
+      return true;
+    }
+
+    const fullSt = (fullProposal?.status || '').toLowerCase().trim();
+    const fullPropSt = (fullProposal?.proposalStatus || '').toLowerCase().trim();
+    if (fullSt === 'approved' || fullSt === 'approved_president' || fullPropSt === 'approved' || fullProposal?.isApproved === true) {
+      return true;
+    }
+
+    // 3. Active campus timing or published states (only approved activities reach these states)
+    if (
+      activeSt === 'upcoming' ||
+      activeSt === 'active' ||
+      activeSt === 'ongoing' ||
+      activeSt === 'published' ||
+      activeLc === 'ongoing' ||
+      activeLc === 'upcoming'
+    ) {
+      return true;
+    }
+
+    // 4. Fallback guard: Explicit rejection, return, or pending states
+    const primaryCandidates = [activeEvent, liveEvent].filter(Boolean);
+    for (const c of primaryCandidates) {
       const pStatus = ((c as any).proposalStatus || '').toLowerCase().trim();
       const st = ((c as any).status || '').toLowerCase().trim();
       const lc = ((c as any).lifecycleStatus || '').toLowerCase().trim();
@@ -587,55 +665,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       ) {
         return false;
       }
-    }
-
-    if (isCompleted) return true;
-
-    const chain: any[] = displayApprovalChain || [];
-    const hasChain = Array.isArray(chain) && chain.length > 0;
-    const fullySigned = isProposalFullySigned(chain);
-
-    // If an approval chain is configured, it MUST be fully signed before the activity is considered approved
-    if (hasChain) {
-      return fullySigned;
-    }
-
-    for (const c of candidates) {
-      const pStatus = ((c as any).proposalStatus || '').toLowerCase().trim();
-      const st = ((c as any).status || '').toLowerCase().trim();
-      const lc = ((c as any).lifecycleStatus || '').toLowerCase().trim();
-
-      // Direct explicit approval
-      if (
-        pStatus === 'approved' ||
-        st === 'approved' ||
-        lc === 'approved' ||
-        lc === 'published' ||
-        (c as any).isApproved === true ||
-        Boolean((c as any).approvedAt) ||
-        Boolean((c as any).approvedBy)
-      ) {
-        return true;
-      }
-
-      // Active campus timing or published states (only approved activities reach these states)
-      if (
-        st === 'upcoming' ||
-        st === 'active' ||
-        st === 'ongoing' ||
-        st === 'published' ||
-        lc === 'ongoing' ||
-        lc === 'upcoming'
-      ) {
-        return true;
-      }
-    }
-
-    // Full proposal status from signatory execution
-    const fullSt = (fullProposal?.status || '').toLowerCase().trim();
-    const fullPropSt = (fullProposal?.proposalStatus || '').toLowerCase().trim();
-    if (fullSt === 'approved' || fullSt === 'approved_president' || fullPropSt === 'approved') {
-      return true;
     }
 
     return false;
@@ -841,6 +870,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         proposalStatus: isAdvancingChain ? 'under_review' : 'approved',
         status: isAdvancingChain ? 'pending' : 'approved',
         lifecycleStatus: isAdvancingChain ? 'pending' : 'approved',
+        isApproved: !isAdvancingChain,
+        isReturned: false,
+        returnFlags: [],
+        stepRevisionRemarks: null,
         approvedBy: profile.uid,
         approvedAt: new Date() as any,
         adviserRemarks: remarks?.trim() || null,
@@ -851,6 +884,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         proposalStatus: isAdvancingChain ? 'under_review' : 'approved',
         status: isAdvancingChain ? 'under_review' : 'approved',
         lifecycleStatus: isAdvancingChain ? 'pending' : 'approved',
+        isApproved: !isAdvancingChain,
+        isReturned: false,
+        returnFlags: [],
+        stepRevisionRemarks: null,
         approvedBy: profile.uid,
         approvedAt: new Date() as any,
         adviserRemarks: remarks?.trim() || null,

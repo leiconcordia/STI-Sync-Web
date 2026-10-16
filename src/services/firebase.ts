@@ -73,4 +73,38 @@ export const analyticsPromise = isSupported().then((supported) =>
   supported ? getAnalytics(app) : null
 );
 
+/**
+ * Recursively strips undefined values from an object or array to prevent Firestore from rejecting writes.
+ * Preserves Firestore FieldValues (such as serverTimestamp(), arrayUnion(), deleteField()) and Dates.
+ */
+export function sanitizeFirestorePayload<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as any;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeFirestorePayload(item)) as any;
+  }
+  if (typeof data === 'object' && !(data instanceof Date)) {
+    // Keep Firestore FieldValues (serverTimestamp, arrayUnion, deleteField, etc.) intact
+    if (
+      '_methodName' in (data as any) ||
+      (data as any).constructor?.name === 'FieldValue' ||
+      typeof (data as any).isEqual === 'function' ||
+      typeof (data as any).toDate === 'function'
+    ) {
+      return data;
+    }
+    const cleanObj: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+      if (value !== undefined) {
+        cleanObj[key] = sanitizeFirestorePayload(value);
+      }
+    }
+    return cleanObj as T;
+  }
+  return data;
+}
+
 export default app;

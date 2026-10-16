@@ -1055,6 +1055,11 @@ export default function SignatoryEndorsementsPage() {
                           <span className="text-[11px] text-gray-500">
                             Org: <strong>{parDoc.organizationName}</strong>
                           </span>
+                          {((parDoc as any).version > 1 || (parDoc as any).revisionCount > 1 || (parDoc as any).revisionHistory?.length > 0 || (parDoc as any).previousSnapshot) && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                              Revision v{(parDoc as any).version || (parDoc as any).revisionCount || 2}.0
+                            </span>
+                          )}
                         </div>
 
                         <h3 className="text-base font-bold text-slate-900 leading-snug">

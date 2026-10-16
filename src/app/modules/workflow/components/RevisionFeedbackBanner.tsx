@@ -67,24 +67,64 @@ export default function RevisionFeedbackBanner({
 
   // Normalize all past revision cycles
   const pastCycles: RevisionHistoryEntry[] = [];
-  if (Array.isArray(revisionHistory) && revisionHistory.length > 0) {
-    pastCycles.push(...revisionHistory);
-  } else if (Array.isArray(versionHistory) && versionHistory.length > 0) {
-    versionHistory.forEach((v: any, idx: number) => {
-      if (v.returnRemarks || v.adviserRemarks || (v.stepRevisionRemarks && Object.keys(v.stepRevisionRemarks).length > 0)) {
+  const rawVersions = Array.isArray(versionHistory) ? versionHistory : [];
+  const rawRevisions = Array.isArray(revisionHistory) ? revisionHistory : [];
+
+  if (rawVersions.length > 0) {
+    rawVersions.forEach((v: any, idx: number) => {
+      pastCycles.push({
+        version: v.version || idx + 1,
+        versionLabel: v.versionLabel || `v${v.version || idx + 1}.0`,
+        submittedAt: v.archivedAt || v.submittedAt || v.savedAt,
+        submittedBy: v.resubmittedBy || v.submittedBy || v.savedByName || 'Submitter',
+        returnedAt: v.returnedAt || v.archivedAt,
+        returnedBy: v.returnedByName || v.returnedBy || 'Reviewer',
+        returnedByRoleTitle: v.returnedByRoleTitle || 'Institutional Signatory',
+        returnRemarks: v.returnRemarks || v.adviserRemarks || (currentDocument as any)?.adviserRemarks || 'Revision requested.',
+        returnFlags: v.returnFlags || [],
+        stepRevisionRemarks: v.stepRevisionRemarks || {},
+        resubmittedAt: v.resubmittedAt,
+        resubmissionNote: v.resubmissionNote,
+        dataSnapshot:
+          v.dataSnapshot ||
+          v.previousSnapshot ||
+          (v as any).snapshot ||
+          (v as any).returnedSnapshot ||
+          previousSnapshot ||
+          (currentDocument as any)?.returnedSnapshot ||
+          (currentDocument as any)?.previousSnapshot ||
+          (currentDocument as any)?.initialSnapshot ||
+          null,
+      });
+    });
+  }
+
+  if (rawRevisions.length > 0) {
+    rawRevisions.forEach((r: any, idx: number) => {
+      const snap =
+        r.dataSnapshot ||
+        r.previousSnapshot ||
+        (r as any).snapshot ||
+        (r as any).returnedSnapshot ||
+        previousSnapshot ||
+        (currentDocument as any)?.returnedSnapshot ||
+        (currentDocument as any)?.previousSnapshot ||
+        (currentDocument as any)?.initialSnapshot ||
+        null;
+
+      const match = pastCycles.find((p) => p.version === r.version);
+      if (match) {
+        if (!match.dataSnapshot && snap) {
+          match.dataSnapshot = snap;
+        }
+        if (r.returnRemarks && !match.returnRemarks) {
+          match.returnRemarks = r.returnRemarks;
+        }
+      } else {
         pastCycles.push({
-          version: v.version || idx + 1,
-          versionLabel: v.versionLabel || `v${v.version || idx + 1}.0`,
-          submittedAt: v.archivedAt || v.submittedAt,
-          submittedBy: v.resubmittedBy || v.submittedBy || 'Submitter',
-          returnedAt: v.returnedAt || v.archivedAt,
-          returnedBy: v.returnedByName || v.returnedBy || 'Reviewer',
-          returnedByRoleTitle: v.returnedByRoleTitle || 'Institutional Signatory',
-          returnRemarks: v.returnRemarks || v.adviserRemarks || 'Revision requested.',
-          returnFlags: v.returnFlags || [],
-          stepRevisionRemarks: v.stepRevisionRemarks || {},
-          resubmittedAt: v.resubmittedAt,
-          resubmissionNote: v.resubmissionNote,
+          ...r,
+          returnRemarks: r.returnRemarks || (currentDocument as any)?.adviserRemarks || 'Revision requested.',
+          dataSnapshot: snap,
         });
       }
     });
@@ -263,7 +303,12 @@ export default function RevisionFeedbackBanner({
         documentTitle={documentTitle}
         documentType={documentType}
         currentDocument={currentDocument || null}
-        previousSnapshot={previousSnapshot}
+        previousSnapshot={
+          previousSnapshot ||
+          (currentDocument as any)?.returnedSnapshot ||
+          (currentDocument as any)?.previousSnapshot ||
+          (currentDocument as any)?.initialSnapshot
+        }
         revisionHistory={pastCycles}
         versionHistory={versionHistory}
       />

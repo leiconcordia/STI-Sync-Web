@@ -726,8 +726,8 @@ export function canWithdrawProposal(
     return { canWithdraw: false, reason: 'Event not found.' };
   }
 
-  const status = (event.proposalStatus || (event as any).status || '').toLowerCase();
-  if (status !== 'pending_review' && status !== 'pending') {
+  const status = (event.proposalStatus || (event as any).status || '').toLowerCase().trim();
+  if (status !== 'pending_review' && status !== 'pending' && status !== 'under_review') {
     return {
       canWithdraw: false,
       reason: 'Only proposals currently under review can be withdrawn.',
@@ -736,9 +736,25 @@ export function canWithdrawProposal(
 
   const officerProp = isOfficerProposal(event);
 
+  const normRole = (userRole || '').toLowerCase().trim();
+  const isAdmin =
+    normRole === 'admin' ||
+    normRole === 'sas_admin' ||
+    normRole === 'sao_admin' ||
+    normRole === 'sao' ||
+    normRole === 'sas' ||
+    normRole === 'sao_head' ||
+    normRole === 'super_admin' ||
+    normRole === 'adviser' ||
+    normRole.includes('admin');
+  const isOfficer =
+    normRole === 'officer' ||
+    normRole === 'student_officer' ||
+    normRole.includes('officer');
+
   // Creator-only withdrawal rule:
   // Admin can ONLY withdraw proposals authored/managed by SAS, NEVER student organization proposals.
-  if (userRole === 'admin') {
+  if (isAdmin) {
     if (officerProp) {
       return {
         canWithdraw: false,
@@ -749,7 +765,7 @@ export function canWithdrawProposal(
   }
 
   // Officers can ONLY withdraw their own organization proposals, NEVER institutional SAS proposals.
-  if (userRole === 'officer') {
+  if (isOfficer) {
     if (!officerProp) {
       return {
         canWithdraw: false,
@@ -786,8 +802,16 @@ export function canEditProposal(
     return { canEdit: false, reason: 'Proposal not found.' };
   }
 
-  const status = (event.proposalStatus || (event as any).status || 'draft').toLowerCase();
-  const isReturned = status === 'returned';
+  const status = (
+    event.proposalStatus ||
+    (event as any).status ||
+    (event as any).lifecycleStatus ||
+    'draft'
+  ).toLowerCase().trim();
+  const isReturned =
+    status === 'returned' ||
+    status === 'returned_for_revision' ||
+    Boolean((event as any).isReturned);
   const isDraft = status === 'draft';
 
   if (!isDraft && !isReturned) {
@@ -799,7 +823,23 @@ export function canEditProposal(
 
   const officerProp = isOfficerProposal(event);
 
-  if (userRole === 'admin') {
+  const normRole = (userRole || '').toLowerCase().trim();
+  const isAdmin =
+    normRole === 'admin' ||
+    normRole === 'sas_admin' ||
+    normRole === 'sao_admin' ||
+    normRole === 'sao' ||
+    normRole === 'sas' ||
+    normRole === 'sao_head' ||
+    normRole === 'super_admin' ||
+    normRole === 'adviser' ||
+    normRole.includes('admin');
+  const isOfficer =
+    normRole === 'officer' ||
+    normRole === 'student_officer' ||
+    normRole.includes('officer');
+
+  if (isAdmin) {
     if (officerProp) {
       return {
         canEdit: false,
@@ -810,7 +850,7 @@ export function canEditProposal(
     return { canEdit: true, isOwner: true };
   }
 
-  if (userRole === 'officer') {
+  if (isOfficer) {
     if (!officerProp) {
       return {
         canEdit: false,
@@ -840,7 +880,19 @@ export function canRestoreEvent(
   event?: Partial<EventDocument> | null,
   userRole: 'admin' | 'officer' | string = 'admin'
 ): boolean {
-  if (!event || userRole !== 'admin') return false;
+  const normRole = (userRole || '').toLowerCase().trim();
+  const isAdmin =
+    normRole === 'admin' ||
+    normRole === 'sas_admin' ||
+    normRole === 'sao_admin' ||
+    normRole === 'sao' ||
+    normRole === 'sas' ||
+    normRole === 'sao_head' ||
+    normRole === 'super_admin' ||
+    normRole === 'adviser' ||
+    normRole.includes('admin');
+
+  if (!event || !isAdmin) return false;
   if (event.isArchived) return false;
   return Boolean(event.isDeleted || event.proposalStatus === 'cancelled');
 }
