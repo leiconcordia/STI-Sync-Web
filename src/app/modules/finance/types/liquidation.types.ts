@@ -1,4 +1,6 @@
 import { Timestamp } from 'firebase/firestore';
+import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
+import type { ReturnStepItem } from '../../workflow/components/StepReturnRevisionModal';
 
 export type LiquidationStatus = 'draft' | 'pending' | 'under_review' | 'approved' | 'returned' | 'voided';
 
@@ -67,8 +69,10 @@ export interface LiquidationApprovalStep {
   isPermanent?: boolean;
 }
 
-export interface LiquidationDocument {
+export interface LiquidationDocument extends SoftDeletable, Archivable {
   id: string;
+  referenceNo?: string;
+  referenceNumber?: string;
   eventId: string;
   eventTitle: string;
   organizationId: string;
@@ -91,7 +95,14 @@ export interface LiquidationDocument {
   approvedAt?: Timestamp | any;
   approvedBy?: string;
   returnRemarks?: string;
+  returnFlags?: string[];
+  stepRevisionRemarks?: Record<string, string>;
+  returnedBy?: string;
+  returnedByName?: string;
+  returnedByRoleTitle?: string;
+  returnedByEmail?: string;
   returnedAt?: Timestamp | any;
+  revisionHistory?: any[];
   voidedAt?: Timestamp | any;
   voidedBy?: string;
   voidedReason?: string;
@@ -107,4 +118,128 @@ export interface EventAttendanceSummary {
   checkedIn: number;
   absent: number;
 }
+
+/**
+ * Builds itemized revision checklist for Financial Liquidation (Form LF-01).
+ * Displays each individual expense line item by title, amount, quantity, and receipt count,
+ * along with the Signatory & Audit Route and Event Budget Linkage.
+ */
+export function buildLiquidationReturnSteps(lineItems: ExpenseLineItem[]): ReturnStepItem[] {
+  const steps: ReturnStepItem[] = [];
+
+  (lineItems || []).forEach((item, idx) => {
+    const itemNum = idx + 1;
+    const itemTitle = item.description?.trim() ? item.description.trim() : `Item #${itemNum}`;
+    const key = `item_${item.id || idx}`;
+
+    const recCount =
+      (item.receiptFiles && item.receiptFiles.length) ||
+      (item.receiptUrls && item.receiptUrls.length) ||
+      (item.receiptUrl ? 1 : 0);
+
+    const costFormatted = Number(item.totalCost || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const unitFormatted = Number(item.unitCost || 0).toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const qty = item.quantity || 1;
+
+    const descParts: string[] = [
+      `₱${costFormatted} (${qty} @ ₱${unitFormatted})`,
+      `${recCount} receipt proof(s)`,
+    ];
+    if (item.category) descParts.push(item.category);
+    if (item.vendorName) descParts.push(`Vendor: ${item.vendorName}`);
+
+    steps.push({
+      key,
+      stepNumber: itemNum,
+      label: `Item #${itemNum}: ${itemTitle}`,
+      description: descParts.join(' • '),
+    });
+  });
+
+  // Signatory & Audit Pipeline
+  steps.push({
+    key: 'sec_signatories',
+    stepNumber: steps.length + 1,
+    label: 'Signatory & Audit Route',
+    description: 'Designated auditor, treasurer, institutional signatories, and endorsement sequence',
+  });
+
+  // Event Linkage & Budget Ceiling
+  steps.push({
+    key: 'sec_event_budget',
+    stepNumber: steps.length + 1,
+    label: 'Event Linkage & Budget Ceiling',
+    description: 'Linked event details, approved allocation amount, and deficit/surplus verification',
+  });
+
+  return steps;
+}
+
+/**
+ * Helper to reliably determine if an expense line item is flagged for revision,
+ * matching against full item ID, prefix-stripped ID, zero-based and 1-based index permutations,
+ * or legacy bulk flags.
+ */
+export function isExpenseItemFlagged(
+  item: ExpenseLineItem,
+  index: number,
+  returnFlags: string[] = [],
+  stepRevisionRemarks: Record<string, string> = {},
+  hasLegacyBulkFlags: boolean = false,
+  hasItemLevelFlags: boolean = false
+): { isFlagged: boolean; feedback?: string } {
+  const flags = returnFlags || [];
+  const remarks = stepRevisionRemarks || {};
+  const allKeys = Array.from(new Set([...flags, ...Object.keys(remarks)]));
+
+  // Construct all possible candidate keys for this line item
+  const candidates: string[] = [];
+  if (item.id) {
+    candidates.push(`item_${item.id}`);
+    candidates.push(item.id);
+    if (item.id.startsWith('item_')) {
+      candidates.push(item.id.replace(/^item_/, ''));
+    }
+  }
+  candidates.push(`item_${index}`);
+  candidates.push(`item_${index + 1}`);
+
+  for (const cand of candidates) {
+    if (flags.includes(cand) || Boolean(remarks[cand])) {
+      return {
+        isFlagged: true,
+        feedback: remarks[cand] || undefined,
+      };
+    }
+  }
+
+  // Substring / partial matching across all flagged keys
+  for (const k of allKeys) {
+    if (!k.startsWith('item_') && !k.startsWith('item-')) continue;
+    if (item.id && (k.includes(item.id) || item.id.includes(k.replace(/^item_/, '')))) {
+      return {
+        isFlagged: true,
+        feedback: remarks[k] || undefined,
+      };
+    }
+  }
+
+  // Fallback to bulk legacy flags if no item-level flags exist
+  if (!hasItemLevelFlags && hasLegacyBulkFlags) {
+    const bulkRemark = remarks['sec_line_items'] || remarks['sec_receipts'];
+    return {
+      isFlagged: true,
+      feedback: bulkRemark || undefined,
+    };
+  }
+
+  return { isFlagged: false };
+}
+
 

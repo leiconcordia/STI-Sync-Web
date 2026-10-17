@@ -87,6 +87,7 @@ export function useAllEvents() {
 
 
       const combined = Array.from(map.values()).filter((e) => {
+        if ((e as any).isDeleted === true) return false;
         const isDraft =
           e.proposalStatus === 'draft' ||
           e.status === 'draft' ||
@@ -276,7 +277,7 @@ export function useDraftEvents() {
       legDrafts.forEach((d) => map.set(d.id, d));
       actDrafts.forEach((d) => map.set(d.id, d));
 
-      const combined = Array.from(map.values());
+      const combined = Array.from(map.values()).filter((d: any) => d.isDeleted !== true);
       combined.sort((a, b) => {
         const aTime = (a.updatedAt as any)?.seconds ?? 0;
         const bTime = (b.updatedAt as any)?.seconds ?? 0;
@@ -327,7 +328,7 @@ export function useOrgEvents(orgId: string | null | undefined) {
       legDocs.forEach((d) => map.set(d.id, d));
       actDocs.forEach((d) => map.set(d.id, d));
 
-      let fetched = Array.from(map.values());
+      let fetched = Array.from(map.values()).filter((e: any) => e.isDeleted !== true);
 
       if (orgId && orgId.trim()) {
         const cleanOrgId = orgId.trim().toLowerCase();

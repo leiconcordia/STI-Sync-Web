@@ -20,6 +20,26 @@ export type UnifiedApprovalStatus =
 
 export type DiffChangeType = 'added' | 'removed' | 'modified' | 'unchanged';
 
+export interface SoftDeletable {
+  isDeleted?: boolean;
+  deletedAt?: any; // Firestore Timestamp / ISO String
+  deletedByUid?: string;
+  deletedByName?: string;
+  deletedByRole?: string;
+  deletedReason?: string;
+  restoredAt?: any;
+  restoredByUid?: string;
+  restoredByName?: string;
+}
+
+export interface Archivable {
+  isArchived?: boolean;
+  archivedAt?: any;
+  archivedBy?: string;
+  archivedRefNumber?: string;
+  archivedDocumentId?: string;
+}
+
 export interface FieldDiffEntry {
   fieldPath: string;           // e.g. "budget.lineItems[0].totalCost" or "sessions[0].venue"
   label: string;               // e.g. "Session 1 Venue" or "Speaker Honorarium"

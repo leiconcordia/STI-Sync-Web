@@ -26,6 +26,7 @@ import OfficerLiquidationModal from '../components/OfficerLiquidationModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
+import { isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
 import { deleteLiquidationReport, withdrawLiquidationReport } from '../../modules/finance/services/liquidation.service';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
@@ -33,8 +34,9 @@ import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
+import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 
-type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft';
+type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 function getLiquidationTimestamp(liq: LiquidationDocument): number {
@@ -357,6 +359,7 @@ export default function FinancialLiquidation() {
               { key: 'approved', label: 'Approved', count: counts.approved },
               { key: 'returned', label: 'Returned', count: counts.returned },
               { key: 'draft', label: 'Drafts', count: counts.draft },
+              { key: 'trash', label: 'Trash', count: undefined },
             ].map((tab) => {
               const isActive = activeTab === tab.key;
               return (
@@ -370,13 +373,15 @@ export default function FinancialLiquidation() {
                   }`}
                 >
                   <span>{tab.label}</span>
-                  <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                      isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
+                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -406,9 +411,24 @@ export default function FinancialLiquidation() {
           </div>
         </div>
 
-        {/* ── Table Container (No inner vertical scroll) ── */}
-        <div className="overflow-x-auto relative">
-          {loading ? (
+        {activeTab === 'trash' ? (
+          <div className="p-4">
+            <TrashRepositoryViewer
+              collectionName="liquidations"
+              documentTypeLabel="Financial Liquidations"
+              organizationId={profile?.activeOrganizationId}
+              currentUser={{
+                uid: profile?.uid || 'officer',
+                name: profile?.studentName || 'Officer',
+                role: 'Officer',
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            {/* ── Table Container (No inner vertical scroll) ── */}
+            <div className="overflow-x-auto relative">
+              {loading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
               Loading liquidation reports...
             </div>
@@ -594,6 +614,8 @@ export default function FinancialLiquidation() {
           onPageChange={setCurrentPage}
           itemName="reports"
         />
+          </>
+        )}
       </div>
 
       {/* Create / Edit Modal */}
@@ -622,12 +644,12 @@ export default function FinancialLiquidation() {
               </div>
               <div>
                 <h3 className="font-bold text-gray-900 text-base">Discard Liquidation Report?</h3>
-                <p className="text-xs text-gray-500">This action will delete the report and unlink it from the event.</p>
+                <p className="text-xs text-gray-500">This draft will be moved to Trash where you can restore it anytime.</p>
               </div>
             </div>
 
             <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-xl border border-gray-100">
-              Are you sure you want to discard the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>? Any attached ledger transactions will be rolled back.
+              Are you sure you want to discard the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>? You can restore it anytime from the Trash tab.
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2">
@@ -645,8 +667,16 @@ export default function FinancialLiquidation() {
                   if (!deletingReport) return;
                   setIsDeleting(true);
                   try {
-                    await deleteLiquidationReport(deletingReport.id);
-                    toast.success('Liquidation report discarded successfully.');
+                    await deleteLiquidationReport(
+                      deletingReport.id,
+                      {
+                        uid: profile?.uid || 'officer',
+                        name: profile?.studentName || 'Officer',
+                        role: 'Officer',
+                      },
+                      'Draft discarded by author'
+                    );
+                    toast.success('Liquidation draft moved to Trash. You can restore it anytime.');
                     setDeletingReport(null);
                   } catch (err: any) {
                     toast.error(err?.message || 'Failed to discard liquidation report.');
@@ -682,26 +712,64 @@ export default function FinancialLiquidation() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
-              <div className="grid grid-cols-3 gap-3 bg-gray-50 p-3 rounded-lg text-center">
-                <div>
-                  <div className="text-xs text-gray-500">Allocated Budget</div>
-                  <div className="font-bold text-sm text-[#001A4D]">
-                    {formatCurrency(viewingDetailReport.allocatedBudget)}
+              {/* Event Linkage & Budget Ceiling Summary */}
+              {(() => {
+                const isEventBudgetFlagged = Boolean(
+                  viewingDetailReport.returnFlags?.includes('sec_event_budget') ||
+                  viewingDetailReport.stepRevisionRemarks?.['sec_event_budget']
+                );
+                const eventBudgetRemark = viewingDetailReport.stepRevisionRemarks?.['sec_event_budget'];
+
+                return (
+                  <div
+                    className={`p-3.5 rounded-xl transition-all ${
+                      isEventBudgetFlagged
+                        ? 'border-2 border-amber-400 bg-amber-50/40 ring-1 ring-amber-300 shadow-xs'
+                        : 'border border-gray-200 bg-gray-50'
+                    }`}
+                  >
+                    {isEventBudgetFlagged && (
+                      <div className="flex items-center justify-between pb-2 mb-2 border-b border-amber-200/80 text-left">
+                        <span className="text-[11px] font-bold text-amber-900 uppercase flex items-center gap-1">
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                          Event Linkage &amp; Budget Ceiling Flagged for Revision
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 bg-amber-200 text-amber-900 rounded">
+                          Needs Revision
+                        </span>
+                      </div>
+                    )}
+
+                    {isEventBudgetFlagged && eventBudgetRemark && (
+                      <div className="p-2 mb-2.5 bg-amber-100/70 border border-amber-300 rounded text-left text-xs text-amber-950">
+                        <span className="font-bold text-amber-900">Reviewer Note: </span>
+                        {eventBudgetRemark}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div>
+                        <div className="text-xs text-gray-500">Allocated Budget</div>
+                        <div className="font-bold text-sm text-[#001A4D]">
+                          {formatCurrency(viewingDetailReport.allocatedBudget)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">Actual Spending</div>
+                        <div className="font-bold text-sm text-gray-900">
+                          {formatCurrency(viewingDetailReport.totalActualSpending)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-gray-500">Surplus / Deficit</div>
+                        <div className={`font-bold text-sm ${viewingDetailReport.surplusOrDeficit < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                          {formatVariance(viewingDetailReport.surplusOrDeficit)}
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Actual Spending</div>
-                  <div className="font-bold text-sm text-gray-900">
-                    {formatCurrency(viewingDetailReport.totalActualSpending)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Surplus / Deficit</div>
-                  <div className={`font-bold text-sm ${viewingDetailReport.surplusOrDeficit < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                    {formatVariance(viewingDetailReport.surplusOrDeficit)}
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
 
               {(viewingDetailReport.status === 'returned' || (viewingDetailReport.revisionHistory && viewingDetailReport.revisionHistory.length > 0)) && (
                 <RevisionFeedbackBanner
@@ -712,6 +780,8 @@ export default function FinancialLiquidation() {
                   }}
                   returnedAt={viewingDetailReport.returnedAt}
                   returnRemarks={viewingDetailReport.returnRemarks}
+                  returnFlags={viewingDetailReport.returnFlags}
+                  stepRevisionRemarks={viewingDetailReport.stepRevisionRemarks}
                   revisionHistory={viewingDetailReport.revisionHistory}
                   canEdit={true}
                   onEditClick={() => {
@@ -728,12 +798,49 @@ export default function FinancialLiquidation() {
 
               <h4 className="font-bold text-sm text-gray-900 pt-2">Line Items</h4>
               <div className="space-y-2">
-                {viewingDetailReport.lineItems?.map((item, idx) => {
-                  const itemAllocated = item.allocatedCost ?? 0;
-                  const itemVariance = itemAllocated > 0 ? itemAllocated - item.totalCost : null;
+                {(() => {
+                  const hasItemLevelFlags = (viewingDetailReport.returnFlags || []).some(
+                    (f) => f.startsWith('item_') || f.startsWith('item-')
+                  );
+                  const hasLegacyBulkFlags = Boolean(
+                    viewingDetailReport.returnFlags?.includes('sec_line_items') ||
+                    viewingDetailReport.returnFlags?.includes('sec_receipts')
+                  );
 
-                  return (
-                    <div key={idx} className="p-3 border border-gray-200 rounded-lg text-xs space-y-1.5 bg-gray-50/50">
+                  return viewingDetailReport.lineItems?.map((item, idx) => {
+                    const itemAllocated = item.allocatedCost ?? 0;
+                    const itemVariance = itemAllocated > 0 ? itemAllocated - item.totalCost : null;
+                    const { isFlagged: isItemFlagged, feedback: itemRemark } = isExpenseItemFlagged(
+                      item,
+                      idx,
+                      viewingDetailReport.returnFlags,
+                      viewingDetailReport.stepRevisionRemarks,
+                      hasLegacyBulkFlags,
+                      hasItemLevelFlags
+                    );
+
+                    return (
+                      <div
+                        key={item.id || idx}
+                        className={`p-3 rounded-lg text-xs space-y-1.5 transition-all ${
+                          isItemFlagged
+                            ? 'border-2 border-amber-400 bg-amber-50/30 ring-1 ring-amber-300'
+                            : 'border border-gray-200 bg-gray-50/50'
+                        }`}
+                      >
+                      {isItemFlagged && (
+                        <div className="flex items-center justify-between pb-1 border-b border-amber-200/80">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3 text-amber-700" />
+                            Needs Revision
+                          </span>
+                          {itemRemark && (
+                            <span className="text-[11px] text-amber-800 italic line-clamp-1">
+                              Note: {itemRemark}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div className="flex items-center justify-between font-bold text-gray-900">
                         <span>{item.description} ({item.category})</span>
                         <span className="text-[#001A4D]">Actual Cost: {formatCurrency(item.totalCost)}</span>
@@ -825,20 +932,54 @@ export default function FinancialLiquidation() {
                       })()}
                     </div>
                   );
-                })}
+                });
+              })()}
               </div>
 
               {/* Multi-Stage Institutional Signatory Pipeline */}
-              <div className="pt-3 border-t border-gray-200 space-y-2">
-                <h4 className="font-bold text-xs text-[#001A4D] uppercase tracking-wider">
-                  Institutional Signatory & Audit Route
-                </h4>
-                <LiquidationSignatoryTracker
-                  approvalChain={viewingDetailReport.approvalChain}
-                  currentStageIndex={viewingDetailReport.currentStageIndex ?? 1}
-                  liquidationStatus={viewingDetailReport.status}
-                />
-              </div>
+              {(() => {
+                const isSignatoriesFlagged = Boolean(
+                  viewingDetailReport.returnFlags?.includes('sec_signatories') ||
+                  viewingDetailReport.stepRevisionRemarks?.['sec_signatories']
+                );
+                const signatoriesRemark = viewingDetailReport.stepRevisionRemarks?.['sec_signatories'];
+
+                return (
+                  <div
+                    className={`pt-3 border-t border-gray-200 space-y-2 p-3 rounded-xl transition-all ${
+                      isSignatoriesFlagged
+                        ? 'border-2 border-amber-400 bg-amber-50/40 ring-1 ring-amber-300 shadow-xs'
+                        : ''
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-xs text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-[#0E4EBD]" />
+                        <span>Institutional Signatory &amp; Audit Route</span>
+                      </h4>
+                      {isSignatoriesFlagged && (
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
+                          <AlertCircle className="w-3 h-3 text-amber-700" />
+                          Needs Revision
+                        </span>
+                      )}
+                    </div>
+
+                    {isSignatoriesFlagged && signatoriesRemark && (
+                      <div className="p-2.5 bg-amber-100/70 border border-amber-300 rounded-lg text-xs text-amber-950">
+                        <span className="font-bold text-amber-900">Reviewer Note: </span>
+                        {signatoriesRemark}
+                      </div>
+                    )}
+
+                    <LiquidationSignatoryTracker
+                      approvalChain={viewingDetailReport.approvalChain}
+                      currentStageIndex={viewingDetailReport.currentStageIndex ?? 1}
+                      liquidationStatus={viewingDetailReport.status}
+                    />
+                  </div>
+                );
+              })()}
 
               {/* Remarks History */}
               {viewingDetailReport.remarksHistory && viewingDetailReport.remarksHistory.length > 0 && (

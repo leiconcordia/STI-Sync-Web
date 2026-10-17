@@ -28,6 +28,7 @@ import type {
 } from '../types/par.types';
 import { autoArchiveApprovedPAR } from '../../documents/services/document_archive_bridge.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
 export const PAR_COLLECTION = 'post_activity_reports';
 
@@ -268,8 +269,9 @@ export async function saveOrSubmitPAR(
       query(collection(db, PAR_COLLECTION), where('eventId', '==', formData.eventId))
     );
     const activeExistingPar = existingParSnap.docs.filter((d) => {
-      const st = (d.data().status || '').toLowerCase();
-      return st !== 'cancelled' && st !== 'voided';
+      const data = d.data();
+      const st = (data.status || '').toLowerCase();
+      return st !== 'cancelled' && st !== 'voided' && data.isDeleted !== true;
     });
     if (activeExistingPar.length > 0) {
       throw new Error(
@@ -281,8 +283,9 @@ export async function saveOrSubmitPAR(
     if (eventData.parId) {
       const oldParSnap = await getDoc(doc(db, PAR_COLLECTION, eventData.parId));
       if (oldParSnap.exists()) {
-        const oldSt = (oldParSnap.data().status || '').toLowerCase();
-        if (oldSt !== 'cancelled' && oldSt !== 'voided') {
+        const oldData = oldParSnap.data();
+        const oldSt = (oldData.status || '').toLowerCase();
+        if (oldSt !== 'cancelled' && oldSt !== 'voided' && oldData.isDeleted !== true) {
           throw new Error(
             'A Post-Activity Report is already linked to this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
           );
@@ -442,7 +445,35 @@ export async function saveOrSubmitPAR(
     payload.previousSnapshot = existingParData.previousSnapshot || existingParData.returnedSnapshot || existingParClean;
     payload.returnedSnapshot = existingParData.returnedSnapshot || existingParData.previousSnapshot || existingParClean;
     payload.returnRemarks = null;
+    payload.stepRevisionRemarks = null;
+    payload.returnFlags = [];
+    payload.returnDeadline = null;
+    payload.isReturned = false;
     payload.returnedAt = null;
+
+    const resubmissionNote = (formData as any).resubmissionNote || '';
+    if (resubmissionNote) {
+      payload.resubmissionNote = resubmissionNote;
+    }
+
+    const revisionEntry = sanitizeFirestorePayload({
+      version: Number(existingParData.version || 1),
+      versionLabel: `v${Number(existingParData.version || 1)}.0`,
+      submittedAt: existingParData.submittedAt || null,
+      submittedBy: existingParData.createdByName || user.name || 'Submitter',
+      submittedByUid: existingParData.createdByUid || user.uid,
+      returnedAt: existingParData.returnedAt || null,
+      returnedBy: (existingParData as any).returnedByName || (existingParData as any).returnedBy || 'Reviewer',
+      returnedByRoleTitle: (existingParData as any).returnedByRoleTitle || 'Signatory',
+      returnRemarks: existingParData.returnRemarks || 'Revision requested.',
+      stepRevisionRemarks: (existingParData as any).stepRevisionRemarks || {},
+      returnFlags: (existingParData as any).returnFlags || [],
+      resubmittedAt: new Date().toISOString(),
+      resubmissionNote: resubmissionNote || `Resubmitted as v${currentVersion}.0`,
+      dataSnapshot: existingParClean,
+      previousSnapshot: existingParClean,
+    });
+    payload.revisionHistory = arrayUnion(revisionEntry);
   }
 
   if (!formData.id) {
@@ -451,13 +482,16 @@ export async function saveOrSubmitPAR(
 
   if (submit) {
     payload.submittedAt = serverTimestamp();
+    const resubmissionNote = (formData as any).resubmissionNote || '';
     const submitRemark: PARRemark = {
       id: `rem-${Date.now()}`,
       authorName: user.name || 'Author',
       authorRole: isUserSas ? 'admin' : 'officer',
       action: 'submitted',
       comment: isResubmission
-        ? `Post-Activity Report revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`
+        ? resubmissionNote
+          ? `Revision v${currentVersion}.0 resubmitted: ${resubmissionNote}. Route reset to Stage 1.`
+          : `Post-Activity Report revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`
         : 'Post-Activity Report submitted for institutional clearance and approval.',
       timestamp: new Date().toISOString(),
     };
@@ -620,7 +654,10 @@ export async function returnPAR(
   adminName: string,
   remarks: string,
   adminRoleTitle = 'Student Affairs & Services Head',
-  adminEmail?: string
+  adminEmail?: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
 ): Promise<void> {
   const parRef = doc(db, PAR_COLLECTION, parId);
   const snap = await getDoc(parRef);
@@ -636,6 +673,9 @@ export async function returnPAR(
     comment: remarks || 'Returned for revision.',
     timestamp: new Date().toISOString(),
   };
+
+  const effectiveDeadline =
+    returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   // Capture full deep snapshot of the PAR before returning so diff comparisons have complete fidelity
   const fullSnapshot = sanitizeFirestorePayload({
@@ -654,13 +694,20 @@ export async function returnPAR(
     returnedByRoleTitle: adminRoleTitle || 'Signatory',
     returnedByEmail: adminEmail || null,
     returnRemarks: remarks || 'Returned for revision.',
+    stepRevisionRemarks: stepRevisionRemarks || {},
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
     dataSnapshot: fullSnapshot,
     previousSnapshot: fullSnapshot,
   });
 
   await updateDoc(parRef, sanitizeFirestorePayload({
     status: 'returned',
+    isReturned: true,
     returnRemarks: remarks || 'Returned for revision.',
+    stepRevisionRemarks: stepRevisionRemarks || null,
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
     returnedBy: adminUserId || 'reviewer',
     returnedByName: adminName || 'Signatory Reviewer',
     returnedByRoleTitle: adminRoleTitle || 'Signatory',
@@ -784,38 +831,80 @@ export async function approvePAR(
 }
 
 /**
- * Deletes a draft or unapproved Post-Activity Report document completely.
- * Also cleans up the parId, parReferenceNo, and parStatus references on the parent event,
+ * Moves a draft or unapproved Post-Activity Report document to Trash (soft delete).
+ * Also cleanly resets the parId, parReferenceNo, and parStatus references on the parent event,
  * allowing the event to be cleanly re-processed under the 1:1:1 invariant.
  */
-export async function deletePAR(parId: string): Promise<boolean> {
+export async function deletePAR(
+  parId: string,
+  user?: { uid: string; name: string; role?: string },
+  reason?: string
+): Promise<boolean> {
   if (!parId) throw new Error('PAR ID is required.');
   const parRef = doc(db, PAR_COLLECTION, parId);
   const snap = await getDoc(parRef);
   if (!snap.exists()) return true;
 
   const data = snap.data() as PostActivityReportDocument;
-  if (data.status === 'approved') {
-    throw new Error('Approved Post-Activity Reports cannot be deleted.');
-  }
 
-  // 1. Delete document
-  await deleteDoc(parRef);
+  // 1. Move to Trash via soft delete
+  await softDeleteDocument(
+    PAR_COLLECTION as any,
+    parId,
+    user || { uid: 'system', name: 'User', role: 'Officer' },
+    reason || 'Post-Activity Report draft discarded'
+  );
 
-  // 2. Cleanly reset references on parent event
+  // 2. Cleanly reset references on parent event across both collections
   if (data.eventId) {
     try {
-      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
-        parId: null,
-        parReferenceNo: null,
-        parStatus: null,
-        updatedAt: serverTimestamp(),
-      });
+      for (const col of ['activities', 'events']) {
+        const eventRef = doc(db, col, data.eventId);
+        const evSnap = await getDoc(eventRef);
+        if (evSnap.exists()) {
+          await updateDoc(eventRef, {
+            parId: null,
+            parReferenceNo: null,
+            parStatus: null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
     } catch (e) {
       console.warn('[deletePAR] Event unlink notice:', e);
     }
   }
 
   return true;
+}
+
+/**
+ * Restores a soft-deleted Post-Activity Report document back to draft status.
+ * Re-links parent event references.
+ */
+export async function restorePAR(
+  parId: string,
+  user: { uid: string; name: string; role?: string }
+): Promise<void> {
+  if (!parId) throw new Error('PAR ID is required.');
+  const parRef = doc(db, PAR_COLLECTION, parId);
+  const snap = await getDoc(parRef);
+  const data = snap.exists() ? (snap.data() as PostActivityReportDocument) : null;
+
+  await restoreDocument(PAR_COLLECTION as any, parId, user);
+
+  // Re-link parent event
+  if (data?.eventId) {
+    try {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      await updateDoc(eventRef, {
+        parId,
+        parReferenceNo: data.referenceNo || null,
+        parStatus: data.status || 'draft',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('[restorePAR] Event relink notice:', e);
+    }
+  }
 }

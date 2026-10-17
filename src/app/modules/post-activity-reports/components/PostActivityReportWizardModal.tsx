@@ -23,6 +23,7 @@ import {
   Loader2,
   FileText,
   HelpCircle,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
@@ -89,6 +90,29 @@ export default function PostActivityReportWizardModal({
   const [activeTab, setActiveTab] = useState<WizardTab>('overview');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingEventData, setIsLoadingEventData] = useState(false);
+  const [resubmissionNote, setResubmissionNote] = useState('');
+
+  const isReturnedReport = Boolean(
+    initialReport?.status === 'returned' ||
+    (initialReport as any)?.isReturned
+  );
+
+  const isOverviewFlagged = Boolean(
+    initialReport?.returnFlags?.includes('overview') ||
+    initialReport?.stepRevisionRemarks?.['overview']
+  );
+  const isObjectivesFlagged = Boolean(
+    initialReport?.returnFlags?.includes('objectives') ||
+    initialReport?.stepRevisionRemarks?.['objectives']
+  );
+  const isRecommendationsFlagged = Boolean(
+    initialReport?.returnFlags?.includes('recommendations') ||
+    initialReport?.stepRevisionRemarks?.['recommendations']
+  );
+  const isPhotosSignatoriesFlagged = Boolean(
+    initialReport?.returnFlags?.includes('photos_signatories') ||
+    initialReport?.stepRevisionRemarks?.['photos_signatories']
+  );
 
   // Form State
   const [selectedEventId, setSelectedEventId] = useState<string>(
@@ -413,8 +437,9 @@ export default function PostActivityReportWizardModal({
               query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', selectedEventId))
             );
             const foundLiq = liqQuery.docs.find((d) => {
-              const st = (d.data().status || '').toLowerCase();
-              return st !== 'voided' && st !== 'cancelled';
+              const data = d.data();
+              const st = (data.status || '').toLowerCase();
+              return st !== 'voided' && st !== 'cancelled' && data.isDeleted !== true;
             });
             if (foundLiq) {
               liqId = foundLiq.id;
@@ -429,7 +454,7 @@ export default function PostActivityReportWizardModal({
             const liqSnap = await getDoc(
               doc(db, LIQUIDATIONS_COLLECTION, liqId)
             );
-            if (liqSnap.exists()) {
+            if (liqSnap.exists() && (liqSnap.data() as any).isDeleted !== true) {
               const liqData = liqSnap.data() as any;
               setLiquidationRef(liqData.referenceNo || (evData as any).liquidationRefNumber || '');
               
@@ -513,6 +538,11 @@ export default function PostActivityReportWizardModal({
     }
 
     if (submitForReview) {
+      if (isReturnedReport && !resubmissionNote.trim()) {
+        setActiveTab('photos_signatories');
+        toast.error('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
+        return;
+      }
       if (!achievementNarrative.trim()) {
         setActiveTab('objectives');
         toast.error('Please provide an achievement narrative for the event objectives.');
@@ -613,6 +643,9 @@ export default function PostActivityReportWizardModal({
           signatureUrl: (currentUser as any)?.signatureUrl || '',
           signedAt: new Date().toISOString(),
         },
+        ...(submitForReview && isReturnedReport && resubmissionNote.trim()
+          ? { resubmissionNote: resubmissionNote.trim() }
+          : {}),
       };
 
       const result = await saveOrSubmitPAR(
@@ -629,7 +662,9 @@ export default function PostActivityReportWizardModal({
 
       toast.success(
         submitForReview
-          ? `Post-Activity Report (${result.referenceNo}) submitted for institutional endorsement!`
+          ? isReturnedReport
+            ? `Post-Activity Report (${result.referenceNo}) resubmitted successfully with revision summary! Route reset to Stage 1.`
+            : `Post-Activity Report (${result.referenceNo}) submitted for institutional endorsement!`
           : `Draft Post-Activity Report (${result.referenceNo}) saved successfully.`
       );
 
@@ -682,10 +717,10 @@ export default function PostActivityReportWizardModal({
         {/* Tab Navigation Navigation */}
         <div className="flex border-b border-slate-200 bg-slate-50/70 px-6 gap-2 pt-2">
           {[
-            { id: 'overview', label: '1. Event & Clearance Summary', icon: FileText },
-            { id: 'objectives', label: '2. Objectives & Learnings', icon: Sparkles },
-            { id: 'recommendations', label: '3. STI Recommendations', icon: ShieldCheck },
-            { id: 'photos_signatories', label: '4. Photos & Pipeline', icon: ImageIcon },
+            { id: 'overview', label: '1. Event & Clearance Summary', icon: FileText, isFlagged: isOverviewFlagged },
+            { id: 'objectives', label: '2. Objectives & Learnings', icon: Sparkles, isFlagged: isObjectivesFlagged },
+            { id: 'recommendations', label: '3. STI Recommendations', icon: ShieldCheck, isFlagged: isRecommendationsFlagged },
+            { id: 'photos_signatories', label: '4. Photos & Pipeline', icon: ImageIcon, isFlagged: isPhotosSignatoriesFlagged },
           ].map((t) => {
             const Icon = t.icon;
             const isActive = activeTab === t.id;
@@ -693,7 +728,7 @@ export default function PostActivityReportWizardModal({
               <button
                 key={t.id}
                 onClick={() => setActiveTab(t.id as WizardTab)}
-                className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition-all rounded-t-lg ${
+                className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition-all rounded-t-lg cursor-pointer ${
                   isActive
                     ? 'border-[#0E4EBD] text-[#0E4EBD] bg-white shadow-sm'
                     : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-100'
@@ -701,6 +736,11 @@ export default function PostActivityReportWizardModal({
               >
                 <Icon className={`w-4 h-4 ${isActive ? 'text-[#0E4EBD]' : 'text-slate-400'}`} />
                 <span>{t.label}</span>
+                {t.isFlagged && (
+                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                    Needs Revision
+                  </span>
+                )}
               </button>
             );
           })}
@@ -708,7 +748,7 @@ export default function PostActivityReportWizardModal({
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {initialReport?.status === 'returned' && (
+          {(initialReport?.status === 'returned' || (initialReport as any)?.isReturned) && (
             <RevisionFeedbackBanner
               returnedBy={{
                 name: (initialReport as any).returnedByName || (initialReport as any).returnedBy || 'Institutional Signatory',
@@ -717,6 +757,8 @@ export default function PostActivityReportWizardModal({
               }}
               returnedAt={initialReport.returnedAt}
               returnRemarks={initialReport.returnRemarks}
+              returnFlags={initialReport.returnFlags}
+              stepRevisionRemarks={initialReport.stepRevisionRemarks}
               revisionHistory={initialReport.revisionHistory}
               documentTitle={initialReport.eventTitle}
               documentType="PAR"
@@ -728,6 +770,21 @@ export default function PostActivityReportWizardModal({
           {/* TAB 1: OVERVIEW & CLEARANCE */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
+              {isOverviewFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      Reviewer Revision Feedback — Event & Clearance Summary
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {initialReport?.stepRevisionRemarks?.['overview'] ||
+                        initialReport?.returnRemarks ||
+                        'Please verify the event mechanics, attendance count, and linked financial clearance.'}
+                    </p>
+                  </div>
+                </div>
+              )}
               {/* Event Picker if creating new */}
               {!initialReport && (
                 <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-200">
@@ -937,6 +994,21 @@ export default function PostActivityReportWizardModal({
           {/* TAB 2: OBJECTIVES & LEARNINGS */}
           {activeTab === 'objectives' && (
             <div className="space-y-6">
+              {isObjectivesFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      Reviewer Revision Feedback — Objectives & Learnings
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {initialReport?.stepRevisionRemarks?.['objectives'] ||
+                        initialReport?.returnRemarks ||
+                        'Please review and update the objectives achievement narrative, learnings, or event assessments.'}
+                    </p>
+                  </div>
+                </div>
+              )}
               {/* Objectives Achievement Status */}
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
@@ -1131,6 +1203,21 @@ export default function PostActivityReportWizardModal({
           {/* TAB 3: 4 STI CATEGORIZED RECOMMENDATIONS */}
           {activeTab === 'recommendations' && (
             <div className="space-y-6">
+              {isRecommendationsFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      Reviewer Revision Feedback — STI Recommendations
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {initialReport?.stepRevisionRemarks?.['recommendations'] ||
+                        initialReport?.returnRemarks ||
+                        'Please refine your observations and recommendations across the four key STI institutional areas.'}
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="bg-blue-50/70 p-4 rounded-xl border border-blue-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
                   <h4 className="text-xs font-black uppercase tracking-wider text-[#001A4D] flex items-center gap-1.5">
@@ -1271,6 +1358,21 @@ export default function PostActivityReportWizardModal({
           {/* TAB 4: PHOTOS & SIGNATORIES PIPELINE */}
           {activeTab === 'photos_signatories' && (
             <div className="space-y-6">
+              {isPhotosSignatoriesFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      Reviewer Revision Feedback — Documentation & Signatories
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {initialReport?.stepRevisionRemarks?.['photos_signatories'] ||
+                        initialReport?.returnRemarks ||
+                        'Please provide required photographic documentation and verify the institutional signatory route.'}
+                    </p>
+                  </div>
+                </div>
+              )}
               {/* Photo Documentation Section */}
               <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-4">
                 <div className="flex items-center justify-between">
@@ -1311,7 +1413,7 @@ export default function PostActivityReportWizardModal({
                     <button
                       type="button"
                       onClick={handleAddPhoto}
-                      className="w-full bg-[#0E4EBD] hover:bg-[#001A4D] text-white p-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
+                      className="w-full bg-[#0E4EBD] hover:bg-[#001A4D] text-white p-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
                     >
                       <Plus className="w-4 h-4" /> Add
                     </button>
@@ -1340,7 +1442,7 @@ export default function PostActivityReportWizardModal({
                           <button
                             type="button"
                             onClick={() => handleRemovePhoto(p.id)}
-                            className="self-end bg-red-600 hover:bg-red-700 p-1 rounded text-white"
+                            className="self-end bg-red-600 hover:bg-red-700 p-1 rounded text-white cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -1360,6 +1462,26 @@ export default function PostActivityReportWizardModal({
                 orgName={selectedEvent?.hostingOrgName || (isSasAdmin ? 'Student Affairs Services' : undefined)}
                 isSasCreator={isSasAdmin || (selectedEvent ? isSasInstitutionalActivity(selectedEvent) : false)}
               />
+
+              {/* Officer Revision Summary Card (Mandatory on Resubmission) */}
+              {isReturnedReport && (
+                <div className="p-4 bg-amber-50/80 border-2 border-amber-300 rounded-xl space-y-2">
+                  <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+                    <RotateCcw className="w-4 h-4 text-amber-700" />
+                    <span>Officer Revision Summary (Required)</span>
+                  </div>
+                  <p className="text-xs text-amber-800">
+                    Summarize the modifications, narrative clarifications, or newly attached documentation provided in response to the reviewers.
+                  </p>
+                  <textarea
+                    value={resubmissionNote}
+                    onChange={(e) => setResubmissionNote(e.target.value)}
+                    placeholder="e.g. Added 4 high-resolution event photos; refined Section 3 recommendations per SAS feedback."
+                    rows={3}
+                    className="w-full text-xs p-3 border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1375,7 +1497,7 @@ export default function PostActivityReportWizardModal({
                   const curIdx = tabs.indexOf(activeTab);
                   if (curIdx > 0) setActiveTab(tabs[curIdx - 1]);
                 }}
-                className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1"
+                className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" /> Previous
               </button>
@@ -1388,7 +1510,7 @@ export default function PostActivityReportWizardModal({
                   const curIdx = tabs.indexOf(activeTab);
                   if (curIdx < tabs.length - 1) setActiveTab(tabs[curIdx + 1]);
                 }}
-                className="px-3 py-2 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1"
+                className="px-3 py-2 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 Next <ChevronRight className="w-4 h-4" />
               </button>
@@ -1400,7 +1522,7 @@ export default function PostActivityReportWizardModal({
               type="button"
               disabled={isSubmitting}
               onClick={() => handleSubmitOrDraft(false)}
-              className="px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 bg-slate-100 border border-slate-300 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              className="px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200 bg-slate-100 border border-slate-300 rounded-lg flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
             >
               <Save className="w-4 h-4" />
               Save Draft
@@ -1409,7 +1531,7 @@ export default function PostActivityReportWizardModal({
               type="button"
               disabled={isSubmitting}
               onClick={() => handleSubmitOrDraft(true)}
-              className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50"
+              className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
             >
               {isSubmitting ? (
                 <>
@@ -1419,7 +1541,7 @@ export default function PostActivityReportWizardModal({
               ) : (
                 <>
                   <Send className="w-4 h-4 text-[#FFD41C]" />
-                  Submit for Endorsement
+                  {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
                 </>
               )}
             </button>

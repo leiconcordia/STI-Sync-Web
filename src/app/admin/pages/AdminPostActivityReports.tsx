@@ -32,9 +32,10 @@ import { exportPostActivityReportPDF } from '../../modules/post-activity-reports
 import { deletePAR } from '../../modules/post-activity-reports/services/par.service';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { TablePagination } from '../../components/common/TablePagination';
+import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { toast } from 'sonner';
 
-type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'sas_internal';
+type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'sas_internal' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 export default function AdminPostActivityReports() {
@@ -154,8 +155,16 @@ export default function AdminPostActivityReports() {
     if (!deletingReport) return;
     setIsDeleting(true);
     try {
-      await deletePAR(deletingReport.id);
-      toast.success(`Draft Post-Activity Report (${deletingReport.referenceNo}) discarded successfully.`);
+      await deletePAR(
+        deletingReport.id,
+        {
+          uid: adminUid,
+          name: adminName,
+          role: 'admin',
+        },
+        'Draft discarded by SAS Admin'
+      );
+      toast.success(`Draft Post-Activity Report (${deletingReport.referenceNo}) moved to Trash. You can restore it anytime.`);
       setDeletingReport(null);
     } catch (err: any) {
       toast.error('Failed to discard report: ' + (err?.message || 'Error'));
@@ -351,6 +360,7 @@ export default function AdminPostActivityReports() {
               { key: 'approved', label: 'Approved', count: counts.approved },
               { key: 'returned', label: 'Returned', count: counts.returned },
               { key: 'sas_internal', label: 'SAS Internal', count: counts.sas_internal },
+              { key: 'trash', label: 'Trash', count: undefined },
             ].map((tab) => {
               const isActive = activeTab === tab.key;
               return (
@@ -364,13 +374,15 @@ export default function AdminPostActivityReports() {
                   }`}
                 >
                   <span>{tab.label}</span>
-                  <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                      isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
+                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -410,9 +422,24 @@ export default function AdminPostActivityReports() {
           </div>
         </div>
 
-        {/* Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-gray-600">
+        {activeTab === 'trash' ? (
+          <div className="p-4">
+            <TrashRepositoryViewer
+              collectionName="post_activity_reports"
+              documentTypeLabel="Post-Activity Reports"
+              isSasAdmin={true}
+              currentUser={{
+                uid: adminUid,
+                name: adminName,
+                role: 'admin',
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-gray-600">
             <thead className="bg-gray-50/75 border-b border-gray-100 font-bold text-gray-700 text-[11px] uppercase tracking-wider">
               <tr>
                 <th className="py-3 px-4">Ref Number</th>
@@ -537,6 +564,8 @@ export default function AdminPostActivityReports() {
           totalItems={filteredPars.length}
           itemsPerPage={ITEMS_PER_PAGE}
         />
+          </>
+        )}
       </div>
 
       {/* Creation Modal for SAS Internal Activities */}

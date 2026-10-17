@@ -37,10 +37,11 @@ import { formatCurrency } from "../../utils/currency";
 import { formatAppDateTime } from "../../utils/date";
 import stiOrmocLogo from "../../../imports/STI_ORMOC_LOGO.jpg";
 import { TablePagination } from "../../components/common/TablePagination";
+import { TrashRepositoryViewer } from "../../modules/workflow/components/TrashRepositoryViewer";
 
 const ITEMS_PER_PAGE = 8;
 
-type TabValue = "all" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "cancelled";
+type TabValue = "all" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "cancelled" | "trash";
 type DateRangeOption = "all" | "this_week" | "this_month" | "custom";
 
 function isWithinDateRange(
@@ -205,7 +206,7 @@ export function EventApprovals() {
 
   useEffect(() => {
     const tabParam = searchParams.get("tab");
-    if (tabParam && ["all", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "cancelled"].includes(tabParam)) {
+    if (tabParam && ["all", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "cancelled", "trash"].includes(tabParam)) {
       setActiveTab(tabParam as TabValue);
       setCurrentPage(1);
     }
@@ -487,14 +488,22 @@ export function EventApprovals() {
   };
 
   const handleDeleteProposal = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this event proposal?')) return;
+    if (!window.confirm('Are you sure you want to discard this event draft? You can safely restore it anytime from the Trash tab.')) return;
     setDeletingId(id);
     try {
-      await deleteEvent(id);
-      toast.success('Event proposal deleted.');
+      await deleteEvent(
+        id,
+        {
+          uid: adviserProfile?.uid || 'admin',
+          name: adviserProfile?.displayName || 'SAS Admin',
+          role: 'admin',
+        },
+        'Draft discarded by SAS Admin'
+      );
+      toast.success('Event draft moved to Trash. You can restore it anytime.');
     } catch (e: any) {
       console.error(e);
-      toast.error('Failed to delete event proposal.');
+      toast.error(e?.message || 'Failed to discard event proposal.');
     } finally {
       setDeletingId(null);
     }
@@ -835,6 +844,7 @@ export function EventApprovals() {
               { key: "cancelled", label: "Cancelled", count: cancelledCount },
               { key: "rejected", label: "Rejected", count: rejectedCount },
               { key: "drafts", label: "Drafts", count: draftsCount },
+              { key: "trash", label: "Trash", count: undefined },
             ].map((tab) => {
               const isActive = activeTab === tab.key;
               return (
@@ -848,13 +858,15 @@ export function EventApprovals() {
                   }`}
                 >
                   <span>{tab.label}</span>
-                  <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                      isActive ? "bg-white/20 text-white" : "bg-gray-200/80 text-gray-700"
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
+                        isActive ? "bg-white/20 text-white" : "bg-gray-200/80 text-gray-700"
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -996,9 +1008,24 @@ export function EventApprovals() {
           </div>
         )}
 
-        {/* ── Table Container (No inner vertical scroll) ── */}
-        <div className="overflow-x-auto relative">
-          {isLoading ? (
+        {activeTab === "trash" ? (
+          <div className="p-4">
+            <TrashRepositoryViewer
+              collectionName="activities"
+              documentTypeLabel="Activity Proposals & Events"
+              isSasAdmin={true}
+              currentUser={{
+                uid: adviserProfile?.uid || 'admin',
+                name: adviserProfile?.displayName || 'SAS Admin',
+                role: 'admin',
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            {/* ── Table Container (No inner vertical scroll) ── */}
+            <div className="overflow-x-auto relative">
+              {isLoading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
               Loading activities...
             </div>
@@ -1381,6 +1408,8 @@ export function EventApprovals() {
           onPageChange={setCurrentPage}
           itemName="activities"
         />
+          </>
+        )}
       </div>
 
       {/* Event Proposal Review */}

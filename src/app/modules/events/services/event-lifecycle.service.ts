@@ -5,7 +5,7 @@
  * 1. Concluding / Marking Completed (Locks attendance scanners & gate check-ins)
  * 2. Pre-archive readiness validation (Liquidation, Student Payables, Attendance)
  * 3. Archiving events (Seals historical records, preserves student dues)
- * 4. Soft-deleting archived events (Safe trash with 30-day restore guarantee)
+ * 4. Soft-deleting archived events (Safe trash with indefinite retention until restored or purged)
  */
 
 import {
@@ -459,7 +459,7 @@ export async function archiveEvent(
 
 /**
  * Soft-deletes an already archived event.
- * Moves to Archive Center Trash with 30-day recovery.
+ * Moves to Archive Center Trash with indefinite retention until restored or purged.
  */
 export async function softDeleteArchivedEvent(
   eventId: string,

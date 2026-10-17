@@ -25,6 +25,63 @@ import type { RevisionHistoryEntry } from '../types/approval.types';
 import { formatAppDateTime } from '../../../utils/date';
 import RevisionDiffViewerModal from './RevisionDiffViewerModal';
 
+function formatRevisionFlagLabel(flagKey: string, currentDocument?: Record<string, any>): string {
+  if (!flagKey) return '';
+  if (flagKey === 'sec_signatories') return 'Signatory & Audit Route';
+  if (flagKey === 'sec_event_budget') return 'Event Linkage & Budget Ceiling';
+  if (flagKey === 'sec_line_items') return 'Expense Line Items & Calculations';
+  if (flagKey === 'sec_receipts') return 'Proof of Expenses & Receipts';
+
+  // Proposal steps:
+  if (flagKey.startsWith('step_')) {
+    const num = flagKey.replace('step_', '');
+    const names: Record<string, string> = {
+      '1': 'Step 1: General Information',
+      '2': 'Step 2: Objectives & Expected Outcomes',
+      '3': 'Step 3: Participant Profile & Attendance',
+      '4': 'Step 4: Activity Schedule & Itinerary',
+      '5': 'Step 5: Resource & Logistical Needs',
+      '6': 'Step 6: Financial Projections & Budget',
+      '7': 'Step 7: Signatory Flow & Audit Route',
+      '8': 'Step 8: Final Review & Submission',
+    };
+    return names[num] || `Step ${num}`;
+  }
+
+  // PAR sections:
+  if (flagKey === 'sec_exec_summary') return 'Section 1: Executive Summary';
+  if (flagKey === 'sec_financial_reconciliation') return 'Section 2: Financial Reconciliation';
+  if (flagKey === 'sec_narrative_outcomes') return 'Section 3: Narrative & Outcomes';
+  if (flagKey === 'sec_signatory_clearance') return 'Section 4: Signatory Pipeline';
+
+  // Liquidation Line Items: item_<id> or item_<index>
+  if (flagKey.startsWith('item_')) {
+    const rawId = flagKey.replace('item_', '');
+    const lineItems: any[] = currentDocument?.lineItems || [];
+    const idxNum = parseInt(rawId, 10);
+    let matchedItem: any = null;
+    let matchedIndex = -1;
+
+    // Search by item id
+    const foundIdx = lineItems.findIndex((it) => it && it.id === rawId);
+    if (foundIdx !== -1) {
+      matchedItem = lineItems[foundIdx];
+      matchedIndex = foundIdx;
+    } else if (!isNaN(idxNum) && lineItems[idxNum]) {
+      matchedItem = lineItems[idxNum];
+      matchedIndex = idxNum;
+    }
+
+    if (matchedItem) {
+      const desc = matchedItem.description?.trim() || 'Expense Line Item';
+      return `Item #${matchedIndex + 1}: ${desc}`;
+    }
+    return `Line Item (${rawId})`;
+  }
+
+  return flagKey;
+}
+
 interface RevisionFeedbackBannerProps {
   returnedBy?: {
     name?: string;
@@ -214,7 +271,7 @@ export default function RevisionFeedbackBanner({
       {Array.isArray(returnFlags) && returnFlags.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
-            Flagged Sections Requiring Correction:
+            Flagged Items & Sections Requiring Correction:
           </p>
           <div className="flex flex-wrap gap-1.5">
             {returnFlags.map((flag, idx) => (
@@ -223,7 +280,7 @@ export default function RevisionFeedbackBanner({
                 className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white border border-amber-300 text-amber-900 shadow-2xs flex items-center gap-1.5"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                {flag}
+                {formatRevisionFlagLabel(flag, currentDocument)}
               </span>
             ))}
           </div>
@@ -234,13 +291,15 @@ export default function RevisionFeedbackBanner({
       {stepRevisionRemarks && Object.keys(stepRevisionRemarks).length > 0 && (
         <div className="bg-white/70 rounded-xl p-3 border border-amber-200/70 space-y-1.5">
           <p className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
-            Detailed Step Feedback:
+            Detailed Step & Item Feedback:
           </p>
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {Object.entries(stepRevisionRemarks).map(([stepKey, comment]) => (
-              <div key={stepKey} className="text-xs text-slate-700 pl-2 border-l border-amber-400">
-                <span className="font-bold text-amber-900">{stepKey}: </span>
-                <span>{comment}</span>
+              <div key={stepKey} className="text-xs text-slate-700 pl-2.5 border-l-2 border-amber-500 py-0.5">
+                <span className="font-bold text-amber-950 block">
+                  {formatRevisionFlagLabel(stepKey, currentDocument)}:
+                </span>
+                <span className="text-slate-700 whitespace-pre-line leading-relaxed">{comment}</span>
               </div>
             ))}
           </div>

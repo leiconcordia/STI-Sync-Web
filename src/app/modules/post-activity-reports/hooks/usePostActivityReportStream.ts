@@ -39,8 +39,8 @@ export function useOfficerPARs(organizationId?: string) {
       (snapshot) => {
         const list = snapshot.docs
           .map((d) => ({ id: d.id, ...d.data() } as PostActivityReportDocument))
-          // Strictly exclude any SAS internal documents
-          .filter((doc) => !doc.isSasInternal && doc.organizationId === organizationId);
+          // Strictly exclude any SAS internal documents and soft-deleted drafts
+          .filter((doc) => !doc.isSasInternal && doc.organizationId === organizationId && (doc as any).isDeleted !== true);
 
         // Sort descending by updated/created
         list.sort((a, b) => {
@@ -79,9 +79,9 @@ export function useAdminPARs() {
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const list = snapshot.docs.map(
-          (d) => ({ id: d.id, ...d.data() } as PostActivityReportDocument)
-        );
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as PostActivityReportDocument))
+          .filter((doc: any) => doc.isDeleted !== true);
 
         list.sort((a, b) => {
           const aTime = (a.updatedAt as any)?.seconds ?? (a.createdAt as any)?.seconds ?? 0;
@@ -117,9 +117,9 @@ export function useAllPARsForSignatories() {
     const unsub = onSnapshot(
       q,
       (snapshot) => {
-        const list = snapshot.docs.map(
-          (d) => ({ id: d.id, ...d.data() } as PostActivityReportDocument)
-        );
+        const list = snapshot.docs
+          .map((d) => ({ id: d.id, ...d.data() } as PostActivityReportDocument))
+          .filter((doc: any) => doc.isDeleted !== true);
         list.sort((a, b) => {
           const aTime = (a.updatedAt as any)?.seconds ?? (a.createdAt as any)?.seconds ?? 0;
           const bTime = (b.updatedAt as any)?.seconds ?? (b.createdAt as any)?.seconds ?? 0;
@@ -197,7 +197,7 @@ export function useEligibleEventsForPAR(
     const map = new Map<string, PostActivityReportDocument>();
     existingPars.forEach((p) => {
       const st = (p.status || '').toLowerCase();
-      if (p.eventId && st !== 'cancelled' && st !== 'voided') {
+      if (p.eventId && st !== 'cancelled' && st !== 'voided' && (p as any).isDeleted !== true) {
         map.set(p.eventId, p);
       }
     });
@@ -206,6 +206,7 @@ export function useEligibleEventsForPAR(
 
   const eligibleEvents = useMemo(() => {
     return allEvents.filter((e) => {
+      if ((e as any).isDeleted === true) return false;
       // 1. Gatekeeping: Must be completed/concluded
       const lStatus = ((e as any).lifecycleStatus || e.status || '').toLowerCase();
       const isConcluded =
@@ -226,7 +227,18 @@ export function useEligibleEventsForPAR(
       if (!isLiquidationSatisfied) return false;
 
       // 3. Strict 1:1 Invariant: Check if a PAR already exists for this event
-      if (takenEventIds.has(e.id) || Boolean((e as any).parId)) {
+      const activePar = takenEventIds.get(e.id);
+      const lingeringParIsActive =
+        Boolean((e as any).parId) &&
+        existingPars.some(
+          (p) =>
+            p.id === (e as any).parId &&
+            p.status !== 'cancelled' &&
+            p.status !== 'voided' &&
+            (p as any).isDeleted !== true
+        );
+
+      if (activePar || lingeringParIsActive) {
         return false;
       }
 

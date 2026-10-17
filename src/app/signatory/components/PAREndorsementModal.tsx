@@ -28,6 +28,8 @@ import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionD
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
 import { diffPostActivityReport } from '../../modules/workflow/utils/document-diff-engine';
+import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
+import { PAR_SECTIONS_FOR_REVISION } from '../../modules/post-activity-reports/types/par.types';
 
 interface PAREndorsementModalProps {
   isOpen: boolean;
@@ -49,7 +51,6 @@ export default function PAREndorsementModal({
   const [remarks, setRemarks] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showReturnDialog, setShowReturnDialog] = useState(false);
-  const [returnComment, setReturnComment] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
 
@@ -172,23 +173,26 @@ export default function PAREndorsementModal({
     }
   };
 
-  const handleReturn = async () => {
-    if (!returnComment.trim()) {
-      toast.error('Please enter revision remarks.');
-      return;
-    }
-
+  const handleReturn = async (data: {
+    overallRemarks: string;
+    flaggedSteps: string[];
+    stepRemarks: Record<string, string>;
+    revisionDeadline: string;
+  }) => {
     setIsSubmitting(true);
     try {
       await returnPAR(
         report.id,
         signatorySession?.id || signatorySession?.uid || '',
         signatorySession?.name || 'Signatory',
-        returnComment,
+        data.overallRemarks,
         signatorySession?.roleTitle || 'Institutional Signatory',
-        signatorySession?.email || undefined
+        signatorySession?.email || undefined,
+        data.stepRemarks,
+        data.flaggedSteps,
+        data.revisionDeadline
       );
-      toast.success('Report returned to organizer for revision.');
+      toast.success('Post-Activity Report returned to organizer with section-level revision notes.');
       if (onReportUpdated) onReportUpdated();
       setShowReturnDialog(false);
       onClose();
@@ -611,41 +615,17 @@ export default function PAREndorsementModal({
         </div>
       </div>
 
-      {/* Return Dialog */}
-      {showReturnDialog && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-          <div className="bg-white rounded-xl shadow-xl border border-slate-200 p-5 w-full max-w-md space-y-4">
-            <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <RotateCcw className="w-4 h-4 text-red-600" />
-              Return Report for Revision
-            </h3>
-            <textarea
-              rows={3}
-              value={returnComment}
-              onChange={(e) => setReturnComment(e.target.value)}
-              placeholder="State clear reasons for return (e.g., photo documentation required, narrative clarity)..."
-              className="w-full text-xs p-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:outline-none"
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowReturnDialog(false)}
-                className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={isSubmitting}
-                onClick={handleReturn}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
-              >
-                Confirm Return
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Step/Section-Level Return for Revision Modal */}
+      <StepReturnRevisionModal
+        isOpen={showReturnDialog}
+        onClose={() => setShowReturnDialog(false)}
+        onSubmit={handleReturn}
+        title="Return Post-Activity Report for Revision"
+        subtitle={`Flag specific sections and write targeted feedback for ${report.eventTitle || report.referenceNo}.`}
+        steps={PAR_SECTIONS_FOR_REVISION}
+        isSubmitting={isSubmitting}
+        documentType="PAR"
+      />
 
       {/* Visual Diff Comparison Modal */}
       <RevisionDiffViewerModal

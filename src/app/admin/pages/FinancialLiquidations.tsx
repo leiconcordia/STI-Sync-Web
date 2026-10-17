@@ -36,18 +36,24 @@ import OfficerLiquidationModal from '../../officer/components/OfficerLiquidation
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
-import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
+import type { LiquidationStatus } from '../../modules/finance/types/liquidation.types';
+import {
+  buildLiquidationReturnSteps,
+  type LiquidationDocument,
+} from '../../modules/finance/types/liquidation.types';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
 import { resolveApprovalPermissions } from '../../modules/workflow/utils/approval-permissions.utils';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
+import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
+import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 
 const ITEMS_PER_PAGE = 8;
-type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'draft';
+type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
 
 function getLiquidationTimestamp(liq: LiquidationDocument): number {
   if (liq.createdAt) {
@@ -108,6 +114,7 @@ export function FinancialLiquidations() {
 
   const { profile: adviserProfile } = useAdviserProfile();
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showReturnModal, setShowReturnModal] = useState(false);
 
   const currentUser = useMemo(() => ({
     uid: adviserProfile?.uid || 'sao_admin_user',
@@ -258,21 +265,29 @@ export function FinancialLiquidations() {
     }
   };
 
-  const handleReturn = async () => {
+  const handleReturnSubmit = async (payload: {
+    overallRemarks: string;
+    flaggedSteps: string[];
+    stepRevisionRemarks: Record<string, string>;
+    returnDeadline: string;
+  }) => {
     if (!selectedReport) return;
-    if (!reviewRemarks.trim()) {
-      setActionError('Please provide revision remarks explaining why the report is being returned.');
-      return;
-    }
     setIsProcessing(true);
     setActionError(null);
     try {
       await returnLiquidationReport(
         selectedReport.id,
-        'sao_admin_user',
-        reviewRemarks.trim()
+        profile?.uid || 'sao_admin_user',
+        payload.overallRemarks,
+        profile?.displayName || 'SAS Adviser',
+        'Student Affairs & Services Head',
+        profile?.email,
+        payload.stepRevisionRemarks,
+        payload.flaggedSteps,
+        payload.returnDeadline
       );
-      toast.info(`Liquidation report returned for revision.`);
+      toast.info(`Liquidation report returned for revision with section-by-section instructions.`);
+      setShowReturnModal(false);
       setSelectedReport(null);
       setReviewRemarks('');
     } catch (err: any) {
@@ -442,6 +457,7 @@ export function FinancialLiquidations() {
               { key: 'approved', label: 'Approved', count: approvedCount },
               { key: 'returned', label: 'Returned', count: returnedCount },
               { key: 'draft', label: 'Drafts', count: draftCount },
+              { key: 'trash', label: 'Trash', count: undefined },
             ].map((tab) => {
               const isActive = activeTab === tab.key;
               return (
@@ -454,12 +470,14 @@ export function FinancialLiquidations() {
                     }`}
                 >
                   <span>{tab.label}</span>
-                  <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                      }`}
-                  >
-                    {tab.count}
-                  </span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                        }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -534,9 +552,24 @@ export function FinancialLiquidations() {
           </div>
         )}
 
-        {/* ── Table Container (No inner vertical scroll) ── */}
-        <div className="overflow-x-auto relative">
-          {loading ? (
+        {activeTab === 'trash' ? (
+          <div className="p-4">
+            <TrashRepositoryViewer
+              collectionName="liquidations"
+              documentTypeLabel="Financial Liquidations"
+              isSasAdmin={true}
+              currentUser={{
+                uid: adviserProfile?.uid || 'sao_admin',
+                name: adviserProfile?.displayName || 'SAO Adviser',
+                role: 'admin',
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            {/* ── Table Container (No inner vertical scroll) ── */}
+            <div className="overflow-x-auto relative">
+              {loading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
               Loading liquidations...
             </div>
@@ -789,6 +822,8 @@ export function FinancialLiquidations() {
           onPageChange={setCurrentPage}
           itemName="reports"
         />
+          </>
+        )}
       </div>
 
       {/* ── Review & Approval Modal ── */}
@@ -832,6 +867,8 @@ export function FinancialLiquidations() {
                   }}
                   returnedAt={selectedReport.returnedAt}
                   returnRemarks={selectedReport.returnRemarks}
+                  returnFlags={selectedReport.returnFlags}
+                  stepRevisionRemarks={selectedReport.stepRevisionRemarks}
                   revisionHistory={selectedReport.revisionHistory}
                   canEdit={permissions.canEdit}
                   onEditClick={() => {
@@ -1100,11 +1137,12 @@ export function FinancialLiquidations() {
                     <>
                       {permissions.canReturn && (
                         <Button
-                          onClick={handleReturn}
+                          onClick={() => setShowReturnModal(true)}
                           disabled={isProcessing}
-                          className="bg-red-600 hover:bg-red-700 text-white font-bold cursor-pointer"
+                          className="bg-amber-600 hover:bg-amber-700 text-white font-bold cursor-pointer"
                         >
                           {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                          <RotateCcw className="w-4 h-4 mr-1.5" />
                           Return for Revision
                         </Button>
                       )}
@@ -1219,14 +1257,14 @@ export function FinancialLiquidations() {
                 <Trash2 className="w-5 h-5 text-rose-600" />
               </div>
               <div>
-                <h3 className="font-bold text-gray-900 text-base">Delete / Void Liquidation Report?</h3>
-                <p className="text-xs text-gray-500">Purges document and rolls back ledger transactions.</p>
+                <h3 className="font-bold text-gray-900 text-base">Discard Liquidation Report?</h3>
+                <p className="text-xs text-gray-500">This draft will be moved to Trash where you can restore it anytime.</p>
               </div>
             </div>
 
             <p className="text-xs text-gray-600 leading-relaxed bg-gray-50 p-3 rounded-xl border border-gray-100">
-              Are you sure you want to delete the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>?
-              All associated transactions in both <code>/organization_ledger</code> and <code>/sao_ledger</code> will be completely purged and rolled back.
+              Are you sure you want to discard the liquidation report for <strong>"{deletingReport.eventTitle}"</strong>?
+              It will be moved to the Trash repository where you can restore it anytime.
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2">
@@ -1244,11 +1282,19 @@ export function FinancialLiquidations() {
                   if (!deletingReport) return;
                   setIsDeleting(true);
                   try {
-                    await deleteLiquidationReport(deletingReport.id);
-                    toast.success('Liquidation report and ledger entries successfully purged.');
+                    await deleteLiquidationReport(
+                      deletingReport.id,
+                      {
+                        uid: adviserProfile?.uid || 'sao_admin',
+                        name: adviserProfile?.displayName || 'SAO Adviser',
+                        role: 'admin',
+                      },
+                      'Draft discarded by SAO Adviser'
+                    );
+                    toast.success('Liquidation draft moved to Trash. You can restore it anytime.');
                     setDeletingReport(null);
                   } catch (err: any) {
-                    toast.error(err?.message || 'Failed to delete liquidation report.');
+                    toast.error(err?.message || 'Failed to discard liquidation report.');
                   } finally {
                     setIsDeleting(false);
                   }
@@ -1261,6 +1307,20 @@ export function FinancialLiquidations() {
             </div>
           </div>
         </div>
+      )}
+      {/* Step-by-Step Return Revision Modal */}
+      {selectedReport && (
+        <StepReturnRevisionModal
+          isOpen={showReturnModal}
+          onClose={() => setShowReturnModal(false)}
+          documentTitle={selectedReport.eventTitle || 'Financial Liquidation'}
+          referenceNo={selectedReport.referenceNumber || selectedReport.referenceNo}
+          documentType="FL"
+          steps={buildLiquidationReturnSteps(selectedReport.lineItems || [])}
+          onSubmit={handleReturnSubmit}
+          isSubmitting={isProcessing}
+          initialOverallRemarks={reviewRemarks}
+        />
       )}
     </div>
   );

@@ -29,6 +29,7 @@ import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.ser
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
 export const LIQUIDATIONS_COLLECTION = 'liquidations';
 
@@ -255,8 +256,9 @@ export const createLiquidationReport = async (
       query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', data.eventId))
     );
     const activeExisting = existingLiqSnap.docs.filter((d) => {
-      const st = (d.data().status || '').toLowerCase();
-      return st !== 'voided' && st !== 'cancelled';
+      const lData = d.data();
+      const st = (lData.status || '').toLowerCase();
+      return st !== 'voided' && st !== 'cancelled' && lData.isDeleted !== true;
     });
 
     if (activeExisting.length > 0) {
@@ -290,8 +292,9 @@ export const createLiquidationReport = async (
       if (evData.liquidationReportId) {
         const oldLiqSnap = await getDoc(doc(db, LIQUIDATIONS_COLLECTION, evData.liquidationReportId));
         if (oldLiqSnap.exists()) {
-          const oldSt = (oldLiqSnap.data().status || '').toLowerCase();
-          if (oldSt !== 'voided' && oldSt !== 'cancelled') {
+          const oldData = oldLiqSnap.data();
+          const oldSt = (oldData.status || '').toLowerCase();
+          if (oldSt !== 'voided' && oldSt !== 'cancelled' && oldData.isDeleted !== true) {
             throw new Error(
               'A Financial Liquidation is already linked to this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
             );
@@ -500,13 +503,21 @@ export const updateLiquidationReport = async (
   }
 
   // Revision Handshake & Pipeline Reset
-  const isResubmission = existingData && existingData.status === 'returned' && (data.status === 'under_review' || data.status === 'pending');
+  const isResubmission = existingData && (existingData.status === 'returned' || Boolean((existingData as any).isReturned)) && (data.status === 'under_review' || data.status === 'pending');
   if (isResubmission) {
     const newRevCount = (existingData.revisionCount || 1) + 1;
+    const resubmissionNote = (data as any).resubmissionNote || '';
+
     payload.revisionCount = newRevCount;
     payload.returnRemarks = null;
+    payload.stepRevisionRemarks = null;
+    payload.returnFlags = [];
+    payload.isReturned = false;
     payload.currentStageIndex = 1;
     payload.currentStepIndex = 0;
+    if (resubmissionNote) {
+      (payload as any).resubmissionNote = resubmissionNote;
+    }
 
     let chain = (data.approvalChain || existingData.approvalChain || []);
     payload.approvalChain = chain.map((step) => {
@@ -526,8 +537,10 @@ export const updateLiquidationReport = async (
       returnedBy: (existingData as any).returnedByName || (existingData as any).returnedBy || 'Reviewer',
       returnedByRoleTitle: (existingData as any).returnedByRoleTitle || 'Institutional Signatory',
       returnRemarks: existingData.returnRemarks || 'Revision requested.',
+      stepRevisionRemarks: (existingData as any).stepRevisionRemarks || {},
+      returnFlags: (existingData as any).returnFlags || [],
       resubmittedAt: new Date().toISOString(),
-      resubmissionNote: `Resubmitted as v${newRevCount}.0`,
+      resubmissionNote: resubmissionNote || `Resubmitted as v${newRevCount}.0`,
       dataSnapshot: {
         lineItems: (existingData.lineItems || []).map((it: any) => ({ ...it })),
         totalActualSpending: existingData.totalActualSpending || 0,
@@ -543,7 +556,9 @@ export const updateLiquidationReport = async (
       authorName: data.submittedByName || existingData.submittedByName || 'Submitter',
       authorRole: (data.submittedByRole as any) || existingData.submittedByRole || 'officer',
       action: 'submitted',
-      comment: `Resubmitted revision v${newRevCount}.0 with updated line items and receipt verification. Route reset to Stage 1.`,
+      comment: resubmissionNote
+        ? `Revision v${newRevCount}.0 resubmitted: ${resubmissionNote}. Route reset to Stage 1.`
+        : `Resubmitted revision v${newRevCount}.0 with updated line items and receipt verification. Route reset to Stage 1.`,
       timestamp: new Date().toISOString(),
     });
     payload.remarksHistory = arrayUnion(resubmitRemark);
@@ -632,40 +647,80 @@ export const submitLiquidationReport = async (
 };
 
 /**
- * Deletes a liquidation report document completely and rolls back any associated ledger entries.
- * Also cleans up the liquidationStatus reference on the parent event.
+ * Moves a draft or unapproved liquidation report document to Trash (soft delete).
+ * Cleans up the liquidationStatus reference on the parent event so it is not locked.
  */
 export async function deleteLiquidationReport(
-  liquidationId: string
+  liquidationId: string,
+  user?: { uid: string; name: string; role?: string },
+  reason?: string
 ): Promise<{ success: boolean; rolledBackLedgerCount: number }> {
   if (!liquidationId) throw new Error('Liquidation ID is required.');
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
   const snap = await getDoc(docRef);
   const data = snap.exists() ? (snap.data() as LiquidationDocument) : null;
 
-  // 1. Purge any associated ledger transactions from /organization_ledger and /sao_ledger
-  const rolledBackCount = await removeLedgerTransactionsForLiquidation(liquidationId);
+  // 1. Move to Trash via soft delete
+  await softDeleteDocument(
+    LIQUIDATIONS_COLLECTION as any,
+    liquidationId,
+    user || { uid: 'system', name: 'User', role: 'Officer' },
+    reason || 'Liquidation draft discarded'
+  );
 
-  // 2. Delete the liquidation document from Firestore
-  await deleteDoc(docRef);
-
-  // 3. Reset event document references
+  // 2. Reset event document references across both collections so parent event is not locked
   if (data?.eventId) {
     try {
-      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
-      await updateDoc(eventRef, {
-        liquidationStatus: null,
-        liquidationReportId: null,
-        liquidationRefNumber: null,
-        updatedAt: serverTimestamp(),
-      });
+      for (const col of ['activities', 'events']) {
+        const eventRef = doc(db, col, data.eventId);
+        const evSnap = await getDoc(eventRef);
+        if (evSnap.exists()) {
+          await updateDoc(eventRef, {
+            liquidationStatus: null,
+            liquidationReportId: null,
+            liquidationRefNumber: null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
     } catch (e) {
       console.warn('[deleteLiquidationReport] Non-critical event unlink notice:', e);
     }
   }
 
-  return { success: true, rolledBackLedgerCount: rolledBackCount };
-};
+  return { success: true, rolledBackLedgerCount: 0 };
+}
+
+/**
+ * Restores a soft-deleted liquidation report back to draft status.
+ * Re-links parent event references.
+ */
+export async function restoreLiquidationReport(
+  liquidationId: string,
+  user: { uid: string; name: string; role?: string }
+): Promise<void> {
+  if (!liquidationId) throw new Error('Liquidation ID is required.');
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  const data = snap.exists() ? (snap.data() as LiquidationDocument) : null;
+
+  await restoreDocument(LIQUIDATIONS_COLLECTION as any, liquidationId, user);
+
+  // Re-link parent event
+  if (data?.eventId) {
+    try {
+      const eventRef = doc(db, EVENTS_COLLECTION, data.eventId);
+      await updateDoc(eventRef, {
+        liquidationStatus: data.status || 'draft',
+        liquidationReportId: liquidationId,
+        liquidationRefNumber: data.referenceNumber || null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.warn('[restoreLiquidationReport] Non-critical event relink notice:', e);
+    }
+  }
+}
 
 /**
  * Withdraws a submitted liquidation report back to 'draft' status so the author can edit before review.
@@ -807,7 +862,10 @@ export const returnLiquidationReport = async (
   remarks: string,
   adminName = 'SAS Adviser',
   adminRoleTitle = 'Student Affairs & Services Head',
-  adminEmail?: string
+  adminEmail?: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
 ): Promise<void> => {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
   const snap = await getDoc(docRef);
@@ -822,6 +880,9 @@ export const returnLiquidationReport = async (
     timestamp: new Date().toISOString(),
   };
 
+  const effectiveDeadline =
+    returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
   const revisionEntry = {
     version: existingData?.revisionCount || 1,
     versionLabel: `v${existingData?.revisionCount || 1}.0`,
@@ -833,11 +894,18 @@ export const returnLiquidationReport = async (
     returnedByRoleTitle: adminRoleTitle,
     returnedByEmail: adminEmail,
     returnRemarks: remarks,
+    stepRevisionRemarks: stepRevisionRemarks || {},
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
   };
 
   await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'returned',
+    isReturned: true,
     returnRemarks: remarks,
+    stepRevisionRemarks: stepRevisionRemarks || null,
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
     returnedBy: adminUserId,
     returnedByName: adminName,
     returnedByRoleTitle: adminRoleTitle,
@@ -1107,7 +1175,10 @@ export async function endorseLiquidationStep(
 export async function returnLiquidationStep(
   liquidationId: string,
   signatory: { uid?: string; id?: string; name: string; email: string; roleTitle?: string; role?: string },
-  remarks: string
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
 ): Promise<{ success: boolean }> {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
   const snap = await getDoc(docRef);
@@ -1151,6 +1222,9 @@ export async function returnLiquidationStep(
     timestamp: new Date().toISOString(),
   };
 
+  const effectiveDeadline =
+    returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
   const revisionEntry = {
     version: data.revisionCount || 1,
     versionLabel: `v${data.revisionCount || 1}.0`,
@@ -1162,11 +1236,18 @@ export async function returnLiquidationStep(
     returnedByRoleTitle: signatory.roleTitle || 'Institutional Signatory',
     returnedByEmail: signatory.email,
     returnRemarks: remarks,
+    stepRevisionRemarks: stepRevisionRemarks || {},
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
   };
 
   const rawUpdates: any = {
     status: 'returned',
+    isReturned: true,
     returnRemarks: remarks,
+    stepRevisionRemarks: stepRevisionRemarks || null,
+    returnFlags: returnFlags || [],
+    returnDeadline: effectiveDeadline,
     returnedBy: signerUid || null,
     returnedByName: signatory.name || 'Signatory',
     returnedByRoleTitle: signatory.roleTitle || 'Institutional Signatory',

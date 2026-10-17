@@ -6,6 +6,7 @@
  */
 
 import type { SignatoryRole, SignatoryActionType } from '../../signatories/types/signatory.types';
+import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
 
 export type ProposalStatus =
   | 'draft'
@@ -91,7 +92,7 @@ export interface ProposalSectionRemark {
   createdAt: any;
 }
 
-export interface ActivityProposal {
+export interface ActivityProposal extends SoftDeletable, Archivable {
   id: string;
   referenceNo: string; // e.g., "AP-2026-SAS-001"
   submissionDate: string; // Auto-set to date submitted or current date (read-only)
@@ -101,6 +102,7 @@ export interface ActivityProposal {
   returnFlags?: string[];
   stepRevisionRemarks?: Record<string, string> | null;
   adviserRemarks?: string;
+  resubmissionNote?: string;
 
   // 1. Activity title
   title: string;

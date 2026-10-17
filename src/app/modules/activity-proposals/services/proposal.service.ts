@@ -19,7 +19,7 @@ import {
   onSnapshot,
   arrayUnion,
 } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
+import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import type {
   ActivityProposal,
   ProposalFormData,
@@ -30,12 +30,13 @@ import {
   removeLedgerTransactionsForEvent,
 } from '../../finance/services/finance.service';
 import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
+import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
 
-export { sanitizeFirestorePayload } from '../../../../services/firebase';
+export { sanitizeFirestorePayload };
 
 /**
  * Sync an Activity Proposal directly to the `events` collection.
@@ -456,6 +457,8 @@ export async function submitProposalForReview(
       previousSnapshot: cleanSnap,
     });
 
+    const resubmissionNote = (formData as any).resubmissionNote || '';
+
     const resubmitHistoryEntry = sanitizeFirestorePayload({
       id: `hist_resubmit_${Date.now()}`,
       action: 'resubmitted',
@@ -463,7 +466,9 @@ export async function submitProposalForReview(
       performedBy: user.uid || 'user',
       performedByName: user.name || 'User',
       performedAt: new Date().toISOString(),
-      remarks: `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
+      remarks: resubmissionNote
+        ? `Proposal revised to v${currentVersion}.0: ${resubmissionNote}`
+        : `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
     });
 
     payload.previousSnapshot = cleanSnap;
@@ -472,6 +477,9 @@ export async function submitProposalForReview(
     payload.returnFlags = [];
     payload.isReturned = false;
     payload.adviserRemarks = null;
+    if (resubmissionNote) {
+      payload.resubmissionNote = resubmissionNote;
+    }
     payload.proposalHistory = arrayUnion(resubmitHistoryEntry);
   }
 
@@ -518,41 +526,29 @@ export async function getProposalById(id: string): Promise<ActivityProposal | nu
 }
 
 /**
- * Delete a draft proposal
+ * Soft delete a draft proposal (moves to Trash repository, preserves all data indefinitely)
  */
-export async function deleteProposal(id: string): Promise<void> {
-  // 1. Purge any associated liquidations and their ledger records
-  try {
-    const liquidationsCol = collection(db, 'liquidations');
-    const q = query(liquidationsCol, where('eventId', '==', id));
-    const liqSnap = await getDocs(q);
-    for (const d of liqSnap.docs) {
-      await removeLedgerTransactionsForLiquidation(d.id);
-      await deleteDoc(d.ref);
-    }
-  } catch (err) {
-    console.warn('[deleteProposal] Liquidation cleanup note:', err);
-  }
-
-  // 2. Purge any event budget deduction from the ledger
-  try {
-    await removeLedgerTransactionsForEvent(id);
-  } catch (err) {
-    console.warn('[deleteProposal] Ledger rollback note:', err);
-  }
-
-  // 3. Delete proposal/activity documents
-  await deleteDoc(doc(db, ACTIVITIES_COLLECTION, id));
-  try {
-    await deleteDoc(doc(db, 'activity_proposals', id));
-  } catch (e) {}
-  try {
-    await deleteDoc(doc(db, 'events', id));
-  } catch (e) {}
+export async function deleteProposal(
+  id: string,
+  user?: { uid: string; name: string; role?: string },
+  reason?: string
+): Promise<void> {
+  const actor = user || { uid: 'user', name: 'Author', role: 'officer' };
+  await softDeleteDocument('activities', id, actor, reason);
 }
 
 /**
- * Real-time subscription to proposals
+ * Restores a soft-deleted proposal back to active draft status
+ */
+export async function restoreProposal(
+  id: string,
+  user: { uid: string; name: string; role?: string }
+): Promise<void> {
+  await restoreDocument('activities', id, user);
+}
+
+/**
+ * Real-time subscription to proposals (filters out soft-deleted records)
  */
 export function subscribeToProposals(
   callback: (proposals: ActivityProposal[]) => void,
@@ -571,10 +567,12 @@ export function subscribeToProposals(
   return onSnapshot(
     q,
     (snapshot) => {
-      const list: ActivityProposal[] = snapshot.docs.map((docSnap) => ({
-        id: docSnap.id,
-        ...docSnap.data(),
-      })) as ActivityProposal[];
+      const list: ActivityProposal[] = snapshot.docs
+        .map((docSnap) => ({
+          id: docSnap.id,
+          ...docSnap.data(),
+        }))
+        .filter((p: any) => p.isDeleted !== true) as ActivityProposal[];
       callback(list);
     },
     (err) => {
@@ -851,7 +849,10 @@ export async function endorseProposal(
 export async function returnProposalForRevision(
   proposalId: string,
   signatory: { uid?: string; id?: string; name: string; email: string; roleTitle?: string; role?: string },
-  remarks: string
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
 ): Promise<{ success: boolean }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
   let snap = await getDoc(docRef);
@@ -924,6 +925,8 @@ export async function returnProposalForRevision(
   const returnedAtStr = new Date().toISOString();
   const signerName = signatory.name || (signatory as any).displayName || 'Institutional Signatory';
   const signerRoleTitle = signatory.roleTitle || (signatory as any).title || 'Signatory Reviewer';
+  const effectiveDeadline =
+    returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   const returnHistoryEntry = sanitizeFirestorePayload({
     id: `hist_return_${Date.now()}`,
@@ -933,6 +936,8 @@ export async function returnProposalForRevision(
     roleTitle: signerRoleTitle,
     performedAt: returnedAtStr,
     remarks: remarks?.trim() || 'Returned for revision.',
+    stepRevisionRemarks: stepRevisionRemarks || {},
+    returnFlags: returnFlags || [],
   });
 
   const rawUpdates = {
@@ -943,8 +948,11 @@ export async function returnProposalForRevision(
     isApproved: false,
     approvedAt: null,
     approvedBy: null,
-    returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+    returnDeadline: effectiveDeadline,
     adviserRemarks: remarks || null,
+    returnRemarks: remarks || null,
+    stepRevisionRemarks: stepRevisionRemarks || null,
+    returnFlags: returnFlags || [],
     returnedByName: signerName,
     returnedByRoleTitle: signerRoleTitle,
     returnedByEmail: signerEmail,
@@ -971,11 +979,14 @@ export async function returnProposalForRevision(
       proposalStatus: 'returned',
       lifecycleStatus: 'returned',
       adviserRemarks: remarks,
+      returnRemarks: remarks,
+      stepRevisionRemarks: stepRevisionRemarks || null,
+      returnFlags: returnFlags || [],
       returnedByName: signerName,
       returnedByRoleTitle: signerRoleTitle,
       returnedByEmail: signerEmail,
       returnedAt: returnedAtStr,
-      returnDeadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      returnDeadline: effectiveDeadline,
     }
   );
 

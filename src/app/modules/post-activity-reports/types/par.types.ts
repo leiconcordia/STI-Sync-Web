@@ -1,4 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
+import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
 
 export type PostActivityReportStatus =
   | 'draft'
@@ -48,7 +49,7 @@ export interface PARRemark {
   timestamp: string;
 }
 
-export interface PostActivityReportDocument {
+export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   id: string;
   referenceNo: string; // e.g., "PAR-ORG-2026-0001" or "PAR-SAS-2026-0001"
 
@@ -151,15 +152,20 @@ export interface PostActivityReportDocument {
 
   // ─── Lifecycle & Clearance Status ───
   status: PostActivityReportStatus;
+  isReturned?: boolean;
   submittedAt?: Timestamp | any;
   approvedAt?: Timestamp | any;
   approvedBy?: string;
-  returnRemarks?: string;
+  returnRemarks?: string | null;
+  stepRevisionRemarks?: Record<string, string> | null;
+  returnFlags?: string[];
+  returnDeadline?: string | null;
   returnedAt?: Timestamp | any;
   returnedBy?: string;
   returnedByName?: string;
   returnedByRoleTitle?: string;
   returnedByEmail?: string;
+  resubmissionNote?: string;
 
   // ─── Revision Management & Diff Tracking ───
   version?: number;
@@ -178,3 +184,10 @@ export interface PostActivityReportDocument {
 }
 
 export type PARFormData = Partial<PostActivityReportDocument>;
+
+export const PAR_SECTIONS_FOR_REVISION = [
+  { id: 'overview', key: 'overview', stepNumber: 1, label: '1. Event & Clearance Summary', description: 'Linked event details, actual mechanics, target audience & attendance summary' },
+  { id: 'objectives', key: 'objectives', stepNumber: 2, label: '2. Objectives & Learnings', description: 'Objectives achievement status, narrative, key learnings, and event assessments' },
+  { id: 'recommendations', key: 'recommendations', stepNumber: 3, label: '3. STI Recommendations', description: 'Program flow, participant engagement, technical setup, and preparedness' },
+  { id: 'photos_signatories', key: 'photos_signatories', stepNumber: 4, label: '4. Photos & Pipeline', description: 'Activity documentation photos and institutional signatory endorsement route' },
+];

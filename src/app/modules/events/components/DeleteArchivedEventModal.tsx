@@ -134,7 +134,7 @@ export const DeleteArchivedEventModal: React.FC<DeleteArchivedEventModalProps> =
         {/* Footer Actions */}
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-800/40 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
           <span className="text-[11px] text-slate-500">
-            Can be restored within 30 days.
+            Can be safely restored from Trash at any time.
           </span>
           <div className="flex items-center gap-3">
             <button

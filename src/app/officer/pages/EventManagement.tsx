@@ -43,8 +43,9 @@ import {
 import { formatCurrency } from '../../utils/currency';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
+import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 
-type EventStatusTab = 'all' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'cancelled';
+type EventStatusTab = 'all' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'cancelled' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 function parseDateSafe(input: any): Date | null {
@@ -324,14 +325,22 @@ export default function EventManagement() {
   }, [searchQuery, filterCategory, filterVenue, filterSemester]);
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Are you sure you want to delete this event proposal?')) return;
+    if (!window.confirm('Are you sure you want to discard this draft? You can safely restore it anytime from the Trash tab.')) return;
     setDeletingId(id);
     try {
-      await deleteEvent(id);
-      toast.success('Event proposal deleted.');
-    } catch (e) {
+      await deleteEvent(
+        id,
+        {
+          uid: profile?.uid || 'officer',
+          name: profile?.studentName || 'Officer',
+          role: 'Officer',
+        },
+        'Draft discarded by author'
+      );
+      toast.success('Event draft moved to Trash. You can restore it anytime.');
+    } catch (e: any) {
       console.error(e);
-      toast.error('Failed to delete event proposal.');
+      toast.error(e?.message || 'Failed to discard event proposal.');
     } finally {
       setDeletingId(null);
     }
@@ -647,6 +656,7 @@ export default function EventManagement() {
               { key: 'draft', label: 'Drafts', count: statusCounts.draft },
               { key: 'archived', label: 'Archived', count: statusCounts.archived },
               { key: 'cancelled', label: 'Cancelled', count: statusCounts.cancelled },
+              { key: 'trash', label: 'Trash', count: undefined },
             ].map((tab) => {
               const isActive = activeStatus === tab.key;
               return (
@@ -660,13 +670,15 @@ export default function EventManagement() {
                   }`}
                 >
                   <span>{tab.label}</span>
-                  <span
-                    className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                      isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                    }`}
-                  >
-                    {tab.count}
-                  </span>
+                  {tab.count !== undefined && (
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
+                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -780,9 +792,24 @@ export default function EventManagement() {
           </div>
         )}
 
-        {/* ── Table Container (No inner vertical scroll) ── */}
-        <div className="overflow-x-auto relative">
-          {loading ? (
+        {activeStatus === 'trash' ? (
+          <div className="p-4">
+            <TrashRepositoryViewer
+              collectionName="activities"
+              documentTypeLabel="Activity Proposals & Events"
+              organizationId={activeOrgId}
+              currentUser={{
+                uid: profile?.uid || 'officer',
+                name: profile?.studentName || 'Officer',
+                role: 'Officer',
+              }}
+            />
+          </div>
+        ) : (
+          <>
+            {/* ── Table Container (No inner vertical scroll) ── */}
+            <div className="overflow-x-auto relative">
+              {loading ? (
             <div className="h-full flex items-center justify-center text-sm text-gray-500">
               Loading activities...
             </div>
@@ -1110,6 +1137,8 @@ export default function EventManagement() {
           onPageChange={setCurrentPage}
           itemName="activities"
         />
+          </>
+        )}
       </div>
 
       {/* Official 7-Step Activity Proposal (AP) Wizard Modal */}

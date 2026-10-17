@@ -42,11 +42,13 @@ import { toast } from 'sonner';
 import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
 import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { diffFinancialLiquidation } from '../../modules/workflow/utils/document-diff-engine';
-import type {
-  LiquidationDocument,
-  ExpenseLineItem,
-  ReceiptAttachment,
+import {
+  buildLiquidationReturnSteps,
+  type LiquidationDocument,
+  type ExpenseLineItem,
+  type ReceiptAttachment,
 } from '../../modules/finance/types/liquidation.types';
 import {
   endorseLiquidationStep,
@@ -107,6 +109,8 @@ export default function LiquidationEndorsementModal({
 
   const [remarks, setRemarks] = useState('');
   const [returnRemarks, setReturnRemarks] = useState('');
+  const [initialReturnFlags, setInitialReturnFlags] = useState<string[]>([]);
+  const [initialStepRemarks, setInitialStepRemarks] = useState<Record<string, string>>({});
   const [isReturning, setIsReturning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
@@ -132,6 +136,10 @@ export default function LiquidationEndorsementModal({
   const selectedItem: ExpenseLineItem | undefined = lineItems[selectedItemIndex] || lineItems[0];
   const selectedItemAttachments = normalizeItemAttachments(selectedItem);
   const activeReceiptFile = selectedItemAttachments[activeFileIndex] || selectedItemAttachments[0] || null;
+
+  const returnSteps = useMemo(() => {
+    return buildLiquidationReturnSteps(lineItems);
+  }, [lineItems]);
 
   // Compute previous snapshot and line item diffs if liquidation was revised
   const latestSnapshot = useMemo(() => {
@@ -287,12 +295,12 @@ export default function LiquidationEndorsementModal({
     }
   };
 
-  const handleReturn = async () => {
-    if (!returnRemarks.trim()) {
-      toast.error('Please provide specific feedback/revision remarks before returning.');
-      return;
-    }
-
+  const handleReturnSubmit = async (payload: {
+    overallRemarks: string;
+    flaggedSteps: string[];
+    stepRevisionRemarks: Record<string, string>;
+    returnDeadline: string;
+  }) => {
     setIsSubmitting(true);
     try {
       await returnLiquidationStep(
@@ -303,11 +311,15 @@ export default function LiquidationEndorsementModal({
           email: signatorySession.email,
           roleTitle: signatorySession.roleTitle,
         },
-        returnRemarks
+        payload.overallRemarks,
+        payload.stepRevisionRemarks,
+        payload.flaggedSteps,
+        payload.returnDeadline
       );
 
-      toast.success(`Liquidation returned for revision with your feedback remarks.`);
+      toast.success(`Liquidation returned for revision with section-by-section instructions.`);
       if (onLiquidationUpdated) onLiquidationUpdated();
+      setIsReturning(false);
       onClose();
     } catch (err: any) {
       console.error('Failed to return liquidation:', err);
@@ -326,9 +338,29 @@ export default function LiquidationEndorsementModal({
   };
 
   const flagMissingReceiptInRemarks = (itemIndex: number, desc: string) => {
-    setIsReturning(true);
+    const item = lineItems[itemIndex];
+    const itemKey = item ? `item_${item.id || itemIndex}` : `item_${itemIndex}`;
     const addition = `Line item #${itemIndex + 1} ("${desc}"): Official receipt or proof document is missing or invalid. Please attach verified BIR receipt or invoice.`;
     setReturnRemarks((prev) => (prev ? `${prev}\n\n${addition}` : addition));
+    setInitialReturnFlags((prev) => Array.from(new Set([...prev, itemKey])));
+    setInitialStepRemarks((prev) => ({
+      ...prev,
+      [itemKey]: prev[itemKey] || `Official receipt or proof document is missing or invalid for "${desc}". Please attach verified BIR receipt or invoice.`,
+    }));
+    setIsReturning(true);
+  };
+
+  const flagItemForRevision = (itemIndex: number, desc: string) => {
+    const item = lineItems[itemIndex];
+    const itemKey = item ? `item_${item.id || itemIndex}` : `item_${itemIndex}`;
+    const addition = `Line item #${itemIndex + 1} ("${desc}"): Please review and revise this line item.`;
+    setReturnRemarks((prev) => (prev ? `${prev}\n\n${addition}` : addition));
+    setInitialReturnFlags((prev) => Array.from(new Set([...prev, itemKey])));
+    setInitialStepRemarks((prev) => ({
+      ...prev,
+      [itemKey]: prev[itemKey] || `Please revise line item #${itemIndex + 1} ("${desc}"): `,
+    }));
+    setIsReturning(true);
   };
 
   return (
@@ -608,6 +640,22 @@ export default function LiquidationEndorsementModal({
                             </button>
                           )}
 
+                          {isMyTurnNow && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedItemIndex(idx);
+                                flagItemForRevision(idx, item.description);
+                              }}
+                              className="text-[10px] font-bold text-amber-700 hover:text-amber-900 hover:underline flex items-center gap-1 cursor-pointer mt-0.5"
+                              title="Flag this specific line item for revision"
+                            >
+                              <RotateCcw className="w-2.5 h-2.5" />
+                              <span>Flag Item</span>
+                            </button>
+                          )}
+
                           {isSelected && (
                             <span className="text-[10px] font-bold text-[#0E4EBD] flex items-center gap-0.5 mt-0.5">
                               <span>Active</span>
@@ -760,39 +808,6 @@ export default function LiquidationEndorsementModal({
                   />
                 </div>
 
-                {/* Return for Revision Modal Box */}
-                {isReturning && (
-                  <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-2xl space-y-2">
-                    <label className="block text-xs font-bold text-amber-950 flex items-center gap-1.5">
-                      <RotateCcw className="w-3.5 h-3.5 text-amber-800" />
-                      <span>Reason for Return / Revision Items Required</span>
-                    </label>
-                    <textarea
-                      value={returnRemarks}
-                      onChange={(e) => setReturnRemarks(e.target.value)}
-                      rows={3}
-                      placeholder="Specify required corrections (e.g. Missing official receipt for Item 2, variance exceeds threshold...)"
-                      className="w-full p-2.5 text-xs bg-white border border-amber-300 rounded-xl focus:ring-2 focus:ring-amber-500/30 outline-none placeholder:text-gray-400"
-                    />
-                    <div className="flex items-center justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setIsReturning(false)}
-                        className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-200/60 rounded-lg cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleReturn}
-                        disabled={isSubmitting}
-                        className="px-4 py-1.5 text-xs font-bold bg-amber-700 hover:bg-amber-800 text-white rounded-lg shadow-xs cursor-pointer disabled:opacity-50"
-                      >
-                        {isSubmitting ? 'Submitting...' : 'Confirm Return for Revision'}
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             ) : null}
           </div>
@@ -1044,7 +1059,9 @@ export default function LiquidationEndorsementModal({
                 {!isReturning && (
                   <button
                     type="button"
-                    onClick={() => setIsReturning(true)}
+                    onClick={() => {
+                      setIsReturning(true);
+                    }}
                     disabled={isSubmitting}
                     className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/60 transition-colors cursor-pointer"
                   >
@@ -1055,78 +1072,54 @@ export default function LiquidationEndorsementModal({
               </div>
 
               <div className="flex items-center gap-2 w-full sm:w-auto">
-                {isReturning ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setIsReturning(false)}
-                      disabled={isSubmitting}
-                      className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                    >
-                      Cancel Return
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleReturn}
-                      disabled={isSubmitting || !returnRemarks.trim()}
-                      className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white shadow-amber-600/20 transition-all disabled:opacity-50 cursor-pointer"
-                    >
-                      <RotateCcw className="w-4 h-4" />
-                      <span>{isSubmitting ? 'Returning Liquidation...' : 'Confirm Return for Revision'}</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={onClose}
-                      className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                    >
-                      Close
-                    </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
 
-                    {hasSubsequentApprover ? (
-                      <button
-                        type="button"
-                        onClick={() => handleEndorse('endorse')}
-                        disabled={isSubmitting || !hasSignature}
-                        className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                      >
-                        <Send className="w-4 h-4 text-[#FFD41C]" />
-                        <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
-                      </button>
-                    ) : isFinalApprover ? (
-                      <button
-                        type="button"
-                        onClick={() => handleEndorse('approve')}
-                        disabled={isSubmitting || !hasSignature}
-                        className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-                      >
-                        <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                        <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation'}</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleEndorse(isChecker ? 'check' : 'endorse')}
-                        disabled={isSubmitting || !hasSignature}
-                        className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                          isChecker
-                            ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
-                            : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-                        }`}
-                      >
-                        <Send className="w-4 h-4" />
-                        <span>
-                          {isSubmitting
-                            ? 'Processing...'
-                            : isChecker
-                            ? 'Audit & Endorse Liquidation'
-                            : 'Stamp E-Signature & Endorse Liquidation'}
-                        </span>
-                      </button>
-                    )}
-                  </>
+                {hasSubsequentApprover ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('endorse')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#0E4EBD] hover:bg-blue-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    <span>{isSubmitting ? 'Processing...' : 'Endorse & Forward to Higher-Ups'}</span>
+                  </button>
+                ) : isFinalApprover ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse('approve')}
+                    disabled={isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                    <span>{isSubmitting ? 'Processing...' : 'Authorize & Approve Financial Liquidation'}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleEndorse(isChecker ? 'check' : 'endorse')}
+                    disabled={isSubmitting || !hasSignature}
+                    className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
+                      isChecker
+                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                        : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                    }`}
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>
+                      {isSubmitting
+                        ? 'Processing...'
+                        : isChecker
+                        ? 'Audit & Endorse Liquidation'
+                        : 'Stamp E-Signature & Endorse Liquidation'}
+                    </span>
+                  </button>
                 )}
               </div>
             </>
@@ -1158,6 +1151,21 @@ export default function LiquidationEndorsementModal({
         previousSnapshot={latestSnapshot}
         customDiffs={liquidationDiffs}
         revisionNumber={liquidation.revisionCount || ((liquidation.revisionHistory?.length || 0) + 1)}
+      />
+
+      {/* Step-by-Step Return Revision Modal */}
+      <StepReturnRevisionModal
+        isOpen={isReturning}
+        onClose={() => setIsReturning(false)}
+        documentTitle={liquidation.eventTitle || 'Financial Liquidation'}
+        referenceNo={liquidation.referenceNo}
+        documentType="FL"
+        steps={returnSteps}
+        onSubmit={handleReturnSubmit}
+        isSubmitting={isSubmitting}
+        initialOverallRemarks={returnRemarks}
+        initialFlags={initialReturnFlags}
+        initialStepRemarks={initialStepRemarks}
       />
     </div>
   );

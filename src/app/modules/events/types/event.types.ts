@@ -1,6 +1,7 @@
 import { Timestamp } from 'firebase/firestore';
+import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
 
-export interface EventDocument {
+export interface EventDocument extends SoftDeletable, Archivable {
   // ─── Identity ───
   id: string;
   referenceId: string;                     // e.g., "EVT-ADM-2026-0018"

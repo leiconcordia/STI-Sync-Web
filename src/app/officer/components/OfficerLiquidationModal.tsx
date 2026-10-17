@@ -19,6 +19,7 @@ import {
   Shield,
   ShieldCheck,
   Layers,
+  RotateCcw,
 } from 'lucide-react';
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { sanitizeFirestorePayload } from '../../../services/firebase';
@@ -39,6 +40,7 @@ import type {
   ReceiptAttachment,
   LiquidationApprovalStep,
 } from '../../modules/finance/types/liquidation.types';
+import { isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import LiquidationFlowBuilder from '../../modules/finance/components/LiquidationFlowBuilder';
 import { formatCurrency, formatVariance } from '../../utils/currency';
@@ -176,8 +178,13 @@ export default function OfficerLiquidationModal({
   const liquidatedEventIds = useMemo(() => {
     const set = new Set<string>();
     liquidationsList.forEach((l) => {
-      // Exclude voided or cancelled liquidations from blocking an event
-      if (l.eventId && l.status !== 'voided' && (l.status as any) !== 'cancelled') {
+      // Exclude voided, cancelled, or soft-deleted liquidations from blocking an event
+      if (
+        l.eventId &&
+        l.status !== 'voided' &&
+        (l.status as any) !== 'cancelled' &&
+        (l as any).isDeleted !== true
+      ) {
         set.add(l.eventId);
       }
     });
@@ -289,9 +296,19 @@ export default function OfficerLiquidationModal({
       // Liquidation exclusivity check (1:1 invariant): if already liquidated or has an active/approved liquidation, exclude
       // NOTE: 'pending' means liquidation is pending to be created for this concluded event, so it is ELIGIBLE!
       const liqStatus = ((e as any).liquidationStatus || '').toString().toLowerCase();
+      const lingeringReportIsActive =
+        Boolean((e as any).liquidationReportId) &&
+        liquidationsList.some(
+          (l) =>
+            l.id === (e as any).liquidationReportId &&
+            l.status !== 'voided' &&
+            (l.status as any) !== 'cancelled' &&
+            (l as any).isDeleted !== true
+        );
+
       const hasLiquidation =
         liquidatedEventIds.has(e.id) ||
-        Boolean((e as any).liquidationReportId) ||
+        lingeringReportIsActive ||
         (e as any).isLiquidated === true ||
         ['submitted', 'under_review', 'approved'].includes(liqStatus) ||
         (e as any).hasLiquidation === true;
@@ -313,6 +330,59 @@ export default function OfficerLiquidationModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resubmissionNote, setResubmissionNote] = useState('');
+
+  const isReturnedReport = Boolean(
+    editingReport?.status === 'returned' ||
+    (editingReport as any)?.isReturned
+  );
+
+  const flaggedLineItemKeys = useMemo(() => {
+    const flags = editingReport?.returnFlags || [];
+    const remarkKeys = Object.keys(editingReport?.stepRevisionRemarks || {});
+    const allKeys = Array.from(new Set([...flags, ...remarkKeys]));
+    return allKeys.filter((k) => k.startsWith('item_') || k.startsWith('item-'));
+  }, [editingReport]);
+
+  const hasItemLevelFlags = flaggedLineItemKeys.length > 0;
+
+  const hasLegacyLineItemFlags = Boolean(
+    editingReport?.returnFlags?.includes('sec_line_items') ||
+    editingReport?.returnFlags?.includes('sec_receipts') ||
+    editingReport?.stepRevisionRemarks?.['sec_line_items'] ||
+    editingReport?.stepRevisionRemarks?.['sec_receipts']
+  );
+
+  const isLineItemsFlagged = hasItemLevelFlags || hasLegacyLineItemFlags;
+
+  const flaggedItemCount = useMemo(() => {
+    if (!editingReport) return 0;
+    if (!hasItemLevelFlags && hasLegacyLineItemFlags) return lineItems.length;
+    return lineItems.filter((item, idx) => {
+      const { isFlagged } = isExpenseItemFlagged(
+        item,
+        idx,
+        editingReport.returnFlags,
+        editingReport.stepRevisionRemarks,
+        hasLegacyLineItemFlags,
+        hasItemLevelFlags
+      );
+      return isFlagged;
+    }).length;
+  }, [lineItems, editingReport, hasItemLevelFlags, hasLegacyLineItemFlags]);
+
+  const isEventBudgetFlagged = Boolean(
+    editingReport?.returnFlags?.includes('sec_event_budget') ||
+    editingReport?.stepRevisionRemarks?.['sec_event_budget']
+  );
+  const eventBudgetFeedback = editingReport?.stepRevisionRemarks?.['sec_event_budget'];
+
+  const isSignatoriesFlagged = Boolean(
+    editingReport?.returnFlags?.includes('sec_signatories') ||
+    editingReport?.stepRevisionRemarks?.['sec_signatories']
+  );
+  const signatoriesFeedback = editingReport?.stepRevisionRemarks?.['sec_signatories'];
+
   const [lightboxData, setLightboxData] = useState<{
     url: string;
     title: string;
@@ -589,6 +659,10 @@ export default function OfficerLiquidationModal({
 
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
+      if (isReturnedReport && !resubmissionNote.trim()) {
+        setError('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
+        return;
+      }
       if (!effectiveIsAdviser && userRole !== 'admin') {
         setError('Only appointed Club Advisers are authorized to officially submit Financial Liquidations. Student officers can prepare and save drafts.');
         return;
@@ -673,10 +747,15 @@ export default function OfficerLiquidationModal({
           ...sanitizedPayload,
           status: nextStatus,
           ...(shouldSubmit ? { submittedAt: new Date() } : {}),
+          ...(shouldSubmit && isReturnedReport && resubmissionNote.trim()
+            ? { resubmissionNote: resubmissionNote.trim() }
+            : {}),
         });
         toast.success(
           shouldSubmit
-            ? 'Liquidation report submitted successfully for institutional review.'
+            ? isReturnedReport
+              ? 'Liquidation report resubmitted successfully with your revision summary. Route reset to Stage 1.'
+              : 'Liquidation report submitted successfully for institutional review.'
             : 'Draft liquidation report updated successfully.'
         );
       } else {
@@ -729,7 +808,7 @@ export default function OfficerLiquidationModal({
             </div>
           )}
 
-          {editingReport?.status === 'returned' && (
+          {(editingReport?.status === 'returned' || (editingReport as any)?.isReturned) && (
             <RevisionFeedbackBanner
               returnedBy={{
                 name: (editingReport as any).returnedByName || (editingReport as any).returnedBy || 'Institutional Signatory',
@@ -738,6 +817,8 @@ export default function OfficerLiquidationModal({
               }}
               returnedAt={editingReport.returnedAt}
               returnRemarks={editingReport.returnRemarks}
+              returnFlags={editingReport.returnFlags}
+              stepRevisionRemarks={editingReport.stepRevisionRemarks}
               revisionHistory={editingReport.revisionHistory}
               documentTitle={editingReport.eventTitle}
               documentType="FL"
@@ -762,55 +843,87 @@ export default function OfficerLiquidationModal({
           )}
 
           {/* Event Selection & Allocated Budget */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Linked Event <span className="text-red-500">*</span>
-              </label>
-              <select
-                value={selectedEventId}
-                onChange={(e) => handleEventSelect(e.target.value)}
-                disabled={!!editingReport || eligibleEvents.length === 0}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] disabled:bg-gray-100 disabled:text-gray-500"
-              >
-                {eligibleEvents.length === 0 ? (
-                  <option value="">No completed, unliquidated events available</option>
-                ) : (
-                  <>
-                    <option value="">Select a completed event ({eligibleEvents.length} available)...</option>
-                    {eligibleEvents.map((evt) => (
-                      <option key={evt.id} value={evt.id}>
-                        {evt.title} ({evt.eventFormat || 'Campus'})
-                      </option>
-                    ))}
-                  </>
+          <div
+            className={`p-4 rounded-xl transition-all ${
+              isEventBudgetFlagged
+                ? 'border-2 border-amber-400 bg-amber-50/30 ring-1 ring-amber-300 shadow-xs'
+                : 'border border-gray-200 bg-gray-50/40'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-3 border-b border-gray-200/60 pb-2">
+              <div className="flex items-center gap-2">
+                <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                  Event &amp; Budget Ceiling Allocation
+                </h4>
+                {isEventBudgetFlagged && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
+                    <AlertCircle className="w-3 h-3 text-amber-700" />
+                    Needs Revision
+                  </span>
                 )}
-              </select>
+              </div>
             </div>
 
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-sm font-medium text-gray-700">
-                  Approved Budget Ceiling (Allocated)
+            {isEventBudgetFlagged && eventBudgetFeedback && (
+              <div className="mb-3 p-3 bg-amber-100/70 border border-amber-300 rounded-lg text-xs text-amber-950 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold text-amber-900">Reviewer Instructions for Event &amp; Budget:</span>
+                  <p className="mt-0.5 whitespace-pre-wrap">{eventBudgetFeedback}</p>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Linked Event <span className="text-red-500">*</span>
                 </label>
-                <span className="text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md flex items-center gap-1">
-                  <Lock className="w-3 h-3 text-gray-400" /> Read-only
-                </span>
+                <select
+                  value={selectedEventId}
+                  onChange={(e) => handleEventSelect(e.target.value)}
+                  disabled={!!editingReport || eligibleEvents.length === 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] disabled:bg-gray-100 disabled:text-gray-500"
+                >
+                  {eligibleEvents.length === 0 ? (
+                    <option value="">No completed, unliquidated events available</option>
+                  ) : (
+                    <>
+                      <option value="">Select a completed event ({eligibleEvents.length} available)...</option>
+                      {eligibleEvents.map((evt) => (
+                        <option key={evt.id} value={evt.id}>
+                          {evt.title} ({evt.eventFormat || 'Campus'})
+                        </option>
+                      ))}
+                    </>
+                  )}
+                </select>
               </div>
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₱</span>
-                <input
-                  type="number"
-                  value={allocatedBudget}
-                  readOnly
-                  disabled
-                  className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
-                  placeholder="0.00"
-                />
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Approved Budget Ceiling (Allocated)
+                  </label>
+                  <span className="text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md flex items-center gap-1">
+                    <Lock className="w-3 h-3 text-gray-400" /> Read-only
+                  </span>
+                </div>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₱</span>
+                  <input
+                    type="number"
+                    value={allocatedBudget}
+                    readOnly
+                    disabled
+                    className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
+                    placeholder="0.00"
+                  />
+                </div>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Locked to the official approved budget ceiling for the linked event.
+                </p>
               </div>
-              <p className="text-[11px] text-gray-500 mt-1">
-                Locked to the official approved budget ceiling for the linked event.
-              </p>
             </div>
           </div>
 
@@ -860,6 +973,13 @@ export default function OfficerLiquidationModal({
               >
                 {lineItems.length}
               </span>
+              {isLineItemsFlagged && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                  {hasItemLevelFlags
+                    ? `${flaggedItemCount} ${flaggedItemCount === 1 ? 'Item Needs' : 'Items Need'} Revision`
+                    : 'Needs Revision'}
+                </span>
+              )}
             </button>
 
             <button
@@ -880,12 +1000,37 @@ export default function OfficerLiquidationModal({
               >
                 {approvalChain.length} Signers
               </span>
+              {isSignatoriesFlagged && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">
+                  Needs Revision
+                </span>
+              )}
             </button>
           </div>
 
           {/* TAB 1: Expenses & Receipts */}
           {activeModalTab === 'expenses' && (
             <div className="space-y-4">
+              {isLineItemsFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      {hasItemLevelFlags
+                        ? `Reviewer Revision Feedback — ${flaggedItemCount} Specific Line Item(s) Flagged`
+                        : 'Reviewer Revision Feedback — Line Items & Receipts'}
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {hasItemLevelFlags
+                        ? 'Specific expense line items flagged for correction are highlighted in amber below with direct reviewer remarks.'
+                        : (editingReport?.stepRevisionRemarks?.['sec_line_items'] ||
+                          editingReport?.stepRevisionRemarks?.['sec_receipts'] ||
+                          editingReport?.returnRemarks ||
+                          'Please update the highlighted expense line items or attach valid receipts.')}
+                    </p>
+                  </div>
+                </div>
+              )}
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-base font-bold text-[#001A4D]">Expense Line Items & Receipts</h3>
@@ -904,17 +1049,35 @@ export default function OfficerLiquidationModal({
               <div className="space-y-4">
                 {lineItems.map((item, index) => {
                   const attachedFiles = item.receiptFiles || [];
+                  const { isFlagged: isThisItemFlagged, feedback: thisItemFeedback } = isExpenseItemFlagged(
+                    item,
+                    index,
+                    editingReport?.returnFlags,
+                    editingReport?.stepRevisionRemarks,
+                    hasLegacyLineItemFlags,
+                    hasItemLevelFlags
+                  );
 
                   return (
                     <div
                       key={item.id}
-                      className="p-4 border border-gray-200 rounded-xl bg-white space-y-3 relative group"
+                      className={`p-4 rounded-xl space-y-3 relative group transition-all ${
+                        isThisItemFlagged
+                          ? 'border-2 border-amber-400 bg-amber-50/20 shadow-xs ring-1 ring-amber-300'
+                          : 'border border-gray-200 bg-white'
+                      }`}
                     >
                       <div className="flex items-center justify-between border-b border-gray-100 pb-2">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
                             Item #{index + 1}
                           </span>
+                          {isThisItemFlagged && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
+                              <AlertCircle className="w-3 h-3 text-amber-700" />
+                              Needs Revision
+                            </span>
+                          )}
                           {item.isContingency ? (
                             <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 rounded border border-amber-300 uppercase flex items-center gap-1">
                               <Shield className="w-2.5 h-2.5 text-amber-700" />
@@ -973,6 +1136,19 @@ export default function OfficerLiquidationModal({
                           )}
                         </div>
                       </div>
+
+                      {/* Reviewer Item-Level Feedback Box */}
+                      {isThisItemFlagged && (
+                        <div className="p-3 bg-amber-50/90 border border-amber-300 rounded-lg text-xs space-y-1">
+                          <div className="font-bold text-amber-900 flex items-center gap-1.5 uppercase text-[10px] tracking-wider">
+                            <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                            Reviewer Feedback for Item #{index + 1} ({item.description || 'Line Item'}):
+                          </div>
+                          <p className="text-amber-800 font-medium pl-2 border-l-2 border-amber-500 whitespace-pre-line leading-relaxed">
+                            {thisItemFeedback || 'This line item was flagged for revision. Please review its description, amount, or attached official receipts.'}
+                          </p>
+                        </div>
+                      )}
 
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="sm:col-span-2">
@@ -1260,6 +1436,28 @@ export default function OfficerLiquidationModal({
                 })}
               </div>
 
+              {/* Cross-Tab Signatory Flag Notice on Tab 1 */}
+              {isSignatoriesFlagged && (
+                <div className="p-3.5 bg-amber-50 border-2 border-amber-300 rounded-xl flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-start gap-2.5 text-amber-950 font-medium">
+                    <AlertCircle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-amber-900 block">Signatory &amp; Audit Route Also Flagged for Revision</span>
+                      <p className="text-amber-800 mt-0.5">
+                        {signatoriesFeedback || 'The reviewer has requested changes to the signatory routing or approval chain.'}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModalTab('signatories')}
+                    className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg transition-colors flex-shrink-0 cursor-pointer shadow-xs text-xs whitespace-nowrap"
+                  >
+                    Go to Signatories Tab ➔
+                  </button>
+                </div>
+              )}
+
               {/* Navigation Helper to Next Tab */}
               <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-xl flex items-center justify-between gap-3 text-xs">
                 <div className="flex items-center gap-2.5 text-blue-950 font-medium">
@@ -1282,15 +1480,53 @@ export default function OfficerLiquidationModal({
           {/* TAB 2: Dynamic Liquidation Signatory & Audit Route Builder */}
           {activeModalTab === 'signatories' && (
             <div className="space-y-4">
-              <LiquidationFlowBuilder
-                approvalChain={approvalChain}
-                onChange={setApprovalChain}
-                activeSignatories={activeSignatories}
-                orgId={orgId}
-                orgName={orgName}
-                allocatedBudget={allocatedBudget}
-                isSasCreator={isSasCreator}
-              />
+              {isSignatoriesFlagged && (
+                <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-xl flex items-start gap-3 shadow-xs">
+                  <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="flex-1 text-xs">
+                    <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
+                      Reviewer Revision Feedback — Signatory Route
+                    </span>
+                    <p className="text-amber-800 leading-relaxed font-medium">
+                      {signatoriesFeedback ||
+                        editingReport?.returnRemarks ||
+                        'Please verify and adjust the signatory routing order.'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div
+                className={`p-4 rounded-xl transition-all ${
+                  isSignatoriesFlagged
+                    ? 'border-2 border-amber-400 bg-amber-50/20 ring-1 ring-amber-300 shadow-xs'
+                    : 'border border-gray-200 bg-white'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3 border-b border-gray-100 pb-2">
+                  <div className="flex items-center gap-2">
+                    <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                      Approval &amp; Endorsement Chain
+                    </h4>
+                    {isSignatoriesFlagged && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
+                        <AlertCircle className="w-3 h-3 text-amber-700" />
+                        Needs Revision
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <LiquidationFlowBuilder
+                  approvalChain={approvalChain}
+                  onChange={setApprovalChain}
+                  activeSignatories={activeSignatories}
+                  orgId={orgId}
+                  orgName={orgName}
+                  allocatedBudget={allocatedBudget}
+                  isSasCreator={isSasCreator}
+                />
+              </div>
 
               {/* If report is already in review or concluded, show visual tracker */}
               {editingReport && editingReport.status !== 'draft' && (
@@ -1305,6 +1541,26 @@ export default function OfficerLiquidationModal({
                   />
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Officer Revision Summary Card (Mandatory on Resubmission) */}
+          {isReturnedReport && (
+            <div className="p-4 bg-amber-50/70 border-2 border-amber-300 rounded-xl space-y-2">
+              <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
+                <RotateCcw className="w-4 h-4 text-amber-700" />
+                <span>Officer Revision Summary (Required)</span>
+              </div>
+              <p className="text-xs text-amber-800">
+                Summarize the modifications, recalculated amounts, or newly attached receipts you provided to address the reviewer feedback.
+              </p>
+              <textarea
+                value={resubmissionNote}
+                onChange={(e) => setResubmissionNote(e.target.value)}
+                placeholder="e.g. Attached official BIR receipts for line items #2 and #4; updated unit costs as requested by the Accountant."
+                rows={3}
+                className="w-full text-xs p-3 border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
+              />
             </div>
           )}
         </div>
@@ -1350,7 +1606,7 @@ export default function OfficerLiquidationModal({
               >
                 {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
                 {!effectiveIsAdviser && userRole !== 'admin' && <Lock className="w-4 h-4" />}
-                Submit Liquidation
+                {isReturnedReport ? 'Resubmit Financial Liquidation' : 'Submit Liquidation'}
               </button>
             </div>
           </div>

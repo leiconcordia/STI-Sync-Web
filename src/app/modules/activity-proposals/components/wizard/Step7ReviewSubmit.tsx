@@ -26,6 +26,7 @@ import {
   X,
   UserCheck,
   Download,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ProposalFormData, ProposalApprovalStep } from '../../types/proposal.types';
@@ -122,6 +123,13 @@ export default function Step7ReviewSubmit({
     }
   }, [ruleCheck.isCompliant]);
 
+  const isReturnedProposal = Boolean(
+    formData.status === 'returned' ||
+    formData.status === 'returned_for_revision' ||
+    (formData as any).proposalStatus === 'returned' ||
+    (formData as any).isReturned
+  );
+
   const canSubmit = useMemo(() => {
     if (!ruleCheck.isCompliant && !(formData.urgentJustification || '').trim()) {
       return false;
@@ -136,8 +144,11 @@ export default function Step7ReviewSubmit({
     if (!hasApprover) {
       return false;
     }
+    if (isReturnedProposal && !(formData.resubmissionNote || '').trim()) {
+      return false;
+    }
     return true;
-  }, [ruleCheck.isCompliant, formData.urgentJustification, formData.title, formData.description, approvalChain]);
+  }, [ruleCheck.isCompliant, formData.urgentJustification, formData.title, formData.description, approvalChain, isReturnedProposal, formData.resubmissionNote]);
 
   return (
     <div className="space-y-6">
@@ -622,6 +633,27 @@ export default function Step7ReviewSubmit({
         </div>
       </div>
 
+      {/* ── OFFICER REVISION SUMMARY (When resubmitting returned proposal) ── */}
+      {isReturnedProposal && (
+        <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-2xl space-y-2 shadow-xs">
+          <div className="flex items-center gap-2 text-amber-950 font-bold text-xs uppercase tracking-wider">
+            <RotateCcw className="w-4 h-4 text-amber-700" />
+            <span>Officer Revision Summary / Changes Made (Required) <span className="text-red-500">*</span></span>
+          </div>
+          <p className="text-[11px] text-amber-800">
+            Explain the corrections, updates, or clarifications applied to the proposal in this revision cycle so approvers can immediately verify them.
+          </p>
+          <textarea
+            rows={3}
+            value={formData.resubmissionNote || ''}
+            onChange={(e) => onChange({ resubmissionNote: e.target.value })}
+            placeholder="e.g. Adjusted budget line item 3 with updated supplier quotations; moved event date to next week to avoid exam conflict..."
+            className="w-full px-3.5 py-2.5 bg-white border border-amber-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-amber-500/40 text-slate-800 placeholder:text-gray-400"
+            required
+          />
+        </div>
+      )}
+
       {/* ── BOTTOM ACTIONS ── */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -658,13 +690,23 @@ export default function Step7ReviewSubmit({
           }`}
         >
           <Send className="w-4 h-4" />
-          <span>{isSubmitting ? 'Submitting Proposal...' : 'Submit Activity Proposal for Institutional Review'}</span>
+          <span>
+            {isSubmitting
+              ? isReturnedProposal
+                ? 'Resubmitting Revised Proposal...'
+                : 'Submitting Proposal...'
+              : isReturnedProposal
+              ? 'Resubmit Revised Proposal for Review'
+              : 'Submit Activity Proposal for Institutional Review'}
+          </span>
         </button>
       </div>
 
       {!canSubmit && (
         <p className="text-[11px] text-slate-400 text-center">
-          {!ruleCheck.isCompliant && !(formData.urgentJustification || '').trim()
+          {isReturnedProposal && !(formData.resubmissionNote || '').trim()
+            ? 'Please provide a summary of the revisions made above before resubmitting.'
+            : !ruleCheck.isCompliant && !(formData.urgentJustification || '').trim()
             ? 'Please enter an urgent submission justification above before proceeding with submission.'
             : 'Please ensure all required fields across previous steps are filled.'}
         </p>

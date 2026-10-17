@@ -19,9 +19,9 @@ export function useAllLiquidations() {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const fetched = snapshot.docs.map(
-          (doc) => ({ id: doc.id, ...doc.data() } as LiquidationDocument)
-        );
+        const fetched = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as LiquidationDocument))
+          .filter((l: any) => l.isDeleted !== true);
         // Sort newest first
         fetched.sort((a, b) => {
           const aTime = (a.updatedAt as any)?.seconds ?? 0;
@@ -67,9 +67,9 @@ export function useOrgLiquidations(orgId: string | null | undefined) {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        const fetched = snapshot.docs.map(
-          (doc) => ({ id: doc.id, ...doc.data() } as LiquidationDocument)
-        );
+        const fetched = snapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as LiquidationDocument))
+          .filter((l: any) => l.isDeleted !== true);
         fetched.sort((a, b) => {
           const aTime = (a.updatedAt as any)?.seconds ?? 0;
           const bTime = (b.updatedAt as any)?.seconds ?? 0;

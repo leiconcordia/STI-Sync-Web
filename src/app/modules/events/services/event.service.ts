@@ -34,6 +34,7 @@ import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
+import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -860,30 +861,25 @@ export const updateAdviserRemarks = async (
   );
 };
 
-export const deleteEvent = async (eventId: string): Promise<void> => {
-  // 1. Purge any associated liquidations and their ledger records
-  try {
-    const liquidationsCol = collection(db, LIQUIDATIONS_COLLECTION);
-    const q = query(liquidationsCol, where('eventId', '==', eventId));
-    const liqSnap = await getDocs(q);
-    for (const d of liqSnap.docs) {
-      await removeLedgerTransactionsForLiquidation(d.id);
-      await deleteDoc(d.ref);
-    }
-  } catch (err) {
-    console.warn('[deleteEvent] Liquidation cleanup note:', err);
-  }
+export const deleteEvent = async (
+  eventId: string,
+  user?: { uid: string; name: string; role?: string },
+  reason?: string
+): Promise<void> => {
+  // Move event draft to Trash safely without destroying data
+  await softDeleteDocument(
+    'events',
+    eventId,
+    user || { uid: 'system', name: 'User', role: 'Officer' },
+    reason || 'Event draft discarded'
+  );
+};
 
-  // 2. Purge any event budget deduction from the ledger
-  try {
-    await removeLedgerTransactionsForEvent(eventId);
-  } catch (err) {
-    console.warn('[deleteEvent] Ledger rollback note:', err);
-  }
-
-  // 3. Delete the event document
-  const ref = doc(db, EVENTS_COLLECTION, eventId);
-  await deleteDoc(ref);
+export const restoreEvent = async (
+  eventId: string,
+  user: { uid: string; name: string; role?: string }
+): Promise<void> => {
+  await restoreDocument('events', eventId, user);
 };
 
 /**

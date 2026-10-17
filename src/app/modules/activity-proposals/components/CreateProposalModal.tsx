@@ -553,14 +553,6 @@ export default function CreateProposalModal({
       return;
     }
 
-    // Strict revision enforcement: Cannot advance if this flagged step is unmodified
-    if (isReturnedProposal && isStepFlagged(currentStep) && !isStepModified(currentStep)) {
-      toast.error(
-        `Step ${currentStep} has revision instructions that have not been modified yet. Please apply the required changes to proceed.`
-      );
-      return;
-    }
-
     setCurrentStep((prev) => Math.min(prev + 1, 7));
   };
 
@@ -710,25 +702,15 @@ export default function CreateProposalModal({
                     <button
                       type="button"
                       onClick={() => {
-                        if (s.id > currentStep) {
-                          // Prevent skipping past an unmodified flagged step
-                          for (let checkStep = currentStep; checkStep < s.id; checkStep++) {
-                            if (isStepFlagged(checkStep) && !isStepModified(checkStep)) {
-                              toast.error(
-                                `You cannot advance to Step ${s.id} because Step ${checkStep} has revision instructions that have not been modified yet.`
-                              );
-                              return;
-                            }
-                          }
-                        }
-                        if (isCompleted || s.id === currentStep) {
+                        // In revision mode or for completed steps, allow jumping directly
+                        if (isReturnedProposal || isCompleted || s.id <= currentStep) {
                           setCurrentStep(s.id);
                         }
                       }}
                       className={`flex items-center gap-2 text-left transition-all ${
                         isActive
                           ? 'opacity-100 font-bold'
-                          : isCompleted
+                          : isCompleted || isReturnedProposal
                           ? 'opacity-80 hover:opacity-100 cursor-pointer'
                           : 'opacity-40 cursor-not-allowed'
                       }`}
@@ -897,11 +879,9 @@ export default function CreateProposalModal({
                   <p className="text-xs font-medium mt-1 leading-relaxed text-slate-800">
                     "{getStepDirective(currentStep)}"
                   </p>
-                  {!isStepModified(currentStep) && (
-                    <p className="text-[11px] text-amber-800/80 mt-1 italic">
-                      You cannot proceed to subsequent steps or submit until you modify this step according to the directive.
-                    </p>
-                  )}
+                  <p className="text-[11px] text-amber-800/80 mt-1 italic">
+                    Review and update this step according to the instructions. You will summarize the changes made on Step 7 before resubmitting.
+                  </p>
                 </div>
               </div>
             </div>
