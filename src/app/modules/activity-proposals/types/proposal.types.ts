@@ -80,6 +80,8 @@ export interface ProposalApprovalStep {
   signedAt?: any;
   remarks?: string;
   feedbackSections?: { sectionKey: string; comment: string }[];
+  isMandatory?: boolean;
+  isPermanent?: boolean;
 }
 
 export interface ProposalSectionRemark {

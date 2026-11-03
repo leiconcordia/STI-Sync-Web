@@ -238,7 +238,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               </div>
               <p className="text-slate-600 dark:text-slate-400">
                 {isLiquidationCompulsory
-                  ? `This event has approved allocations of ₱${formatPHP(totalApprovedBudget)}. Pre-set expense items will be locked into the liquidation report and require verified receipt attachments.`
+                  ? `This event has an approved baseline budget ceiling of ₱${formatPHP(totalApprovedBudget)}. Officers can record actual purchases line-by-line and attach official receipts for institutional liquidation (Form LF-01).`
                   : 'This event has ₱0.00 approved funds and no cash advances. No financial liquidation report is required.'}
               </p>
             </div>
@@ -298,7 +298,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               <li className="flex items-start gap-2">
                 <Lock className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <span>
-                  <strong>Cash Allocations Sealed:</strong> Cash advance allocations are switched to read-only for audit and liquidation.
+                  <strong>Financial Liquidation Ready:</strong> Official expense receipts can now be submitted for institutional review and signatory audit.
                 </span>
               </li>
               <li className="flex items-start gap-2">

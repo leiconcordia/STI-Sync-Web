@@ -25,6 +25,7 @@ import {
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import LiquidationEndorsementModal from '../components/LiquidationEndorsementModal';
+import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 
 interface ContextType {
@@ -45,6 +46,7 @@ export default function SignatoryLiquidationsPage() {
   const [activeTab, setActiveTab] = useState<'pending' | 'endorsed' | 'returned'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
+  const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
 
   const currentList =
     activeTab === 'pending'
@@ -223,6 +225,19 @@ export default function SignatoryLiquidationsPage() {
                 <div className="flex items-center gap-2 self-start md:self-center">
                   <button
                     type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExportReport(liq);
+                    }}
+                    className="px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer whitespace-nowrap"
+                    title="Export official STI liquidation Excel spreadsheet (.xlsx)"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Export</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => setSelectedLiquidation(liq)}
                     className="px-4 py-2 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold flex items-center gap-2 shadow-xs transition-all cursor-pointer whitespace-nowrap"
                   >
@@ -253,6 +268,15 @@ export default function SignatoryLiquidationsPage() {
           signatorySession={session}
           onClose={() => setSelectedLiquidation(null)}
           onOpenSignaturePad={onOpenSignatureModal}
+        />
+      )}
+
+      {/* Liquidation Export Preview Modal */}
+      {exportReport && (
+        <LiquidationExportPreviewModal
+          isOpen={Boolean(exportReport)}
+          onClose={() => setExportReport(null)}
+          report={exportReport}
         />
       )}
     </div>

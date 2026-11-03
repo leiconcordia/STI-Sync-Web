@@ -53,32 +53,39 @@ const DEFAULT_REVENUE_PRESETS = [
 
 const DEFAULT_EXPENSE_PRESETS = [
   {
+    description: 'Meals & Refreshments (Speakers, Guests & Working Committee)',
+    lastYearActual: 0,
+    thisYearProposed: 2500,
+    adjustment: 0,
+    remarks: 'Approved baseline allocation for catering and lunch packs',
+  },
+  {
     description: 'Guest Speaker Honorarium / Token of Appreciation',
     lastYearActual: 0,
     thisYearProposed: 2000,
     adjustment: 0,
-    remarks: 'Resource speaker honorarium',
+    remarks: 'Approved baseline honorarium for resource speaker',
   },
   {
-    description: 'Meals & Refreshments (Speakers, Guests & Working Committee)',
+    description: 'Materials, Printing & Promotional Tarpaulin',
     lastYearActual: 0,
-    thisYearProposed: 1500,
+    thisYearProposed: 1200,
     adjustment: 0,
-    remarks: 'Packed lunch and snack sets',
+    remarks: 'Certificates, specialty paper, and event tarpaulin banner',
   },
   {
-    description: 'Certificates of Participation & Certificate Frames',
+    description: 'Transportation & Travel Allowance',
     lastYearActual: 0,
     thisYearProposed: 800,
     adjustment: 0,
-    remarks: 'High-gloss specialty paper & token frames',
+    remarks: 'Fares and transit allowances for organizers/guests',
   },
   {
-    description: 'Promotional Tarpaulin & Stage Backdrop',
+    description: 'Contingency / Buffer Fund',
     lastYearActual: 0,
-    thisYearProposed: 700,
+    thisYearProposed: 1000,
     adjustment: 0,
-    remarks: '6x4 ft campus backdrop banner',
+    remarks: 'Operational buffer fund for unexpected event requirements',
   },
 ];
 
@@ -361,22 +368,27 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
         </div>
       </div>
 
-      {/* ── SECTION B: EXPENSES ── */}
+      {/* ── SECTION B: EXPENSES (Form LF-01 Baseline Categories) ── */}
       <div className="space-y-3 pt-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
-            <h3 className="text-sm font-bold text-slate-800">
-              B. Projected Expenditures / Budget Breakdown
-            </h3>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
+              <h3 className="text-sm font-bold text-slate-800">
+                B. Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+              </h3>
+            </div>
+            <p className="text-[11px] text-slate-500 pl-4.5 mt-0.5">
+              These general baseline categories establish the spending guide for post-event Form LF-01 Financial Liquidation, where actual store receipts will be attached.
+            </p>
           </div>
           <button
             type="button"
             onClick={() => handleAddLineItem('expenses')}
-            className="text-xs text-rose-700 hover:text-rose-800 font-semibold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 transition-colors"
+            className="text-xs text-rose-700 hover:text-rose-800 font-semibold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 transition-colors self-start sm:self-center shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Add Expense Item</span>
+            <span>Add Baseline Category</span>
           </button>
         </div>
 

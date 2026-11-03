@@ -288,15 +288,6 @@ export default function FinancialLiquidation() {
             Submit actual spendings, receipt evidence, and track financial variance against approved event budgets
           </p>
         </div>
-
-        {/* Solid button without gradients */}
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center gap-2 px-4 py-2.5 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-xl text-sm font-bold shadow-xs transition-colors cursor-pointer self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4 text-[#FFD41C]" />
-          New Liquidation Report
-        </button>
       </div>
 
       {/* ── 3 KPI Summary Cards ── */}
@@ -437,7 +428,7 @@ export default function FinancialLiquidation() {
               <Receipt className="w-12 h-12 text-gray-300 mx-auto" />
               <div className="font-bold text-gray-700 text-sm">No liquidation reports found</div>
               <p className="text-xs text-gray-400 max-w-sm">
-                Click &quot;+ New Liquidation Report&quot; to select an approved event and submit your expenses with receipts.
+                Navigate to your approved event under Events & Activities and click Financial Liquidation to record expenses and submit receipts.
               </p>
             </div>
           ) : (

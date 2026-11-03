@@ -36,8 +36,8 @@ import {
   isProposalFullySigned,
   PublishStudentFeedModal,
   AttendanceScannersModal,
-  CashCustodiansModal,
 } from '../../modules/events';
+import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useEventTypesStream, useVenuesStream } from '../../modules/events/hooks/useEventConfigStream';
@@ -1819,12 +1819,12 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       </span>
                     </div>
                     <h4 className="text-sm font-bold text-slate-900 mt-1">
-                      Budget Custodians ("Hold Money") & Activity Operations
+                      Financial Liquidation &amp; Activity Operations
                     </h4>
                     <p className="text-xs text-slate-500 mt-0.5">
                       {isOrgManagedEvent
-                        ? 'View promotional mobile banners, ticket scanners, and physical cash custodian allocations configured by the student officers.'
-                        : 'Subdivide the approved budget to designated committee leads, configure mobile app publishing, and manage ticket scanners.'}
+                        ? 'View promotional mobile banners, ticket scanners, and actual expense liquidations submitted by student officers.'
+                        : 'Configure mobile app publishing, manage ticket scanners, and liquidate actual expenditures with official receipts.'}
                     </p>
                   </div>
 
@@ -1902,71 +1902,43 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </div>
                 </div>
 
-                {/* Custodian Summary & Progress Bar */}
+                {/* Financial Liquidation Baseline & Status Card */}
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-bold text-slate-700 uppercase tracking-wider">
-                      Designated Cash Custodians ({budgetCustodians.length})
+                    <span className="font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <Receipt className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      Financial Liquidation (Form LF-01 Readiness)
                     </span>
                     <span className="font-mono text-slate-600">
-                      Total Allocated: <strong className="text-emerald-700">{formatPHP(totalAllocatedToCustodians)}</strong> / Approved: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount)}</strong>
+                      Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount)}</strong>
                     </span>
                   </div>
 
-                  {budgetCustodians.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {budgetCustodians.map((c, i) => {
-                        const isContingency = c.isContingencyFund === true;
-                        return (
-                          <div
-                            key={c.id || i}
-                            className={`p-3.5 rounded-xl space-y-1.5 border transition-all ${
-                              isContingency
-                                ? 'bg-amber-50/70 border-amber-300 shadow-2xs'
-                                : 'bg-slate-50 border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-900 truncate">
-                                {c.personName || 'Unassigned Custodian'}
-                              </span>
-                              <span
-                                className={`text-xs font-black font-mono ${
-                                  isContingency ? 'text-amber-800' : 'text-emerald-700'
-                                }`}
-                              >
-                                {formatPHP(c.allocatedAmount || 0)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <p className="text-[11px] text-slate-700 font-medium truncate">
-                                {c.purpose || 'Expense Category'}
-                              </p>
-                              {isContingency && (
-                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-900 border border-amber-300">
-                                  <Shield className="w-2.5 h-2.5 text-amber-700" />
-                                  Contingency
-                                </span>
-                              )}
-                            </div>
-                            {c.personRole && (
-                              <p className="text-[10px] text-slate-400 truncate">
-                                Role: {c.personRole}
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-center">
-                      <p className="text-xs text-slate-500">
-                        {isOrgManagedEvent
-                          ? 'No cash custodian advances recorded yet by student officers.'
-                          : 'No cash custodians assigned yet. Click "Allocate Cash Custodians" above to assign specific amounts to committee leads before physical disbursement and post-event liquidation.'}
+                  <div className="p-4 bg-gradient-to-br from-blue-50/70 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-[#001A4D]">
+                          Proposed Expense Baseline Guide
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-300">
+                          Guidance Ceiling
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 max-w-xl">
+                        The proposal budget serves as an approved spending baseline. Click <strong>"{isOrgManagedEvent ? 'View Financial Liquidation' : 'Financial Liquidation'}"</strong> to review or record actual purchases line-by-line with official receipts (ORs) and track remaining balances in real time.
                       </p>
                     </div>
-                  )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsCashModalOpen(true)}
+                      className="px-4 py-2.5 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0"
+                    >
+                      <Receipt className="w-4 h-4 text-[#FFD41C]" />
+                      <span>{isOrgManagedEvent ? 'View Financial Liquidation' : 'Open Financial Liquidation'}</span>
+                      <ChevronRight className="w-3.5 h-3.5 text-[#FFD41C]/70" />
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : isOrgManagedEvent ? (
@@ -2363,35 +2335,43 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 </div>
               )}
 
-              {/* Expenses Table (Official 6-Column Format) */}
+              {/* Expenses Table (Form LF-01 Baseline Categories) */}
               <div>
-                <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-[#0E4EBD]" />
-                  Projected Expenses & Materials
-                </h4>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
+                  <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-[#0E4EBD]" />
+                    Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+                  </h4>
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    Approved spending guide for post-event financial liquidation
+                  </span>
+                </div>
                 <div className="border border-gray-200 rounded-xl overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead className="bg-slate-50 border-b border-gray-200 text-gray-600 font-bold uppercase">
                       <tr>
                         <th className="px-3 py-2.5 text-left w-10">#</th>
-                        <th className="px-3 py-2.5 text-left">Items / Description</th>
+                        <th className="px-3 py-2.5 text-left">Baseline Category / Scope</th>
                         <th className="px-3 py-2.5 text-right">Last Year's Actual</th>
                         <th className="px-3 py-2.5 text-right">Proposed Budget</th>
-                        <th className="px-3 py-2.5 text-right font-black text-[#001A4D]">Total Amount</th>
-                        <th className="px-3 py-2.5 text-left">Remarks</th>
+                        <th className="px-3 py-2.5 text-right font-black text-[#001A4D]">Total Baseline</th>
+                        <th className="px-3 py-2.5 text-left">Scope / Remarks</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {financialProjections.expenses.map((exp: any, i: number) => (
-                        <tr key={exp.id || i} className="hover:bg-blue-50/20">
-                          <td className="px-3 py-2.5 text-gray-400 font-mono">{i + 1}</td>
-                          <td className="px-3 py-2.5 font-medium text-gray-900">{exp.description}</td>
-                          <td className="px-3 py-2.5 text-right font-mono text-gray-500">{formatPHP(exp.lastYearActual || 0)}</td>
-                          <td className="px-3 py-2.5 text-right font-mono text-gray-700">{formatPHP(exp.thisYearProposed || 0)}</td>
-                          <td className="px-3 py-2.5 text-right font-mono font-bold text-[#001A4D]">{formatPHP(exp.totalAmount || 0)}</td>
-                          <td className="px-3 py-2.5 text-gray-500">{exp.remarks || '—'}</td>
-                        </tr>
-                      ))}
+                      {financialProjections.expenses.map((exp: any, i: number) => {
+                        const letter = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'][i] || `${i + 1}`;
+                        return (
+                          <tr key={exp.id || i} className="hover:bg-blue-50/20">
+                            <td className="px-3 py-2.5 text-blue-700 font-mono font-bold">{letter}.</td>
+                            <td className="px-3 py-2.5 font-semibold text-gray-900">{exp.description}</td>
+                            <td className="px-3 py-2.5 text-right font-mono text-gray-500">{formatPHP(exp.lastYearActual || 0)}</td>
+                            <td className="px-3 py-2.5 text-right font-mono text-gray-700">{formatPHP(exp.thisYearProposed || 0)}</td>
+                            <td className="px-3 py-2.5 text-right font-mono font-bold text-[#001A4D]">{formatPHP(exp.totalAmount || 0)}</td>
+                            <td className="px-3 py-2.5 text-gray-500">{exp.remarks || '—'}</td>
+                          </tr>
+                        );
+                      })}
                       {financialProjections.expenses.length === 0 && (
                         <tr>
                           <td colSpan={6} className="px-4 py-6 text-center text-gray-400 italic">
@@ -2995,7 +2975,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <span>Institutional Routing Active</span>
                 </p>
                 <p className="text-blue-800 leading-relaxed text-[11px]">
-                  This activity was authored by SAS. Operational tools (Publishing, Attendance, Cash Custodians) will automatically unlock once all designated signatories have completed their endorsement.
+                  This activity was authored by SAS. Operational tools (Publishing, Attendance, Financial Liquidation) will automatically unlock once all designated signatories have completed their endorsement.
                 </p>
               </div>
 
@@ -3627,14 +3607,20 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         />
       )}
 
-      {/* 3. CASH CUSTODIANS MODAL */}
+      {/* 3. FINANCIAL LIQUIDATION MODAL */}
       {isCashModalOpen && (
-        <CashCustodiansModal
+        <OfficerLiquidationModal
           isOpen={isCashModalOpen}
           onClose={() => setIsCashModalOpen(false)}
-          activity={event}
-          financialProjections={fullProposal?.financialProjections || (event as any).financialProjections}
+          orgId={event.hostingOrgId || (event as any).organizationId || 'sao_admin'}
+          orgName={event.hostingOrgName || (event as any).organizationName || 'Student Affairs'}
+          userUid={profile?.uid || 'admin'}
+          userName={profile?.displayName || 'SAS Administrator'}
+          userRole="admin"
+          isAdviser={true}
           readOnly={isOrgManagedEvent}
+          initialEventId={event.id}
+          initialEvent={event}
         />
       )}
 

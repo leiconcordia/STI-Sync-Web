@@ -8,9 +8,13 @@
  * ZERO HARDCODED DATA - All signatories are queried dynamically from the Firestore database.
  */
 
-import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import {
+  type InstitutionalSignatory,
+  isSignatoryApplicableTo,
+} from '../../signatories/types/signatory.types';
 import type { ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import type { SasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { getCachedWorkflowSettings } from '../../workflow/services/approval-workflow.service';
 
 export function buildDynamicApprovalChain(
   targetAudience: ProposalTargetAudience,
@@ -20,7 +24,8 @@ export function buildDynamicApprovalChain(
     | { name?: string; roleTitle?: string; email?: string; department?: string; employeeId?: string }
     | string,
   sasAdminEmailOrIsSasCreator?: string | boolean,
-  isSasCreatorParam = false
+  isSasCreatorParam = false,
+  autoInjectDepartments = false
 ): ProposalApprovalStep[] {
   let sasConfig: Partial<SasSignatoryConfig> = {};
   let isSasCreator = false;
@@ -49,8 +54,7 @@ export function buildDynamicApprovalChain(
     if (s.isActive === false) return false;
     const roleLower = (s.role || '').toLowerCase();
     const titleLower = (s.roleTitle || '').toLowerCase();
-    if (roleLower === 'accountant' || titleLower.includes('accountant') || titleLower.includes('auditor')) return false;
-    if (s.applicableScope === 'liquidation_only') return false;
+    if (!isSignatoryApplicableTo(s, 'proposal')) return false;
     return true;
   });
 
@@ -137,7 +141,7 @@ export function buildDynamicApprovalChain(
   // Exclude executive approvers from Stage 2
   const executiveRoles = ['school_president', 'school_administrator'];
 
-  const departmentSignatories = signatories.filter((s) => {
+  const departmentSignatories = autoInjectDepartments ? signatories.filter((s) => {
     if (usedSignatoryIds.has(s.id)) return false;
     if (executiveRoles.includes(s.role)) return false;
 
@@ -187,7 +191,7 @@ export function buildDynamicApprovalChain(
     }
 
     return false;
-  });
+  }) : [];
 
   departmentSignatories.forEach((sig) => {
     usedSignatoryIds.add(sig.id);

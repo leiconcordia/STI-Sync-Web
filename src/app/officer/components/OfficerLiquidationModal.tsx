@@ -20,16 +20,30 @@ import {
   ShieldCheck,
   Layers,
   RotateCcw,
+  Receipt,
+  Calendar,
+  Building,
+  Clock,
+  Save,
+  Undo2,
+  Download,
 } from 'lucide-react';
+import { format } from 'date-fns';
+import { doc, getDoc } from 'firebase/firestore';
 import { uploadToCloudinary } from '../../../services/cloudinary';
-import { sanitizeFirestorePayload } from '../../../services/firebase';
+import { sanitizeFirestorePayload, db } from '../../../services/firebase';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
-import { getEventTimingStatus, isSasInstitutionalActivity } from '../../modules/events/utils/event-lifecycle.utils';
+import {
+  getEventTimingStatus,
+  isSasInstitutionalActivity,
+  isEventConcluded,
+} from '../../modules/events/utils/event-lifecycle.utils';
 import {
   createLiquidationReport,
   updateLiquidationReport,
   submitLiquidationReport,
+  withdrawLiquidationReport,
   generateDefaultLiquidationChain,
 } from '../../modules/finance/services/liquidation.service';
 import { subscribeToSignatories } from '../../modules/signatories/services/signatory.service';
@@ -45,6 +59,8 @@ import LiquidationSignatoryTracker from '../../modules/finance/components/Liquid
 import LiquidationFlowBuilder from '../../modules/finance/components/LiquidationFlowBuilder';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
+import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import { toast } from 'sonner';
@@ -60,6 +76,9 @@ interface OfficerLiquidationModalProps {
   isAdviser?: boolean;
   editingReport?: LiquidationDocument | null;
   existingLiquidations?: LiquidationDocument[];
+  initialEventId?: string;
+  initialEvent?: any;
+  readOnly?: boolean;
 }
 
 const EXPENSE_CATEGORIES = [
@@ -116,6 +135,27 @@ function formatFileSize(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function parseDateSafely(val?: any): Date | null {
+  if (!val) return null;
+  if (typeof val?.toDate === 'function') return val.toDate();
+  if (typeof val?.seconds === 'number') return new Date(val.seconds * 1000);
+  if (typeof val === 'string') {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d;
+  }
+  if (val instanceof Date && !isNaN(val.getTime())) return val;
+  return null;
+}
+
+function calculateDaysLapse(subDate: Date, deadDate: Date): string {
+  const s = new Date(subDate.getFullYear(), subDate.getMonth(), subDate.getDate());
+  const d = new Date(deadDate.getFullYear(), deadDate.getMonth(), deadDate.getDate());
+  const diffTime = s.getTime() - d.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  if (diffDays <= 0) return '-o-';
+  return `+${diffDays} day${diffDays === 1 ? '' : 's'}`;
+}
+
 function normalizeLineItems(items: ExpenseLineItem[]): ExpenseLineItem[] {
   return items.map((item, idx) => {
     let files: ReceiptAttachment[] = item.receiptFiles ? [...item.receiptFiles] : [];
@@ -158,6 +198,9 @@ export default function OfficerLiquidationModal({
   isAdviser,
   editingReport,
   existingLiquidations,
+  initialEventId,
+  initialEvent,
+  readOnly = false,
 }: OfficerLiquidationModalProps) {
   const { profile: officerProfile } = useOfficerProfile();
   const effectiveIsAdviser = Boolean(isAdviser ?? officerProfile?.isAdviser ?? (userRole === 'admin'));
@@ -172,7 +215,13 @@ export default function OfficerLiquidationModal({
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
 
-  const liquidationsList = existingLiquidations || allLiquidations || [];
+  // Merge scoped org liquidations and global liquidations to ensure complete coverage without shadowing
+  const liquidationsList = useMemo(() => {
+    const map = new Map<string, LiquidationDocument>();
+    (allLiquidations || []).forEach((l) => map.set(l.id, l));
+    (existingLiquidations || []).forEach((l) => map.set(l.id, l));
+    return Array.from(map.values());
+  }, [allLiquidations, existingLiquidations]);
 
   // Set of eventIds that already have an active liquidation
   const liquidatedEventIds = useMemo(() => {
@@ -220,9 +269,9 @@ export default function OfficerLiquidationModal({
       if (!e || e.isDeleted === true) return false;
 
       // When editing an existing report, always preserve the event currently linked to it
-      if (editingReport && editingReport.eventId === e.id) return true;
+      if ((editingReport && editingReport.eventId === e.id) || (initialEventId && initialEventId === e.id)) return true;
 
-      const isEditingThisEvent = editingReport && editingReport.eventId === e.id;
+      const isEditingThisEvent = (editingReport && editingReport.eventId === e.id) || (initialEventId && initialEventId === e.id);
 
       // Basic validity & non-cancellation / non-draft / non-rejected check
       const pStatus = (e.proposalStatus || '').toString().toLowerCase();
@@ -234,7 +283,7 @@ export default function OfficerLiquidationModal({
 
       if (isCancelled || isDraft || isRejected) return false;
 
-      // Completion check: Only completed events can be liquidated
+      // Lifecycle check: Events must be officially approved (ongoing / recording receipts mode) or completed/concluded
       const timingStatus = getEventTimingStatus(e);
       const isCompleted =
         eStatus === 'completed' ||
@@ -243,8 +292,9 @@ export default function OfficerLiquidationModal({
         lStatus === 'concluded' ||
         (e as any).isConcluded === true ||
         timingStatus === 'completed';
+      const isApproved = pStatus === 'approved' || eStatus === 'approved';
 
-      if (!isCompleted) return false;
+      if (!isCompleted && !isApproved) return false;
 
       // Role & Organization ownership scoping:
       // STRICT AUTHORING ISOLATION:
@@ -319,69 +369,149 @@ export default function OfficerLiquidationModal({
 
       return true;
     });
-  }, [allEvents, orgId, orgName, userRole, liquidatedEventIds, editingReport]);
+  }, [allEvents, orgId, orgName, userRole, liquidatedEventIds, editingReport, initialEventId]);
 
   const [selectedEventId, setSelectedEventId] = useState<string>('');
+  const [activeReportId, setActiveReportId] = useState<string>(editingReport?.id || '');
   const [allocatedBudget, setAllocatedBudget] = useState<number>(0);
   const [lineItems, setLineItems] = useState<ExpenseLineItem[]>([]);
   const [approvalChain, setApprovalChain] = useState<LiquidationApprovalStep[]>([]);
   const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
   const [activeModalTab, setActiveModalTab] = useState<'expenses' | 'signatories'>('expenses');
+  const [activeCategoryId, setActiveCategoryId] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resubmissionNote, setResubmissionNote] = useState('');
 
+  const selectedEvent = useMemo(() => {
+    return (
+      (initialEvent && (!selectedEventId || initialEvent.id === selectedEventId) ? initialEvent : null) ||
+      eligibleEvents.find((e) => e.id === selectedEventId) ||
+      allEvents.find((e) => e.id === selectedEventId) ||
+      initialEvent ||
+      null
+    );
+  }, [eligibleEvents, allEvents, selectedEventId, initialEvent]);
+
+  // Derive active report from prop, tracked ID, linked event, or existing list
+  const effectiveReport = useMemo(() => {
+    if (editingReport) return editingReport;
+    if (activeReportId) {
+      const found = liquidationsList.find((l) => l.id === activeReportId);
+      if (found) return found;
+    }
+    const targetId = (selectedEvent as any)?.liquidationReportId;
+    if (targetId) {
+      const found = liquidationsList.find((l) => l.id === targetId);
+      if (found) return found;
+    }
+    const eventIdToMatch = selectedEventId || initialEventId;
+    if (eventIdToMatch) {
+      const found = liquidationsList.find(
+        (l) =>
+          l.eventId === eventIdToMatch &&
+          l.status !== 'voided' &&
+          (l.status as any) !== 'cancelled' &&
+          (l as any).isDeleted !== true
+      );
+      if (found) return found;
+    }
+    return null;
+  }, [editingReport, activeReportId, selectedEvent, selectedEventId, initialEventId, liquidationsList]);
+
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [isWithdrawing, setIsWithdrawing] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+
+  const [localStatusOverride, setLocalStatusOverride] = useState<LiquidationStatus | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setLocalStatusOverride(null);
+    }
+  }, [isOpen]);
+
+  const currentStatus = localStatusOverride || effectiveReport?.status || (editingReport?.status ?? 'draft');
+
+  const isReportSubmittedOrApproved = Boolean(
+    effectiveReport &&
+    (currentStatus === 'under_review' ||
+     currentStatus === 'pending' ||
+     currentStatus === 'approved')
+  );
+  const isEffectiveReadOnly = Boolean(readOnly || isReportSubmittedOrApproved);
+
+  const handleWithdraw = async () => {
+    if (!effectiveReport) return;
+    setIsWithdrawing(true);
+    try {
+      await withdrawLiquidationReport(effectiveReport.id, userUid, userName);
+      toast.success(`Liquidation report for "${effectiveReport.eventTitle}" withdrawn to draft.`);
+      setShowWithdrawModal(false);
+      setLocalStatusOverride('draft');
+      if (effectiveReport) {
+        effectiveReport.status = 'draft';
+      }
+      setActiveReportId(effectiveReport.id);
+    } catch (err: any) {
+      console.error('[OfficerLiquidationModal] Withdraw failed:', err);
+      toast.error(err?.message || 'Failed to withdraw liquidation report.');
+    } finally {
+      setIsWithdrawing(false);
+    }
+  };
+
   const isReturnedReport = Boolean(
-    editingReport?.status === 'returned' ||
-    (editingReport as any)?.isReturned
+    effectiveReport?.status === 'returned' ||
+    (effectiveReport as any)?.isReturned
   );
 
   const flaggedLineItemKeys = useMemo(() => {
-    const flags = editingReport?.returnFlags || [];
-    const remarkKeys = Object.keys(editingReport?.stepRevisionRemarks || {});
+    const flags = effectiveReport?.returnFlags || [];
+    const remarkKeys = Object.keys(effectiveReport?.stepRevisionRemarks || {});
     const allKeys = Array.from(new Set([...flags, ...remarkKeys]));
     return allKeys.filter((k) => k.startsWith('item_') || k.startsWith('item-'));
-  }, [editingReport]);
+  }, [effectiveReport]);
 
   const hasItemLevelFlags = flaggedLineItemKeys.length > 0;
 
   const hasLegacyLineItemFlags = Boolean(
-    editingReport?.returnFlags?.includes('sec_line_items') ||
-    editingReport?.returnFlags?.includes('sec_receipts') ||
-    editingReport?.stepRevisionRemarks?.['sec_line_items'] ||
-    editingReport?.stepRevisionRemarks?.['sec_receipts']
+    effectiveReport?.returnFlags?.includes('sec_line_items') ||
+    effectiveReport?.returnFlags?.includes('sec_receipts') ||
+    effectiveReport?.stepRevisionRemarks?.['sec_line_items'] ||
+    effectiveReport?.stepRevisionRemarks?.['sec_receipts']
   );
 
   const isLineItemsFlagged = hasItemLevelFlags || hasLegacyLineItemFlags;
 
   const flaggedItemCount = useMemo(() => {
-    if (!editingReport) return 0;
+    if (!effectiveReport) return 0;
     if (!hasItemLevelFlags && hasLegacyLineItemFlags) return lineItems.length;
     return lineItems.filter((item, idx) => {
       const { isFlagged } = isExpenseItemFlagged(
         item,
         idx,
-        editingReport.returnFlags,
-        editingReport.stepRevisionRemarks,
+        effectiveReport.returnFlags,
+        effectiveReport.stepRevisionRemarks,
         hasLegacyLineItemFlags,
         hasItemLevelFlags
       );
       return isFlagged;
     }).length;
-  }, [lineItems, editingReport, hasItemLevelFlags, hasLegacyLineItemFlags]);
+  }, [lineItems, effectiveReport, hasItemLevelFlags, hasLegacyLineItemFlags]);
 
   const isEventBudgetFlagged = Boolean(
-    editingReport?.returnFlags?.includes('sec_event_budget') ||
-    editingReport?.stepRevisionRemarks?.['sec_event_budget']
+    effectiveReport?.returnFlags?.includes('sec_event_budget') ||
+    effectiveReport?.stepRevisionRemarks?.['sec_event_budget']
   );
-  const eventBudgetFeedback = editingReport?.stepRevisionRemarks?.['sec_event_budget'];
+  const eventBudgetFeedback = effectiveReport?.stepRevisionRemarks?.['sec_event_budget'];
 
   const isSignatoriesFlagged = Boolean(
-    editingReport?.returnFlags?.includes('sec_signatories') ||
-    editingReport?.stepRevisionRemarks?.['sec_signatories']
+    effectiveReport?.returnFlags?.includes('sec_signatories') ||
+    effectiveReport?.stepRevisionRemarks?.['sec_signatories']
   );
-  const signatoriesFeedback = editingReport?.stepRevisionRemarks?.['sec_signatories'];
+  const signatoriesFeedback = effectiveReport?.stepRevisionRemarks?.['sec_signatories'];
 
   const [lightboxData, setLightboxData] = useState<{
     url: string;
@@ -392,51 +522,374 @@ export default function OfficerLiquidationModal({
     fileType?: string;
   } | null>(null);
 
-  // Subscribe to active institutional signatories for dynamic pipeline builder
-  useEffect(() => {
-    const unsub = subscribeToSignatories((list) => {
-      setActiveSignatories(list);
-    });
-    return () => unsub();
-  }, []);
+  const isConcluded = useMemo(() => {
+    return isEventConcluded(selectedEvent);
+  }, [selectedEvent]);
 
-  // Pre-fill if editing an existing / returned report
-  useEffect(() => {
-    if (!isOpen) return;
+  // Form LF-01 Official Header Information
+  const [employeeName, setEmployeeName] = useState<string>('');
+  const [detectedEmployeeSource, setDetectedEmployeeSource] = useState<'club_adviser' | 'sas_admin' | 'manual'>('manual');
+  const [detectedAdviserName, setDetectedAdviserName] = useState<string>('');
+  const [chequeNumber, setChequeNumber] = useState<string>(''); // Manually inputted, NO default value per user request!
+  const [purpose, setPurpose] = useState<string>('');
+  const [amountAdvanced, setAmountAdvanced] = useState<number>(0);
+  const [dateReleased, setDateReleased] = useState<string>('');
+  const [activityEndDate, setActivityEndDate] = useState<string>('');
+  const [submissionDeadline, setSubmissionDeadline] = useState<string>('');
+  const [dateSubmitted, setDateSubmitted] = useState<string>(() => {
+    try {
+      return format(new Date(), 'yyyy-MM-dd');
+    } catch {
+      return '';
+    }
+  });
+  const [daysLapsed, setDaysLapsed] = useState<string>('-o-');
+  const [orNumber, setOrNumber] = useState<string>('');
 
-    if (editingReport) {
-      setSelectedEventId(editingReport.eventId);
-      setAllocatedBudget(editingReport.allocatedBudget || 0);
-      setLineItems(normalizeLineItems(editingReport.lineItems || []));
-      if (editingReport.approvalChain && editingReport.approvalChain.length > 0) {
-        // Strip out any legacy placeholder steps with empty UIDs
-        let validSteps = editingReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
-        if (isSasCreator) {
-          // If created by SAS/admin, omit redundant Stage 1 SAS clearance step
-          validSteps = validSteps.filter(
-            (s) =>
-              !(
-                (s.stageIndex ?? 1) === 1 &&
-                (s.role === 'sas_head' ||
-                  (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
-                  (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')))
-              )
-          );
-        }
-        setApprovalChain(reindexLiquidationSteps(validSteps));
-      } else {
-        generateDefaultLiquidationChain(orgId, orgName, editingReport.allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
-          setApprovalChain(chain);
-        });
-      }
+  const exportReportTarget = useMemo<LiquidationDocument | null>(() => {
+    if (effectiveReport) {
+      return {
+        ...effectiveReport,
+        status: currentStatus,
+        employeeName: employeeName || effectiveReport.employeeName,
+        chequeNumber: chequeNumber || effectiveReport.chequeNumber,
+        purpose: purpose || effectiveReport.purpose,
+        amountAdvanced: amountAdvanced || effectiveReport.amountAdvanced,
+        dateReleased: dateReleased || effectiveReport.dateReleased,
+        activityEndDate: activityEndDate || effectiveReport.activityEndDate,
+        submissionDeadline: submissionDeadline || effectiveReport.submissionDeadline,
+        dateSubmitted: dateSubmitted || effectiveReport.dateSubmitted,
+        daysLapsed: daysLapsed || effectiveReport.daysLapsed,
+        orNumber: orNumber || effectiveReport.orNumber,
+        lineItems: lineItems.length > 0 ? lineItems : effectiveReport.lineItems,
+        allocatedBudget: allocatedBudget || effectiveReport.allocatedBudget,
+        approvalChain: approvalChain.length > 0 ? approvalChain : effectiveReport.approvalChain,
+      };
+    }
+    return null;
+  }, [
+    effectiveReport,
+    currentStatus,
+    employeeName,
+    chequeNumber,
+    purpose,
+    amountAdvanced,
+    dateReleased,
+    activityEndDate,
+    submissionDeadline,
+    dateSubmitted,
+    daysLapsed,
+    orNumber,
+    lineItems,
+    allocatedBudget,
+    approvalChain,
+  ]);
+
+  const handleActivityEndDateChange = (val: string) => {
+    setActivityEndDate(val);
+    const parsed = parseDateSafely(val);
+    if (parsed) {
+      const newDeadline = new Date(parsed.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const newDeadStr = format(newDeadline, 'yyyy-MM-dd');
+      setSubmissionDeadline(newDeadStr);
+
+      const subParsed = parseDateSafely(dateSubmitted) || new Date();
+      setDaysLapsed(calculateDaysLapse(subParsed, newDeadline));
+    }
+  };
+
+  const handleDateSubmittedChange = (val: string) => {
+    setDateSubmitted(val);
+    const subParsed = parseDateSafely(val) || new Date();
+    const deadParsed = parseDateSafely(submissionDeadline);
+    if (deadParsed) {
+      setDaysLapsed(calculateDaysLapse(subParsed, deadParsed));
+    }
+  };
+
+  const handleResetEmployeeName = () => {
+    if (detectedAdviserName) {
+      setEmployeeName(detectedAdviserName);
+      toast.info(`Reset Employee Name to detected: ${detectedAdviserName}`);
+    }
+  };
+
+  // Pre-populate Form LF-01 Header Information
+  useEffect(() => {
+    if (!selectedEvent) return;
+
+    // 1. If editing an existing report with stored header values, prioritize them:
+    const targetReport = effectiveReport || editingReport;
+    if (targetReport) {
+      if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
+      if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
+      if (targetReport.purpose) setPurpose(targetReport.purpose);
+      if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
+      if (targetReport.dateReleased) setDateReleased(targetReport.dateReleased);
+      if (targetReport.activityEndDate) setActivityEndDate(targetReport.activityEndDate);
+      if (targetReport.submissionDeadline) setSubmissionDeadline(targetReport.submissionDeadline);
+      if (targetReport.dateSubmitted) setDateSubmitted(targetReport.dateSubmitted);
+      if (targetReport.daysLapsed) setDaysLapsed(targetReport.daysLapsed);
+      if (targetReport.orNumber) setOrNumber(targetReport.orNumber);
+      return;
+    }
+
+    // 2. Fresh Liquidation Report Defaults:
+    const eventIsSas = isSasCreator || isSasInstitutionalActivity(selectedEvent);
+
+    // A. Employee Name: Club Adviser for club events, Admin for SAS events
+    let detectedName = '';
+    const detectedSource: 'club_adviser' | 'sas_admin' = eventIsSas ? 'sas_admin' : 'club_adviser';
+
+    if (eventIsSas) {
+      detectedName =
+        (userRole === 'admin' ? userName : '') ||
+        selectedEvent.supervisorName ||
+        selectedEvent.createdByName ||
+        'SAO Administrator';
     } else {
-      setSelectedEventId('');
-      setAllocatedBudget(0);
-      setLineItems([
+      if (effectiveIsAdviser && userName) {
+        detectedName = userName;
+      } else if (selectedEvent.supervisorName) {
+        detectedName = selectedEvent.supervisorName;
+      } else if (selectedEvent.adviserName) {
+        detectedName = selectedEvent.adviserName;
+      }
+    }
+
+    // Query organization if student club adviser is not yet detected on event
+    const hostOrgId = selectedEvent.hostingOrgId || selectedEvent.organizationId || orgId;
+    if (!eventIsSas && !detectedName && hostOrgId && hostOrgId !== 'sas' && hostOrgId !== 'sao_admin') {
+      getDoc(doc(db, 'organizations', hostOrgId))
+        .then((orgSnap) => {
+          if (orgSnap.exists()) {
+            const oData = orgSnap.data() as any;
+            const oAdviser = oData.adviserName || oData.adviser?.name || '';
+            if (oAdviser) {
+              setDetectedAdviserName(oAdviser);
+              setEmployeeName((prev) => (prev ? prev : oAdviser));
+            }
+          }
+        })
+        .catch((err) => console.warn('[OfficerLiquidationModal] Org adviser fetch:', err));
+    }
+
+    if (detectedName) {
+      setDetectedAdviserName(detectedName);
+      setEmployeeName((prev) => (prev ? prev : detectedName));
+      setDetectedEmployeeSource(detectedSource);
+    }
+
+    // B. Cheque Number: User explicitly specified: MANUALLY INPUTTED, NO DEFAULT VALUE!
+    // chequeNumber stays as entered or ""
+
+    // C. Purpose: Default to event title
+    setPurpose((prev) => (prev ? prev : selectedEvent.title || ''));
+
+    // D. Amount: Default to allocated budget
+    const budget = calculateEventBudget(selectedEvent);
+    setAmountAdvanced((prev) => (prev > 0 ? prev : budget));
+
+    // E. Dates:
+    let relDateStr = '';
+    let endDateStr = '';
+
+    if (Array.isArray(selectedEvent.sessions) && selectedEvent.sessions.length > 0) {
+      const validSessions = selectedEvent.sessions.filter((s: any) => s && s.date);
+      if (validSessions.length > 0) {
+        validSessions.sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
+        const firstSession = validSessions[0];
+        const lastSession = validSessions[validSessions.length - 1];
+
+        const pFirst = parseDateSafely(firstSession.date);
+        if (pFirst) relDateStr = format(pFirst, 'yyyy-MM-dd');
+
+        const pLast = parseDateSafely(lastSession.date);
+        if (pLast) endDateStr = format(pLast, 'yyyy-MM-dd');
+      }
+    }
+
+    if (!relDateStr) {
+      const pCreated = parseDateSafely(selectedEvent.createdAt);
+      if (pCreated) relDateStr = format(pCreated, 'yyyy-MM-dd');
+    }
+
+    if (!endDateStr) {
+      const pCompleted = parseDateSafely(selectedEvent.completedAt || selectedEvent.createdAt);
+      if (pCompleted) endDateStr = format(pCompleted, 'yyyy-MM-dd');
+    }
+
+    setDateReleased((prev) => (prev ? prev : relDateStr));
+    setActivityEndDate((prev) => (prev ? prev : endDateStr));
+
+    // F. Deadline (+7 days from activityEndDate)
+    if (endDateStr) {
+      const parsedEnd = parseDateSafely(endDateStr);
+      if (parsedEnd) {
+        const deadDate = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const deadStr = format(deadDate, 'yyyy-MM-dd');
+        setSubmissionDeadline((prev) => (prev ? prev : deadStr));
+
+        const parsedSub = parseDateSafely(dateSubmitted) || new Date();
+        setDaysLapsed(calculateDaysLapse(parsedSub, deadDate));
+      }
+    }
+  }, [selectedEvent, effectiveReport, editingReport]);
+
+  // Extract proposed baseline items from selected event
+  const proposedBaselineItems = useMemo(() => {
+    if (!selectedEvent) return [];
+
+    // Check budgetItems
+    if (Array.isArray(selectedEvent.budgetItems) && selectedEvent.budgetItems.length > 0) {
+      return selectedEvent.budgetItems.map((bi: any, idx: number) => {
+        const allocated = Number(
+          bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
+        );
+        return {
+          id: bi.id || `prop_bi_${idx}`,
+          title: bi.item || bi.description || `Budget Item ${idx + 1}`,
+          baselineAmount: allocated,
+        };
+      });
+    }
+
+    // Check financialProjections.expenses
+    if (
+      Array.isArray(selectedEvent.financialProjections?.expenses) &&
+      selectedEvent.financialProjections.expenses.length > 0
+    ) {
+      return selectedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
+        id: exp.id || `prop_exp_${idx}`,
+        title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
+        baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
+      }));
+    }
+
+    // Check budgetCustodians
+    if (
+      Array.isArray((selectedEvent as any).budgetCustodians) &&
+      (selectedEvent as any).budgetCustodians.length > 0
+    ) {
+      return (selectedEvent as any).budgetCustodians.map((c: any, idx: number) => ({
+        id: c.id || `prop_cust_${idx}`,
+        title: c.purpose || c.item || `Allocation ${idx + 1}`,
+        baselineAmount: Number(c.allocatedAmount || 0),
+      }));
+    }
+
+    return [];
+  }, [selectedEvent]);
+
+  // Dynamic category list: Proposed baseline items + Other / General Expenses (or fallback categories)
+  const categoriesList = useMemo(() => {
+    if (proposedBaselineItems.length > 0) {
+      return [
+        ...proposedBaselineItems,
         {
-          id: Date.now().toString(),
+          id: 'cat_other',
+          title: 'Other / General Expenses',
+          baselineAmount: 0,
+        },
+      ];
+    }
+    return EXPENSE_CATEGORIES.map((cat, idx) => ({
+      id: `cat_fallback_${idx}`,
+      title: cat,
+      baselineAmount: 0,
+    }));
+  }, [proposedBaselineItems]);
+
+  // Aggregate spending per category in real time
+  const categorySpendingMap = useMemo(() => {
+    const map = new Map<string, { baseline: number; spent: number; receiptCount: number }>();
+
+    categoriesList.forEach((c) => {
+      map.set(c.title, { baseline: c.baselineAmount, spent: 0, receiptCount: 0 });
+    });
+
+    lineItems.forEach((item) => {
+      const cat = (item.proposedItemTitle || item.category || 'Other / General Expenses').trim();
+      const cost = Number(item.totalCost || 0);
+      const hasReceipt = Boolean(
+        (item.receiptFiles && item.receiptFiles.length > 0) ||
+        (item.receiptUrls && item.receiptUrls.length > 0) ||
+        item.receiptUrl
+      );
+
+      if (!map.has(cat)) {
+        map.set(cat, { baseline: Number(item.proposedBaselineAmount || 0), spent: 0, receiptCount: 0 });
+      }
+
+      const entry = map.get(cat)!;
+      entry.spent += cost;
+      if (hasReceipt) entry.receiptCount += 1;
+    });
+
+    return map;
+  }, [categoriesList, lineItems]);
+
+  // Keep active category synced
+  useEffect(() => {
+    if (!activeCategoryId && categoriesList.length > 0) {
+      setActiveCategoryId(categoriesList[0].id);
+    } else if (activeCategoryId && !categoriesList.some((c) => c.id === activeCategoryId)) {
+      setActiveCategoryId(categoriesList[0]?.id || '');
+    }
+  }, [categoriesList, activeCategoryId]);
+
+  const currentCategory = useMemo(() => {
+    return categoriesList.find((c) => c.id === activeCategoryId) || categoriesList[0];
+  }, [categoriesList, activeCategoryId]);
+
+  // Line items belonging strictly to the currently active category tab (1-indexed per category)
+  const currentCategoryItems = useMemo(() => {
+    if (!currentCategory) return [];
+    return lineItems.filter((item) => {
+      if (currentCategory.id === 'cat_other') {
+        return (
+          item.proposedItemId === 'cat_other' ||
+          (!item.proposedItemId && !proposedBaselineItems.some((p) => p.title === item.category))
+        );
+      }
+      return (
+        item.proposedItemId === currentCategory.id ||
+        item.category === currentCategory.title ||
+        item.proposedItemTitle === currentCategory.title
+      );
+    });
+  }, [lineItems, currentCategory, proposedBaselineItems]);
+
+  // Select a category tab: auto-initialize Item #1 if empty
+  const handleSelectCategoryTab = (catId: string) => {
+    setActiveCategoryId(catId);
+    const targetCat = categoriesList.find((c) => c.id === catId);
+    if (!targetCat) return;
+
+    const existingInCat = lineItems.filter((item) => {
+      if (targetCat.id === 'cat_other') {
+        return (
+          item.proposedItemId === 'cat_other' ||
+          (!item.proposedItemId && !proposedBaselineItems.some((p) => p.title === item.category))
+        );
+      }
+      return (
+        item.proposedItemId === targetCat.id ||
+        item.category === targetCat.title ||
+        item.proposedItemTitle === targetCat.title
+      );
+    });
+
+    if (existingInCat.length === 0 && !isEffectiveReadOnly) {
+      setLineItems((prev) => [
+        ...prev,
+        {
+          id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           description: '',
-          category: EXPENSE_CATEGORIES[0],
+          category: targetCat.title,
+          proposedItemId: targetCat.id,
+          proposedItemTitle: targetCat.title,
+          proposedBaselineAmount: targetCat.baselineAmount || 0,
           quantity: 1,
           unitCost: 0,
           totalCost: 0,
@@ -447,99 +900,208 @@ export default function OfficerLiquidationModal({
           receiptFiles: [],
         },
       ]);
+    }
+  };
+
+  // Add Item to the active category (Item #1, Item #2, etc.)
+  const handleAddItemToCurrentCategory = () => {
+    if (!currentCategory || isEffectiveReadOnly) return;
+    setLineItems((prev) => [
+      ...prev,
+      {
+        id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        description: '',
+        category: currentCategory.title,
+        proposedItemId: currentCategory.id,
+        proposedItemTitle: currentCategory.title,
+        proposedBaselineAmount: currentCategory.baselineAmount || 0,
+        quantity: 1,
+        unitCost: 0,
+        totalCost: 0,
+        vendorName: '',
+        receiptNumber: '',
+        receiptUrl: '',
+        receiptUrls: [],
+        receiptFiles: [],
+      },
+    ]);
+  };
+
+  // Remove or reset item in the active category
+  const handleRemoveCategoryItem = (itemToRemoveId: string) => {
+    if (isEffectiveReadOnly) return;
+    if (currentCategoryItems.length <= 1) {
+      setLineItems((prev) =>
+        prev.map((i) =>
+          i.id === itemToRemoveId
+            ? {
+                ...i,
+                description: '',
+                vendorName: '',
+                receiptNumber: '',
+                unitCost: 0,
+                totalCost: 0,
+                receiptUrl: '',
+                receiptUrls: [],
+                receiptFiles: [],
+              }
+            : i
+        )
+      );
+      toast.info('Item cleared to blank.');
+      return;
+    }
+
+    setLineItems((prev) => prev.filter((i) => i.id !== itemToRemoveId));
+  };
+  const eventTitle = selectedEvent?.title || effectiveReport?.eventTitle || editingReport?.eventTitle || 'Event Liquidation';
+
+
+  // Ensure active category has Item #1 when initialized
+  useEffect(() => {
+    if (isOpen && !effectiveReport && !editingReport && lineItems.length === 0 && categoriesList.length > 0 && !isEffectiveReadOnly) {
+      const firstCat = categoriesList[0];
+      setLineItems([
+        {
+          id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          description: '',
+          category: firstCat.title,
+          proposedItemId: firstCat.id,
+          proposedItemTitle: firstCat.title,
+          proposedBaselineAmount: firstCat.baselineAmount || 0,
+          quantity: 1,
+          unitCost: 0,
+          totalCost: 0,
+          vendorName: '',
+          receiptNumber: '',
+          receiptUrl: '',
+          receiptUrls: [],
+          receiptFiles: [],
+        },
+      ]);
+      setActiveCategoryId(firstCat.id);
+    }
+  }, [isOpen, effectiveReport, editingReport, lineItems.length, categoriesList, isEffectiveReadOnly]);
+
+  // Subscribe to active institutional signatories for dynamic pipeline builder
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => {
+      setActiveSignatories(list);
+    });
+    return () => unsub();
+  }, []);
+
+  // Pre-fill if editing an existing / returned report, or opening from an event
+  useEffect(() => {
+    if (!isOpen) return;
+    setError(null);
+
+    const targetReport =
+      editingReport ||
+      (initialEventId
+        ? liquidationsList.find(
+            (l) =>
+              l.eventId === initialEventId &&
+              l.status !== 'voided' &&
+              (l.status as any) !== 'cancelled' &&
+              (l as any).isDeleted !== true
+          ) || (initialEvent?.liquidationReportId ? liquidationsList.find((l) => l.id === initialEvent.liquidationReportId) : null)
+        : null);
+
+    if (targetReport) {
+      setActiveReportId(targetReport.id);
+      setSelectedEventId(targetReport.eventId);
+      setAllocatedBudget(targetReport.allocatedBudget || 0);
+      setLineItems(normalizeLineItems(targetReport.lineItems || []));
+
+      // Hydrate LF-01 Header from existing report
+      if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
+      if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
+      if (targetReport.purpose) setPurpose(targetReport.purpose);
+      if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
+      if (targetReport.dateReleased) setDateReleased(targetReport.dateReleased);
+      if (targetReport.activityEndDate) setActivityEndDate(targetReport.activityEndDate);
+      if (targetReport.submissionDeadline) setSubmissionDeadline(targetReport.submissionDeadline);
+      if (targetReport.dateSubmitted) setDateSubmitted(targetReport.dateSubmitted);
+      if (targetReport.daysLapsed) setDaysLapsed(targetReport.daysLapsed);
+      if (targetReport.orNumber) setOrNumber(targetReport.orNumber);
+
+      if (targetReport.approvalChain && targetReport.approvalChain.length > 0) {
+        const validSteps = targetReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
+        setApprovalChain(reindexLiquidationSteps(validSteps));
+      } else {
+        generateDefaultLiquidationChain(orgId, orgName, targetReport.allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
+          setApprovalChain(chain);
+        });
+      }
+    } else if (initialEventId) {
+      setActiveReportId('');
+      handleEventSelect(initialEventId);
+    } else {
+      setActiveReportId('');
+      setSelectedEventId('');
+      setAllocatedBudget(0);
+      setLineItems([]);
       generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories, isSasCreator).then((chain) => {
         setApprovalChain(chain);
       });
     }
-  }, [editingReport, isOpen, orgId, orgName, activeSignatories, isSasCreator]);
+  }, [editingReport, isOpen, initialEventId, initialEvent, liquidationsList, orgId, orgName, activeSignatories, isSasCreator]);
 
   // Update budget & auto-fetch budgetItems when event is selected
   const handleEventSelect = async (eventId: string) => {
     setSelectedEventId(eventId);
     const event = eligibleEvents.find((e) => e.id === eventId) || allEvents.find((e) => e.id === eventId);
-    if (event) {
-      const budget = calculateEventBudget(event);
-      setAllocatedBudget(budget);
+    if (!event) return;
 
-      const eventIsSas = isSasCreator || isSasInstitutionalActivity(event);
+    // Check if this selected event already has an active liquidation report
+    const existing = liquidationsList.find(
+      (l) =>
+        l.eventId === eventId &&
+        l.status !== 'voided' &&
+        (l.status as any) !== 'cancelled' &&
+        (l as any).isDeleted !== true
+    ) || (event.liquidationReportId ? liquidationsList.find((l) => l.id === event.liquidationReportId) : null);
 
-      // Auto-load liquidation approval chain dynamically from active maintenance signatories
-      if (!editingReport || !editingReport.approvalChain || editingReport.approvalChain.length === 0) {
-        const defaultChain = await generateDefaultLiquidationChain(
-          event.hostingOrgId || orgId,
-          event.hostingOrgName || orgName,
-          budget,
-          activeSignatories,
-          eventIsSas
-        );
-        setApprovalChain(defaultChain);
+    if (existing) {
+      setActiveReportId(existing.id);
+      setAllocatedBudget(existing.allocatedBudget || 0);
+      setLineItems(normalizeLineItems(existing.lineItems || []));
+
+      // Hydrate LF-01 Header from existing report
+      if (existing.employeeName) setEmployeeName(existing.employeeName);
+      if (existing.chequeNumber) setChequeNumber(existing.chequeNumber);
+      if (existing.purpose) setPurpose(existing.purpose);
+      if (existing.amountAdvanced) setAmountAdvanced(existing.amountAdvanced);
+      if (existing.dateReleased) setDateReleased(existing.dateReleased);
+      if (existing.activityEndDate) setActivityEndDate(existing.activityEndDate);
+      if (existing.submissionDeadline) setSubmissionDeadline(existing.submissionDeadline);
+      if (existing.dateSubmitted) setDateSubmitted(existing.dateSubmitted);
+      if (existing.daysLapsed) setDaysLapsed(existing.daysLapsed);
+      if (existing.orNumber) setOrNumber(existing.orNumber);
+
+      if (existing.approvalChain && existing.approvalChain.length > 0) {
+        setApprovalChain(reindexLiquidationSteps(existing.approvalChain));
       }
+      return;
+    }
 
-      // Auto-fetch line items: Prioritize Budget Custodians ("Hold Money"), fallback to budgetItems
-      if (!editingReport) {
-        if ((event as any).budgetCustodians && (event as any).budgetCustodians.length > 0) {
-          const fetchedItems: ExpenseLineItem[] = (event as any).budgetCustodians.map((c: any, i: number) => {
-            const allocatedCost = Number(c.allocatedAmount || 0);
-            const isContingency = c.isContingencyFund === true || (c.purpose || '').toLowerCase().includes('contingency');
-            const rawDesc = c.purpose || 'Expense';
-            const formattedDesc = isContingency
-              ? (rawDesc.toLowerCase().includes('contingency') ? rawDesc : `[Contingency Fund] ${rawDesc}`)
-              : rawDesc;
-            const custodianSuffix = c.personName ? ` (Custodian: ${c.personName})` : '';
+    setActiveReportId('');
+    const budget = calculateEventBudget(event);
+    setAllocatedBudget(budget);
 
-            return {
-              id: `item-${i}-${Date.now()}`,
-              description: `${formattedDesc}${custodianSuffix}`,
-              category: isContingency
-                ? 'Miscellaneous'
-                : c.purpose?.toLowerCase().includes('food') || c.purpose?.toLowerCase().includes('snack')
-                ? 'Food & Catering'
-                : c.purpose?.toLowerCase().includes('venue') || c.purpose?.toLowerCase().includes('sound')
-                ? 'Venue & Facilities'
-                : c.purpose?.toLowerCase().includes('token') || c.purpose?.toLowerCase().includes('cert')
-                ? 'Materials & Printing'
-                : EXPENSE_CATEGORIES[0],
-              allocatedCost: allocatedCost,
-              proposedQuantity: 1,
-              proposedUnitCost: allocatedCost,
-              isPreFilled: true,
-              isContingency: isContingency,
-              quantity: 1,
-              unitCost: 0,
-              totalCost: 0,
-              vendorName: '',
-              receiptUrl: '',
-              receiptUrls: [],
-              receiptFiles: [],
-            };
-          });
-          setLineItems(fetchedItems);
-        } else if ((event as any).budgetItems && (event as any).budgetItems.length > 0) {
-          const fetchedItems: ExpenseLineItem[] = (event as any).budgetItems.map((bi: any, i: number) => {
-            const allocatedCost = bi.approvedAmount || bi.quantity * bi.unitCost || bi.totalCost || 0;
-            const propQty = bi.quantity || 1;
-            const propUnit = bi.unitCost || (allocatedCost > 0 ? Math.round(allocatedCost / propQty) : 0);
+    const eventIsSas = isSasCreator || isSasInstitutionalActivity(event);
 
-            return {
-              id: `item-${i}-${Date.now()}`,
-              description: bi.item || bi.description || `Budget Item ${i + 1}`,
-              category: bi.category || EXPENSE_CATEGORIES[0],
-              allocatedCost: allocatedCost,
-              proposedQuantity: propQty,
-              proposedUnitCost: propUnit,
-              isPreFilled: true,
-              quantity: propQty,
-              unitCost: 0,
-              totalCost: 0,
-              vendorName: '',
-              receiptUrl: '',
-              receiptUrls: [],
-              receiptFiles: [],
-            };
-          });
-          setLineItems(fetchedItems);
-        }
-      }
+    // Auto-load liquidation approval chain dynamically from active maintenance signatories
+    if (!effectiveReport || !effectiveReport.approvalChain || effectiveReport.approvalChain.length === 0) {
+      const defaultChain = await generateDefaultLiquidationChain(
+        event.hostingOrgId || orgId,
+        event.hostingOrgName || orgName,
+        budget,
+        activeSignatories,
+        eventIsSas
+      );
+      setApprovalChain(defaultChain);
     }
   };
 
@@ -554,6 +1116,19 @@ export default function OfficerLiquidationModal({
     }
 
     updated[index] = item;
+    setLineItems(updated);
+  };
+
+  // Pure receipt entry: user inputs direct amount from the receipt; no quantity/unit price calculations
+  const handleReceiptAmountChange = (index: number, amountVal: string) => {
+    const numeric = Math.max(0, Number(amountVal) || 0);
+    const updated = [...lineItems];
+    updated[index] = {
+      ...updated[index],
+      quantity: 1,
+      unitCost: numeric,
+      totalCost: numeric,
+    };
     setLineItems(updated);
   };
 
@@ -646,58 +1221,67 @@ export default function OfficerLiquidationModal({
   const surplusOrDeficit = allocatedBudget - totalActualSpending;
   const isDeficit = surplusOrDeficit < 0;
 
-  const selectedEvent =
-    eligibleEvents.find((e) => e.id === selectedEventId) ||
-    allEvents.find((e) => e.id === selectedEventId);
-  const eventTitle = selectedEvent?.title || editingReport?.eventTitle || 'Event Liquidation';
-
   const handleSave = async (shouldSubmit: boolean) => {
-    if (!selectedEventId) {
-      setError('Please select an event for this liquidation report.');
+    // Collect non-empty line items upfront
+    const meaningfulItems = lineItems.filter(
+      (item) => item.description.trim() !== '' || item.totalCost > 0 || (item.receiptFiles && item.receiptFiles.length > 0)
+    );
+
+    const showValidationError = (msg: string) => {
+      setError(msg);
+      toast.error(msg);
+    };
+
+    if (!selectedEventId && !selectedEvent?.id) {
+      showValidationError('Please select an event for this liquidation report.');
       return;
     }
 
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
+      if (!isConcluded) {
+        showValidationError('Cannot submit liquidation: This event has not yet concluded. You can record receipts and save drafts anytime during the event, and officially submit once the event concludes.');
+        return;
+      }
       if (isReturnedReport && !resubmissionNote.trim()) {
-        setError('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
+        showValidationError('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
         return;
       }
       if (!effectiveIsAdviser && userRole !== 'admin') {
-        setError('Only appointed Club Advisers are authorized to officially submit Financial Liquidations. Student officers can prepare and save drafts.');
+        showValidationError('Only appointed Club Advisers are authorized to officially submit Financial Liquidations. Student officers can prepare and save drafts.');
         return;
       }
-      if (lineItems.length === 0) {
-        setError('Please add at least one expense line item before submitting.');
+      if (meaningfulItems.length === 0) {
+        showValidationError('Please add at least one expense receipt before submitting.');
         return;
       }
-      if (lineItems.some((item) => !item.description.trim())) {
-        setError('Please provide a description for all expense line items before submitting.');
+      if (meaningfulItems.some((item) => !item.description.trim())) {
+        showValidationError('Please provide a description or particular for all expense receipts before submitting.');
         return;
       }
-      if (lineItems.some((item) => item.totalCost <= 0 || item.unitCost <= 0 || item.quantity <= 0)) {
-        setError('All expense line items must have valid quantity, unit cost, and total cost greater than 0.');
+      if (meaningfulItems.some((item) => item.totalCost <= 0)) {
+        showValidationError('All expense receipts must have a valid amount greater than ₱0.00.');
         return;
       }
-      const missingReceipts = lineItems.some(
+      const missingReceipts = meaningfulItems.some(
         (item) =>
           (!item.receiptFiles || item.receiptFiles.length === 0) &&
           (!item.receiptUrls || item.receiptUrls.length === 0) &&
           !item.receiptUrl
       );
       if (missingReceipts) {
-        setError('Please attach at least one valid receipt or proof document for every expense line item before submitting.');
+        showValidationError('Please attach at least one valid receipt or proof document for every expense receipt before submitting.');
         return;
       }
       if (approvalChain.length === 0) {
-        setError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
+        showValidationError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
         return;
       }
       const hasApprover = approvalChain.some(
         (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
       );
       if (!hasApprover) {
-        setError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
+        showValidationError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
         return;
       }
     }
@@ -721,8 +1305,8 @@ export default function OfficerLiquidationModal({
       }
 
       const payload: Omit<LiquidationDocument, 'id' | 'createdAt' | 'updatedAt'> = {
-        eventId: selectedEventId || '',
-        eventTitle: eventTitle || '',
+        eventId: selectedEventId || selectedEvent?.id || '',
+        eventTitle: selectedEvent?.title || eventTitle || '',
         organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId || '',
         organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName || '',
         createdById: userUid || 'user',
@@ -737,13 +1321,27 @@ export default function OfficerLiquidationModal({
         approvalChain: finalizedChain,
         currentStageIndex: 1,
         currentStepIndex: 0,
-        lineItems,
+        lineItems: shouldSubmit ? meaningfulItems : lineItems,
+
+        // Official Form LF-01 Header Information
+        employeeName: (employeeName || '').trim(),
+        chequeNumber: (chequeNumber || '').trim(),
+        purpose: (purpose || selectedEvent?.title || eventTitle || '').trim(),
+        amountAdvanced: Number(amountAdvanced || allocatedBudget || 0),
+        dateReleased: (dateReleased || '').trim(),
+        activityEndDate: (activityEndDate || '').trim(),
+        submissionDeadline: (submissionDeadline || '').trim(),
+        dateSubmitted: (dateSubmitted || '').trim(),
+        daysLapsed: (daysLapsed || '').trim(),
+        orNumber: (orNumber || '').trim(),
       };
 
       const sanitizedPayload = sanitizeFirestorePayload(payload);
 
-      if (editingReport) {
-        await updateLiquidationReport(editingReport.id, {
+      const effectiveReportId = activeReportId || effectiveReport?.id || editingReport?.id;
+
+      if (effectiveReportId) {
+        await updateLiquidationReport(effectiveReportId, {
           ...sanitizedPayload,
           status: nextStatus,
           ...(shouldSubmit ? { submittedAt: new Date() } : {}),
@@ -759,7 +1357,10 @@ export default function OfficerLiquidationModal({
             : 'Draft liquidation report updated successfully.'
         );
       } else {
-        await createLiquidationReport(sanitizedPayload);
+        const newId = await createLiquidationReport(sanitizedPayload);
+        if (newId) {
+          setActiveReportId(newId);
+        }
         toast.success(
           shouldSubmit
             ? 'Liquidation report submitted successfully for institutional review.'
@@ -770,7 +1371,9 @@ export default function OfficerLiquidationModal({
       onClose();
     } catch (err: any) {
       console.error('[OfficerLiquidationModal] Save failed:', err);
-      setError(err?.message || 'Failed to save liquidation report.');
+      const errMsg = err?.message || 'Failed to save liquidation report.';
+      setError(errMsg);
+      toast.error(errMsg);
     } finally {
       setIsSubmitting(false);
     }
@@ -784,11 +1387,42 @@ export default function OfficerLiquidationModal({
         {/* Modal Header */}
         <div className="px-6 py-4 bg-[#001A4D] text-white flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-bold">
-              {editingReport ? 'Edit Financial Liquidation Report' : 'Create Liquidation Report'}
-            </h2>
+            <div className="flex items-center gap-2.5">
+              <h2 className="text-xl font-bold">
+                {isEffectiveReadOnly
+                  ? effectiveReport?.status === 'approved'
+                    ? 'Approved Financial Liquidation Report'
+                    : 'Financial Liquidation Report (Under Review)'
+                  : effectiveReport || activeReportId || editingReport
+                  ? 'Edit Financial Liquidation Report'
+                  : 'Create Liquidation Report'}
+              </h2>
+              {isEffectiveReadOnly && (
+                <span
+                  className={`text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider flex items-center gap-1 ${
+                    effectiveReport?.status === 'approved'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                      : 'bg-blue-500/20 text-blue-300 border border-blue-400/30'
+                  }`}
+                >
+                  {effectiveReport?.status === 'approved' ? (
+                    <>
+                      <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                      Approved
+                    </>
+                  ) : (
+                    <>
+                      <Clock className="w-3 h-3 text-blue-400 animate-pulse" />
+                      Under Signatory Review
+                    </>
+                  )}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-white/80 mt-0.5">
-              Submit actual spendings, attach multiple receipt proofs/documents, and verify budget variance.
+              {isEffectiveReadOnly
+                ? 'Official financial liquidation report. All actual expenses, attached receipt proofs, and signatory routes are presented in view-only mode.'
+                : 'Submit actual spendings, attach multiple receipt proofs/documents, and verify budget variance.'}
             </p>
           </div>
           <button
@@ -801,34 +1435,27 @@ export default function OfficerLiquidationModal({
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 flex-shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          {(editingReport?.status === 'returned' || (editingReport as any)?.isReturned) && (
+          {((effectiveReport?.status === 'returned' || (effectiveReport as any)?.isReturned)) && (
             <RevisionFeedbackBanner
               returnedBy={{
-                name: (editingReport as any).returnedByName || (editingReport as any).returnedBy || 'Institutional Signatory',
-                roleTitle: (editingReport as any).returnedByRoleTitle || 'Signatory Reviewer',
-                email: (editingReport as any).returnedByEmail,
+                name: (effectiveReport as any).returnedByName || (effectiveReport as any).returnedBy || 'Institutional Signatory',
+                roleTitle: (effectiveReport as any).returnedByRoleTitle || 'Signatory Reviewer',
+                email: (effectiveReport as any).returnedByEmail,
               }}
-              returnedAt={editingReport.returnedAt}
-              returnRemarks={editingReport.returnRemarks}
-              returnFlags={editingReport.returnFlags}
-              stepRevisionRemarks={editingReport.stepRevisionRemarks}
-              revisionHistory={editingReport.revisionHistory}
-              documentTitle={editingReport.eventTitle}
+              returnedAt={effectiveReport.returnedAt}
+              returnRemarks={effectiveReport.returnRemarks}
+              returnFlags={effectiveReport.returnFlags}
+              stepRevisionRemarks={effectiveReport.stepRevisionRemarks}
+              revisionHistory={effectiveReport.revisionHistory}
+              documentTitle={effectiveReport.eventTitle}
               documentType="FL"
-              currentDocument={editingReport}
-              versionLabel={`v${editingReport.revisionCount || 1}.0`}
+              currentDocument={effectiveReport}
+              versionLabel={`v${effectiveReport.revisionCount || 1}.0`}
             />
           )}
 
           {/* Empty State Warning Alert */}
-          {eligibleEvents.length === 0 && !editingReport && (
+          {eligibleEvents.length === 0 && !effectiveReport && !editingReport && (
             <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
               <div>
@@ -842,7 +1469,7 @@ export default function OfficerLiquidationModal({
             </div>
           )}
 
-          {/* Event Selection & Allocated Budget */}
+          {/* Event Selection & Allocated Budget (View-Only Linked Activity) */}
           <div
             className={`p-4 rounded-xl transition-all ${
               isEventBudgetFlagged
@@ -852,9 +1479,15 @@ export default function OfficerLiquidationModal({
           >
             <div className="flex items-center justify-between mb-3 border-b border-gray-200/60 pb-2">
               <div className="flex items-center gap-2">
+                <Building className="w-4 h-4 text-[#0E4EBD]" />
                 <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
-                  Event &amp; Budget Ceiling Allocation
+                  Linked Activity &amp; Budget Ceiling Allocation
                 </h4>
+                {selectedEvent && (
+                  <span className="text-[10px] font-semibold text-gray-500 bg-white border border-gray-200 px-2 py-0.5 rounded-md flex items-center gap-1">
+                    <Lock className="w-3 h-3 text-gray-400" /> View Only
+                  </span>
+                )}
                 {isEventBudgetFlagged && (
                   <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
                     <AlertCircle className="w-3 h-3 text-amber-700" />
@@ -862,6 +1495,22 @@ export default function OfficerLiquidationModal({
                   </span>
                 )}
               </div>
+
+              {selectedEvent && (
+                <div>
+                  {isConcluded ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Event Concluded (Ready to Submit)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs">
+                      <Clock className="w-3.5 h-3.5 text-amber-600" />
+                      Event In Progress (Recording Receipts Mode)
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {isEventBudgetFlagged && eventBudgetFeedback && (
@@ -874,81 +1523,296 @@ export default function OfficerLiquidationModal({
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Linked Event <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={selectedEventId}
-                  onChange={(e) => handleEventSelect(e.target.value)}
-                  disabled={!!editingReport || eligibleEvents.length === 0}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] disabled:bg-gray-100 disabled:text-gray-500"
-                >
-                  {eligibleEvents.length === 0 ? (
-                    <option value="">No completed, unliquidated events available</option>
-                  ) : (
-                    <>
-                      <option value="">Select a completed event ({eligibleEvents.length} available)...</option>
-                      {eligibleEvents.map((evt) => (
-                        <option key={evt.id} value={evt.id}>
-                          {evt.title} ({evt.eventFormat || 'Campus'})
-                        </option>
-                      ))}
-                    </>
-                  )}
-                </select>
-              </div>
+            {selectedEvent ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-semibold text-gray-500 mb-1">
+                    Linked Activity
+                  </label>
+                  <div className="p-3 bg-white border border-gray-200 rounded-lg shadow-2xs">
+                    <h3 className="text-sm font-bold text-[#001A4D]">
+                      {selectedEvent.title}
+                    </h3>
+                    <p className="text-xs text-gray-600 mt-0.5">
+                      Host: <span className="font-semibold text-gray-800">{selectedEvent.hostingOrgName || selectedEvent.organizationName || orgName}</span>
+                      {selectedEvent.eventFormat ? ` • ${selectedEvent.eventFormat}` : ''}
+                      {activityEndDate ? ` • Ends: ${activityEndDate}` : ''}
+                    </p>
+                  </div>
+                </div>
 
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-gray-500">
+                      Approved Budget Ceiling
+                    </label>
+                    <span className="text-[10px] text-gray-400 font-mono">Allocation</span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₱</span>
+                    <input
+                      type="number"
+                      value={allocatedBudget}
+                      readOnly
+                      disabled
+                      className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm font-bold text-[#001A4D] bg-white cursor-not-allowed select-none focus:outline-none font-mono"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Linked Event <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedEventId}
+                    onChange={(e) => handleEventSelect(e.target.value)}
+                    disabled={!!effectiveReport || !!editingReport || eligibleEvents.length === 0}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] disabled:bg-gray-100 disabled:text-gray-500"
+                  >
+                    {eligibleEvents.length === 0 ? (
+                      <option value="">No eligible events available</option>
+                    ) : (
+                      <>
+                        <option value="">Select an event ({eligibleEvents.length} available)...</option>
+                        {eligibleEvents.map((evt) => (
+                          <option key={evt.id} value={evt.id}>
+                            {evt.title} ({evt.eventFormat || 'Campus'})
+                          </option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Approved Budget Ceiling (Allocated)
+                    </label>
+                    <span className="text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md flex items-center gap-1">
+                      <Lock className="w-3 h-3 text-gray-400" /> Read-only
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₱</span>
+                    <input
+                      type="number"
+                      value={allocatedBudget}
+                      readOnly
+                      disabled
+                      className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Form LF-01 Official Header & Cheque Details */}
+          <div className="p-4 bg-white border border-gray-200 rounded-xl shadow-2xs space-y-3">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+              <div className="flex items-center gap-2">
+                <FileSpreadsheet className="w-4 h-4 text-[#0E4EBD]" />
+                <h4 className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                  Form LF-01 Official Disbursement Header
+                </h4>
+              </div>
+              <span className="text-[11px] text-gray-500">
+                Official header information exported to STI Liquidation (Form LF-01)
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {/* Disbursing Employee Name */}
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Approved Budget Ceiling (Allocated)
+                  <label className="block text-xs font-semibold text-gray-700">
+                    Disbursing Employee Name <span className="text-red-500">*</span>
                   </label>
-                  <span className="text-[11px] font-semibold text-gray-500 bg-gray-100 border border-gray-200 px-2 py-0.5 rounded-md flex items-center gap-1">
-                    <Lock className="w-3 h-3 text-gray-400" /> Read-only
+                  {detectedAdviserName && (
+                    <button
+                      type="button"
+                      onClick={handleResetEmployeeName}
+                      className="text-[10px] text-[#0E4EBD] hover:underline flex items-center gap-0.5 cursor-pointer"
+                      title="Reset to detected default"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5" /> Reset
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={employeeName}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => setEmployeeName(e.target.value)}
+                  placeholder="Enter employee / adviser name"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <div className="mt-1 flex items-center gap-1 text-[10px]">
+                  {detectedEmployeeSource === 'club_adviser' ? (
+                    <span className="text-emerald-700 font-semibold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                      🎓 Club Adviser Detected
+                    </span>
+                  ) : (
+                    <span className="text-blue-700 font-semibold bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                      🏛️ SAS Administration Detected
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Cheque Number (Manually inputted, no default value) */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Cheque Number <span className="text-gray-400 font-normal">(Manual Input)</span>
+                </label>
+                <input
+                  type="text"
+                  value={chequeNumber}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => setChequeNumber(e.target.value)}
+                  placeholder="Enter Cheque / Check No."
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  Enter official cheque number issued for this disbursement
+                </span>
+              </div>
+
+              {/* Date Released */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Date Released <span className="text-gray-400 font-normal">(Disbursement)</span>
+                </label>
+                <input
+                  type="date"
+                  value={dateReleased}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => setDateReleased(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  Date funds or cheque was released
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-gray-100">
+              {/* Date of Activity End */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Date of Activity End <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="date"
+                  value={activityEndDate}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => handleActivityEndDateChange(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  End date of scheduled sessions
+                </span>
+              </div>
+
+              {/* Deadline for Submission (+7 days) */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Liquidation Deadline <span className="text-xs text-blue-600">(+7 Days)</span>
+                </label>
+                <input
+                  type="date"
+                  value={submissionDeadline}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => setSubmissionDeadline(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  Standard 7-day liquidation policy
+                </span>
+              </div>
+
+              {/* Date Submitted */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  Date Submitted
+                </label>
+                <input
+                  type="date"
+                  value={dateSubmitted}
+                  disabled={isEffectiveReadOnly}
+                  onChange={(e) => handleDateSubmittedChange(e.target.value)}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                />
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  Defaults to today
+                </span>
+              </div>
+
+              {/* No. of Days Lapse */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                  No. of Days Lapse
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={daysLapsed}
+                    disabled={isEffectiveReadOnly}
+                    onChange={(e) => setDaysLapsed(e.target.value)}
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-bold font-mono bg-gray-50"
+                  />
+                  <span
+                    className={`px-2 py-1 rounded text-[11px] font-bold whitespace-nowrap ${
+                      daysLapsed === '-o-'
+                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                        : 'bg-amber-100 text-amber-900 border border-amber-300'
+                    }`}
+                  >
+                    {daysLapsed === '-o-' ? 'Compliant' : 'Lapsed'}
                   </span>
                 </div>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">₱</span>
-                  <input
-                    type="number"
-                    value={allocatedBudget}
-                    readOnly
-                    disabled
-                    className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg text-sm font-bold text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
-                    placeholder="0.00"
-                  />
-                </div>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Locked to the official approved budget ceiling for the linked event.
-                </p>
+                <span className="text-[10px] text-gray-500 mt-1 block">
+                  Auto-calculated from deadline
+                </span>
               </div>
             </div>
           </div>
 
-          {/* Live Financial Variance Summary Card */}
-          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
-            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-xs">
+          {/* Live Financial Variance Summary Cards */}
+          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
               <div className="text-xs text-gray-500 font-medium">Approved Budget</div>
-              <div className="text-lg font-bold text-[#001A4D] mt-1">{formatCurrency(allocatedBudget)}</div>
+              <div className="text-lg font-bold text-[#001A4D] mt-1 font-mono">{formatCurrency(allocatedBudget)}</div>
             </div>
 
-            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-xs">
+            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
               <div className="text-xs text-gray-500 font-medium">Total Actual Spendings</div>
-              <div className="text-lg font-bold text-[#0E4EBD] mt-1">{formatCurrency(totalActualSpending)}</div>
+              <div className="text-lg font-bold text-[#0E4EBD] mt-1 font-mono">{formatCurrency(totalActualSpending)}</div>
             </div>
 
             <div
-              className={`p-3 bg-white border rounded-lg shadow-xs ${
-                isDeficit ? 'border-red-200' : 'border-green-200'
+              className={`p-3 bg-white border rounded-lg shadow-2xs ${
+                isDeficit ? 'border-red-200 bg-red-50/20' : 'border-green-200 bg-green-50/20'
               }`}
             >
               <div className="text-xs text-gray-500 font-medium">
                 {isDeficit ? 'Net Deficit (Over Budget)' : 'Net Surplus (Remaining)'}
               </div>
-              <div className={`text-lg font-bold mt-1 ${isDeficit ? 'text-red-600' : 'text-green-600'}`}>
+              <div className={`text-lg font-bold mt-1 font-mono ${isDeficit ? 'text-red-600' : 'text-green-600'}`}>
                 {formatVariance(surplusOrDeficit)}
+              </div>
+            </div>
+
+            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
+              <div className="text-xs text-gray-500 font-medium">Receipts Attached</div>
+              <div className="text-lg font-bold text-slate-800 mt-1 font-mono">
+                {lineItems.filter((i) => (i.receiptFiles && i.receiptFiles.length > 0) || (i.receiptUrls && i.receiptUrls.length > 0) || i.receiptUrl).length}
               </div>
             </div>
           </div>
@@ -1023,37 +1887,138 @@ export default function OfficerLiquidationModal({
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {hasItemLevelFlags
                         ? 'Specific expense line items flagged for correction are highlighted in amber below with direct reviewer remarks.'
-                        : (editingReport?.stepRevisionRemarks?.['sec_line_items'] ||
-                          editingReport?.stepRevisionRemarks?.['sec_receipts'] ||
-                          editingReport?.returnRemarks ||
+                        : (effectiveReport?.stepRevisionRemarks?.['sec_line_items'] ||
+                          effectiveReport?.stepRevisionRemarks?.['sec_receipts'] ||
+                          effectiveReport?.returnRemarks ||
                           'Please update the highlighted expense line items or attach valid receipts.')}
                     </p>
                   </div>
                 </div>
               )}
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-base font-bold text-[#001A4D]">Expense Line Items & Receipts</h3>
-                  <p className="text-xs text-gray-500">
-                    Input actual disbursements, quantities, unit prices, and attach digital invoices/receipts.
-                  </p>
+{/* Horizontally Scrollable Category Tabs (Reference Guide) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                    Proposed Budget Baseline Categories (Reference Guide)
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    {categoriesList.length} Categories • Scroll sideways to switch
+                  </span>
                 </div>
-                <button
-                  onClick={handleAddLineItem}
-                  className="px-3 py-1.5 bg-[#1E70E8] text-white text-xs font-medium rounded-lg hover:bg-[#0E4EBD] flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" /> Add Line Item
-                </button>
+
+                <div className="flex items-center gap-2.5 overflow-x-auto pb-2 pt-1 scrollbar-thin">
+                  {categoriesList.map((cat) => {
+                    const isSelected = cat.id === activeCategoryId;
+                    const stats = categorySpendingMap.get(cat.title) || { baseline: cat.baselineAmount, spent: 0, receiptCount: 0 };
+                    const rem = cat.baselineAmount - stats.spent;
+                    const isOver = rem < 0;
+
+                    const catItems = lineItems.filter((it) =>
+                      cat.id === 'cat_other'
+                        ? it.proposedItemId === 'cat_other' || (!it.proposedItemId && !proposedBaselineItems.some((p) => p.title === it.category))
+                        : it.proposedItemId === cat.id || it.category === cat.title || it.proposedItemTitle === cat.title
+                    );
+
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => handleSelectCategoryTab(cat.id)}
+                        className={`flex-shrink-0 px-4 py-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#001A4D] text-white border-[#001A4D] shadow-md ring-2 ring-[#001A4D]/25'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3 min-w-[170px]">
+                          <span className={`text-xs font-bold truncate max-w-[180px] ${isSelected ? 'text-white' : 'text-slate-900'}`} title={cat.title}>
+                            {cat.title}
+                          </span>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                            isSelected ? 'bg-white/20 text-[#FFD41C]' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {catItems.length} {catItems.length === 1 ? 'item' : 'items'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3 text-[11px] mt-1.5 pt-1.5 border-t border-current/10 font-mono">
+                          <span className={isSelected ? 'text-slate-300' : 'text-slate-500'}>
+                            {cat.baselineAmount > 0 ? formatCurrency(cat.baselineAmount) : 'General'}
+                          </span>
+                          {cat.baselineAmount > 0 && (
+                            <span className={`font-bold ${
+                              isSelected
+                                ? isOver ? 'text-rose-300' : 'text-emerald-300'
+                                : isOver ? 'text-rose-600' : 'text-emerald-700'
+                            }`}>
+                              {isOver ? `-${formatCurrency(Math.abs(rem))}` : `+${formatCurrency(rem)}`}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
+              {/* Active Category Header & Action Banner (No '+ Add Receipt to Category' button in cards) */}
+              <div className="p-4 bg-gradient-to-r from-blue-50/80 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#001A4D] text-[#FFD41C]">
+                      Active Category
+                    </span>
+                    <h3 className="text-sm font-extrabold text-[#001A4D]">
+                      {currentCategory?.title}
+                    </h3>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 mt-1">
+                    {currentCategory && currentCategory.baselineAmount > 0 ? (
+                      <>
+                        <span>Baseline Ceiling: <strong className="font-mono text-[#001A4D]">{formatCurrency(currentCategory.baselineAmount)}</strong></span>
+                        <span>•</span>
+                        <span>Total Spent in Category: <strong className="font-mono text-[#0E4EBD]">{formatCurrency(categorySpendingMap.get(currentCategory.title)?.spent || 0)}</strong></span>
+                        <span>•</span>
+                        {(() => {
+                          const stats = categorySpendingMap.get(currentCategory.title) || { baseline: currentCategory.baselineAmount, spent: 0 };
+                          const rem = stats.baseline - stats.spent;
+                          const isOver = rem < 0;
+                          return (
+                            <span className={`font-bold font-mono ${isOver ? 'text-rose-600' : 'text-emerald-700'}`}>
+                              {isOver ? `Over by ${formatCurrency(Math.abs(rem))}` : `Remaining: ${formatCurrency(rem)}`}
+                            </span>
+                          );
+                        })()}
+                      </>
+                    ) : (
+                      <span>Unplanned / General operational items</span>
+                    )}
+                  </div>
+                </div>
+
+                {!isEffectiveReadOnly && (
+                  <button
+                    type="button"
+                    onClick={handleAddItemToCurrentCategory}
+                    className="px-3.5 py-2 bg-[#0E4EBD] hover:bg-[#1E70E8] text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer shrink-0 self-start sm:self-auto"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Receipt</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Items in Active Category (1-indexed per category) */}
               <div className="space-y-4">
-                {lineItems.map((item, index) => {
+                {currentCategoryItems.map((item, categoryItemIndex) => {
+                  const realIndex = lineItems.findIndex((i) => i.id === item.id);
                   const attachedFiles = item.receiptFiles || [];
                   const { isFlagged: isThisItemFlagged, feedback: thisItemFeedback } = isExpenseItemFlagged(
                     item,
-                    index,
-                    editingReport?.returnFlags,
-                    editingReport?.stepRevisionRemarks,
+                    realIndex,
+                    effectiveReport?.returnFlags,
+                    effectiveReport?.stepRevisionRemarks,
                     hasLegacyLineItemFlags,
                     hasItemLevelFlags
                   );
@@ -1064,38 +2029,22 @@ export default function OfficerLiquidationModal({
                       className={`p-4 rounded-xl space-y-3 relative group transition-all ${
                         isThisItemFlagged
                           ? 'border-2 border-amber-400 bg-amber-50/20 shadow-xs ring-1 ring-amber-300'
-                          : 'border border-gray-200 bg-white'
+                          : 'border border-gray-200 bg-white shadow-2xs'
                       }`}
                     >
                       <div className="flex items-center justify-between border-b border-gray-100 pb-2">
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                            Item #{index + 1}
+                          <Receipt className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                          <span className="text-xs font-bold text-gray-800 uppercase tracking-wider">
+                            Receipt #{categoryItemIndex + 1}
+                          </span>
+                          <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
+                            {currentCategory?.title}
                           </span>
                           {isThisItemFlagged && (
                             <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1 animate-pulse">
                               <AlertCircle className="w-3 h-3 text-amber-700" />
                               Needs Revision
-                            </span>
-                          )}
-                          {item.isContingency ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 rounded border border-amber-300 uppercase flex items-center gap-1">
-                              <Shield className="w-2.5 h-2.5 text-amber-700" />
-                              Contingency Reserve
-                            </span>
-                          ) : item.isPreFilled ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-50 text-[#0E4EBD] rounded border border-blue-200 uppercase">
-                              Allocated Item
-                            </span>
-                          ) : null}
-                          {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                            <span className="text-[11px] font-semibold px-2.5 py-0.5 bg-blue-50 text-blue-800 rounded border border-blue-200">
-                              Allocated: {formatCurrency(item.allocatedCost)}
-                            </span>
-                          )}
-                          {item.wasModifiedInRev && (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-800 rounded border border-amber-300">
-                              ✏️ Revised in Revision
                             </span>
                           )}
                           {attachedFiles.length > 0 ? (
@@ -1106,30 +2055,21 @@ export default function OfficerLiquidationModal({
                           ) : (
                             <span className="text-[10px] font-bold px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded flex items-center gap-1">
                               <AlertCircle className="w-3 h-3 text-rose-600" />
-                              Receipt Required
+                              Receipt Proof Required
                             </span>
                           )}
                         </div>
 
                         <div className="flex items-center gap-3">
-                          {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                            <span
-                              className={`text-[11px] font-bold px-2.5 py-0.5 rounded ${
-                                item.allocatedCost - item.totalCost < 0
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-green-100 text-green-800'
-                              }`}
-                            >
-                              {item.allocatedCost - item.totalCost < 0
-                                ? `Item Deficit (-${formatCurrency(Math.abs(item.allocatedCost - item.totalCost))})`
-                                : `Item Surplus (+${formatCurrency(item.allocatedCost - item.totalCost)})`}
-                            </span>
-                          )}
-                          {!item.isPreFilled && lineItems.length > 1 && (
+                          <span className="text-xs font-bold font-mono text-[#001A4D]">
+                            {formatCurrency(item.totalCost || 0)}
+                          </span>
+                          {!isEffectiveReadOnly && (
                             <button
-                              onClick={() => handleRemoveLineItem(index)}
-                              className="text-red-500 hover:text-red-700 p-1 cursor-pointer"
-                              title="Remove custom item"
+                              type="button"
+                              onClick={() => handleRemoveCategoryItem(item.id)}
+                              className="text-red-500 hover:text-red-700 p-1 cursor-pointer transition-colors"
+                              title={currentCategoryItems.length > 1 ? "Remove receipt" : "Clear receipt fields"}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -1142,267 +2082,199 @@ export default function OfficerLiquidationModal({
                         <div className="p-3 bg-amber-50/90 border border-amber-300 rounded-lg text-xs space-y-1">
                           <div className="font-bold text-amber-900 flex items-center gap-1.5 uppercase text-[10px] tracking-wider">
                             <AlertCircle className="w-3.5 h-3.5 text-amber-700 shrink-0" />
-                            Reviewer Feedback for Item #{index + 1} ({item.description || 'Line Item'}):
+                            Reviewer Feedback for Receipt #{categoryItemIndex + 1} ({item.description || 'Receipt'}):
                           </div>
                           <p className="text-amber-800 font-medium pl-2 border-l-2 border-amber-500 whitespace-pre-line leading-relaxed">
-                            {thisItemFeedback || 'This line item was flagged for revision. Please review its description, amount, or attached official receipts.'}
+                            {thisItemFeedback || 'This receipt was flagged for revision. Please review its description, amount, or attached official receipts.'}
                           </p>
                         </div>
                       )}
 
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div className="sm:col-span-2">
-                          <label className="block text-xs text-gray-600 mb-1">Description / Item Name *</label>
+                      {/* Pure Receipt Entry Inputs: Description, Store, OR#, and Amount */}
+                      <div className="space-y-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-700 mb-1">
+                            Receipt Particulars / Description of Purchase <span className="text-red-500">*</span>
+                          </label>
                           <input
                             type="text"
                             value={item.description}
-                            disabled={item.isPreFilled}
-                            onChange={(e) => handleLineItemChange(index, 'description', e.target.value)}
-                            placeholder="e.g. Lunch Catering for 50 Pax"
-                            className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
-                              item.isPreFilled
-                                ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
-                                : 'focus:ring-1 focus:ring-[#0E4EBD]'
-                            }`}
+                            disabled={isEffectiveReadOnly}
+                            onChange={(e) => handleLineItemChange(realIndex, 'description', e.target.value)}
+                            placeholder="What was bought according to this receipt (e.g. 35 Pax Packed Lunch from Jollibee)"
+                            className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
                           />
                         </div>
 
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Category</label>
-                          <select
-                            value={item.category}
-                            disabled={item.isPreFilled}
-                            onChange={(e) => handleLineItemChange(index, 'category', e.target.value)}
-                            className={`w-full px-3 py-1.5 border border-gray-300 rounded text-sm ${
-                              item.isPreFilled
-                                ? 'bg-gray-100 font-semibold text-gray-700 cursor-not-allowed'
-                                : 'focus:ring-1 focus:ring-[#0E4EBD]'
-                            }`}
-                          >
-                            {EXPENSE_CATEGORIES.map((cat) => (
-                              <option key={cat} value={cat}>
-                                {cat}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      {/* Side-by-Side Proposed vs Actual Comparison Banner */}
-                      {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                        <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <div>
-                              <span className="text-gray-500 font-medium">Proposed Baseline:</span>
-                              <span className="ml-1.5 font-bold text-[#001A4D]">
-                                {item.proposedQuantity || item.quantity || 1} Qty ×{' '}
-                                {formatCurrency(item.proposedUnitCost || 0)} = {formatCurrency(item.allocatedCost || 0)}
-                              </span>
-                            </div>
-                            <span className="text-blue-300 hidden sm:inline">|</span>
-                            <div>
-                              <span className="text-gray-500 font-medium">Actual Input:</span>
-                              <span className="ml-1.5 font-bold text-[#0E4EBD]">
-                                {item.quantity} Qty × {formatCurrency(item.unitCost)} = {formatCurrency(item.totalCost)}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div
-                            className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-                              (item.allocatedCost || 0) - item.totalCost < 0
-                                ? 'bg-red-100 text-red-800'
-                                : 'bg-green-100 text-green-800'
-                            }`}
-                          >
-                            {(item.allocatedCost || 0) - item.totalCost < 0
-                              ? `Deficit: -${formatCurrency(Math.abs((item.allocatedCost || 0) - item.totalCost))}`
-                              : `Surplus: +${formatCurrency((item.allocatedCost || 0) - item.totalCost)}`}
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Actual Quantity</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={item.quantity}
-                            onChange={(e) => handleLineItemChange(index, 'quantity', e.target.value)}
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Actual Unit Cost (₱)</label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={item.unitCost}
-                            onChange={(e) => handleLineItemChange(index, 'unitCost', e.target.value)}
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm font-medium text-gray-900"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Total Actual Cost (₱)</label>
-                          <input
-                            type="number"
-                            readOnly
-                            value={item.totalCost}
-                            className="w-full px-3 py-1.5 border border-gray-200 bg-gray-50 rounded text-sm font-bold text-[#0E4EBD]"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Vendor Name & Multi-Receipt Upload Section */}
-                      <div className="space-y-3 pt-2 border-t border-gray-100">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                           <div>
-                            <label className="block text-xs text-gray-600 mb-1">Vendor / Store Name *</label>
+                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                              Store / Vendor Name
+                            </label>
                             <input
                               type="text"
-                              value={item.vendorName}
-                              onChange={(e) => handleLineItemChange(index, 'vendorName', e.target.value)}
-                              placeholder="e.g. Jollibee Ormoc, National Book Store"
-                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                              value={item.vendorName || ''}
+                              disabled={isEffectiveReadOnly}
+                              onChange={(e) => handleLineItemChange(realIndex, 'vendorName', e.target.value)}
+                              placeholder="e.g. Jollibee Ormoc"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
                             />
                           </div>
 
                           <div>
-                            <label className="block text-xs text-gray-600 mb-1">Receipt / Invoice Ref Number (Optional)</label>
+                            <label className="block text-xs font-semibold text-gray-700 mb-1">
+                              Official Receipt (OR) / Invoice No.
+                            </label>
                             <input
                               type="text"
                               value={item.receiptNumber || ''}
-                              onChange={(e) => handleLineItemChange(index, 'receiptNumber', e.target.value)}
-                              placeholder="e.g. OR #104928"
-                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                              disabled={isEffectiveReadOnly}
+                              onChange={(e) => handleLineItemChange(realIndex, 'receiptNumber', e.target.value)}
+                              placeholder="e.g. OR #10234"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
                             />
                           </div>
+
+                          <div>
+                            <label className="block text-xs font-bold text-[#001A4D] mb-1">
+                              Receipt Amount (₱) <span className="text-red-500">*</span>
+                            </label>
+                            <div className="relative">
+                              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-xs">₱</span>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={item.totalCost || ''}
+                                disabled={isEffectiveReadOnly}
+                                onChange={(e) => handleReceiptAmountChange(realIndex, e.target.value)}
+                                placeholder="0.00"
+                                className="w-full pl-7 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm font-bold text-[#001A4D] bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none font-mono"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Multi-file Receipt Proof Attachments */}
+                      <div className="pt-2 border-t border-gray-100">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="block text-xs font-semibold text-gray-700">
+                            Receipts &amp; Proof Documents ({attachedFiles.length})
+                          </label>
+                          <span className="text-[11px] text-gray-500">
+                            Allowed: Images (PNG/JPG), PDF, Word, Excel/CSV, Text
+                          </span>
                         </div>
 
-                        {/* Multi-file Receipt Proof Attachments */}
-                        <div>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <label className="block text-xs font-semibold text-gray-700">
-                              Receipts & Proof Documents ({attachedFiles.length})
-                            </label>
-                            <span className="text-[11px] text-gray-500">
-                              Allowed: Images (PNG/JPG), PDF, Word, Excel/CSV, Text
-                            </span>
-                          </div>
+                        {attachedFiles.length > 0 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                            {attachedFiles.map((file) => {
+                              const isImg = file.fileType === 'image';
+                              const isPdf = file.fileType === 'pdf';
+                              const isSheet = file.fileType === 'spreadsheet';
+                              const isDoc = file.fileType === 'document';
 
-                          {/* List of uploaded receipt files */}
-                          {attachedFiles.length > 0 && (
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
-                              {attachedFiles.map((file) => {
-                                const isImg = file.fileType === 'image';
-                                const isPdf = file.fileType === 'pdf';
-                                const isSheet = file.fileType === 'spreadsheet';
-                                const isDoc = file.fileType === 'document';
+                              return (
+                                <div
+                                  key={file.id}
+                                  className="flex items-center justify-between gap-2 p-2 bg-gray-50 hover:bg-gray-100/80 border border-gray-200 rounded-lg transition-colors group/file text-xs"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                                    {isImg ? (
+                                      <div className="w-7 h-7 rounded border border-gray-200 overflow-hidden bg-gray-200 flex-shrink-0 flex items-center justify-center">
+                                        <img
+                                          src={file.url}
+                                          alt={file.name}
+                                          className="w-full h-full object-cover"
+                                          onError={(e) => {
+                                            (e.target as HTMLElement).style.display = 'none';
+                                          }}
+                                        />
+                                      </div>
+                                    ) : isPdf ? (
+                                      <div className="w-7 h-7 rounded bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0 border border-red-200">
+                                        <FileText className="w-4 h-4" />
+                                      </div>
+                                    ) : isSheet ? (
+                                      <div className="w-7 h-7 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0 border border-emerald-200">
+                                        <FileSpreadsheet className="w-4 h-4" />
+                                      </div>
+                                    ) : isDoc ? (
+                                      <div className="w-7 h-7 rounded bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 border border-blue-200">
+                                        <FileText className="w-4 h-4" />
+                                      </div>
+                                    ) : (
+                                      <div className="w-7 h-7 rounded bg-gray-100 text-gray-600 flex items-center justify-center flex-shrink-0 border border-gray-200">
+                                        <File className="w-4 h-4" />
+                                      </div>
+                                    )}
 
-                                return (
-                                  <div
-                                    key={file.id}
-                                    className="flex items-center justify-between gap-2 p-2 bg-gray-50 hover:bg-gray-100/80 border border-gray-200 rounded-lg transition-colors group/file text-xs"
-                                  >
-                                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                                      {isImg ? (
-                                        <div className="w-7 h-7 rounded border border-gray-200 overflow-hidden bg-gray-200 flex-shrink-0 flex items-center justify-center">
-                                          <img
-                                            src={file.url}
-                                            alt={file.name}
-                                            className="w-full h-full object-cover"
-                                            onError={(e) => {
-                                              (e.target as HTMLElement).style.display = 'none';
-                                            }}
-                                          />
-                                        </div>
-                                      ) : isPdf ? (
-                                        <div className="w-7 h-7 rounded bg-red-50 text-red-600 flex items-center justify-center flex-shrink-0 border border-red-200">
-                                          <FileText className="w-4 h-4" />
-                                        </div>
-                                      ) : isSheet ? (
-                                        <div className="w-7 h-7 rounded bg-emerald-50 text-emerald-600 flex items-center justify-center flex-shrink-0 border border-emerald-200">
-                                          <FileSpreadsheet className="w-4 h-4" />
-                                        </div>
-                                      ) : isDoc ? (
-                                        <div className="w-7 h-7 rounded bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0 border border-blue-200">
-                                          <FileText className="w-4 h-4" />
-                                        </div>
-                                      ) : (
-                                        <div className="w-7 h-7 rounded bg-gray-100 text-gray-600 flex items-center justify-center flex-shrink-0 border border-gray-200">
-                                          <File className="w-4 h-4" />
-                                        </div>
-                                      )}
-
-                                      <div className="min-w-0 flex-1">
-                                        <div
-                                          className="font-semibold text-gray-800 truncate"
-                                          title={file.name}
-                                        >
-                                          {file.name}
-                                        </div>
-                                        <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
-                                          <span className="uppercase">{file.fileType}</span>
-                                          {file.size ? (
-                                            <>
-                                              <span>•</span>
-                                              <span>{formatFileSize(file.size)}</span>
-                                            </>
-                                          ) : null}
-                                        </div>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="font-semibold text-gray-800 truncate" title={file.name}>
+                                        {file.name}
+                                      </div>
+                                      <div className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                                        <span className="uppercase">{file.fileType}</span>
+                                        {file.size ? (
+                                          <>
+                                            <span>•</span>
+                                            <span>{formatFileSize(file.size)}</span>
+                                          </>
+                                        ) : null}
                                       </div>
                                     </div>
+                                  </div>
 
-                                    <div className="flex items-center gap-1 flex-shrink-0">
+                                  <div className="flex items-center gap-1 flex-shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setLightboxData({
+                                          url: file.url,
+                                          title: item.description || 'Receipt File',
+                                          vendor: item.vendorName,
+                                          amount: item.totalCost,
+                                          fileName: file.name,
+                                          fileType: file.fileType,
+                                        })
+                                      }
+                                      className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors cursor-pointer"
+                                      title="Preview Receipt"
+                                    >
+                                      <Eye className="w-4 h-4" />
+                                    </button>
+
+                                    <a
+                                      href={file.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors"
+                                      title="Open in new tab"
+                                    >
+                                      <ExternalLink className="w-3.5 h-3.5" />
+                                    </a>
+
+                                    {!isEffectiveReadOnly && (
                                       <button
                                         type="button"
-                                        onClick={() =>
-                                          setLightboxData({
-                                            url: file.url,
-                                            title: item.description || 'Receipt File',
-                                            vendor: item.vendorName,
-                                            amount: item.totalCost,
-                                            fileName: file.name,
-                                            fileType: file.fileType,
-                                          })
-                                        }
-                                        className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors cursor-pointer"
-                                        title="Preview Receipt"
-                                      >
-                                        <Eye className="w-4 h-4" />
-                                      </button>
-
-                                      <a
-                                        href={file.url}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="p-1 text-gray-500 hover:text-[#0E4EBD] hover:bg-blue-50 rounded transition-colors"
-                                        title="Open in new tab"
-                                      >
-                                        <ExternalLink className="w-3.5 h-3.5" />
-                                      </a>
-
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemoveReceiptFile(index, file.id)}
+                                        onClick={() => handleRemoveReceiptFile(realIndex, file.id)}
                                         className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
                                         title="Remove file"
                                       >
                                         <X className="w-4 h-4" />
                                       </button>
-                                    </div>
+                                    )}
                                   </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
 
-                          {/* Upload trigger button / dropzone */}
+                        {!isEffectiveReadOnly && (
                           <label className="cursor-pointer flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed border-gray-300 hover:border-[#1E70E8] rounded-xl hover:bg-blue-50/40 text-xs font-semibold text-gray-700 transition-colors">
-                            {uploadingIndex === index ? (
+                            {uploadingIndex === realIndex ? (
                               <>
                                 <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
                                 <span className="text-[#0E4EBD]">Uploading files to secure storage...</span>
@@ -1419,17 +2291,17 @@ export default function OfficerLiquidationModal({
                               type="file"
                               multiple
                               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf"
-                              disabled={uploadingIndex === index}
+                              disabled={uploadingIndex === realIndex}
                               className="hidden"
                               onChange={(e) => {
                                 if (e.target.files && e.target.files.length > 0) {
-                                  handleReceiptUpload(index, e.target.files);
-                                  e.target.value = ''; // Reset input
+                                  handleReceiptUpload(realIndex, e.target.files);
+                                  e.target.value = '';
                                 }
                               }}
                             />
                           </label>
-                        </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1489,7 +2361,7 @@ export default function OfficerLiquidationModal({
                     </span>
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {signatoriesFeedback ||
-                        editingReport?.returnRemarks ||
+                        effectiveReport?.returnRemarks ||
                         'Please verify and adjust the signatory routing order.'}
                     </p>
                   </div>
@@ -1529,15 +2401,15 @@ export default function OfficerLiquidationModal({
               </div>
 
               {/* If report is already in review or concluded, show visual tracker */}
-              {editingReport && editingReport.status !== 'draft' && (
+              {effectiveReport && effectiveReport.status !== 'draft' && (
                 <div className="space-y-2 pt-4 border-t border-gray-200">
                   <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">
                     Live Progress Tracker
                   </h4>
                   <LiquidationSignatoryTracker
                     approvalChain={approvalChain}
-                    currentStageIndex={editingReport?.currentStageIndex ?? 1}
-                    liquidationStatus={editingReport?.status ?? 'draft'}
+                    currentStageIndex={effectiveReport?.currentStageIndex ?? 1}
+                    liquidationStatus={effectiveReport?.status ?? 'draft'}
                   />
                 </div>
               )}
@@ -1565,53 +2437,185 @@ export default function OfficerLiquidationModal({
           )}
         </div>
 
-        {/* Modal Footer */}
-        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
-          <div className="text-xs text-gray-500">
-            * All liquidations require receipt proof/invoices for validation.
-          </div>
-
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onClose}
-              disabled={isSubmitting}
-              className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => handleSave(false)}
-              disabled={isSubmitting}
-              className="px-4 py-2 text-gray-700 bg-gray-200 rounded-lg text-sm font-medium hover:bg-gray-300 transition-colors flex items-center gap-2 cursor-pointer"
-            >
-              {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              Save Draft
-            </button>
-            <div className="flex items-center gap-2">
-              {!effectiveIsAdviser && userRole !== 'admin' && (
-                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium">
-                  <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  Adviser Required to Submit
+        {/* Modal Footer with Lifecycle Submission Sync */}
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+          {isEffectiveReadOnly ? (
+            <>
+              <div className="text-xs text-gray-500 flex items-center gap-1.5">
+                <Lock className="w-4 h-4 text-gray-400" />
+                <span>
+                  {effectiveReport?.status === 'approved'
+                    ? 'Report is approved and locked. You can preview or export Form LF-01.'
+                    : 'Report is submitted and locked in read-only mode during signatory routing.'}
                 </span>
-              )}
-              <button
-                onClick={() => handleSave(true)}
-                disabled={isSubmitting || (!effectiveIsAdviser && userRole !== 'admin')}
-                title={!effectiveIsAdviser && userRole !== 'admin' ? "Only appointed Club Advisers can submit. You can prepare and save drafts." : undefined}
-                className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 ${
-                  !effectiveIsAdviser && userRole !== 'admin'
-                    ? 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed'
-                    : 'bg-[#001A4D] hover:bg-[#0E4EBD] text-white cursor-pointer'
-                }`}
-              >
-                {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
-                {!effectiveIsAdviser && userRole !== 'admin' && <Lock className="w-4 h-4" />}
-                {isReturnedReport ? 'Resubmit Financial Liquidation' : 'Submit Liquidation'}
-              </button>
-            </div>
-          </div>
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  type="button"
+                  onClick={() => setShowExportModal(true)}
+                  className="px-4 py-2 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                  <span>Export Report (Form LF-01)</span>
+                </button>
+
+                {effectiveReport && (currentStatus === 'under_review' || currentStatus === 'pending') && (
+                  <button
+                    type="button"
+                    onClick={() => setShowWithdrawModal(true)}
+                    disabled={isWithdrawing}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    {isWithdrawing ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Undo2 className="w-4 h-4" />
+                    )}
+                    <span>Withdraw Submission</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg text-sm font-bold transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-xs">
+                {!isConcluded ? (
+                  <div className="flex items-center gap-2 text-amber-900 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                    <Clock className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                    <span>
+                      <strong>Event In Progress:</strong> You can add receipts and save drafts anytime. Submission to signatories unlocks once the event is concluded.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-emerald-900 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+                    <span>
+                      <strong>Event Concluded:</strong> Spendings and receipts are ready for official liquidation submission.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 self-end sm:self-auto">
+                <button
+                  onClick={onClose}
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+
+                {/* Save Draft / Save Receipts is ALWAYS enabled */}
+                <button
+                  onClick={() => handleSave(false)}
+                  disabled={isSubmitting}
+                  className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
+                    !isConcluded
+                      ? 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
+                      : 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-300'
+                  }`}
+                >
+                  {isSubmitting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Save className="w-4 h-4" />
+                  )}
+                  {!isConcluded ? 'Save Receipts & Draft' : 'Save Draft'}
+                </button>
+
+                {/* Submit Liquidation: Unlocked ONLY when event is concluded */}
+                {isConcluded ? (
+                  <div className="flex items-center gap-2">
+                    {!effectiveIsAdviser && userRole !== 'admin' && (
+                      <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium">
+                        <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        Adviser Required to Submit
+                      </span>
+                    )}
+                    <button
+                      onClick={() => handleSave(true)}
+                      disabled={isSubmitting || (!effectiveIsAdviser && userRole !== 'admin')}
+                      title={
+                        !effectiveIsAdviser && userRole !== 'admin'
+                          ? 'Only appointed Club Advisers can submit. You can prepare and save drafts.'
+                          : undefined
+                      }
+                      className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 ${
+                        !effectiveIsAdviser && userRole !== 'admin'
+                          ? 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed'
+                          : 'bg-[#001A4D] hover:bg-[#0E4EBD] text-white cursor-pointer'
+                      }`}
+                    >
+                      {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
+                      {!effectiveIsAdviser && userRole !== 'admin' && <Lock className="w-4 h-4" />}
+                      {isReturnedReport ? 'Resubmit Financial Liquidation' : 'Submit Liquidation'}
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    title="Event has not yet concluded. Submission to signatories unlocks once the event is concluded."
+                    className="px-4 py-2 bg-gray-200 text-gray-400 border border-gray-300 rounded-lg text-sm font-bold flex items-center gap-1.5 cursor-not-allowed select-none"
+                  >
+                    <Lock className="w-4 h-4" />
+                    Submit Liquidation (Locked)
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
+
+      {/* Lower Right Validation Snackbar (Matching APs) */}
+      {error && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm bg-[#001A4D] border-l-4 border-red-500 text-white p-3.5 rounded-xl shadow-2xl flex items-start justify-between gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className="flex items-start gap-2.5 text-xs">
+            <AlertCircle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+            <div>
+              <span className="font-bold block text-red-300">Validation Notice</span>
+              <span className="text-white/90 leading-tight block mt-0.5">{error}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="text-white/60 hover:text-white p-1 rounded-md transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Withdraw Confirmation Modal */}
+      {showWithdrawModal && effectiveReport && (
+        <WithdrawConfirmModal
+          isOpen={showWithdrawModal}
+          onClose={() => setShowWithdrawModal(false)}
+          onConfirm={handleWithdraw}
+          documentTitle={effectiveReport.eventTitle || 'Liquidation Report'}
+          documentTypeLabel="Financial Liquidation"
+        />
+      )}
+
+      {/* Export Report (Form LF-01) Preview Modal */}
+      {showExportModal && exportReportTarget && (
+        <LiquidationExportPreviewModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          report={exportReportTarget}
+        />
+      )}
 
       {/* Lightbox / Document Viewer */}
       {lightboxData && (

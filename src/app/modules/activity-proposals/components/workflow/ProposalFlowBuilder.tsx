@@ -43,6 +43,10 @@ import {
   DEFAULT_SAS_SIGNATORY_CONFIG,
   type SasSignatoryConfig,
 } from '../../../signatories/services/sas-signatory.service';
+import {
+  getDefaultWorkflowSettings,
+  getCachedWorkflowSettings,
+} from '../../../workflow/services/approval-workflow.service';
 
 interface ProposalFlowBuilderProps {
   approvalChain: ProposalApprovalStep[];
@@ -286,14 +290,264 @@ export default function ProposalFlowBuilder({
     onChange(flattened);
   };
 
-  // 1. Auto-Suggest from Target Audience (Optional manual helper button)
-  const handleAutoSuggest = () => {
+  // 1. Audience-Driven Signatory Recommendations (e.g. Senior High School Principal, Department Heads)
+  const suggestedSignatories = useMemo(() => {
+    if (!targetAudience || activeSignatories.length === 0) return [];
+
+    const isAllStudents =
+      targetAudience.allStudents === true ||
+      targetAudience.scope === 'all' ||
+      (targetAudience.departments || []).some(
+        (d) =>
+          d.toLowerCase().includes('all students') ||
+          d.toLowerCase().includes('campus-wide') ||
+          d.toLowerCase().includes('all campus')
+      );
+
+    const hasShsAudience =
+      (targetAudience.academicLevels || []).includes('SHS') ||
+      (targetAudience.departments || []).some(
+        (d) =>
+          d.toLowerCase().includes('shs') ||
+          d.toLowerCase().includes('senior high') ||
+          ['stem', 'abm', 'humss', 'tvl', 'gas'].includes(d.toLowerCase().trim())
+      ) ||
+      (targetAudience.courseCodes || []).some((c) =>
+        ['stem', 'abm', 'humss', 'tvl', 'gas'].includes(c.toLowerCase().trim())
+      );
+
+    const targetDeptNames = (targetAudience.departments || []).map((d) => d.toLowerCase().trim());
+    const targetCourseCodes = (targetAudience.courseCodes || []).map((c) => c.toLowerCase().trim());
+    const targetDeptIds = new Set((targetAudience.departmentIds || []).filter(Boolean));
+
+    // Signatories from directory who are applicable to Activity Proposals
+    const candidates = activeSignatories.filter((s) => {
+      if (s.isActive === false) return false;
+      if (!isSignatoryApplicableTo(s, 'proposal')) return false;
+      // Do not suggest executive final approvers or SAS head here
+      if (['school_president', 'school_administrator', 'sas_head'].includes(s.role)) return false;
+      return true;
+    });
+
+    const matchedList: InstitutionalSignatory[] = [];
+
+    // Check for SHS Signatory recommendation (e.g. Cybele Nudalo)
+    if (hasShsAudience || isAllStudents) {
+      const shsSig = candidates.find(
+        (s) =>
+          s.role === 'shs_principal' ||
+          s.department?.toLowerCase().includes('senior high') ||
+          s.department?.toLowerCase().includes('shs') ||
+          s.roleTitle?.toLowerCase().includes('principal') ||
+          s.roleTitle?.toLowerCase().includes('senior high') ||
+          s.name?.toLowerCase().includes('cybele')
+      );
+      if (shsSig && !matchedList.some((m) => m.id === shsSig.id)) {
+        matchedList.push(shsSig);
+      }
+    }
+
+    // Check for Department Head recommendations (e.g. BSIT Program Head)
+    candidates.forEach((s) => {
+      if (matchedList.some((m) => m.id === s.id)) return;
+      const deptName = (s.department || '').toLowerCase().trim();
+      const roleTitle = (s.roleTitle || '').toLowerCase().trim();
+
+      if (isAllStudents) {
+        if (s.department && !['institutional', 'campus-wide', 'academic affairs', 'finance'].includes(deptName)) {
+          matchedList.push(s);
+        }
+        return;
+      }
+
+      if (s.departmentId && targetDeptIds.has(s.departmentId)) {
+        matchedList.push(s);
+        return;
+      }
+
+      if (targetDeptNames.some((td) => deptName.includes(td) || td.includes(deptName))) {
+        matchedList.push(s);
+        return;
+      }
+
+      if (targetCourseCodes.some((cc) => deptName.includes(cc) || roleTitle.includes(cc))) {
+        matchedList.push(s);
+        return;
+      }
+    });
+
+    // Invariant: "just a suggestion and after I add that person in any step I inserted the suggestion will be removed."
+    // Exclude any signatory that is already present anywhere in the approvalChain!
+    return matchedList.filter((candidate) => {
+      const isAlreadyInChain = approvalChain.some(
+        (step) =>
+          (step.signatoryUid && step.signatoryUid === candidate.id) ||
+          (step.signatoryEmail && candidate.email && step.signatoryEmail.toLowerCase() === candidate.email.toLowerCase()) ||
+          (step.signatoryName && candidate.name && step.signatoryName.trim().toLowerCase() === candidate.name.trim().toLowerCase())
+      );
+      return !isAlreadyInChain;
+    });
+  }, [activeSignatories, targetAudience, approvalChain]);
+
+  // Handler to manually insert suggested signatory into selected stage
+  const handleAddSuggestedSignatory = (signatory: InstitutionalSignatory, targetStageIndex?: number) => {
+    const stageIdx = targetStageIndex || (isOfficerProposal ? 2 : 1);
+
+    const existsInChain = approvalChain.some(
+      (s) =>
+        s.signatoryUid === signatory.id ||
+        (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatory.email || '').toLowerCase()) ||
+        (s.signatoryName && s.signatoryName.trim().toLowerCase() === (signatory.name || '').trim().toLowerCase())
+    );
+
+    if (existsInChain) {
+      alert(`"${signatory.name}" is already assigned to this proposal's approval pipeline.`);
+      return;
+    }
+
+    const rawCap = signatory.actionType || (signatory.role === 'school_president' ? 'approver' : 'endorser');
+    let actionType: SignatoryActionType = 'endorse';
+    if (rawCap === 'approver' || rawCap === 'approve') {
+      actionType = 'approve';
+    } else if (rawCap === 'endorser' || rawCap === 'endorse') {
+      actionType = 'endorse';
+    } else {
+      actionType = stageIdx === stages.length ? 'approve' : 'endorse';
+    }
+
+    const targetStage = stages.find((s) => s.stageIndex === stageIdx);
+
+    const newStep: ProposalApprovalStep = {
+      id: `step_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      step: approvalChain.length + 1,
+      stageIndex: stageIdx,
+      stageName: targetStage?.stageName || `Stage ${stageIdx}`,
+      role: signatory.role || '',
+      roleTitle: signatory.roleTitle || 'Institutional Signatory',
+      actionType,
+      signatoryUid: signatory.id || (signatory as any).uid || '',
+      signatoryName: signatory.name || '',
+      signatoryEmail: signatory.email || '',
+      department: signatory.department || '',
+      status: stageIdx === 1 ? 'current' : 'waiting',
+    };
+
+    let updatedStages = [...stages];
+    const stageExists = updatedStages.some((stg) => stg.stageIndex === stageIdx);
+    if (!stageExists) {
+      updatedStages.push({
+        stageIndex: stageIdx,
+        stageName: `Stage ${stageIdx}: Department & Program Endorsements`,
+        steps: [newStep],
+      });
+      updatedStages.sort((a, b) => a.stageIndex - b.stageIndex);
+    } else {
+      updatedStages = updatedStages.map((stg) => {
+        if (stg.stageIndex === stageIdx) {
+          return { ...stg, steps: [...stg.steps, newStep] };
+        }
+        return stg;
+      });
+    }
+
+    reindexChain(updatedStages);
+  };
+
+  // 1. Auto-Suggest from Target Audience & Institutional Pipeline Settings
+  const handleAutoSuggest = async () => {
     const defaultAudience: ProposalTargetAudience = targetAudience || {
       academicLevels: ['College'],
       departments: ['BSIT'],
       yearLevels: [1, 2, 3, 4],
     };
     const isSasCreator = !isOfficerProposal;
+
+    let workflowSettings: any;
+    try {
+      workflowSettings = await getDefaultWorkflowSettings();
+    } catch {
+      workflowSettings = getCachedWorkflowSettings();
+    }
+
+    const pipelineKey = isSasCreator ? 'admin_ap' : 'adviser_ap';
+    let configuredTemplate = workflowSettings ? workflowSettings[pipelineKey] : undefined;
+
+    const hasAssignedSigners = (steps?: any[]) =>
+      Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
+
+    if (!hasAssignedSigners(configuredTemplate)) {
+      const alternateKey = isSasCreator ? 'adviser_ap' : 'admin_ap';
+      if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
+        configuredTemplate = workflowSettings?.[alternateKey];
+      }
+    }
+
+    if (configuredTemplate && configuredTemplate.length > 0) {
+      const chain: ProposalApprovalStep[] = [];
+      const usedIds = new Set<string>();
+
+      configuredTemplate.forEach((tpl: any, idx: number) => {
+        let matched = activeSignatories.find(
+          (s) =>
+            (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+            (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
+        );
+
+        if (!matched && tpl.role) {
+          matched = activeSignatories.find(
+            (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
+          );
+        }
+
+        if (tpl.role === 'sas_head' && !matched) {
+          matched = {
+            id: sasConfig.employeeId || 'sas_admin',
+            name: sasConfig.name || 'Student Affairs & Services Head',
+            email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+            role: 'sas_head' as any,
+            roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
+            department: sasConfig.department || 'Student Affairs & Services',
+            isActive: true,
+            isPermanentSigner: true,
+            applicableScope: 'all',
+            actionType: 'approver',
+          };
+        }
+
+        if (matched) usedIds.add(matched.id);
+
+        const resolvedUid = matched?.id || tpl.signatoryUid || `prop_step_${Date.now()}_${idx + 1}`;
+        const resolvedName = matched?.name || tpl.signatoryName || tpl.roleTitle || 'Institutional Signatory';
+        const resolvedEmail = matched?.email || tpl.signatoryEmail || '';
+        const resolvedRole = matched?.role || tpl.role || 'signatory';
+        const resolvedRoleTitle = matched?.roleTitle || tpl.roleTitle || 'Institutional Signatory';
+        const resolvedDept = matched?.department || tpl.department || '';
+        const isPermanent = Boolean(tpl.isPermanent);
+        const isMandatory = Boolean(tpl.isMandatory || isPermanent);
+
+        chain.push({
+          id: tpl.id || `prop_step_${idx + 1}`,
+          step: idx + 1,
+          stageIndex: tpl.stageIndex || 1,
+          stageName: tpl.stageName || `Stage ${tpl.stageIndex || 1}`,
+          role: resolvedRole,
+          roleTitle: resolvedRoleTitle,
+          actionType: tpl.actionType || 'endorse',
+          signatoryUid: resolvedUid,
+          signatoryName: resolvedName,
+          signatoryEmail: resolvedEmail,
+          department: resolvedDept,
+          status: (tpl.stageIndex || 1) === 1 ? 'current' : 'waiting',
+          isMandatory,
+          isPermanent,
+        });
+      });
+
+      if (chain.length > 0) {
+        onChange(chain);
+        return;
+      }
+    }
 
     const suggested = buildDynamicApprovalChain(
       defaultAudience,
@@ -325,6 +579,12 @@ export default function ProposalFlowBuilder({
     if (stages.length <= 1) return;
     if (isOfficerProposal && stageIdx === 1) {
       alert('Stage 1 (SAS Endorsement) is mandatory for Student Organization proposals and cannot be deleted.');
+      return;
+    }
+    const targetStage = stages.find((s) => s.stageIndex === stageIdx);
+    const hasPermanentSigner = targetStage?.steps.some((step) => Boolean(step.isPermanent));
+    if (hasPermanentSigner) {
+      alert('This stage contains permanent signatories configured in institutional settings and cannot be deleted.');
       return;
     }
     const filtered = stages.filter((s) => s.stageIndex !== stageIdx);
@@ -382,13 +642,15 @@ export default function ProposalFlowBuilder({
       return;
     }
 
-    // Prevent duplicate within the same stage
-    const existsInStage = stages
-      .find((s) => s.stageIndex === stageIndex)
-      ?.steps.some((s) => s.signatoryUid === signatory.id || s.signatoryEmail === signatory.email);
+    // Prevent duplicate anywhere in the workflow chain
+    const existsInChain = approvalChain.some(
+      (s) =>
+        s.signatoryUid === signatory.id ||
+        (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatory.email || '').toLowerCase())
+    );
 
-    if (existsInStage) {
-      alert(`"${signatory.name}" is already in this stage.`);
+    if (existsInChain) {
+      alert(`"${signatory.name}" is already assigned to this proposal's approval pipeline.`);
       return;
     }
 
@@ -484,6 +746,10 @@ export default function ProposalFlowBuilder({
       (stepToRemove?.stageIndex === 1 || stepToRemove?.role === 'sas_head' || stepToRemove?.role === 'sas_coordinator')
     ) {
       alert('Stage 1 SAS Gatekeeper endorsement is mandatory for Student Organization proposals and cannot be removed.');
+      return;
+    }
+    if (stepToRemove?.isPermanent) {
+      alert(`"${stepToRemove?.signatoryName || stepToRemove?.roleTitle}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
       return;
     }
     const filtered = approvalChain.filter((s) => (s.id ? s.id !== stepIdOrIndex : s.step !== stepIdOrIndex));
@@ -622,6 +888,60 @@ export default function ProposalFlowBuilder({
         </div>
       </div>
 
+      {/* ── AUDIENCE-DRIVEN SUGGESTED SIGNATORIES BANNER ── */}
+      {suggestedSignatories.length > 0 && (
+        <div className="bg-amber-50/90 border-2 border-amber-300 rounded-2xl p-4 sm:p-4.5 shadow-xs flex flex-col gap-2.5 transition-all">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-950 uppercase tracking-wider">
+              <Sparkles className="w-4 h-4 text-amber-600" />
+              <span>Suggested Signatory</span>
+            </div>
+            <span className="text-[11px] text-amber-900 font-semibold bg-amber-200/60 border border-amber-300 px-2.5 py-0.5 rounded-full">
+              Audience-Driven Recommendation
+            </span>
+          </div>
+
+          <p className="text-xs text-amber-950 font-medium">
+            Based on the selected target audience, the following signatory is recommended to sign this proposal:
+          </p>
+
+          <div className="flex flex-wrap gap-2.5 pt-0.5">
+            {suggestedSignatories.map((sig) => (
+              <div
+                key={sig.id}
+                className="inline-flex items-center gap-2.5 px-3 py-1.5 bg-white border border-amber-300 rounded-xl shadow-2xs text-xs"
+              >
+                <div className="flex items-center gap-1.5">
+                  <UserCheck className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="font-bold text-slate-900">{sig.name}</span>
+                  <span className="text-slate-500 font-medium text-[11px]">
+                    ({sig.department || 'SHS'} — {sig.roleTitle})
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1 pl-2 border-l border-amber-200">
+                  {stages.map((stg) => (
+                    <button
+                      key={stg.stageIndex}
+                      type="button"
+                      onClick={() => handleAddSuggestedSignatory(sig, stg.stageIndex)}
+                      className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white font-bold text-[10px] rounded-lg transition-colors cursor-pointer shadow-2xs"
+                      title={`Insert ${sig.name} into ${stg.stageName}`}
+                    >
+                      + Stage {stg.stageIndex}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <p className="text-[11px] text-amber-800/80 italic">
+            You can click "+ Stage X" above to quickly insert them into any stage, or manually select them from any stage's dropdown below. Once added to any step in the flow, this recommendation will be automatically removed.
+          </p>
+        </div>
+      )}
+
       {/* ── STAGES LIST ── */}
       <div className="space-y-4">
         {stages.map((stage, stageIdx) => {
@@ -744,7 +1064,7 @@ export default function ProposalFlowBuilder({
                         (s) => s.id === step.signatoryUid || (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                       );
                       const isApplicableToProposal = matchedSig ? isSignatoryApplicableTo(matchedSig, 'proposal') : true;
-                      const isPermanentSigner = Boolean(matchedSig?.isPermanentSigner && isApplicableToProposal);
+                      const isPermanentSigner = Boolean(step.isPermanent);
                       const isBuiltinFixedSasSigner = Boolean(
                         isOfficerProposal &&
                         (stage.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator')
@@ -990,7 +1310,15 @@ export default function ProposalFlowBuilder({
                         >
                           <option value="">+ Choose Registered Signatory from Directory...</option>
                           {activeSignatories
-                            .filter((sig) => sig.isActive !== false && isSignatoryApplicableTo(sig, 'proposal'))
+                            .filter((sig) => {
+                              if (sig.isActive === false) return false;
+                              if (!isSignatoryApplicableTo(sig, 'proposal')) return false;
+                              // Exclude if already assigned to any stage in this approval workflow
+                              const isAlreadyAssigned = approvalChain.some(
+                                (s) => s.signatoryUid === sig.id || (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
+                              );
+                              return !isAlreadyAssigned;
+                            })
                             .map((sig) => {
                               const capLabel =
                                 sig.actionType === 'both'

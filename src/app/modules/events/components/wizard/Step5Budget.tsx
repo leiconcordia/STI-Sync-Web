@@ -1,5 +1,31 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Shield, Plus, Trash2, PieChart, Users, QrCode, X, Calculator, Lock, Wallet, AlertTriangle, AlertCircle, CheckCircle2 } from 'lucide-react';
+import {
+  Shield,
+  Plus,
+  Trash2,
+  PieChart,
+  Users,
+  QrCode,
+  X,
+  Calculator,
+  Lock,
+  Wallet,
+  AlertTriangle,
+  AlertCircle,
+  CheckCircle2,
+  Receipt,
+  Sparkles,
+} from 'lucide-react';
+
+const STANDARD_CATEGORIES = [
+  { item: 'Meals & Catering', defaultDesc: 'Refreshments, lunch, and catering for attendees & committee' },
+  { item: 'Transportation & Travel', defaultDesc: 'Fares, van/bus rentals, fuel, and transit allowances' },
+  { item: 'Honorarium & Speaker Tokens', defaultDesc: 'Resource speaker honoraria, tokens, and plaques' },
+  { item: 'Venue & Equipment Rental', defaultDesc: 'Sound system, projectors, lights, and facility rental fees' },
+  { item: 'Materials, Printing & Signage', defaultDesc: 'Tarpaulins, certificates, ribbons, name tags, and printing' },
+  { item: 'Contingency / Buffer Fund', defaultDesc: 'Buffer allocation for unforeseen operational adjustments' },
+  { item: 'Registration & Entry Fees', defaultDesc: 'Entrance tickets, competition, or conference registration' },
+];
 import type { EventFormData, BudgetLineItem } from '../../types/event.types';
 import { formatCurrency, formatVariance } from '../../../../utils/currency';
 import { useOrgLedger, useSaoLedger } from '../../../finance/hooks/useFinanceStream';
@@ -14,6 +40,11 @@ interface Step5Props {
 
 export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, isRestricted }: Step5Props) {
   const [showPayables, setShowPayables] = useState(false);
+  const [expandedEstimatorMap, setExpandedEstimatorMap] = useState<Record<string, boolean>>({});
+
+  const toggleEstimator = (id: string) => {
+    setExpandedEstimatorMap((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   // Dynamic Theme Styling based on Officer vs Admin
   const accentBorder = 'border-[#0E4EBD]';
@@ -55,7 +86,28 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
   };
 
   const addBudgetItem = () => {
-    const newItem: BudgetLineItem = { id: Date.now().toString(), item: '', description: '', quantity: 1, unitCost: 0, approvedAmount: 0, status: 'approved' };
+    const newItem: BudgetLineItem = {
+      id: Date.now().toString(),
+      item: '',
+      description: '',
+      quantity: 1,
+      unitCost: 0,
+      approvedAmount: 0,
+      status: 'approved',
+    };
+    updateField('budgetItems', [...budgetItems, newItem]);
+  };
+
+  const addCategoryPreset = (preset: { item: string; defaultDesc: string }) => {
+    const newItem: BudgetLineItem = {
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      item: preset.item,
+      description: preset.defaultDesc,
+      quantity: 1,
+      unitCost: 0,
+      approvedAmount: 0,
+      status: 'approved',
+    };
     updateField('budgetItems', [...budgetItems, newItem]);
   };
 
@@ -72,6 +124,25 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
       }
       return i;
     }));
+  };
+
+  const updateBaselineAmount = (id: string, amount: number) => {
+    updateField(
+      'budgetItems',
+      budgetItems.map((i) => {
+        if (i.id === id) {
+          const qty = i.quantity && i.quantity > 0 ? i.quantity : 1;
+          const newUnitCost = qty === 1 ? amount : Math.round((amount / qty) * 100) / 100;
+          return {
+            ...i,
+            approvedAmount: amount,
+            unitCost: newUnitCost,
+            quantity: qty,
+          };
+        }
+        return i;
+      })
+    );
   };
 
   const totalProposed = budgetItems.reduce((sum, i) => sum + ((i.quantity || 0) * (i.unitCost || 0)), 0);
@@ -177,11 +248,11 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
         )}
 
         {/* Budget Table */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <div className={`border-l-4 ${accentBorder} pl-3 flex items-center gap-2`}>
-                <h3 className="text-[#001A4D] font-bold text-base">Proposed Line Items Breakdown</h3>
+                <h3 className="text-[#001A4D] font-bold text-base">Proposed Budget Baseline Categories</h3>
                 {isRestricted && (
                   <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-md">
                     <Lock className="w-3 h-3 text-amber-600" /> Locked upon Approval
@@ -189,7 +260,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
                 )}
               </div>
               <p className="text-xs text-gray-500 pl-4 mt-0.5">
-                Optional: If your event requires no funding, you can leave line items empty (no financial liquidation required).
+                Financial Allocation Guide: Define general categories (e.g., Food, Tokens, Contingency). Actual itemized receipts will be attached during post-event liquidation.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -233,11 +304,64 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
                   onClick={addBudgetItem}
                   className="px-4 py-2 bg-[#1E70E8] text-white rounded-lg text-sm font-medium hover:bg-[#0E4EBD] flex items-center gap-2 cursor-pointer shadow-xs"
                 >
-                  <Plus className="w-4 h-4" /> Add Item
+                  <Plus className="w-4 h-4" /> Add Category
                 </button>
               )}
             </div>
           </div>
+
+          {/* Educational Callout Banner */}
+          <div className="p-3.5 bg-blue-50/80 border border-blue-200/90 rounded-xl text-xs text-blue-900 shadow-xs flex items-start gap-3">
+            <div className="w-7 h-7 rounded-lg bg-blue-100 text-[#0E4EBD] flex items-center justify-center shrink-0 mt-0.5">
+              <Receipt className="w-4 h-4" />
+            </div>
+            <div className="space-y-1">
+              <div className="font-bold text-[#001A4D] flex items-center gap-1.5 text-xs">
+                <span>Form LF-01 Liquidation Baseline Notice</span>
+                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] font-semibold">Standard STI Policy</span>
+              </div>
+              <p className="text-blue-800 leading-relaxed text-[11px]">
+                Each proposed category here establishes your approved spending guide (Left Side of Form LF-01). After the event is approved and concluded, these items appear as <strong>Reference Guide Tabs</strong> in your Financial Liquidation portal, where you will attach multiple actual store receipts line-by-line.
+              </p>
+              <p className="text-blue-700/90 text-[11px] pt-0.5">
+                💡 <strong>Contingency / Buffer Fund:</strong> Simply add a category named <em>&quot;Contingency / Buffer Fund&quot;</em> with your desired baseline. It follows the exact same receipt attachment workflow as all other categories.
+              </p>
+            </div>
+          </div>
+
+          {/* Quick-Add Standard Category Pills */}
+          {!isRestricted && (
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl space-y-2">
+              <div className="text-[11px] font-bold text-gray-600 uppercase tracking-wider flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>Quick-Add Official Baseline Categories:</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {STANDARD_CATEGORIES.map((preset) => {
+                  const isAlreadyAdded = budgetItems.some(
+                    (b) => b.item?.toLowerCase().trim() === preset.item.toLowerCase().trim()
+                  );
+                  return (
+                    <button
+                      key={preset.item}
+                      type="button"
+                      disabled={isRestricted || isAlreadyAdded}
+                      onClick={() => addCategoryPreset(preset)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isAlreadyAdded
+                          ? 'bg-gray-200/70 text-gray-400 cursor-not-allowed opacity-60'
+                          : 'bg-white border border-gray-300 text-gray-700 hover:border-[#0E4EBD] hover:text-[#0E4EBD] hover:bg-blue-50/50 shadow-xs'
+                      }`}
+                      title={isAlreadyAdded ? 'Already added to proposed categories' : `Add ${preset.item}`}
+                    >
+                      <Plus className="w-3 h-3 text-[#0E4EBD]" />
+                      <span>{preset.item}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {data.isVisible === false && (
             <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 flex items-center gap-2">
@@ -255,7 +379,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
               </div>
               <h4 className="text-sm font-bold text-gray-900">Zero-Budget Event (Optional)</h4>
               <p className="text-xs text-gray-500 max-w-md mx-auto">
-                No budget line items proposed. This event will not require treasury fund disbursement or post-event financial liquidation.
+                No budget baseline categories proposed. This event will not require treasury fund disbursement or post-event financial liquidation.
               </p>
               {!isRestricted && (
                 <button
@@ -263,116 +387,143 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
                   onClick={addBudgetItem}
                   className="mt-2 px-4 py-2 bg-white border border-gray-300 text-gray-700 hover:bg-gray-100 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
                 >
-                  <Plus className="w-3.5 h-3.5" /> Add Budget Item
+                  <Plus className="w-3.5 h-3.5" /> Add Baseline Category
                 </button>
               )}
             </div>
           ) : (
-            <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <div className="border border-gray-200 rounded-xl overflow-hidden shadow-xs">
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[700px]">
-                  <thead className="bg-gray-100">
+                  <thead className="bg-gray-100 border-b border-gray-200">
                     <tr>
-                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[25%]">Item Name</th>
-                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[30%]">Description</th>
-                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[12%]">Quantity</th>
-                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[18%]">Estimated Unit Cost</th>
-                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[15%]">Total Proposed</th>
-                      {!isRestricted && <th className="px-3 py-2.5 w-[30px]" />}
+                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[30%]">Baseline Category</th>
+                      <th className="px-3 py-2.5 text-left text-xs font-bold text-gray-700 w-[38%]">Scope & Description</th>
+                      <th className="px-3 py-2.5 text-right text-xs font-bold text-gray-700 w-[24%]">Proposed Baseline Budget (₱)</th>
+                      {!isRestricted && <th className="px-3 py-2.5 w-[8%]" />}
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
                     {budgetItems.map((item, idx) => {
-                      const total = (item.quantity || 0) * (item.unitCost || 0);
+                      const total = (item.quantity || 1) * (item.unitCost || 0);
                       const itemErr = errors[`budget_${idx}_item`];
-                      const qtyErr = errors[`budget_${idx}_quantity`];
                       const costErr = errors[`budget_${idx}_unitCost`];
+                      const isEstimatorOpen = Boolean(expandedEstimatorMap[item.id]);
 
                       return (
-                        <tr key={item.id} className={isRestricted ? 'bg-gray-50/50' : 'hover:bg-gray-50'}>
-                          <td className="px-3 py-2">
-                            <input
-                              type="text"
-                              list={`item-suggestions-${item.id}`}
-                              placeholder="e.g. Catering / Food"
-                              value={item.item || ''}
-                              disabled={isRestricted}
-                              onChange={(e) => updateItem(item.id, { item: e.target.value })}
-                              className={`w-full px-2 py-1.5 border rounded text-xs focus:ring-2 focus:border-transparent disabled:opacity-60 disabled:bg-gray-100 transition-colors ${
-                                itemErr
-                                  ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
-                                  : `border-gray-300 ${accentFocusRing}`
-                              }`}
-                            />
+                        <tr key={item.id} className={isRestricted ? 'bg-gray-50/50' : 'hover:bg-gray-50/80 transition-colors'}>
+                          <td className="px-3 py-2.5 align-top">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-5 h-5 rounded-full bg-blue-100 text-[#0E4EBD] font-bold text-[10px] flex items-center justify-center shrink-0">
+                                {['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'][idx] || `${idx + 1}`}
+                              </span>
+                              <input
+                                type="text"
+                                list={`item-suggestions-${item.id}`}
+                                placeholder="e.g. Food & Catering"
+                                value={item.item || ''}
+                                disabled={isRestricted}
+                                onChange={(e) => updateItem(item.id, { item: e.target.value })}
+                                className={`w-full px-2.5 py-1.5 border rounded-lg text-xs font-semibold focus:ring-2 focus:border-transparent disabled:opacity-60 disabled:bg-gray-100 transition-colors ${
+                                  itemErr
+                                    ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
+                                    : `border-gray-300 ${accentFocusRing}`
+                                }`}
+                              />
+                            </div>
                             {itemErr && (
-                              <p className="text-[10px] text-red-600 mt-0.5 font-medium">{itemErr}</p>
+                              <p className="text-[10px] text-red-600 mt-1 pl-6.5 font-medium">{itemErr}</p>
                             )}
                             <datalist id={`item-suggestions-${item.id}`}>
-                              <option>Venue & Facilities</option>
-                              <option>Materials & Printing</option>
-                              <option>Food & Catering</option>
-                              <option>Honorarium</option>
-                              <option>Transportation</option>
-                              <option>Equipment Rental</option>
-                              <option>Miscellaneous</option>
+                              {STANDARD_CATEGORIES.map((c) => (
+                                <option key={c.item} value={c.item} />
+                              ))}
                             </datalist>
                           </td>
-                          <td className="px-3 py-2">
+                          <td className="px-3 py-2.5 align-top">
                             <input
                               type="text"
-                              placeholder="Detailed description..."
+                              placeholder="Coverage details (e.g. meals for 2 days, speaker tokens...)"
                               value={item.description || ''}
                               disabled={isRestricted}
                               onChange={(e) => updateItem(item.id, { description: e.target.value })}
-                              className={`w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:ring-2 ${accentFocusRing} focus:border-transparent disabled:opacity-60 disabled:bg-gray-100`}
+                              className={`w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs focus:ring-2 ${accentFocusRing} focus:border-transparent disabled:opacity-60 disabled:bg-gray-100`}
                             />
-                          </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              placeholder="1"
-                              min="1"
-                              value={item.quantity || ''}
-                              disabled={isRestricted}
-                              onChange={(e) => updateItem(item.id, { quantity: Number(e.target.value) })}
-                              className={`w-full px-2 py-1.5 border rounded text-xs focus:ring-2 focus:border-transparent disabled:opacity-60 disabled:bg-gray-100 transition-colors ${
-                                qtyErr
-                                  ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
-                                  : `border-gray-300 ${accentFocusRing}`
-                              }`}
-                            />
-                            {qtyErr && (
-                              <p className="text-[10px] text-red-600 mt-0.5 font-medium">{qtyErr}</p>
+                            {/* Optional Estimator Helper Drawer */}
+                            {isEstimatorOpen && !isRestricted && (
+                              <div className="mt-2 p-2 bg-blue-50/60 border border-blue-200 rounded-lg flex items-center gap-2 text-xs">
+                                <span className="text-[10px] font-bold text-gray-500 uppercase">Calculation:</span>
+                                <div className="flex items-center gap-1">
+                                  <input
+                                    type="number"
+                                    min="1"
+                                    placeholder="Qty"
+                                    value={item.quantity || 1}
+                                    onChange={(e) => updateItem(item.id, { quantity: Math.max(1, Number(e.target.value)) })}
+                                    className="w-16 px-1.5 py-1 bg-white border border-gray-300 rounded text-xs font-mono text-center"
+                                  />
+                                  <span className="text-gray-400 font-bold">× ₱</span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    placeholder="Rate"
+                                    value={item.unitCost || 0}
+                                    onChange={(e) => updateItem(item.id, { unitCost: Math.max(0, Number(e.target.value)) })}
+                                    className="w-20 px-1.5 py-1 bg-white border border-gray-300 rounded text-xs font-mono text-right"
+                                  />
+                                </div>
+                                <span className="text-gray-400 font-bold">=</span>
+                                <span className="font-mono font-bold text-[#001A4D]">
+                                  {formatCurrency((item.quantity || 1) * (item.unitCost || 0))}
+                                </span>
+                              </div>
                             )}
                           </td>
-                          <td className="px-3 py-2">
-                            <input
-                              type="number"
-                              placeholder="0"
-                              min="0"
-                              value={item.unitCost || ''}
-                              disabled={isRestricted}
-                              onChange={(e) => updateItem(item.id, { unitCost: Number(e.target.value) })}
-                              className={`w-full px-2 py-1.5 border rounded text-xs focus:ring-2 focus:border-transparent disabled:opacity-60 disabled:bg-gray-100 transition-colors ${
-                                costErr
-                                  ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
-                                  : `border-gray-300 ${accentFocusRing}`
-                              }`}
-                            />
+                          <td className="px-3 py-2.5 align-top text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <div className="relative w-full max-w-[140px]">
+                                <span className="absolute left-2.5 top-1.5 text-xs font-bold text-gray-400">₱</span>
+                                <input
+                                  type="number"
+                                  placeholder="0.00"
+                                  min="0"
+                                  step="any"
+                                  value={total > 0 ? total : ''}
+                                  disabled={isRestricted}
+                                  onChange={(e) => updateBaselineAmount(item.id, Math.max(0, Number(e.target.value)))}
+                                  className={`w-full pl-6 pr-2 py-1.5 border rounded-lg text-xs font-mono font-bold text-right focus:ring-2 focus:border-transparent disabled:opacity-60 disabled:bg-gray-100 transition-colors ${
+                                    costErr
+                                      ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
+                                      : `border-gray-300 ${accentFocusRing} text-[#001A4D]`
+                                  }`}
+                                />
+                              </div>
+                              {!isRestricted && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleEstimator(item.id)}
+                                  className={`p-1.5 rounded-md border transition-all cursor-pointer ${
+                                    isEstimatorOpen
+                                      ? 'bg-blue-100 border-blue-300 text-[#0E4EBD]'
+                                      : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                                  }`}
+                                  title="Toggle Quantity & Unit Rate Estimator Helper"
+                                >
+                                  <Calculator className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                             {costErr && (
-                              <p className="text-[10px] text-red-600 mt-0.5 font-medium">{costErr}</p>
+                              <p className="text-[10px] text-red-600 mt-1 font-medium text-right">{costErr}</p>
                             )}
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className={`text-xs font-bold ${accentText}`}>{formatCurrency(total)}</div>
                           </td>
                           {!isRestricted && (
-                            <td className="px-3 py-2">
+                            <td className="px-3 py-2.5 align-top text-center">
                               <button
                                 type="button"
                                 onClick={() => removeBudgetItem(item.id)}
-                                className="text-red-600 hover:text-red-700 p-1 cursor-pointer"
-                                title="Delete Item"
+                                className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-md transition-colors cursor-pointer"
+                                title="Delete Category"
                               >
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -387,10 +538,10 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
             </div>
           )}
           
-          <div className="mt-3 p-3 bg-[#001A4D]/5 border border-[#001A4D]/20 rounded-lg flex items-center justify-between">
+          <div className="p-3.5 bg-[#001A4D]/5 border border-[#001A4D]/20 rounded-xl flex items-center justify-between">
             <div>
-              <span className="font-bold text-[#001A4D]">Total Overall Proposed Budget</span>
-              <p className="text-xs text-gray-500">Sum of all proposed line items for this event</p>
+              <span className="font-bold text-[#001A4D] text-sm">Total Proposed Baseline Budget</span>
+              <p className="text-xs text-gray-500">Total approved allocation guide for post-event Form LF-01 financial liquidation</p>
             </div>
             <span className={`text-2xl font-black ${accentText}`}>{formatCurrency(totalProposed)}</span>
           </div>
@@ -434,6 +585,51 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
               <Shield className="w-6 h-6 text-[#FFC107] mx-auto mb-1" />
               <div className="text-white text-xs font-bold mb-1">Budget Authority Seal</div>
               <div className="text-white/80 text-xs">Auto-applied to all exported financial documents</div>
+            </div>
+
+            {/* Form LF-01 Liquidation Baseline Preview */}
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5 shadow-xs">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-200">
+                <div className="flex items-center gap-1.5">
+                  <Receipt className="w-4 h-4 text-[#001A4D]" />
+                  <span className="text-xs font-bold text-[#001A4D]">Form LF-01 Baseline Preview</span>
+                </div>
+                <span className="text-[10px] bg-blue-100 text-blue-900 font-bold px-1.5 py-0.5 rounded">
+                  Left Side Guide
+                </span>
+              </div>
+              
+              <p className="text-[10px] text-slate-500 leading-tight">
+                How these categories will appear as reference guide tabs in post-event Financial Liquidation:
+              </p>
+
+              <div className="space-y-1.5 max-h-[160px] overflow-y-auto pr-1">
+                {budgetItems.length === 0 ? (
+                  <div className="text-[11px] text-gray-400 italic py-2 text-center">
+                    No baseline categories added yet.
+                  </div>
+                ) : (
+                  budgetItems.map((item, idx) => {
+                    const letter = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'][idx] || `${idx + 1}`;
+                    const total = (item.quantity || 1) * (item.unitCost || 0);
+                    return (
+                      <div key={item.id} className="flex items-center justify-between text-xs py-1 border-b border-slate-100 last:border-0">
+                        <span className="font-semibold text-slate-700 truncate max-w-[140px]" title={item.item || `Category ${letter}`}>
+                          {letter}. {item.item || 'Untitled Category'}
+                        </span>
+                        <span className="font-mono font-bold text-slate-900 shrink-0">
+                          {formatCurrency(total)}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+              <div className="pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                <span className="font-bold text-slate-900">Total Advance Baseline:</span>
+                <span className="font-mono font-black text-[#0E4EBD]">{formatCurrency(totalProposed)}</span>
+              </div>
             </div>
           </div>
         </div>

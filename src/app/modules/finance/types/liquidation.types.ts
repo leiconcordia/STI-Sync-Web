@@ -16,11 +16,14 @@ export interface ReceiptAttachment {
 export interface ExpenseLineItem {
   id: string;
   description: string;
-  category: string; // 'Food & Catering' | 'Venue & Facilities' | 'Materials & Printing' | 'Honorarium' | 'Transportation' | 'Miscellaneous'
+  category: string; // Sourced dynamically from proposed items or custom entry
+  proposedItemId?: string; // Linkage to original proposal line item
+  proposedItemTitle?: string; // Original title of proposed item (e.g. 'Food & Catering')
+  proposedBaselineAmount?: number; // Total approved baseline budget for this proposed item (e.g. 10000)
   allocatedCost?: number; // Pre-filled approved budget amount for this item
   proposedQuantity?: number; // Proposed quantity from proposal
   proposedUnitCost?: number; // Proposed unit cost from proposal
-  isPreFilled?: boolean; // If true, description & category cannot be edited or deleted
+  isPreFilled?: boolean; // Legacy flag (retained for backward compat, no longer locks editing)
   isContingency?: boolean; // True if designated as contingency fund advance
   quantity: number;
   unitCost: number;
@@ -80,6 +83,18 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   createdById: string;
   createdByRole: 'admin' | 'officer';
   createdByName: string;
+  // Official Form LF-01 Header & Cheque Information
+  employeeName?: string;
+  chequeNumber?: string;
+  purpose?: string;
+  amountAdvanced?: number;
+  dateReleased?: string;
+  activityEndDate?: string;
+  submissionDeadline?: string;
+  dateSubmitted?: string;
+  daysLapsed?: string;
+  orNumber?: string;
+
   allocatedBudget: number;      // Approved budget ceiling from event
   totalActualSpending: number;  // Sum of all line items
   surplusOrDeficit: number;     // allocatedBudget - totalActualSpending

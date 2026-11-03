@@ -7,7 +7,6 @@ import {
   Clock,
   FileText,
   Eye,
-  Plus,
   AlertCircle,
   Loader2,
   Check,
@@ -32,7 +31,6 @@ import {
   deleteLiquidationReport,
   withdrawLiquidationReport,
 } from '../../modules/finance/services/liquidation.service';
-import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
@@ -98,13 +96,11 @@ export function FinancialLiquidations() {
 
   const [activeTab, setActiveTab] = useState<TabValue>('all');
   const [selectedReport, setSelectedReport] = useState<LiquidationDocument | null>(null);
-  const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
   const [deletingReport, setDeletingReport] = useState<LiquidationDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showAdminCreateModal, setShowAdminCreateModal] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -377,21 +373,11 @@ export function FinancialLiquidations() {
   return (
     <div className="space-y-5 w-full">
       {/* ── Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <p className="text-gray-500 text-sm font-medium">
-            Review and process liquidation reports from student organizations
-          </p>
-        </div>
-
-        {/* Solid button without gradients */}
-        <Button
-          onClick={() => setShowAdminCreateModal(true)}
-          className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4 text-[#FFD41C]" />
-          Create Financial Liquidation
-        </Button>
+      {/* ── Subtitle ── */}
+      <div>
+        <p className="text-gray-500 text-sm font-medium">
+          Review and process liquidation reports from student organizations
+        </p>
       </div>
 
       {/* ── Top 3 KPI Summary Cards (Matching Reference) ── */}
@@ -781,16 +767,14 @@ export function FinancialLiquidations() {
                             );
                           })()}
 
-                          {isApproved && (
-                            <button
-                              onClick={() => setExportReport(liq)}
-                              className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                              title="Export report to Excel/Preview"
-                            >
-                              <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
-                              <span>Export</span>
-                            </button>
-                          )}
+                          <button
+                            onClick={() => setExportReport(liq)}
+                            className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                            title="Export official STI liquidation form (LIQUIDATION-FORMAT_v1)"
+                          >
+                            <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                            <span>Export</span>
+                          </button>
 
                           <button
                             onClick={() => {
@@ -1097,20 +1081,20 @@ export function FinancialLiquidations() {
               </Button>
 
               {/* Status Specific Footer Actions */}
-              {selectedReport.status === 'approved' && (
-                <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3">
+                {selectedReport.status === 'approved' && (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                     <CheckCircle2 className="w-4 h-4" /> Approved by SAO Adviser
                   </span>
-                  <Button
-                    onClick={() => setExportReport(selectedReport)}
-                    className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-xs cursor-pointer shadow-xs"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 mr-1.5 text-[#FFD41C]" />
-                    Export Liquidation Report
-                  </Button>
-                </div>
-              )}
+                )}
+                <Button
+                  onClick={() => setExportReport(selectedReport)}
+                  className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-xs cursor-pointer shadow-xs"
+                >
+                  <FileSpreadsheet className="w-4 h-4 mr-1.5 text-[#FFD41C]" />
+                  Export Liquidation (LF-01)
+                </Button>
+              </div>
 
               {(selectedReport.status === 'pending' || selectedReport.status === 'under_review') && (
                 <div className="flex items-center gap-3">
@@ -1210,24 +1194,6 @@ export function FinancialLiquidations() {
         documentTitle={selectedReport?.eventTitle || ''}
         isProcessing={isProcessing}
       />
-
-      {/* SAO Admin Create / Edit Liquidation Modal */}
-      {showAdminCreateModal && (
-        <OfficerLiquidationModal
-          isOpen={showAdminCreateModal}
-          onClose={() => {
-            setShowAdminCreateModal(false);
-            setEditingReport(null);
-          }}
-          orgId={editingReport?.organizationId || "sao_admin"}
-          orgName={editingReport?.organizationName || "Student Affairs Office"}
-          userUid="sao_admin_user"
-          userName="SAO Adviser"
-          userRole="admin"
-          editingReport={editingReport}
-          existingLiquidations={liquidations}
-        />
-      )}
 
       {/* Lightbox Modal */}
       <ReceiptLightboxModal

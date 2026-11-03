@@ -30,6 +30,7 @@ import {
   Check,
   FileSignature,
   Zap,
+  Lock,
 } from 'lucide-react';
 import type { PARApprovalStep } from '../types/par.types';
 import {
@@ -197,8 +198,17 @@ export default function PARFlowBuilder({
     reindexAndPropagate(updatedChain);
   };
 
-  // Delete a stage
+  // Delete a stage (permanent stages cannot be deleted)
   const handleDeleteStage = (stageIndex: number) => {
+    const hasPermanent = approvalChain.some((step) => {
+      if ((step.stageIndex ?? 1) !== stageIndex) return false;
+      return Boolean(step.isPermanent);
+    });
+    if (hasPermanent) {
+      alert(`Cannot delete Stage ${stageIndex} because it contains a permanent institutional signatory configured in settings.`);
+      return;
+    }
+
     const remainingSteps = approvalChain.filter((s) => (s.stageIndex ?? 1) !== stageIndex);
     const remainingConfigs = stageConfigs.filter((sc) => sc.stageIndex !== stageIndex);
 
@@ -244,11 +254,23 @@ export default function PARFlowBuilder({
     onChange(reindexed);
   };
 
-  // Cycle actionType between 'endorse' -> 'approve' -> 'check'
+  // Cycle actionType between 'endorse' -> 'approve' -> 'check' respecting signatory authority capability
   const handleCycleActionType = (stepIdOrIndex: string | number) => {
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (!match) return s;
+
+      const matchedSig = activeSignatories.find(
+        (sig) => (sig.uid || sig.id) === s.signatoryUid || (sig.email && sig.email.toLowerCase() === (s.signatoryEmail || '').toLowerCase())
+      );
+      const capability = matchedSig?.actionType;
+      if (capability === 'approver') {
+        return { ...s, actionType: 'approve' as const };
+      }
+      if (capability === 'endorser') {
+        const next = s.actionType === 'endorse' ? 'check' : 'endorse';
+        return { ...s, actionType: next as const };
+      }
 
       let nextAction: 'check' | 'endorse' | 'approve' = 'endorse';
       if (s.actionType === 'endorse') nextAction = 'approve';
@@ -263,8 +285,19 @@ export default function PARFlowBuilder({
     onChange(updated);
   };
 
-  // Remove signatory
+  // Remove signatory (permanent signatories cannot be removed)
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
+    const stepToRemove = approvalChain.find((s) => {
+      if (s.id && typeof stepIdOrIndex === 'string') {
+        return s.id === stepIdOrIndex;
+      }
+      return s.step === stepIdOrIndex;
+    });
+    if (stepToRemove?.isPermanent) {
+      alert(`"${stepToRemove?.signatoryName || 'This signatory'}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
+      return;
+    }
+
     const filtered = approvalChain.filter((s) => {
       if (s.id && typeof stepIdOrIndex === 'string') {
         return s.id !== stepIdOrIndex;
@@ -301,6 +334,22 @@ export default function PARFlowBuilder({
     const signatory = activeSignatories.find((s) => s.id === sigId);
     if (!signatory) return;
 
+    if (!isSignatoryApplicableTo(signatory, 'par')) {
+      alert(`"${signatory.name}" (${signatory.roleTitle}) is not authorized for Post-Activity Reports.`);
+      return;
+    }
+
+    const existsInWorkflow = approvalChain.some(
+      (s) =>
+        s.signatoryUid === (signatory.uid || signatory.id) ||
+        (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatory.email || '').toLowerCase())
+    );
+
+    if (existsInWorkflow) {
+      alert(`"${signatory.name}" is already assigned to this report's approval pipeline.`);
+      return;
+    }
+
     const stageConfig = stageConfigs.find((sc) => sc.stageIndex === stageIndex);
     const stageName = stageConfig?.stageName || `Stage ${stageIndex}: Post-Activity Review`;
 
@@ -323,8 +372,8 @@ export default function PARFlowBuilder({
       signatoryEmail: signatory.email,
       department: signatory.department || '',
       status: stageIndex === 1 ? 'current' : 'waiting',
-      isMandatory: signatory.isMandatory !== false,
-      isPermanent: signatory.isPermanentSigner ?? true,
+      isMandatory: false,
+      isPermanent: false,
     };
 
     const newChain = [...approvalChain, newStep];
@@ -577,6 +626,10 @@ export default function PARFlowBuilder({
                       stage.steps.map((step, stepIdx) => {
                         const isApprover = step.actionType === 'approve' || step.role === 'school_president';
                         const isChecker = step.actionType === 'check';
+                        const matchedSig = activeSignatories.find(
+                          (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
+                        );
+                        const isStepPermanent = Boolean(step.isPermanent);
 
                         return (
                           <div
@@ -595,10 +648,17 @@ export default function PARFlowBuilder({
                                   <span className="text-[11px] text-slate-500 font-normal">
                                     ({step.signatoryEmail})
                                   </span>
-                                  <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
-                                    <ShieldCheck className="w-3 h-3 text-blue-600" />
-                                    <span>Institutional Signer</span>
-                                  </span>
+                                  {isStepPermanent ? (
+                                    <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-300 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
+                                      <Lock className="w-3 h-3 text-amber-600" />
+                                      <span>Permanent</span>
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
+                                      <ShieldCheck className="w-3 h-3 text-blue-600" />
+                                      <span>Institutional Signer</span>
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-[11px] text-blue-900 font-semibold flex items-center gap-1.5 mt-0.5">
                                   <span>{step.roleTitle}</span>
@@ -666,15 +726,24 @@ export default function PARFlowBuilder({
                                 </button>
                               </div>
 
-                              {/* Remove Signatory Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveSignatory(step.id || step.step)}
-                                className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 transition-colors cursor-pointer"
-                                title="Remove signatory from stage"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {/* Remove Signatory Button or Lock Indicator */}
+                              {isStepPermanent ? (
+                                <span
+                                  className="p-1.5 rounded-lg text-amber-600 bg-amber-50 border border-amber-200"
+                                  title="Permanent Signatory (locked in institutional settings)"
+                                >
+                                  <Lock className="w-3.5 h-3.5" />
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSignatory(step.id || step.step)}
+                                  className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 transition-colors cursor-pointer"
+                                  title="Remove signatory from stage"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         );
@@ -696,7 +765,14 @@ export default function PARFlowBuilder({
                     >
                       <option value="">-- Add an institutional officer to this stage --</option>
                       {activeSignatories
-                        .filter((sig) => !stage.steps.some((s) => s.signatoryUid === (sig.uid || sig.id)))
+                        .filter(
+                          (sig) =>
+                            !approvalChain.some(
+                              (s) =>
+                                s.signatoryUid === (sig.uid || sig.id) ||
+                                (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
+                            ) && isSignatoryApplicableTo(sig, 'par')
+                        )
                         .map((sig) => (
                           <option key={sig.id} value={sig.id}>
                             {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''}

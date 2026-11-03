@@ -9,6 +9,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
+  Receipt,
   FileSpreadsheet,
   CheckCircle2,
   AlertTriangle,
@@ -38,6 +39,8 @@ import {
   ArrowRight,
   GitCompare,
 } from 'lucide-react';
+import { doc, getDoc } from 'firebase/firestore';
+import { db } from '../../../services/firebase';
 import { toast } from 'sonner';
 import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
 import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
@@ -55,6 +58,7 @@ import {
   returnLiquidationStep,
 } from '../../modules/finance/services/liquidation.service';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
+import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
@@ -114,7 +118,32 @@ export default function LiquidationEndorsementModal({
   const [isReturning, setIsReturning] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
-  const [lightboxData, setLightboxData] = useState<{
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [linkedEvent, setLinkedEvent] = useState<any>(null);
+  const [activeCategoryId, setActiveCategoryId] = useState<string>('all');
+
+  useEffect(() => {
+    if (!liquidation?.eventId) return;
+    let isMounted = true;
+    (async () => {
+      try {
+        const evSnap = await getDoc(doc(db, 'events', liquidation.eventId));
+        if (evSnap.exists() && isMounted) {
+          setLinkedEvent(evSnap.data());
+          return;
+        }
+        const actSnap = await getDoc(doc(db, 'activities', liquidation.eventId));
+        if (actSnap.exists() && isMounted) {
+          setLinkedEvent(actSnap.data());
+        }
+      } catch (err) {
+        console.warn('[LiquidationEndorsementModal] Event lookup:', err);
+      }
+    })();
+    return () => { isMounted = false; };
+  }, [liquidation?.eventId]);
+
+    const [lightboxData, setLightboxData] = useState<{
     url: string;
     title: string;
     vendor?: string;
@@ -133,6 +162,183 @@ export default function LiquidationEndorsementModal({
   if (!isOpen || !liquidation) return null;
 
   const lineItems: ExpenseLineItem[] = liquidation.lineItems || [];
+  const proposedBaselineItems = useMemo(() => {
+    if (linkedEvent) {
+      if (Array.isArray(linkedEvent.budgetItems) && linkedEvent.budgetItems.length > 0) {
+        return linkedEvent.budgetItems.map((bi: any, idx: number) => {
+          const allocated = Number(
+            bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
+          );
+          return {
+            id: bi.id || `prop_bi_${idx}`,
+            title: bi.item || bi.description || `Budget Item ${idx + 1}`,
+            baselineAmount: allocated,
+          };
+        });
+      }
+
+      if (
+        Array.isArray(linkedEvent.financialProjections?.expenses) &&
+        linkedEvent.financialProjections.expenses.length > 0
+      ) {
+        return linkedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
+          id: exp.id || `prop_exp_${idx}`,
+          title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
+          baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
+        }));
+      }
+
+      if (
+        Array.isArray(linkedEvent.budgetCustodians) &&
+        linkedEvent.budgetCustodians.length > 0
+      ) {
+        return linkedEvent.budgetCustodians.map((c: any, idx: number) => ({
+          id: c.id || `prop_cust_${idx}`,
+          title: c.purpose || c.item || `Allocation ${idx + 1}`,
+          baselineAmount: Number(c.allocatedAmount || 0),
+        }));
+      }
+    }
+
+    // Fallback: extract distinct categories from lineItems
+    const map = new Map<string, { id: string; title: string; baselineAmount: number }>();
+    (liquidation.lineItems || []).forEach((it, idx) => {
+      const title = (it.proposedItemTitle || it.category || 'General Expenses').trim();
+      if (!map.has(title)) {
+        map.set(title, {
+          id: it.proposedItemId || `cat_${idx}`,
+          title,
+          baselineAmount: Number(it.proposedBaselineAmount || it.allocatedCost || 0),
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [linkedEvent, liquidation.lineItems]);
+
+  const categoriesList = useMemo(() => {
+    if (proposedBaselineItems.length > 0) {
+      const hasOther = (liquidation.lineItems || []).some(
+        (it) =>
+          it.proposedItemId === 'cat_other' ||
+          it.category === 'Other / General Expenses' ||
+          (!it.proposedItemId && !proposedBaselineItems.some((p) => p.title === it.category))
+      );
+
+      const list = [...proposedBaselineItems];
+      if (hasOther || !list.some((c) => c.id === 'cat_other')) {
+        list.push({
+          id: 'cat_other',
+          title: 'Other / General Expenses',
+          baselineAmount: 0,
+        });
+      }
+      return list;
+    }
+
+    const catSet = new Set<string>();
+    (liquidation.lineItems || []).forEach((it) => {
+      if (it.category) catSet.add(it.category.trim());
+      if (it.proposedItemTitle) catSet.add(it.proposedItemTitle.trim());
+    });
+    if (catSet.size === 0) catSet.add('General Expenses');
+
+    return Array.from(catSet).map((cat, idx) => ({
+      id: `cat_${idx}`,
+      title: cat,
+      baselineAmount: 0,
+    }));
+  }, [proposedBaselineItems, liquidation.lineItems]);
+
+  const categorySpendingMap = useMemo(() => {
+    const map = new Map<string, { baseline: number; spent: number; receiptCount: number; itemCount: number }>();
+
+    categoriesList.forEach((c) => {
+      map.set(c.title, { baseline: c.baselineAmount, spent: 0, receiptCount: 0, itemCount: 0 });
+    });
+
+    (liquidation.lineItems || []).forEach((item) => {
+      const cat = (item.proposedItemTitle || item.category || 'Other / General Expenses').trim();
+      const cost = Number(item.totalCost || 0);
+      const attachments = normalizeItemAttachments(item);
+      const hasReceipt = attachments.length > 0;
+
+      if (!map.has(cat)) {
+        map.set(cat, {
+          baseline: Number(item.proposedBaselineAmount || item.allocatedCost || 0),
+          spent: 0,
+          receiptCount: 0,
+          itemCount: 0,
+        });
+      }
+
+      const entry = map.get(cat)!;
+      entry.spent += cost;
+      entry.itemCount += 1;
+      if (hasReceipt) entry.receiptCount += attachments.length;
+    });
+
+    return map;
+  }, [categoriesList, liquidation.lineItems]);
+
+  const currentCategory = useMemo(() => {
+    if (activeCategoryId === 'all') return null;
+    return categoriesList.find((c) => c.id === activeCategoryId) || null;
+  }, [activeCategoryId, categoriesList]);
+
+  const displayedLineItems = useMemo(() => {
+    const rawItems = liquidation.lineItems || [];
+    if (activeCategoryId === 'all' || !currentCategory) {
+      return rawItems;
+    }
+    return rawItems.filter((item) => {
+      if (currentCategory.id === 'cat_other') {
+        return (
+          item.proposedItemId === 'cat_other' ||
+          item.category === 'Other / General Expenses' ||
+          (!item.proposedItemId && !proposedBaselineItems.some((p) => p.title === item.category))
+        );
+      }
+      return (
+        item.proposedItemId === currentCategory.id ||
+        item.category === currentCategory.title ||
+        item.proposedItemTitle === currentCategory.title
+      );
+    });
+  }, [liquidation.lineItems, activeCategoryId, currentCategory, proposedBaselineItems]);
+
+  const handleSelectCategoryTab = (catId: string) => {
+    setActiveCategoryId(catId);
+    const rawItems = liquidation.lineItems || [];
+    let targetItems = rawItems;
+    if (catId !== 'all') {
+      const targetCat = categoriesList.find((c) => c.id === catId);
+      if (targetCat) {
+        targetItems = rawItems.filter((item) => {
+          if (targetCat.id === 'cat_other') {
+            return (
+              item.proposedItemId === 'cat_other' ||
+              item.category === 'Other / General Expenses' ||
+              (!item.proposedItemId && !proposedBaselineItems.some((p) => p.title === item.category))
+            );
+          }
+          return (
+            item.proposedItemId === targetCat.id ||
+            item.category === targetCat.title ||
+            item.proposedItemTitle === targetCat.title
+          );
+        });
+      }
+    }
+    if (targetItems.length > 0) {
+      const firstTargetItem = targetItems[0];
+      const realIdx = rawItems.findIndex((it) => (it.id && it.id === firstTargetItem.id) || it === firstTargetItem);
+      if (realIdx !== -1) {
+        setSelectedItemIndex(realIdx);
+      }
+    }
+  };
+
   const selectedItem: ExpenseLineItem | undefined = lineItems[selectedItemIndex] || lineItems[0];
   const selectedItemAttachments = normalizeItemAttachments(selectedItem);
   const activeReceiptFile = selectedItemAttachments[activeFileIndex] || selectedItemAttachments[0] || null;
@@ -401,6 +607,16 @@ export default function LiquidationEndorsementModal({
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowExportModal(true)}
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+              title="Export official STI liquidation form (LIQUIDATION-FORMAT_v1)"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-[#FFD41C]" />
+              <span>Export LF-01</span>
+            </button>
+
             {hasRevisions && (
               <button
                 type="button"
@@ -519,154 +735,332 @@ export default function LiquidationEndorsementModal({
               </span>
             </div>
 
-            {/* Interactive Line Items List */}
-            <div className="space-y-2.5">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-700 px-1">
-                <span>Expense Line Items ({lineItems.length})</span>
-                <span className="text-slate-400 font-normal">Click a card to verify receipt</span>
-              </div>
-
+            {/* ── CATEGORY TABS & RECEIPTS ARCHITECTURE ── */}
+            <div className="space-y-3.5">
+              {/* Category Tabs (Reference Guide) */}
               <div className="space-y-2">
-                {lineItems.map((item, idx) => {
-                  const isSelected = idx === selectedItemIndex;
-                  const itemFiles = normalizeItemAttachments(item);
-                  const hasReceipt = itemFiles.length > 0;
-                  const itemVariance = (item.allocatedCost || 0) > 0 ? (item.allocatedCost || 0) - (item.totalCost || 0) : null;
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                    <Layers className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                    Proposed Budget Baseline Categories
+                  </span>
+                  <span className="text-[11px] text-slate-500 font-mono">
+                    {categoriesList.length} Categories • Scroll sideways to switch
+                  </span>
+                </div>
 
-                  return (
-                    <div
-                      key={item.id || idx}
-                      onClick={() => setSelectedItemIndex(idx)}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
-                        isSelected
-                          ? 'bg-blue-50/80 border-[#0E4EBD] shadow-sm ring-2 ring-[#0E4EBD]/20'
-                          : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex items-start gap-2.5 min-w-0">
+                <div className="flex items-center gap-2.5 overflow-x-auto pb-2 pt-1 scrollbar-thin">
+                  {/* All Categories Tab */}
+                  <button
+                    type="button"
+                    onClick={() => handleSelectCategoryTab('all')}
+                    className={`flex-shrink-0 px-4 py-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                      activeCategoryId === 'all'
+                        ? 'bg-[#001A4D] text-white border-[#001A4D] shadow-md ring-2 ring-[#001A4D]/25'
+                        : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 shadow-2xs'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-3 min-w-[150px]">
+                      <span className={`text-xs font-bold truncate ${activeCategoryId === 'all' ? 'text-white' : 'text-slate-900'}`}>
+                        All Categories
+                      </span>
+                      <span
+                        className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                          activeCategoryId === 'all'
+                            ? 'bg-white/20 text-[#FFD41C]'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {lineItems.length} {lineItems.length === 1 ? 'item' : 'items'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-[11px] mt-1.5 pt-1.5 border-t border-current/10 font-mono">
+                      <span className={activeCategoryId === 'all' ? 'text-slate-300' : 'text-slate-500'}>
+                        Ceiling: {formatCurrency(allocatedBudget)}
+                      </span>
+                      <span
+                        className={`font-bold ${
+                          activeCategoryId === 'all'
+                            ? isDeficit ? 'text-rose-300' : 'text-emerald-300'
+                            : isDeficit ? 'text-rose-600' : 'text-emerald-700'
+                        }`}
+                      >
+                        {isDeficit ? `-${formatCurrency(Math.abs(surplusOrDeficit))}` : `+${formatCurrency(surplusOrDeficit)}`}
+                      </span>
+                    </div>
+                  </button>
+
+                  {/* Individual Proposed Category Tabs */}
+                  {categoriesList.map((cat) => {
+                    const isSelected = cat.id === activeCategoryId;
+                    const stats = categorySpendingMap.get(cat.title) || { baseline: cat.baselineAmount, spent: 0, receiptCount: 0, itemCount: 0 };
+                    const rem = cat.baselineAmount - stats.spent;
+                    const isOver = rem < 0;
+
+                    return (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => handleSelectCategoryTab(cat.id)}
+                        className={`flex-shrink-0 px-4 py-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-[#001A4D] text-white border-[#001A4D] shadow-md ring-2 ring-[#001A4D]/25'
+                            : 'bg-white text-slate-700 border-slate-200 hover:border-blue-300 hover:bg-blue-50/50 shadow-2xs'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3 min-w-[170px]">
                           <span
-                            className={`w-6 h-6 rounded-lg text-xs font-mono font-bold flex items-center justify-center shrink-0 mt-0.5 ${
+                            className={`text-xs font-bold truncate max-w-[180px] ${
+                              isSelected ? 'text-white' : 'text-slate-900'
+                            }`}
+                            title={cat.title}
+                          >
+                            {cat.title}
+                          </span>
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
                               isSelected
-                                ? 'bg-[#001A4D] text-[#FFD41C]'
+                                ? 'bg-white/20 text-[#FFD41C]'
                                 : 'bg-slate-100 text-slate-600'
                             }`}
                           >
-                            {idx + 1}
+                            {stats.itemCount} {stats.itemCount === 1 ? 'item' : 'items'}
                           </span>
+                        </div>
 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h4 className="text-xs font-bold text-slate-900 truncate">
-                                {item.description}
-                              </h4>
-                              <span className="text-[10px] font-semibold px-2 py-0.2 bg-slate-100 text-slate-700 rounded border border-slate-200">
-                                {item.category}
+                        <div className="flex items-center justify-between gap-3 text-[11px] mt-1.5 pt-1.5 border-t border-current/10 font-mono">
+                          <span className={isSelected ? 'text-slate-300' : 'text-slate-500'}>
+                            {cat.baselineAmount > 0 ? formatCurrency(cat.baselineAmount) : 'General'}
+                          </span>
+                          {cat.baselineAmount > 0 ? (
+                            <span
+                              className={`font-bold ${
+                                isSelected
+                                  ? isOver ? 'text-rose-300' : 'text-emerald-300'
+                                  : isOver ? 'text-rose-600' : 'text-emerald-700'
+                              }`}
+                            >
+                              {isOver ? `-${formatCurrency(Math.abs(rem))}` : `+${formatCurrency(rem)}`}
+                            </span>
+                          ) : (
+                            <span className={isSelected ? 'text-slate-300' : 'text-slate-500'}>
+                              {formatCurrency(stats.spent)}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Active Category Context Header */}
+              {currentCategory && (
+                <div className="p-3 bg-gradient-to-r from-blue-50/80 via-white to-slate-50 border border-blue-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded-md bg-[#001A4D] text-[#FFD41C] text-[10px] font-bold uppercase tracking-wider">
+                      Active Category
+                    </span>
+                    <h4 className="font-bold text-slate-900">{currentCategory.title}</h4>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-[11px] font-mono">
+                    {currentCategory.baselineAmount > 0 ? (
+                      <>
+                        <span className="text-slate-600">
+                          Baseline Ceiling: <strong>{formatCurrency(currentCategory.baselineAmount)}</strong>
+                        </span>
+                        <span>•</span>
+                        <span className="text-[#0E4EBD]">
+                          Spent: <strong>{formatCurrency(categorySpendingMap.get(currentCategory.title)?.spent || 0)}</strong>
+                        </span>
+                        <span>•</span>
+                        {(() => {
+                          const stats = categorySpendingMap.get(currentCategory.title) || { baseline: currentCategory.baselineAmount, spent: 0 };
+                          const rem = stats.baseline - stats.spent;
+                          const isOver = rem < 0;
+                          return (
+                            <span className={`font-bold ${isOver ? 'text-rose-600' : 'text-emerald-700'}`}>
+                              {isOver ? `Over by ${formatCurrency(Math.abs(rem))}` : `Remaining: ${formatCurrency(rem)}`}
+                            </span>
+                          );
+                        })()}
+                      </>
+                    ) : (
+                      <span className="text-slate-600">
+                        Total Spent: <strong>{formatCurrency(categorySpendingMap.get(currentCategory.title)?.spent || 0)}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Receipts Below Category Tabs */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700 px-1">
+                  <span>
+                    Receipt Line Items ({displayedLineItems.length})
+                    {currentCategory ? ` in "${currentCategory.title}"` : ' (All Categories)'}
+                  </span>
+                  <span className="text-slate-400 font-normal">Click a receipt to inspect in right pane</span>
+                </div>
+
+                {displayedLineItems.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-50 border border-dashed border-slate-300 rounded-2xl space-y-2">
+                    <Receipt className="w-10 h-10 text-slate-300 mx-auto" />
+                    <h5 className="text-xs font-bold text-slate-700">No receipts recorded in this category</h5>
+                    <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                      {currentCategory && currentCategory.baselineAmount > 0
+                        ? `The approved baseline ceiling of ${formatCurrency(currentCategory.baselineAmount)} remains unspent.`
+                        : 'No expenses were filed under this category.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {displayedLineItems.map((item, localIdx) => {
+                      const realIdx = lineItems.findIndex((it) => (it.id && it.id === item.id) || it === item);
+                      const isSelected = realIdx === selectedItemIndex;
+                      const itemFiles = normalizeItemAttachments(item);
+                      const hasReceipt = itemFiles.length > 0;
+                      const itemVariance = (item.allocatedCost || 0) > 0 ? (item.allocatedCost || 0) - (item.totalCost || 0) : null;
+
+                      return (
+                        <div
+                          key={item.id || localIdx}
+                          onClick={() => setSelectedItemIndex(realIdx !== -1 ? realIdx : localIdx)}
+                          className={`p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-blue-50/80 border-[#0E4EBD] shadow-sm ring-2 ring-[#0E4EBD]/20'
+                              : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-2.5 min-w-0">
+                              <span
+                                className={`w-6 h-6 rounded-lg text-xs font-mono font-bold flex items-center justify-center shrink-0 mt-0.5 ${
+                                  isSelected
+                                    ? 'bg-[#001A4D] text-[#FFD41C]'
+                                    : 'bg-slate-100 text-slate-600'
+                                }`}
+                              >
+                                {localIdx + 1}
                               </span>
-                              {diffByPath.get(`lineItems.${idx}.totalCost`) && (
-                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.totalCost`)} />
+
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <h4 className="text-xs font-bold text-slate-900 truncate">
+                                    {item.description}
+                                  </h4>
+                                  <span className="text-[10px] font-semibold px-2 py-0.2 bg-slate-100 text-slate-700 rounded border border-slate-200">
+                                    {item.category || currentCategory?.title}
+                                  </span>
+                                  {diffByPath.get(`lineItems.${realIdx}.totalCost`) && (
+                                    <InlineRevisionBadge diff={diffByPath.get(`lineItems.${realIdx}.totalCost`)} />
+                                  )}
+                                  {diffByPath.get(`lineItems.${realIdx}.receiptNumber`) && (
+                                    <InlineRevisionBadge diff={diffByPath.get(`lineItems.${realIdx}.receiptNumber`)} />
+                                  )}
+                                  {diffByPath.get(`lineItems.${realIdx}.receiptUrls`) && (
+                                    <InlineRevisionBadge diff={diffByPath.get(`lineItems.${realIdx}.receiptUrls`)} />
+                                  )}
+                                  {!diffByPath.get(`lineItems.${realIdx}.totalCost`) && item.wasModifiedInRev && (
+                                    <span className="text-[10px] font-bold px-2 py-0.2 bg-amber-100 text-amber-900 rounded border border-amber-300">
+                                      ✏️ Revised
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
+                                  <span>
+                                    <strong>{item.quantity}</strong> × {formatCurrency(item.unitCost)}
+                                  </span>
+                                  <span>•</span>
+                                  <span>Vendor: <strong>{item.vendorName || 'Not recorded'}</strong></span>
+                                  {item.receiptNumber && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="font-mono">OR #: <strong>{item.receiptNumber}</strong></span>
+                                    </>
+                                  )}
+                                </div>
+
+                                {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
+                                  <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2">
+                                    <span>Baseline: {formatCurrency(item.allocatedCost)}</span>
+                                    {itemVariance !== null && (
+                                      <span
+                                        className={`font-semibold px-1.5 py-0.2 rounded text-[10px] ${
+                                          itemVariance < 0
+                                            ? 'bg-rose-100 text-rose-800'
+                                            : 'bg-emerald-100 text-emerald-800'
+                                        }`}
+                                      >
+                                        {itemVariance < 0
+                                          ? `Deficit -${formatCurrency(Math.abs(itemVariance))}`
+                                          : `Surplus +${formatCurrency(itemVariance)}`}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                              <span className="text-sm font-black text-[#001A4D]">
+                                {formatCurrency(item.totalCost)}
+                              </span>
+
+                              {hasReceipt ? (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                  {itemFiles.length} Receipt{itemFiles.length === 1 ? '' : 's'}
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedItemIndex(realIdx);
+                                    flagMissingReceiptInRemarks(realIdx, item.description);
+                                  }}
+                                  className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300 hover:bg-rose-200 transition-colors cursor-pointer flex items-center gap-1"
+                                  title="Flag missing receipt in return remarks"
+                                >
+                                  <AlertCircle className="w-3 h-3 text-rose-600" />
+                                  No Receipt (Flag)
+                                </button>
                               )}
-                              {diffByPath.get(`lineItems.${idx}.receiptNumber`) && (
-                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.receiptNumber`)} />
+
+                              {isMyTurnNow && (
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedItemIndex(realIdx);
+                                    flagItemForRevision(realIdx, item.description);
+                                  }}
+                                  className="text-[10px] font-bold text-amber-700 hover:text-amber-900 hover:underline flex items-center gap-1 cursor-pointer mt-0.5"
+                                  title="Flag this specific line item for revision"
+                                >
+                                  <RotateCcw className="w-2.5 h-2.5" />
+                                  <span>Flag Item</span>
+                                </button>
                               )}
-                              {diffByPath.get(`lineItems.${idx}.receiptUrls`) && (
-                                <InlineRevisionBadge diff={diffByPath.get(`lineItems.${idx}.receiptUrls`)} />
-                              )}
-                              {!diffByPath.get(`lineItems.${idx}.totalCost`) && item.wasModifiedInRev && (
-                                <span className="text-[10px] font-bold px-2 py-0.2 bg-amber-100 text-amber-900 rounded border border-amber-300">
-                                  ✏️ Revised
+
+                              {isSelected && (
+                                <span className="text-[10px] font-bold text-[#0E4EBD] flex items-center gap-0.5 mt-0.5">
+                                  <span>Active</span>
+                                  <ChevronRight className="w-3 h-3" />
                                 </span>
                               )}
                             </div>
-
-                            <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
-                              <span>
-                                <strong>{item.quantity}</strong> × {formatCurrency(item.unitCost)}
-                              </span>
-                              <span>•</span>
-                              <span>Vendor: <strong>{item.vendorName || 'Not recorded'}</strong></span>
-                              {item.receiptNumber && (
-                                <>
-                                  <span>•</span>
-                                  <span className="font-mono">OR #: <strong>{item.receiptNumber}</strong></span>
-                                </>
-                              )}
-                            </div>
-
-                            {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
-                              <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2">
-                                <span>Baseline: {formatCurrency(item.allocatedCost)}</span>
-                                {itemVariance !== null && (
-                                  <span
-                                    className={`font-semibold px-1.5 py-0.2 rounded text-[10px] ${
-                                      itemVariance < 0
-                                        ? 'bg-rose-100 text-rose-800'
-                                        : 'bg-emerald-100 text-emerald-800'
-                                    }`}
-                                  >
-                                    {itemVariance < 0
-                                      ? `Deficit -${formatCurrency(Math.abs(itemVariance))}`
-                                      : `Surplus +${formatCurrency(itemVariance)}`}
-                                  </span>
-                                )}
-                              </div>
-                            )}
                           </div>
                         </div>
-
-                        <div className="text-right shrink-0 flex flex-col items-end gap-1">
-                          <span className="text-sm font-black text-[#001A4D]">
-                            {formatCurrency(item.totalCost)}
-                          </span>
-
-                          {hasReceipt ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              {itemFiles.length} Receipt{itemFiles.length === 1 ? '' : 's'}
-                            </span>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedItemIndex(idx);
-                                flagMissingReceiptInRemarks(idx, item.description);
-                              }}
-                              className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-300 hover:bg-rose-200 transition-colors cursor-pointer flex items-center gap-1"
-                              title="Flag missing receipt in return remarks"
-                            >
-                              <AlertCircle className="w-3 h-3 text-rose-600" />
-                              No Receipt (Flag)
-                            </button>
-                          )}
-
-                          {isMyTurnNow && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedItemIndex(idx);
-                                flagItemForRevision(idx, item.description);
-                              }}
-                              className="text-[10px] font-bold text-amber-700 hover:text-amber-900 hover:underline flex items-center gap-1 cursor-pointer mt-0.5"
-                              title="Flag this specific line item for revision"
-                            >
-                              <RotateCcw className="w-2.5 h-2.5" />
-                              <span>Flag Item</span>
-                            </button>
-                          )}
-
-                          {isSelected && (
-                            <span className="text-[10px] font-bold text-[#0E4EBD] flex items-center gap-0.5 mt-0.5">
-                              <span>Active</span>
-                              <ChevronRight className="w-3 h-3" />
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1126,6 +1520,15 @@ export default function LiquidationEndorsementModal({
           )}
         </div>
       </div>
+
+      {/* Liquidation Export Preview Modal */}
+      {showExportModal && (
+        <LiquidationExportPreviewModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          report={liquidation}
+        />
+      )}
 
       {/* Lightbox / Document Viewer */}
       {lightboxData && (

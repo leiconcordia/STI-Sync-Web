@@ -30,6 +30,11 @@ import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-sign
 import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
+import {
+  getCachedWorkflowSettings,
+  getDefaultWorkflowSettings,
+  getBuiltinDefaultWorkflow,
+} from '../../workflow/services/approval-workflow.service';
 
 export const LIQUIDATIONS_COLLECTION = 'liquidations';
 
@@ -63,6 +68,105 @@ export async function generateDefaultLiquidationChain(
 
   if (activeSignatories.length === 0 && isSasCreator) {
     return [];
+  }
+
+  // ── Pull Configured Workflow Template from Settings (Admin FL vs Adviser FL) ──
+  const pipelineKey = isSasCreator ? 'admin_fl' : 'adviser_fl';
+  let workflowSettings: any;
+  try {
+    workflowSettings = await getDefaultWorkflowSettings();
+  } catch (err) {
+    workflowSettings = getCachedWorkflowSettings();
+  }
+
+  let configuredTemplate = workflowSettings ? workflowSettings[pipelineKey] : undefined;
+
+  // Fallback: If target role's FL has no assigned signers, check if the other role's FL was configured
+  const hasAssignedSigners = (steps?: any[]) =>
+    Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
+
+  if (!hasAssignedSigners(configuredTemplate)) {
+    const alternateKey = isSasCreator ? 'adviser_fl' : 'admin_fl';
+    if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
+      configuredTemplate = workflowSettings?.[alternateKey];
+    }
+  }
+
+  if (!configuredTemplate || configuredTemplate.length === 0) {
+    configuredTemplate = getBuiltinDefaultWorkflow(pipelineKey);
+  }
+
+  if (configuredTemplate && configuredTemplate.length > 0) {
+    const chain: LiquidationApprovalStep[] = [];
+    const usedIds = new Set<string>();
+
+    configuredTemplate.forEach((tpl: any, idx: number) => {
+      // 1. Try to find live matched signatory from maintenance by UID or email
+      let matched = activeSignatories.find(
+        (s) =>
+          (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+          (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
+      );
+
+      // 2. Fallback to role matching if no UID match and template only had role
+      if (!matched && tpl.role) {
+        matched = activeSignatories.find(
+          (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
+        );
+      }
+
+      // 3. Fallback for SAS Head if needed
+      if (tpl.role === 'sas_head' && !matched) {
+        const sasConfig = getCachedSasSignatoryConfig();
+        matched = {
+          id: sasConfig.employeeId || 'sas_admin',
+          name: sasConfig.name || 'Student Affairs & Services Head',
+          email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+          role: 'sas_head' as any,
+          roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
+          department: sasConfig.department || 'Student Affairs & Services',
+          isActive: true,
+          isPermanentSigner: true,
+          applicableScope: 'all',
+          actionType: 'approver',
+        };
+      }
+
+      if (matched) {
+        usedIds.add(matched.id);
+      }
+
+      // Preserve step properties from template saved in settings if live matching is absent
+      const resolvedUid = matched?.id || tpl.signatoryUid || `liq_step_${Date.now()}_${idx + 1}`;
+      const resolvedName = matched?.name || tpl.signatoryName || tpl.roleTitle || 'Institutional Signatory';
+      const resolvedEmail = matched?.email || tpl.signatoryEmail || '';
+      const resolvedRole = matched?.role || tpl.role || 'signatory';
+      const resolvedRoleTitle = matched?.roleTitle || tpl.roleTitle || 'Institutional Signatory';
+      const resolvedDept = matched?.department || tpl.department || '';
+      const isPermanent = Boolean(tpl.isPermanent);
+      const isMandatory = Boolean(tpl.isMandatory || isPermanent);
+
+      chain.push({
+        id: tpl.id || `step_${idx + 1}`,
+        step: idx + 1,
+        stageIndex: tpl.stageIndex || 1,
+        stageName: tpl.stageName || `Stage ${tpl.stageIndex || 1}`,
+        role: resolvedRole,
+        roleTitle: resolvedRoleTitle,
+        actionType: tpl.actionType || 'endorse',
+        signatoryUid: resolvedUid,
+        signatoryName: resolvedName,
+        signatoryEmail: resolvedEmail,
+        department: resolvedDept,
+        status: (tpl.stageIndex || 1) === 1 ? 'current' : 'waiting',
+        isMandatory,
+        isPermanent,
+      });
+    });
+
+    if (chain.length > 0) {
+      return chain;
+    }
   }
 
   // Dynamically group real signatories from maintenance into logical sequential stages.
@@ -262,9 +366,13 @@ export const createLiquidationReport = async (
     });
 
     if (activeExisting.length > 0) {
-      throw new Error(
-        'A Financial Liquidation already exists for this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
-      );
+      // ── STRICT 1:1:1 INVARIANT ENFORCEMENT ──
+      // An activity proposal can have at most ONE active Financial Liquidation document.
+      // If one already exists (in draft, pending, under_review, returned, etc.), NEVER create a duplicate.
+      // Instead, seamlessly update the existing document with the incoming data and return its ID.
+      const existingDoc = activeExisting[0];
+      await updateLiquidationReport(existingDoc.id, data);
+      return existingDoc.id;
     }
 
     // 2. Cross-verify parent event document
@@ -289,15 +397,14 @@ export const createLiquidationReport = async (
         throw new Error('This activity was organized by a student organization. The Financial Liquidation must be authored and submitted by the officers of that specific organization.');
       }
 
-      if (evData.liquidationReportId) {
+      if (evData.liquidationReportId && evData.liquidationReportId !== 'null' && evData.liquidationReportId !== 'undefined') {
         const oldLiqSnap = await getDoc(doc(db, LIQUIDATIONS_COLLECTION, evData.liquidationReportId));
         if (oldLiqSnap.exists()) {
           const oldData = oldLiqSnap.data();
-          const oldSt = (oldData.status || '').toLowerCase();
+          const oldSt = (oldData.status || '').toLowerCase().trim();
           if (oldSt !== 'voided' && oldSt !== 'cancelled' && oldData.isDeleted !== true) {
-            throw new Error(
-              'A Financial Liquidation is already linked to this activity proposal (1:1:1 invariant enforced). Please edit or revise the existing report instead.'
-            );
+            await updateLiquidationReport(oldLiqSnap.id, data);
+            return oldLiqSnap.id;
           }
         }
       }
@@ -329,52 +436,6 @@ export const createLiquidationReport = async (
       undefined,
       isSasCreator
     );
-  } else if (isSasCreator) {
-    // If created by SAS/admin, ensure Stage 1 SAS clearance is stripped and reindexed
-    const hasSasStage1 = chain.some(
-      (s) =>
-        (s.stageIndex ?? 1) === 1 &&
-        (s.role === 'sas_head' ||
-          (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
-          (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
-          (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
-    );
-    if (hasSasStage1) {
-      const filtered = chain.filter(
-        (s) =>
-          !(
-            (s.stageIndex ?? 1) === 1 &&
-            (s.role === 'sas_head' ||
-              (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
-              (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
-              (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
-          )
-      );
-      const stageMap = new Map<number, LiquidationApprovalStep[]>();
-      filtered.forEach((s) => {
-        const idx = s.stageIndex ?? 1;
-        if (!stageMap.has(idx)) stageMap.set(idx, []);
-        stageMap.get(idx)!.push(s);
-      });
-      const sortedKeys = Array.from(stageMap.keys()).sort((a, b) => a - b);
-      let stepNum = 1;
-      const reindexed: LiquidationApprovalStep[] = [];
-      sortedKeys.forEach((oldIdx, newIdxMinusOne) => {
-        const newStageNum = newIdxMinusOne + 1;
-        const steps = stageMap.get(oldIdx)!;
-        const stageName = steps[0]?.stageName || `Stage ${newStageNum}`;
-        steps.forEach((st) => {
-          reindexed.push({
-            ...st,
-            step: stepNum++,
-            stageIndex: newStageNum,
-            stageName,
-            status: newStageNum === 1 ? 'current' : 'waiting',
-          });
-        });
-      });
-      chain = reindexed;
-    }
   }
 
   // If submitting right away, activate Stage 1 steps and ensure subsequent stages are waiting

@@ -44,6 +44,8 @@ import {
   type SignatoryRole,
   type CreateSignatoryPayload,
   type SignatoryDocumentScope,
+  type WorkflowDocumentType,
+  getSignatoryAuthorizedWorkflows,
 } from '../../../modules/signatories/types/signatory.types';
 import { useSignatoryRolesStream } from '../../../modules/signatories/hooks/useSignatoryRolesStream';
 import {
@@ -90,7 +92,8 @@ export default function InstitutionalSignatoryManagement() {
     role: '',
     roleTitle: '',
     actionType: 'endorser',
-    applicableScope: 'both',
+    applicableScope: 'all',
+    applicableWorkflows: ['proposal', 'liquidation', 'par'],
     employeeId: '',
     temporaryPassword: '',
     isPermanentSigner: false,
@@ -129,7 +132,8 @@ export default function InstitutionalSignatoryManagement() {
       role: '',
       roleTitle: '',
       actionType: 'endorser',
-      applicableScope: 'both',
+      applicableScope: 'all',
+      applicableWorkflows: ['proposal', 'liquidation', 'par'],
       employeeId: '',
       department: '',
       departmentId: '',
@@ -145,12 +149,14 @@ export default function InstitutionalSignatoryManagement() {
       (sig.roleTitle || '').toLowerCase().includes('accountant') ||
       (sig.roleTitle || '').toLowerCase().includes('auditor');
 
-    const resolvedScope: SignatoryDocumentScope =
-      sig.applicableScope || (isAcct ? 'liquidation_only' : 'both');
+    const resolvedWorkflows: WorkflowDocumentType[] = isAcct
+      ? ['liquidation']
+      : getSignatoryAuthorizedWorkflows(sig);
 
     setEditingSignatory({
       ...sig,
-      applicableScope: resolvedScope,
+      applicableScope: isAcct ? 'liquidation_only' : (sig.applicableScope || 'all'),
+      applicableWorkflows: resolvedWorkflows,
     });
   };
 
@@ -255,7 +261,14 @@ export default function InstitutionalSignatoryManagement() {
     const cleanTitle = formData.roleTitle.trim();
     const cleanRole = cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');
-    const finalScope: SignatoryDocumentScope = formData.applicableScope || (isAccountantRole ? 'liquidation_only' : 'both');
+    const finalWorkflows: WorkflowDocumentType[] = isAccountantRole
+      ? ['liquidation']
+      : (formData.applicableWorkflows && formData.applicableWorkflows.length > 0
+          ? formData.applicableWorkflows
+          : ['proposal', 'liquidation', 'par']);
+    const finalScope: SignatoryDocumentScope = isAccountantRole
+      ? 'liquidation_only'
+      : (finalWorkflows.length === 3 ? 'all' : (finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation' ? 'liquidation_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal' ? 'proposal_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'par' ? 'par' : 'both'));
 
     setIsSubmitting(true);
     try {
@@ -266,6 +279,7 @@ export default function InstitutionalSignatoryManagement() {
           roleTitle: cleanTitle,
           actionType: formData.actionType || 'endorser',
           applicableScope: finalScope,
+          applicableWorkflows: finalWorkflows,
           isPermanentSigner: Boolean(formData.isPermanentSigner),
         },
         profile?.uid || 'admin'
@@ -300,8 +314,15 @@ export default function InstitutionalSignatoryManagement() {
     const cleanTitle = editingSignatory.roleTitle.trim();
     // Preserve established role identifier if valid, otherwise derive from title
     const cleanRole = editingSignatory.role || cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-    // Directly save user's selected workflow scope
-    const finalScope: SignatoryDocumentScope = editingSignatory.applicableScope || 'both';
+    const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');
+    const finalWorkflows: WorkflowDocumentType[] = isAccountantRole
+      ? ['liquidation']
+      : (editingSignatory.applicableWorkflows && editingSignatory.applicableWorkflows.length > 0
+          ? editingSignatory.applicableWorkflows
+          : ['proposal', 'liquidation', 'par']);
+    const finalScope: SignatoryDocumentScope = isAccountantRole
+      ? 'liquidation_only'
+      : (finalWorkflows.length === 3 ? 'all' : (finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation' ? 'liquidation_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal' ? 'proposal_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'par' ? 'par' : 'both'));
 
     setIsSubmitting(true);
     try {
@@ -311,6 +332,7 @@ export default function InstitutionalSignatoryManagement() {
         roleTitle: cleanTitle,
         actionType: editingSignatory.actionType || 'endorser',
         applicableScope: finalScope,
+        applicableWorkflows: finalWorkflows,
         employeeId: editingSignatory.employeeId ? editingSignatory.employeeId.trim() : '',
         department: editingSignatory.department || '',
         departmentId: editingSignatory.departmentId || '',
@@ -625,22 +647,39 @@ export default function InstitutionalSignatoryManagement() {
 
                     {/* Workflow Scope */}
                     <td className="py-3.5 px-4">
-                      {sig.applicableScope === 'liquidation_only' || sig.role === 'accountant' ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold rounded-lg">
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                          Liquidations Only
-                        </span>
-                      ) : sig.applicableScope === 'proposal_only' ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-900 border border-indigo-200 text-xs font-bold rounded-lg">
-                          <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                          Proposals Only
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-900 border border-teal-200 text-xs font-bold rounded-lg">
-                          <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-                          All Workflows
-                        </span>
-                      )}
+                      {(() => {
+                        const workflows = getSignatoryAuthorizedWorkflows(sig);
+                        if (workflows.length === 3) {
+                          return (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-teal-50 text-teal-900 border border-teal-200 text-xs font-bold rounded-lg">
+                              <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                              All Workflows (AP, FL, PAR)
+                            </span>
+                          );
+                        }
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {workflows.includes('proposal') && (
+                              <span className="inline-flex items-center px-2 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 text-[11px] font-bold rounded">
+                                AP
+                              </span>
+                            )}
+                            {workflows.includes('liquidation') && (
+                              <span className="inline-flex items-center px-2 py-0.5 bg-amber-50 text-amber-900 border border-amber-200 text-[11px] font-bold rounded">
+                                FL
+                              </span>
+                            )}
+                            {workflows.includes('par') && (
+                              <span className="inline-flex items-center px-2 py-0.5 bg-purple-50 text-purple-800 border border-purple-200 text-[11px] font-bold rounded">
+                                PAR
+                              </span>
+                            )}
+                            {workflows.length === 0 && (
+                              <span className="text-gray-400 text-xs italic">None</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
 
                     {/* Signature Status */}
@@ -908,81 +947,105 @@ export default function InstitutionalSignatoryManagement() {
 
               {/* Document Workflow Scope */}
               <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Document Workflow Scope *
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider">
+                    Document Workflow Scope *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const all: WorkflowDocumentType[] = ['proposal', 'liquidation', 'par'];
+                      const current = formData.applicableWorkflows || [];
+                      const next = current.length === 3 ? ['liquidation'] : all;
+                      setFormData({ ...formData, applicableWorkflows: next });
+                    }}
+                    className="text-[11px] text-[#0E4EBD] hover:underline font-semibold"
+                  >
+                    {(formData.applicableWorkflows || []).length === 3 ? 'Deselect All' : 'Select All Workflows'}
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {/* Activity Proposal */}
                   <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (formData.applicableScope === 'both' || !formData.applicableScope)
-                        ? 'bg-teal-50 border-teal-400 ring-2 ring-teal-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="applicableScopeAdd"
-                      value="both"
-                      checked={formData.applicableScope === 'both' || !formData.applicableScope}
-                      onChange={() => setFormData({ ...formData, applicableScope: 'both' })}
-                      className="mt-0.5 text-teal-600 focus:ring-teal-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">All Workflows</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Proposals & Liquidations.
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      formData.applicableScope === 'liquidation_only'
-                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="applicableScopeAdd"
-                      value="liquidation_only"
-                      checked={formData.applicableScope === 'liquidation_only'}
-                      onChange={() => setFormData({ ...formData, applicableScope: 'liquidation_only' })}
-                      className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Liquidations Only</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Financial Liquidations only (Accountant).
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      formData.applicableScope === 'proposal_only'
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (formData.applicableWorkflows || []).includes('proposal')
                         ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
                         : 'bg-white border-gray-200 hover:border-gray-300'
                     }`}
                   >
                     <input
-                      type="radio"
-                      name="applicableScopeAdd"
-                      value="proposal_only"
-                      checked={formData.applicableScope === 'proposal_only'}
-                      onChange={() => setFormData({ ...formData, applicableScope: 'proposal_only' })}
-                      className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      type="checkbox"
+                      checked={(formData.applicableWorkflows || []).includes('proposal')}
+                      onChange={(e) => {
+                        const cur = formData.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'proposal'] : cur.filter((w) => w !== 'proposal');
+                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer"
                     />
                     <div>
-                      <div className="font-bold text-gray-900">Proposals Only</div>
+                      <div className="font-bold text-gray-900">Activity Proposals</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Activity Proposals only.
+                        Form AP-01 (Events & activities).
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* Financial Liquidation */}
+                  <label
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (formData.applicableWorkflows || []).includes('liquidation')
+                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={(formData.applicableWorkflows || []).includes('liquidation')}
+                      onChange={(e) => {
+                        const cur = formData.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'liquidation'] : cur.filter((w) => w !== 'liquidation');
+                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Financial Liquidations</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form FL-01 (Cash & expense audit).
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* Post-Activity Report */}
+                  <label
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (formData.applicableWorkflows || []).includes('par')
+                        ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={(formData.applicableWorkflows || []).includes('par')}
+                      onChange={(e) => {
+                        const cur = formData.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'par'] : cur.filter((w) => w !== 'par');
+                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-purple-600 rounded border-gray-300 focus:ring-purple-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Post-Activity Reports</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form PAR-01 (Documentation & outcome).
                       </div>
                     </div>
                   </label>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Select which document workflows this signatory will be available for in STI Sync.
+                  Select which document workflows (AP, FL, PAR) this signatory is authorized to review or endorse.
                 </p>
               </div>
 
@@ -1232,87 +1295,105 @@ export default function InstitutionalSignatoryManagement() {
 
               {/* Document Workflow Scope */}
               <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Document Workflow Scope *
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider">
+                    Document Workflow Scope *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const all: WorkflowDocumentType[] = ['proposal', 'liquidation', 'par'];
+                      const current = editingSignatory.applicableWorkflows || [];
+                      const next = current.length === 3 ? ['liquidation'] : all;
+                      setEditingSignatory({ ...editingSignatory, applicableWorkflows: next });
+                    }}
+                    className="text-[11px] text-[#0E4EBD] hover:underline font-semibold"
+                  >
+                    {(editingSignatory.applicableWorkflows || []).length === 3 ? 'Deselect All' : 'Select All Workflows'}
+                  </button>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {/* Activity Proposal */}
                   <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      editingSignatory.applicableScope === 'both'
-                        ? 'bg-teal-50 border-teal-400 ring-2 ring-teal-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="applicableScopeEdit"
-                      value="both"
-                      checked={editingSignatory.applicableScope === 'both'}
-                      onChange={() =>
-                        setEditingSignatory({ ...editingSignatory, applicableScope: 'both' })
-                      }
-                      className="mt-0.5 text-teal-600 focus:ring-teal-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">All Workflows</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Proposals & Liquidations.
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      editingSignatory.applicableScope === 'liquidation_only'
-                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="applicableScopeEdit"
-                      value="liquidation_only"
-                      checked={editingSignatory.applicableScope === 'liquidation_only'}
-                      onChange={() =>
-                        setEditingSignatory({ ...editingSignatory, applicableScope: 'liquidation_only' })
-                      }
-                      className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Liquidations Only</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Financial Liquidations only (Accountant).
-                      </div>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      editingSignatory.applicableScope === 'proposal_only'
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (editingSignatory.applicableWorkflows || []).includes('proposal')
                         ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
                         : 'bg-white border-gray-200 hover:border-gray-300'
                     }`}
                   >
                     <input
-                      type="radio"
-                      name="applicableScopeEdit"
-                      value="proposal_only"
-                      checked={editingSignatory.applicableScope === 'proposal_only'}
-                      onChange={() =>
-                        setEditingSignatory({ ...editingSignatory, applicableScope: 'proposal_only' })
-                      }
-                      className="mt-0.5 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                      type="checkbox"
+                      checked={(editingSignatory.applicableWorkflows || []).includes('proposal')}
+                      onChange={(e) => {
+                        const cur = editingSignatory.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'proposal'] : cur.filter((w) => w !== 'proposal');
+                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer"
                     />
                     <div>
-                      <div className="font-bold text-gray-900">Proposals Only</div>
+                      <div className="font-bold text-gray-900">Activity Proposals</div>
                       <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Activity Proposals only.
+                        Form AP-01 (Events & activities).
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* Financial Liquidation */}
+                  <label
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (editingSignatory.applicableWorkflows || []).includes('liquidation')
+                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={(editingSignatory.applicableWorkflows || []).includes('liquidation')}
+                      onChange={(e) => {
+                        const cur = editingSignatory.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'liquidation'] : cur.filter((w) => w !== 'liquidation');
+                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Financial Liquidations</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form FL-01 (Cash & expense audit).
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* Post-Activity Report */}
+                  <label
+                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
+                      (editingSignatory.applicableWorkflows || []).includes('par')
+                        ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-200'
+                        : 'bg-white border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={(editingSignatory.applicableWorkflows || []).includes('par')}
+                      onChange={(e) => {
+                        const cur = editingSignatory.applicableWorkflows || [];
+                        const next = e.target.checked ? [...cur, 'par'] : cur.filter((w) => w !== 'par');
+                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
+                      }}
+                      className="mt-0.5 text-purple-600 rounded border-gray-300 focus:ring-purple-500 cursor-pointer"
+                    />
+                    <div>
+                      <div className="font-bold text-gray-900">Post-Activity Reports</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
+                        Form PAR-01 (Documentation & outcome).
                       </div>
                     </div>
                   </label>
                 </div>
                 <p className="text-[11px] text-gray-500 mt-1">
-                  Determines whether this signatory appears in Activity Proposals, Financial Liquidations, or both.
+                  Determines whether this signatory appears in Activity Proposals, Financial Liquidations, or Post-Activity Reports.
                 </p>
               </div>
 

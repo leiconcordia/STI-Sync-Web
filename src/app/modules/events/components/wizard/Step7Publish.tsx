@@ -50,7 +50,7 @@ export default function Step7Publish({ data, onUpdate, onPublish, isPublishing, 
     { id: 1, label: 'Event details complete', desc: s1Res.isValid ? 'Title, banner, and type specified' : (s1Res.errors[0] || 'Missing event details'), status: s1Res.isValid ? 'valid' : 'invalid' },
     { id: 2, label: 'Schedule and venue assigned', desc: s2Res.isValid ? 'Active semester, sessions, and venue configured without conflicts' : (s2Res.errors[0] || 'Schedule incomplete or has conflicts'), status: s2Res.isValid ? 'valid' : 'invalid' },
     { id: 3, label: 'Participant settings configured', desc: s3Res.isValid ? 'Target audience and academic cohort set' : (s3Res.errors[0] || 'Invalid participant settings'), status: s3Res.isValid ? 'valid' : 'invalid' },
-    { id: 4, label: 'Budget requested', desc: s5Res.isValid ? 'Itemized budget lines are valid' : (s5Res.errors[0] || 'Invalid budget items'), status: s5Res.isValid ? 'valid' : 'invalid' },
+    { id: 4, label: 'Budget requested', desc: s5Res.isValid ? 'Baseline budget categories are valid' : (s5Res.errors[0] || 'Invalid budget items'), status: s5Res.isValid ? 'valid' : 'invalid' },
     { id: 5, label: 'Documents uploaded', desc: s6Res.isValid ? 'Required proposal documents attached' : (s6Res.errors[0] || 'Required documents missing'), status: s6Res.isValid ? 'valid' : 'invalid' },
     {
       id: 6,
@@ -177,7 +177,7 @@ export default function Step7Publish({ data, onUpdate, onPublish, isPublishing, 
                 <h3 className="text-sm font-bold text-gray-700 mb-2">Budget</h3>
                 <div className="space-y-2">
                   <div className="text-2xl font-bold text-[#001A4D]">{formatCurrency(data.totalApprovedBudget || data.totalRequestedBudget || 0)}</div>
-                  <div className="text-xs text-gray-600">Total Amount across {data.budgetItems?.length || 0} line items</div>
+                  <div className="text-xs text-gray-600">Total Proposed Baseline across {data.budgetItems?.length || 0} categories (Form LF-01 Spending Guide)</div>
                 </div>
               </div>
             </div>

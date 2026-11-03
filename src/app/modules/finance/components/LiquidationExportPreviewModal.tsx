@@ -7,6 +7,7 @@ import {
   FileText,
   Sparkles,
   RotateCcw,
+  Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { doc, getDoc, collection, query, where, limit, getDocs } from 'firebase/firestore';
@@ -14,7 +15,12 @@ import { format } from 'date-fns';
 import { db } from '../../../../services/firebase';
 import { ACTIVITIES_COLLECTION } from '../../events/services/event.service';
 import type { LiquidationDocument } from '../types/liquidation.types';
-import { exportOfficialStiLiquidationExcel } from '../utils/sti-liquidation-excel';
+import {
+  exportOfficialStiLiquidationExcel,
+  exportOfficialStiLiquidationXlsx,
+  exportOfficialStiLiquidationXml,
+  type StiSignatory,
+} from '../utils/sti-liquidation-excel';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate, parseDateSafe } from '../../../utils/date';
 
@@ -80,6 +86,9 @@ export function LiquidationExportPreviewModal({
   );
   const [daysLapsed, setDaysLapsed] = useState('-o-');
   const [orNumber, setOrNumber] = useState('');
+  const [baselineCategories, setBaselineCategories] = useState<
+    Array<{ id?: string; title: string; baselineAmount: number }>
+  >([]);
 
   const [activeTab, setActiveTab] = useState<'preview' | 'metadata'>('preview');
   const [isExporting, setIsExporting] = useState(false);
@@ -91,13 +100,19 @@ export function LiquidationExportPreviewModal({
 
     let isMounted = true;
 
-    // 1. Initial direct population from liquidation report
-    const initialOfficer = report.submittedByName || report.createdByName || '';
+    // 1. Initial direct population from saved liquidation report
+    const initialOfficer =
+      (report as any).employeeName ||
+      (report as any).officerName ||
+      report.submittedByName ||
+      report.createdByName ||
+      '';
     const initialCheque =
       (report as any).chequeNumber ||
       (report as any).checkNumber ||
-      (report.id ? report.id.slice(0, 8).toUpperCase() : '');
+      '';
     const initialAmount = Number(
+      (report as any).amountAdvanced ||
       report.allocatedBudget ||
       (report as any).totalAllocatedBudget ||
       report.totalActualSpending ||
@@ -113,10 +128,12 @@ export function LiquidationExportPreviewModal({
           .filter((n): n is string => Boolean(n && n.length > 0))
       )
     );
-    const initialOR = lineItemORs.join(', ');
+    const initialOR = (report as any).orNumber || lineItemORs.join(', ');
 
     // Submitted date
-    const subDate = parseLocalDate(report.submittedAt || report.createdAt) || new Date();
+    const subDate = (report as any).dateSubmitted
+      ? parseLocalDate((report as any).dateSubmitted) || new Date()
+      : parseLocalDate(report.submittedAt || report.createdAt) || new Date();
     const subDateStr = format(subDate, 'MMM d, yyyy');
 
     setOfficerName(initialOfficer);
@@ -125,15 +142,41 @@ export function LiquidationExportPreviewModal({
     setOrNumber(initialOR);
     setDateSubmitted(subDateStr);
 
-    // Fallback baseline for activity end date and deadline from report.createdAt
-    const fallbackEndDate = parseLocalDate(report.createdAt) || new Date();
-    const initialEndStr = format(fallbackEndDate, 'MMM d, yyyy');
-    const initialDeadDate = new Date(fallbackEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
-    const initialDeadStr = format(initialDeadDate, 'MMM d, yyyy');
+    // Initial activity end date, deadline, released date, and days lapsed
+    const initialEndDateVal = (report as any).activityEndDate
+      ? parseLocalDate((report as any).activityEndDate)
+      : null;
+    const initialDeadlineVal = (report as any).submissionDeadline
+      ? parseLocalDate((report as any).submissionDeadline)
+      : null;
+    const initialReleasedVal = (report as any).dateReleased
+      ? parseLocalDate((report as any).dateReleased)
+      : null;
 
-    setActivityEndDate(initialEndStr);
-    setSubmissionDeadline(initialDeadStr);
-    setDaysLapsed(calculateDaysLapse(subDate, initialDeadDate));
+    if (initialEndDateVal) {
+      setActivityEndDate(format(initialEndDateVal, 'MMM d, yyyy'));
+    }
+    if (initialDeadlineVal) {
+      setSubmissionDeadline(format(initialDeadlineVal, 'MMM d, yyyy'));
+    }
+    if (initialReleasedVal) {
+      setDateReleased(format(initialReleasedVal, 'MMM d, yyyy'));
+    }
+    if ((report as any).daysLapsed) {
+      setDaysLapsed((report as any).daysLapsed);
+    } else if (initialEndDateVal && initialDeadlineVal) {
+      setDaysLapsed(calculateDaysLapse(subDate, initialDeadlineVal));
+    } else {
+      // Fallback baseline for activity end date and deadline from report.createdAt
+      const fallbackEndDate = parseLocalDate(report.createdAt) || new Date();
+      const initialEndStr = format(fallbackEndDate, 'MMM d, yyyy');
+      const initialDeadDate = new Date(fallbackEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const initialDeadStr = format(initialDeadDate, 'MMM d, yyyy');
+
+      if (!initialEndDateVal) setActivityEndDate(initialEndStr);
+      if (!initialDeadlineVal) setSubmissionDeadline(initialDeadStr);
+      setDaysLapsed(calculateDaysLapse(subDate, initialDeadDate));
+    }
 
     // 2. Asynchronous enrichment: query Event document and Ledger
     const fetchEnrichedMetadata = async () => {
@@ -143,6 +186,7 @@ export function LiquidationExportPreviewModal({
         let eventSupervisor = '';
         let eventReleasedDate: Date | null = null;
         let eventApprovedBudget = 0;
+        let eventBaselines: Array<{ id?: string; title: string; baselineAmount: number }> = [];
 
         // Fetch Event from activities collection
         if (report.eventId) {
@@ -158,6 +202,35 @@ export function LiquidationExportPreviewModal({
             eventApprovedBudget = Number(
               eventData.totalApprovedBudget || eventData.totalAllocatedBudget || 0
             );
+
+            // Extract proposal baseline categories (Left Side of Form LF-01)
+            if (Array.isArray(eventData.budgetItems) && eventData.budgetItems.length > 0) {
+              eventBaselines = eventData.budgetItems.map((bi: any, idx: number) => ({
+                id: bi.id || `prop_bi_${idx}`,
+                title: bi.item || bi.description || `Budget Item ${idx + 1}`,
+                baselineAmount: Number(
+                  bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
+                ),
+              }));
+            } else if (
+              Array.isArray(eventData.financialProjections?.expenses) &&
+              eventData.financialProjections.expenses.length > 0
+            ) {
+              eventBaselines = eventData.financialProjections.expenses.map((exp: any, idx: number) => ({
+                id: exp.id || `prop_exp_${idx}`,
+                title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
+                baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
+              }));
+            } else if (
+              Array.isArray(eventData.budgetCustodians) &&
+              eventData.budgetCustodians.length > 0
+            ) {
+              eventBaselines = eventData.budgetCustodians.map((c: any, idx: number) => ({
+                id: c.id || `prop_cust_${idx}`,
+                title: c.purpose || c.item || `Allocation ${idx + 1}`,
+                baselineAmount: Number(c.allocatedAmount || 0),
+              }));
+            }
 
             // Determine actual Activity End Date from event sessions (last session date)
             if (
@@ -226,14 +299,18 @@ export function LiquidationExportPreviewModal({
 
         if (!isMounted) return;
 
-        // Apply enriched event values
-        if (eventEndParsed) {
+        if (eventBaselines.length > 0) {
+          setBaselineCategories(eventBaselines);
+        }
+
+        // Apply enriched event values if not already persisted on the report
+        if (!initialEndDateVal && eventEndParsed) {
           const endStr = format(eventEndParsed, 'MMM d, yyyy');
           const deadlineDate = new Date(eventEndParsed.getTime() + 7 * 24 * 60 * 60 * 1000);
           const deadlineStr = format(deadlineDate, 'MMM d, yyyy');
 
           setActivityEndDate(endStr);
-          setSubmissionDeadline(deadlineStr);
+          if (!initialDeadlineVal) setSubmissionDeadline(deadlineStr);
           setDaysLapsed(calculateDaysLapse(subDate, deadlineDate));
         }
 
@@ -241,7 +318,7 @@ export function LiquidationExportPreviewModal({
           setOfficerName(eventSupervisor);
         }
 
-        if (eventReferenceId && initialCheque === report.id?.slice(0, 8).toUpperCase()) {
+        if (!initialCheque && eventReferenceId) {
           setChequeNumber(eventReferenceId);
         }
 
@@ -253,9 +330,11 @@ export function LiquidationExportPreviewModal({
           setOrNumber(ledgerReceipt);
         }
 
-        const finalReleased = ledgerDate || eventReleasedDate || eventEndParsed;
-        if (finalReleased) {
-          setDateReleased(format(finalReleased, 'MMM d, yyyy'));
+        if (!initialReleasedVal) {
+          const finalReleased = ledgerDate || eventReleasedDate || eventEndParsed;
+          if (finalReleased) {
+            setDateReleased(format(finalReleased, 'MMM d, yyyy'));
+          }
         }
 
         setIsAutoFilled(true);
@@ -308,21 +387,164 @@ export function LiquidationExportPreviewModal({
     }
   };
 
-  // Categorized Items for Preview
-  const categorizedItems = useMemo(() => {
-    const map = new Map<string, typeof report.lineItems>();
-    (report.lineItems || []).forEach((item) => {
-      const cat = (item.category || 'General Expenses').trim();
-      if (!map.has(cat)) {
-        map.set(cat, []);
-      }
-      map.get(cat)!.push(item);
-    });
-    return Array.from(map.entries());
-  }, [report.lineItems]);
+  // Group items matching the two-sided layout of LIQUIDATION-FORMAT_v1 (2) - Copy.xlsx
+  const groupedDisplayCategories = useMemo(() => {
+    const groups: Array<{
+      categoryTitle: string;
+      baselineAmount: number;
+      items: typeof report.lineItems;
+    }> = [];
+    const assignedIds = new Set<string>();
 
-  // Export Action (Strictly omitting signatories/matrix)
-  const handleExportExcel = () => {
+    if (baselineCategories.length > 0) {
+      baselineCategories.forEach((cat) => {
+        const catTitle = cat.title.trim();
+        const matches = (report.lineItems || []).filter((it, idx) => {
+          const key = it.id || `item_${idx}`;
+          if (assignedIds.has(key)) return false;
+          const match =
+            it.proposedItemId === cat.id ||
+            (it.proposedItemTitle && it.proposedItemTitle.trim().toLowerCase() === catTitle.toLowerCase()) ||
+            (it.category && it.category.trim().toLowerCase() === catTitle.toLowerCase());
+          if (match) {
+            assignedIds.add(key);
+            return true;
+          }
+          return false;
+        });
+
+        groups.push({
+          categoryTitle: catTitle,
+          baselineAmount: Number(cat.baselineAmount || 0),
+          items: matches,
+        });
+      });
+    }
+
+    const unassigned = (report.lineItems || []).filter((it, idx) => !assignedIds.has(it.id || `item_${idx}`));
+    if (unassigned.length > 0) {
+      if (baselineCategories.length === 0) {
+        const dynamicMap = new Map<string, { baselineAmount: number; items: typeof report.lineItems }>();
+        unassigned.forEach((it) => {
+          const name = (it.proposedItemTitle || it.category || 'General Expenses').trim();
+          if (!dynamicMap.has(name)) {
+            dynamicMap.set(name, {
+              baselineAmount: Number(it.proposedBaselineAmount || it.allocatedCost || 0),
+              items: [],
+            });
+          }
+          dynamicMap.get(name)!.items.push(it);
+        });
+        dynamicMap.forEach((val, key) => {
+          groups.push({ categoryTitle: key, baselineAmount: val.baselineAmount, items: val.items });
+        });
+      } else {
+        groups.push({
+          categoryTitle: 'Other / Unplanned Expenses',
+          baselineAmount: 0,
+          items: unassigned,
+        });
+      }
+    }
+
+    if (groups.length === 0) {
+      groups.push({
+        categoryTitle: 'General Expenses',
+        baselineAmount: Number(amountAdvanced || report.allocatedBudget || 0),
+        items: [],
+      });
+    }
+
+    return groups;
+  }, [baselineCategories, report.lineItems, amountAdvanced, report.allocatedBudget]);
+
+  // Resolve official signatories for preview
+  const displaySignatories: StiSignatory[] = useMemo(() => {
+    const chain = report.approvalChain || [];
+    const findSigner = (predicate: (s: any) => boolean) => chain.find(predicate);
+
+    const accountantStep = findSigner(
+      (s) =>
+        s.role === 'accountant' ||
+        s.roleTitle?.toLowerCase().includes('accountant') ||
+        s.actionType === 'check'
+    );
+
+    const supervisorStep = findSigner(
+      (s) =>
+        s.role === 'adviser' ||
+        s.role === 'sas_head' ||
+        s.roleTitle?.toLowerCase().includes('adviser') ||
+        s.roleTitle?.toLowerCase().includes('supervisor')
+    );
+
+    const adminStep = findSigner(
+      (s) =>
+        s.role === 'school_administrator' ||
+        s.roleTitle?.toLowerCase().includes('administrator') ||
+        s.roleTitle?.toLowerCase().includes('principal')
+    );
+
+    const presidentStep = findSigner(
+      (s) =>
+        s.role === 'school_president' ||
+        s.roleTitle?.toLowerCase().includes('president')
+    );
+
+    const formatSignerDate = (step?: any) => {
+      if (!step) return '';
+      const rawDate = step.signedAt || step.approvedAt;
+      return rawDate ? formatAppDate(rawDate, '') : '';
+    };
+
+    return [
+      {
+        id: 'sig_sub',
+        type: 'Submitted By:',
+        name: officerName,
+        role: '(Name of Employee / Treasurer)',
+        date: dateSubmitted,
+      },
+      {
+        id: 'sig_chk',
+        type: 'Checked By:',
+        name: accountantStep?.signatoryName || 'Emily L. Rojas',
+        role: '(Accountant)',
+        date: formatSignerDate(accountantStep),
+      },
+      {
+        id: 'sig_ind',
+        type: 'Indorsed By:',
+        name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
+        role: '(Supervisor)',
+        date: formatSignerDate(supervisorStep),
+      },
+      {
+        id: 'sig_rec',
+        type: 'Recommending Approval:',
+        name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
+        role: '(Supervisor)',
+        date: formatSignerDate(supervisorStep),
+      },
+      {
+        id: 'sig_app',
+        type: 'Approved By:',
+        name: adminStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
+        role: '(Administrator)',
+        date: formatSignerDate(adminStep),
+      },
+      {
+        id: 'sig_not',
+        type: 'Noted By:',
+        name: presidentStep?.signatoryName || 'ATTY. ANTONIO R. LUCERO JR.',
+        role: '(President)',
+        date: formatSignerDate(presidentStep),
+      },
+    ];
+  }, [report.approvalChain, officerName, dateSubmitted]);
+
+  // Export Action (Default: Genuine Office Open XML .xlsx)
+  const handleExportXlsx = () => {
     setIsExporting(true);
     try {
       exportOfficialStiLiquidationExcel(report, {
@@ -335,12 +557,44 @@ export function LiquidationExportPreviewModal({
         amountAdvanced,
         daysLapsed,
         orNumber,
-        includeSignatures: false, // Explicitly no signatories/matrix
+        proposedBaselineCategories: baselineCategories,
+        signatories: displaySignatories,
+        includeSignatures: true,
+        exportFormat: 'xlsx',
       });
-      toast.success('Official STI Liquidation Excel exported successfully!');
+      toast.success('Official STI Liquidation (.xlsx) exported successfully!');
       onClose();
     } catch (err) {
       console.error('Failed to export STI liquidation Excel', err);
+      toast.error('Failed to generate official Excel file.');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Alternative Export Action (Styled XML Spreadsheet .xls)
+  const handleExportXml = () => {
+    setIsExporting(true);
+    try {
+      exportOfficialStiLiquidationExcel(report, {
+        officerName,
+        chequeNumber,
+        activityEndDate,
+        submissionDeadline,
+        dateSubmitted,
+        dateReleased,
+        amountAdvanced,
+        daysLapsed,
+        orNumber,
+        proposedBaselineCategories: baselineCategories,
+        signatories: displaySignatories,
+        includeSignatures: true,
+        exportFormat: 'xls',
+      });
+      toast.success('Official STI Liquidation (.xls) exported successfully!');
+      onClose();
+    } catch (err) {
+      console.error('Failed to export STI liquidation XML', err);
       toast.error('Failed to generate official Excel file.');
     } finally {
       setIsExporting(false);
@@ -368,7 +622,7 @@ export function LiquidationExportPreviewModal({
                 </span>
               </div>
               <p className="text-xs text-white/70">
-                STI College Official Financial Liquidation Template Generator
+                Faithfully formatted to official template (LIQUIDATION-FORMAT_v1 (2) - Copy.xlsx)
               </p>
             </div>
           </div>
@@ -445,7 +699,7 @@ export function LiquidationExportPreviewModal({
 
                   <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 mt-3 text-[11px] text-black">
                     <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Employee / Officer Name:</span>
+                      <span className="font-bold">Employee Name:</span>
                       <span>{officerName || '—'}</span>
                     </div>
                     <div className="flex justify-between border-b border-gray-200 py-0.5">
@@ -498,7 +752,7 @@ export function LiquidationExportPreviewModal({
                         <th className="p-2 border-r border-black w-[24%]">PARTICULAR</th>
                         <th className="p-2 border-r border-black w-[14%]">AMOUNT</th>
                         <th colSpan={3} className="p-2 border-r border-black">ACTUAL EXPENSES BREAKDOWN</th>
-                        <th className="p-2 w-[18%]">Remarks</th>
+                        <th className="p-2 w-[18%]">Remarks/Reference</th>
                       </tr>
                       <tr className="bg-white text-black font-bold text-[10px] text-center border-b border-black">
                         <th className="p-1.5 border-r border-black font-normal">Breakdown For Cash Advances</th>
@@ -510,42 +764,70 @@ export function LiquidationExportPreviewModal({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-300 font-mono text-[11px]">
-                      {categorizedItems.length === 0 ? (
+                      {groupedDisplayCategories.length === 0 ? (
                         <tr>
                           <td colSpan={6} className="p-6 text-center text-gray-400 font-sans">
                             No recorded liquidation line items.
                           </td>
                         </tr>
                       ) : (
-                        categorizedItems.map(([category, items], catIdx) => {
+                        groupedDisplayCategories.map((group, catIdx) => {
                           const letter = String.fromCharCode(65 + catIdx);
-                          const catAllocated = items.reduce((sum, i) => sum + (i.allocatedCost || 0), 0);
+                          const categoryParticular = `${letter}. ${group.categoryTitle}`;
+                          const baseline = group.baselineAmount;
 
-                          return items.map((item, itemIdx) => {
+                          if (group.items.length === 0) {
+                            return (
+                              <tr key={`cat_${catIdx}`} className="hover:bg-gray-50/50">
+                                <td className="p-1.5 border-r border-black font-sans font-bold text-black">
+                                  {categoryParticular}
+                                </td>
+                                <td className="p-1.5 border-r border-black text-right text-black font-mono font-bold">
+                                  {baseline > 0 ? formatCurrency(baseline) : '—'}
+                                </td>
+                                <td className="p-1.5 border-r border-black font-sans text-gray-400 italic">
+                                  —
+                                </td>
+                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
+                                  ₱0.00
+                                </td>
+                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
+                                  ₱0.00
+                                </td>
+                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
+                                  {formatCurrency(baseline)}
+                                </td>
+                                <td className="p-1.5 text-gray-400 font-sans text-[10px]">—</td>
+                              </tr>
+                            );
+                          }
+
+                          return group.items.map((item, itemIdx) => {
                             const isFirst = itemIdx === 0;
-                            const itemVariance = (item.allocatedCost || 0) > 0
-                              ? (item.allocatedCost || 0) - (item.totalCost || 0)
-                              : 0;
+                            const itemCost = Number(item.totalCost || 0);
 
                             return (
-                              <tr key={item.id || `${catIdx}-${itemIdx}`}>
+                              <tr key={item.id || `${catIdx}_${itemIdx}`} className="hover:bg-gray-50/50">
                                 <td className="p-1.5 border-r border-black font-sans font-bold text-black">
-                                  {isFirst ? `${letter}. ${category}` : ''}
+                                  {isFirst ? categoryParticular : ''}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black">
-                                  {isFirst ? (catAllocated > 0 ? formatCurrency(catAllocated) : '—') : ''}
+                                <td className="p-1.5 border-r border-black text-right text-black font-mono font-bold">
+                                  {isFirst ? (baseline > 0 ? formatCurrency(baseline) : '—') : ''}
                                 </td>
                                 <td className="p-1.5 border-r border-black font-sans text-black">
-                                  {item.description || item.vendorName}
+                                  {item.description || item.vendorName || '—'}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black">
-                                  {formatCurrency(item.totalCost || 0)}
+                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
+                                  {formatCurrency(itemCost)}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black">
-                                  {formatCurrency(itemVariance)}
+                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
+                                  {formatCurrency(itemCost)}
+                                </td>
+                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
+                                  -
                                 </td>
                                 <td className="p-1.5 text-black font-sans text-[10px]">
-                                  {item.receiptNumber ? `OR# ${item.receiptNumber}` : item.vendorName || '—'}
+                                  {item.receiptNumber ? `OR #${item.receiptNumber}` : (item.vendorName || '—')}
                                 </td>
                               </tr>
                             );
@@ -596,6 +878,25 @@ export function LiquidationExportPreviewModal({
                       OR NO: <strong>{orNumber}</strong>
                     </div>
                   )}
+                </div>
+
+                {/* 5. Official Signatories Block matching Rows 55-76 */}
+                <div className="bg-white p-4 border border-black space-y-3 text-[11px] text-black">
+                  <div className="font-bold uppercase tracking-wider text-[10px] text-gray-500 border-b border-gray-200 pb-1">
+                    Official Signatory &amp; Audit Endorsements (Form LF-01)
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 pt-1">
+                    {displaySignatories.map((sig, sIdx) => (
+                      <div key={sig.id || sIdx} className="space-y-0.5">
+                        <span className="font-bold text-gray-800 text-[10px] uppercase block">{sig.type}</span>
+                        <div className="border-b border-black pb-0.5 flex justify-between items-end">
+                          <span className="font-bold text-black text-xs">{sig.name || '—'}</span>
+                          <span className="text-[10px] text-gray-600 font-mono">{sig.date || '(Date)'}</span>
+                        </div>
+                        <div className="text-[10px] text-gray-500">{sig.role}</div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -769,30 +1070,41 @@ export function LiquidationExportPreviewModal({
         </div>
 
         {/* Modal Footer */}
-        <footer className="px-6 py-4 bg-white border-t border-gray-200 flex items-center justify-between flex-shrink-0">
+        <footer className="px-6 py-4 bg-white border-t border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 flex-shrink-0">
           <div className="text-xs text-gray-500 flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse" />
             <span>
-              Format ready: <strong>LIQUIDATION-FORMAT_v1.xlsx</strong> ({report.lineItems?.length || 0} line items).
+              Format ready: <strong>LIQUIDATION-FORMAT_v1 (2) - Copy.xlsx</strong> ({report.lineItems?.length || 0} line items).
             </span>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             <button
               onClick={onClose}
               disabled={isExporting}
-              className="px-5 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50 transition-colors cursor-pointer"
+              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-50 transition-colors cursor-pointer"
             >
               Cancel
             </button>
 
             <button
-              onClick={handleExportExcel}
+              onClick={handleExportXml}
               disabled={isExporting}
-              className="px-6 py-2.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold disabled:opacity-50 transition-all shadow-md flex items-center gap-2 cursor-pointer"
+              className="px-4 py-2 border border-blue-300 bg-blue-50 text-[#001A4D] hover:bg-blue-100 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+              title="Download formatted XML spreadsheet (.xls)"
+            >
+              <Download className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              <span>Export .xls</span>
+            </button>
+
+            <button
+              onClick={handleExportXlsx}
+              disabled={isExporting}
+              className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold disabled:opacity-50 transition-all shadow-md flex items-center gap-2 cursor-pointer"
+              title="Download official Excel workbook (.xlsx)"
             >
               <FileSpreadsheet className="w-4 h-4 text-[#FFD41C]" />
-              <span>{isExporting ? 'Generating Official Excel...' : 'Download Official STI Excel (.xls)'}</span>
+              <span>{isExporting ? 'Generating Official Excel...' : 'Download Official Excel (.xlsx)'}</span>
             </button>
           </div>
         </footer>

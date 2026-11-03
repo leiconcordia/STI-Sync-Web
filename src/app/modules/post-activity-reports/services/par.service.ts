@@ -17,8 +17,16 @@ import {
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
-import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import {
+  type InstitutionalSignatory,
+  isSignatoryApplicableTo,
+} from '../../signatories/types/signatory.types';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import {
+  getCachedWorkflowSettings,
+  getDefaultWorkflowSettings,
+  getBuiltinDefaultWorkflow,
+} from '../../workflow/services/approval-workflow.service';
 import type {
   PostActivityReportDocument,
   PARApprovalStep,
@@ -76,10 +84,111 @@ export async function generateDefaultPARSignatoryChain(
     }
   }
 
-  activeSignatories = (activeSignatories || []).filter((s) => s.isActive !== false);
+  activeSignatories = (activeSignatories || []).filter(
+    (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'par')
+  );
 
   if (activeSignatories.length === 0 && isSasCreator) {
     return [];
+  }
+
+  // ── Pull Configured Workflow Template from Settings (Admin PAR vs Adviser PAR) ──
+  const pipelineKey = isSasCreator ? 'admin_par' : 'adviser_par';
+  let workflowSettings: any;
+  try {
+    workflowSettings = await getDefaultWorkflowSettings();
+  } catch (err) {
+    workflowSettings = getCachedWorkflowSettings();
+  }
+
+  let configuredTemplate = workflowSettings ? workflowSettings[pipelineKey] : undefined;
+
+  // Fallback: If target role's PAR has no assigned signers, check if the other role's PAR was configured
+  const hasAssignedSigners = (steps?: any[]) =>
+    Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
+
+  if (!hasAssignedSigners(configuredTemplate)) {
+    const alternateKey = isSasCreator ? 'adviser_par' : 'admin_par';
+    if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
+      configuredTemplate = workflowSettings?.[alternateKey];
+    }
+  }
+
+  if (!configuredTemplate || configuredTemplate.length === 0) {
+    configuredTemplate = getBuiltinDefaultWorkflow(pipelineKey);
+  }
+
+  if (configuredTemplate && configuredTemplate.length > 0) {
+    const chain: PARApprovalStep[] = [];
+    const usedIds = new Set<string>();
+
+    configuredTemplate.forEach((tpl: any, idx: number) => {
+      // 1. Try to find live matched signatory from maintenance by UID or email
+      let matched = activeSignatories.find(
+        (s) =>
+          (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+          (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
+      );
+
+      // 2. Fallback to role matching if no UID match and template only had role
+      if (!matched && tpl.role) {
+        matched = activeSignatories.find(
+          (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
+        );
+      }
+
+      // 3. Fallback for SAS Head if needed
+      if (tpl.role === 'sas_head' && !matched) {
+        const sasConfig = getCachedSasSignatoryConfig();
+        matched = {
+          id: sasConfig.employeeId || 'sas_admin',
+          name: sasConfig.name || 'Student Affairs & Services Head',
+          email: sasConfig.email || 'sao@ormoc.sti.edu.ph',
+          role: 'sas_head' as any,
+          roleTitle: sasConfig.roleTitle || 'Student Affairs & Services Head',
+          department: sasConfig.department || 'Student Affairs & Services',
+          isActive: true,
+          isPermanentSigner: true,
+          applicableScope: 'all',
+          actionType: 'approver',
+        };
+      }
+
+      if (matched) {
+        usedIds.add(matched.id);
+      }
+
+      // Preserve step properties from template saved in settings if live matching is absent
+      const resolvedUid = matched?.id || tpl.signatoryUid || `par_step_${Date.now()}_${idx + 1}`;
+      const resolvedName = matched?.name || tpl.signatoryName || tpl.roleTitle || 'Institutional Signatory';
+      const resolvedEmail = matched?.email || tpl.signatoryEmail || '';
+      const resolvedRole = matched?.role || tpl.role || 'signatory';
+      const resolvedRoleTitle = matched?.roleTitle || tpl.roleTitle || 'Institutional Signatory';
+      const resolvedDept = matched?.department || tpl.department || '';
+      const isPermanent = Boolean(tpl.isPermanent);
+      const isMandatory = Boolean(tpl.isMandatory || isPermanent);
+
+      chain.push({
+        id: tpl.id || `par_step_${idx + 1}`,
+        step: idx + 1,
+        stageIndex: tpl.stageIndex || 1,
+        stageName: tpl.stageName || `Stage ${tpl.stageIndex || 1}`,
+        role: resolvedRole,
+        roleTitle: resolvedRoleTitle,
+        actionType: tpl.actionType || 'endorse',
+        signatoryUid: resolvedUid,
+        signatoryName: resolvedName,
+        signatoryEmail: resolvedEmail,
+        department: resolvedDept,
+        status: (tpl.stageIndex || 1) === 1 ? 'current' : 'waiting',
+        isMandatory,
+        isPermanent,
+      });
+    });
+
+    if (chain.length > 0) {
+      return chain;
+    }
   }
 
   const stageSigners: {

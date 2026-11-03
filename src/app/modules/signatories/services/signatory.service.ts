@@ -287,7 +287,7 @@ export async function toggleSignatoryStatus(
  */
 export async function updateSignatoryDetails(
   signatoryId: string,
-  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope'>>
+  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows'>>
 ): Promise<void> {
   const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
   await updateDoc(docRef, {

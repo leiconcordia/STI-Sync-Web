@@ -680,7 +680,7 @@ export default function ProposalEndorsementModal({
                   ))}
                   <tr className="bg-rose-50/40 font-bold text-rose-900">
                     <td colSpan={5} className="p-2 text-[11px] uppercase tracking-wider">
-                      Operational Expenses
+                      Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
                     </td>
                   </tr>
                   {proposal.financialProjections?.expenses?.map((e, i) => (

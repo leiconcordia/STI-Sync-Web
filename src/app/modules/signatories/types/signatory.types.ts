@@ -62,7 +62,17 @@ export const SIGNATORY_ROLES: SignatoryRoleOption[] = [
 
 export type SignatoryAuthorityCapability = 'endorser' | 'approver' | 'both';
 
-export type SignatoryDocumentScope = 'both' | 'liquidation_only' | 'proposal_only';
+export type WorkflowDocumentType = 'proposal' | 'liquidation' | 'par';
+
+export type SignatoryDocumentScope =
+  | 'both' // Legacy: proposal + liquidation
+  | 'liquidation_only' // Legacy: liquidation only
+  | 'proposal_only' // Legacy: proposal only
+  | 'all' // All three documents: proposal, liquidation, par
+  | 'proposal'
+  | 'liquidation'
+  | 'par'
+  | string;
 
 export interface InstitutionalSignatory {
   id: string;
@@ -80,7 +90,8 @@ export interface InstitutionalSignatory {
   signatureUpdatedAt?: any;
   isPermanentSigner?: boolean;
   isMandatoryForDepartment?: string;
-  applicableScope?: SignatoryDocumentScope; // 'both' | 'liquidation_only' | 'proposal_only'
+  applicableScope?: SignatoryDocumentScope; // Legacy single-value scope string
+  applicableWorkflows?: WorkflowDocumentType[]; // Explicit list of workflows: ['proposal', 'liquidation', 'par']
   isActive: boolean;
   requiresPasswordChange?: boolean;
   temporaryPassword?: string;
@@ -104,15 +115,32 @@ export interface CreateSignatoryPayload {
   isPermanentSigner?: boolean;
   isMandatoryForDepartment?: string;
   applicableScope?: SignatoryDocumentScope;
+  applicableWorkflows?: WorkflowDocumentType[];
+}
+
+/**
+ * Returns the normalized array of authorized workflow documents for a signatory.
+ */
+export function getSignatoryAuthorizedWorkflows(sig: InstitutionalSignatory): WorkflowDocumentType[] {
+  if (Array.isArray(sig.applicableWorkflows) && sig.applicableWorkflows.length > 0) {
+    return sig.applicableWorkflows;
+  }
+  const scope = sig.applicableScope || 'both';
+  if (scope === 'all') return ['proposal', 'liquidation', 'par'];
+  if (scope === 'liquidation_only' || scope === 'liquidation') return ['liquidation'];
+  if (scope === 'proposal_only' || scope === 'proposal') return ['proposal'];
+  if (scope === 'par_only' || scope === 'par') return ['par'];
+  // 'both' in legacy meant proposal + liquidation
+  return ['proposal', 'liquidation'];
 }
 
 /**
  * Determines whether a signatory is eligible for a specific document workflow.
- * Guarantees that Accountants are strictly for Liquidations and never Activity Proposals.
+ * Guarantees that Accountants are strictly for Liquidations and never Activity Proposals or PAR.
  */
 export function isSignatoryApplicableTo(
   sig: InstitutionalSignatory,
-  formType: 'proposal' | 'liquidation'
+  formType: WorkflowDocumentType | 'proposal' | 'liquidation' | 'par'
 ): boolean {
   const roleLower = (sig.role || '').toLowerCase();
   const titleLower = (sig.roleTitle || '').toLowerCase();
@@ -121,14 +149,37 @@ export function isSignatoryApplicableTo(
     titleLower.includes('accountant') ||
     titleLower.includes('auditor');
 
+  // Hard safety invariant: Accountants & Auditors are strictly for Liquidations
+  if (isAccountant && formType !== 'liquidation') {
+    return false;
+  }
+
+  // 1. Check array if explicitly set
+  if (Array.isArray(sig.applicableWorkflows) && sig.applicableWorkflows.length > 0) {
+    return sig.applicableWorkflows.includes(formType as WorkflowDocumentType);
+  }
+
+  // 2. Check legacy applicableScope string
+  const scope = sig.applicableScope || 'both';
+  if (scope === 'all') {
+    return true;
+  }
+
   if (formType === 'proposal') {
-    if (isAccountant) return false;
-    if (sig.applicableScope === 'liquidation_only') return false;
+    if (scope === 'liquidation_only' || scope === 'liquidation' || scope === 'par') return false;
     return true;
   }
 
   if (formType === 'liquidation') {
-    if (sig.applicableScope === 'proposal_only') return false;
+    if (scope === 'proposal_only' || scope === 'proposal' || scope === 'par') return false;
+    return true;
+  }
+
+  if (formType === 'par') {
+    // If explicit par scope or 'all', allowed
+    if (scope === 'par' || scope === 'all') return true;
+    // Legacy 'both' was strictly AP + FL, but if a signatory is academic/executive they can be used unless liquidation_only
+    if (scope === 'liquidation_only' || scope === 'liquidation') return false;
     return true;
   }
 

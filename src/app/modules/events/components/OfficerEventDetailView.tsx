@@ -19,7 +19,8 @@ import { useDepartments, useCourses, useSections } from '../../academic/hooks/us
 import ActivitySignatoryTracker from '../../activity-proposals/components/workflow/ActivitySignatoryTracker';
 import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
-import CashCustodiansModal from './CashCustodiansModal';
+import { useAllLiquidations } from '../../finance/hooks/useLiquidationStream';
+import OfficerLiquidationModal from '../../../officer/components/OfficerLiquidationModal';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
@@ -42,7 +43,7 @@ interface OfficerEventDetailViewProps {
 const NAV_SECTIONS = [
   { id: 'overview', icon: FileText, label: '1. Activity Overview' },
   { id: 'objectives', icon: Target, label: '2. Objectives & Indicators' },
-  { id: 'operations', icon: SlidersHorizontal, label: '3. Operations & Budget Custodians' },
+  { id: 'operations', icon: SlidersHorizontal, label: '3. Operations & Liquidation' },
   { id: 'execution', icon: Wrench, label: '4. Mechanics & Materials' },
   { id: 'audience_schedule', icon: Calendar, label: '5. Schedule & Target Audience' },
   { id: 'strategy', icon: Megaphone, label: '6. Marketing & Documentation' },
@@ -206,7 +207,31 @@ export default function OfficerEventDetailView({
   const navSections = NAV_SECTIONS;
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
-  const [isCashModalOpen, setIsCashModalOpen] = useState(false);
+  const [isLiquidationModalOpen, setIsLiquidationModalOpen] = useState(false);
+
+  const { liquidations: allLiquidations = [] } = useAllLiquidations();
+
+  const linkedLiquidation = useMemo(() => {
+    if (!event?.id) return null;
+    return (
+      allLiquidations.find(
+        (l) =>
+          (l.eventId === event.id || l.id === (event as any).liquidationReportId) &&
+          l.status !== 'voided' &&
+          (l.status as any) !== 'cancelled' &&
+          (l as any).isDeleted !== true
+      ) || null
+    );
+  }, [allLiquidations, event?.id, (event as any)?.liquidationReportId]);
+
+  const liquidationStatus = useMemo(() => {
+    return (linkedLiquidation?.status || (activeEvent as any)?.liquidationStatus || '').toString().toLowerCase();
+  }, [linkedLiquidation, activeEvent]);
+
+  const isLiquidationSubmitted = liquidationStatus === 'under_review' || liquidationStatus === 'pending';
+  const isLiquidationApproved = liquidationStatus === 'approved';
+  const isLiquidationReturned = liquidationStatus === 'returned';
+  const isLiquidationDraft = liquidationStatus === 'draft';
 
   const editCheck = canEditProposal(event, 'officer', profile?.uid, profile?.activeOrganizationId);
   const isEditable = editCheck.canEdit;
@@ -826,7 +851,7 @@ export default function OfficerEventDetailView({
                 toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
                 return;
               }
-              setIsCashModalOpen(true);
+              setIsLiquidationModalOpen(true);
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
               isApproved
@@ -838,15 +863,15 @@ export default function OfficerEventDetailView({
             {!isApproved ? (
               <>
                 <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Cash Custodians</span>
+                <span>Financial Liquidation</span>
                 <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
                   Locked
                 </span>
               </>
             ) : (
               <>
-                <Coins className="w-3.5 h-3.5 text-amber-300" />
-                <span>Cash Custodians</span>
+                <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
+                <span>Financial Liquidation</span>
               </>
             )}
           </button>
@@ -1298,8 +1323,8 @@ export default function OfficerEventDetailView({
             className="space-y-4"
           >
             <SectionHeader
-              title="3. Operational Setup & Budget Custodians"
-              subtitle="Post-approval controls: Promotional banner, student publishing, attendance scanners, and dynamic cash allocations ('Hold Money')"
+              title="3. Operational Setup & Financial Liquidation"
+              subtitle="Post-approval controls: Promotional banner, student publishing, attendance scanners, and itemized financial liquidation with receipts"
             />
 
             {isApproved ? (
@@ -1312,10 +1337,10 @@ export default function OfficerEventDetailView({
                       </span>
                     </div>
                     <h4 className="text-sm font-bold text-slate-900 mt-1">
-                      Budget Custodians ("Hold Money") & Activity Operations
+                      Financial Liquidation & Activity Operations
                     </h4>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Subdivide the approved budget to designated committee leads, configure mobile app publishing, and manage ticket scanners.
+                      Manage mobile app publishing, configure ticket scanners, and liquidate actual expenditures with official receipts.
                     </p>
                   </div>
 
@@ -1376,75 +1401,81 @@ export default function OfficerEventDetailView({
                       onClick={() => setIsCashModalOpen(true)}
                       className="px-3 py-2 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
                     >
-                      <Coins className="w-3.5 h-3.5 text-[#FFD41C]" />
-                      <span>Allocate Cash Custodians</span>
+                      <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
+                      <span>Financial Liquidation</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Custodian Summary */}
+                {/* Financial Liquidation Baseline & Status Card */}
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-bold text-slate-700 uppercase tracking-wider">
-                      Designated Cash Custodians ({budgetCustodians.length})
+                    <span className="font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                      <Receipt className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      Financial Liquidation (Form LF-01 Readiness)
                     </span>
                     <span className="font-mono text-slate-600">
-                      Total Allocated: <strong className="text-emerald-700">{formatPHP(totalAllocatedToCustodians)}</strong> / Approved: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount)}</strong>
+                      Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount || totalApprovedBudget)}</strong>
                     </span>
                   </div>
 
-                  {budgetCustodians.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {budgetCustodians.map((c, i) => {
-                        const isContingency = c.isContingencyFund === true;
-                        return (
-                          <div
-                            key={c.id || i}
-                            className={`p-3.5 rounded-xl space-y-1.5 border transition-all ${
-                              isContingency
-                                ? 'bg-amber-50/70 border-amber-300 shadow-2xs'
-                                : 'bg-slate-50 border-slate-200'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-900 truncate">
-                                {c.personName || 'Unassigned Custodian'}
-                              </span>
-                              <span
-                                className={`text-xs font-black font-mono ${
-                                  isContingency ? 'text-amber-800' : 'text-emerald-700'
-                                }`}
-                              >
-                                {formatPHP(c.allocatedAmount || 0)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <p className="text-[11px] text-slate-700 font-medium truncate">
-                                {c.purpose || 'Expense Category'}
-                              </p>
-                              {isContingency && (
-                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold uppercase tracking-wider bg-amber-200/80 text-amber-900 border border-amber-300">
-                                  <Shield className="w-2.5 h-2.5 text-amber-700" />
-                                  Contingency
-                                </span>
-                              )}
-                            </div>
-                            {c.personRole && (
-                              <p className="text-[10px] text-slate-400 truncate">
-                                Role: {c.personRole}
-                              </p>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="bg-slate-50 p-4 rounded-xl border border-dashed border-slate-200 text-center">
-                      <p className="text-xs text-slate-500">
-                        No cash custodians assigned yet. Click <strong>"Allocate Cash Custodians"</strong> above to allocate specific amounts to committee leads before physical disbursement and post-event liquidation.
+                  <div className="p-4 bg-gradient-to-br from-blue-50/70 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-[#001A4D]">
+                          Proposed Expense Baseline Guide
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-300">
+                          Guidance Ceiling
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 max-w-xl">
+                        The proposal budget serves as an approved spending baseline. Click <strong>"Financial Liquidation"</strong> to add your actual purchases line-by-line with official receipts (ORs) and track your remaining balance in real time.
                       </p>
                     </div>
-                  )}
+
+                    <button
+                      type="button"
+                      onClick={() => setIsLiquidationModalOpen(true)}
+                      className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0 ${
+                        isLiquidationApproved
+                          ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                          : isLiquidationSubmitted
+                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                          : isLiquidationReturned
+                          ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                          : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
+                      }`}
+                    >
+                      {isLiquidationApproved ? (
+                        <>
+                          <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                          <span>View Liquidation (Approved)</span>
+                        </>
+                      ) : isLiquidationSubmitted ? (
+                        <>
+                          <Eye className="w-4 h-4 text-blue-200" />
+                          <span>View Liquidation (Under Review)</span>
+                        </>
+                      ) : isLiquidationReturned ? (
+                        <>
+                          <RotateCcw className="w-4 h-4 text-amber-200" />
+                          <span>Revise Liquidation (Returned)</span>
+                        </>
+                      ) : isLiquidationDraft ? (
+                        <>
+                          <Receipt className="w-4 h-4 text-[#FFD41C]" />
+                          <span>Continue Liquidation (Draft)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Receipt className="w-4 h-4 text-[#FFD41C]" />
+                          <span>Open Financial Liquidation</span>
+                        </>
+                      )}
+                      <ChevronRight className="w-3.5 h-3.5 opacity-70" />
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -2102,13 +2133,19 @@ export default function OfficerEventDetailView({
         />
       )}
 
-      {/* 3. CASH CUSTODIANS MODAL */}
-      {isCashModalOpen && (
-        <CashCustodiansModal
-          isOpen={isCashModalOpen}
-          onClose={() => setIsCashModalOpen(false)}
-          activity={event}
-          financialProjections={fullProposal?.financialProjections || (event as any).financialProjections}
+      {/* 3. FINANCIAL LIQUIDATION MODAL */}
+      {isLiquidationModalOpen && (
+        <OfficerLiquidationModal
+          isOpen={isLiquidationModalOpen}
+          onClose={() => setIsLiquidationModalOpen(false)}
+          orgId={event.hostingOrgId || event.organizationId || profile?.activeOrganizationId || 'org'}
+          orgName={event.hostingOrgName || (event as any).organizationName || profile?.activeOrgName || 'Organization'}
+          userUid={profile?.uid || 'user'}
+          userName={profile?.studentName || profile?.displayName || 'Officer'}
+          userRole="officer"
+          isAdviser={Boolean(profile?.isAdviser)}
+          initialEventId={event.id}
+          initialEvent={event}
         />
       )}
     </div>

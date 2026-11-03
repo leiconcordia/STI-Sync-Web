@@ -537,16 +537,16 @@ export function validateStep5(
     budgetItems.forEach((item, idx) => {
       const iNum = idx + 1;
       if (!item.item?.trim()) {
-        errors.push(`Budget Item #${iNum}: Item name / description cannot be blank.`);
-        fieldErrors[`budget_${idx}_item`] = 'Item name is required.';
+        errors.push(`Budget Category #${iNum}: Category name cannot be blank.`);
+        fieldErrors[`budget_${idx}_item`] = 'Category name is required.';
       }
       if (item.quantity !== undefined && Number(item.quantity) < 1) {
-        errors.push(`Budget Item #${iNum}: Quantity must be at least 1.`);
+        errors.push(`Budget Category #${iNum}: Quantity must be at least 1.`);
         fieldErrors[`budget_${idx}_quantity`] = 'Quantity must be at least 1.';
       }
       if (item.unitCost !== undefined && Number(item.unitCost) < 0) {
-        errors.push(`Budget Item #${iNum}: Unit cost cannot be negative.`);
-        fieldErrors[`budget_${idx}_unitCost`] = 'Unit cost cannot be negative.';
+        errors.push(`Budget Category #${iNum}: Baseline amount cannot be negative.`);
+        fieldErrors[`budget_${idx}_unitCost`] = 'Baseline amount cannot be negative.';
       }
       totalProposed += (Number(item.quantity) || 1) * (Number(item.unitCost) || 0);
     });

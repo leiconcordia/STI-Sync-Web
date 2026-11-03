@@ -1,7 +1,7 @@
 import {
   UserCircle, Lock, Calendar, Book,
   Building, Users, CalendarDays,
-  Coins, Files, Archive, FileSignature, ShieldCheck,
+  Coins, Files, Archive, FileSignature, GitBranch,
 } from 'lucide-react';
 
 interface SettingsNavigationProps {
@@ -54,7 +54,7 @@ const navItems = [
   {
     group: 'GOVERNANCE & APPROVALS',
     items: [
-      { id: 'sas-signatory', icon: ShieldCheck, label: 'SAS Signatory Maintenance' },
+      { id: 'approval-workflows', icon: GitBranch, label: 'Default Approval Workflows' },
       { id: 'institutional-signatories', icon: FileSignature, label: 'Institutional Signatories' },
     ]
   },

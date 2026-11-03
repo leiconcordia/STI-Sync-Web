@@ -129,7 +129,7 @@ export default function LiquidationFlowBuilder({
         return true;
       });
 
-      // 3. Synchronize edited names, titles, departments, and permanent flags from database
+      // 3. Synchronize edited names, titles, and departments from database
       filteredSteps = filteredSteps.map((step) => {
         const matched = activeSignatories.find(
           (s) =>
@@ -137,12 +137,10 @@ export default function LiquidationFlowBuilder({
             (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
         );
         if (matched) {
-          const shouldBePermanent = Boolean(matched.isPermanentSigner);
           if (
             (matched.name && matched.name !== step.signatoryName) ||
             (matched.roleTitle && matched.roleTitle !== step.roleTitle) ||
-            (matched.department && matched.department !== step.department) ||
-            step.isPermanent !== shouldBePermanent
+            (matched.department && matched.department !== step.department)
           ) {
             modified = true;
             return {
@@ -150,8 +148,6 @@ export default function LiquidationFlowBuilder({
               signatoryName: matched.name || step.signatoryName,
               roleTitle: matched.roleTitle || step.roleTitle,
               department: matched.department || step.department,
-              isPermanent: shouldBePermanent,
-              isMandatory: shouldBePermanent || step.isMandatory,
             };
           }
         }
@@ -246,60 +242,7 @@ export default function LiquidationFlowBuilder({
     onChange(flattened);
   };
 
-  // Auto-prune Stage 1 SAS clearance if this liquidation is created by SAS/Admin
-  useEffect(() => {
-    if (!isSasCreator || !approvalChain || approvalChain.length === 0) return;
-    const hasSasStage1 = approvalChain.some(
-      (s) =>
-        (s.stageIndex ?? 1) === 1 &&
-        (s.role === 'sas_head' ||
-          (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
-          (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
-          (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
-    );
-    if (hasSasStage1) {
-      const filtered = approvalChain.filter(
-        (s) =>
-          !(
-            (s.stageIndex ?? 1) === 1 &&
-            (s.role === 'sas_head' ||
-              (s.roleTitle && s.roleTitle.toLowerCase().includes('student affairs')) ||
-              (s.signatoryEmail && s.signatoryEmail.toLowerCase().includes('sao@ormoc.sti.edu.ph')) ||
-              (s.stageName && s.stageName.toLowerCase().includes('sas clearance')))
-          )
-      );
-      // Group and reindex
-      const stageMap = new Map<number, LiquidationApprovalStep[]>();
-      filtered.forEach((s) => {
-        const idx = s.stageIndex ?? 1;
-        if (!stageMap.has(idx)) stageMap.set(idx, []);
-        stageMap.get(idx)!.push(s);
-      });
-      const sortedKeys = Array.from(stageMap.keys()).sort((a, b) => a - b);
-      let stepNum = 1;
-      const reindexed: LiquidationApprovalStep[] = [];
-      const newConfigs: { stageIndex: number; stageName: string }[] = [];
-      sortedKeys.forEach((oldIdx, newIdxMinusOne) => {
-        const newStageNum = newIdxMinusOne + 1;
-        const steps = stageMap.get(oldIdx)!;
-        const stageName = steps[0]?.stageName || `Stage ${newStageNum}`;
-        newConfigs.push({ stageIndex: newStageNum, stageName });
-        steps.forEach((st) => {
-          reindexed.push({
-            ...st,
-            step: stepNum++,
-            stageIndex: newStageNum,
-            stageName,
-            status: newStageNum === 1 ? 'current' : 'waiting',
-          });
-        });
-      });
-      setStageConfigs(newConfigs);
-      onChange(reindexed);
-    }
-  }, [isSasCreator, approvalChain, onChange]);
-
-  // 1. Pre-fill Standard Liquidation Pipeline from Maintenance
+  // 1. Pre-fill Standard Liquidation Pipeline from Maintenance / Institutional Settings
   const handleAutoSuggest = async () => {
     const suggested = await generateDefaultLiquidationChain(
       orgId,
@@ -329,6 +272,12 @@ export default function LiquidationFlowBuilder({
 
   // 3. Delete Stage (allows removing any stage)
   const handleDeleteStage = (stageIdx: number) => {
+    const targetStage = stages.find((s) => s.stageIndex === stageIdx);
+    const hasPermanent = targetStage?.steps.some((step) => Boolean(step.isPermanent));
+    if (hasPermanent) {
+      alert(`Cannot delete Stage ${stageIdx} because it contains a permanent institutional signatory configured in settings.`);
+      return;
+    }
     const filtered = stages.filter((s) => s.stageIndex !== stageIdx);
     reindexChain(filtered);
   };
@@ -382,13 +331,15 @@ export default function LiquidationFlowBuilder({
       return;
     }
 
-    // Prevent duplicate within the same stage
-    const existsInStage = stages
-      .find((s) => s.stageIndex === stageIndex)
-      ?.steps.some((s) => s.signatoryUid === signatory.id || (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatory.email || '').toLowerCase()));
+    // Prevent duplicate anywhere in the liquidation pipeline
+    const existsInWorkflow = approvalChain.some(
+      (s) =>
+        s.signatoryUid === signatory.id ||
+        (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (signatory.email || '').toLowerCase())
+    );
 
-    if (existsInStage) {
-      alert(`"${signatory.name}" is already assigned to this stage.`);
+    if (existsInWorkflow) {
+      alert(`"${signatory.name}" is already assigned to this liquidation's approval pipeline.`);
       return;
     }
 
@@ -406,8 +357,6 @@ export default function LiquidationFlowBuilder({
       actionType = 'endorse';
     }
 
-    const isPermanent = Boolean(signatory.isPermanentSigner);
-
     const newStep: LiquidationApprovalStep = {
       id: `liq_step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: approvalChain.length + 1,
@@ -421,8 +370,8 @@ export default function LiquidationFlowBuilder({
       signatoryEmail: signatory.email || '',
       department: signatory.department || '',
       status: stageIndex === 1 ? 'current' : 'waiting',
-      isPermanent,
-      isMandatory: isPermanent,
+      isPermanent: false,
+      isMandatory: false,
     };
 
     const updatedStages = stages.map((stg) => {
@@ -436,8 +385,13 @@ export default function LiquidationFlowBuilder({
     setSelectedSignatoryIdPerStage((prev) => ({ ...prev, [stageIndex]: '' }));
   };
 
-  // 8. Remove Signatory from Stage (allows removing any signatory)
+  // 8. Remove Signatory from Stage (permanent signatories cannot be removed)
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
+    const stepToRemove = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (stepToRemove?.isPermanent) {
+      alert(`"${stepToRemove?.signatoryName || 'This signatory'}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
+      return;
+    }
     const filtered = approvalChain.filter((s) => (s.id ? s.id !== stepIdOrIndex : s.step !== stepIdOrIndex));
     let globalStep = 1;
     const flattened: LiquidationApprovalStep[] = filtered.map((step) => ({
@@ -453,11 +407,22 @@ export default function LiquidationFlowBuilder({
     onChange([]);
   };
 
-  // 10. Cycle Action Type for a specific Step ('check' -> 'endorse' -> 'approve' -> 'check')
+  // 10. Cycle Action Type for a specific Step respecting signatory authority capability
   const handleCycleActionType = (stepIdOrIndex: string | number) => {
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
+        const matched = activeSignatories.find(
+          (sig) => sig.id === s.signatoryUid || (sig.email && sig.email.toLowerCase() === (s.signatoryEmail || '').toLowerCase())
+        );
+        const capability = matched?.actionType;
+        if (capability === 'approver') {
+          return { ...s, actionType: 'approve' as const };
+        }
+        if (capability === 'endorser') {
+          const next = s.actionType === 'check' ? 'endorse' : 'check';
+          return { ...s, actionType: next as const };
+        }
         let nextAction: 'check' | 'endorse' | 'approve' = 'endorse';
         if (s.actionType === 'check') nextAction = 'endorse';
         else if (s.actionType === 'endorse') nextAction = 'approve';
@@ -698,6 +663,10 @@ export default function LiquidationFlowBuilder({
                       stage.steps.map((step, stepIdx) => {
                         const isApprover = step.actionType === 'approve' || step.role === 'school_president';
                         const isChecker = step.actionType === 'check' || step.role === 'accountant';
+                        const matchedSig = activeSignatories.find(
+                          (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
+                        );
+                        const isStepPermanent = Boolean(step.isPermanent);
 
                         return (
                           <div
@@ -716,13 +685,13 @@ export default function LiquidationFlowBuilder({
                                   <span className="text-[11px] text-slate-500 font-normal">
                                     ({step.signatoryEmail})
                                   </span>
-                                  {step.isPermanent && (
-                                    <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
-                                      <ShieldCheck className="w-3 h-3 text-blue-600" />
-                                      <span>Institutional Signer</span>
+                                  {isStepPermanent && (
+                                    <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-300 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
+                                      <Lock className="w-3 h-3 text-amber-600" />
+                                      <span>Permanent</span>
                                     </span>
                                   )}
-                                  {step.isMandatory && !step.isPermanent && (
+                                  {step.isMandatory && !isStepPermanent && (
                                     <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-900 border border-blue-200 text-[10px] font-bold flex items-center gap-1 shadow-2xs">
                                       <Check className="w-3 h-3 text-blue-600" />
                                       <span>Required Role</span>
@@ -776,15 +745,24 @@ export default function LiquidationFlowBuilder({
                                 </span>
                               </button>
 
-                              {/* Remove Signatory Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveSignatory(step.id || step.step)}
-                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                title="Remove signatory from this stage"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {/* Remove Signatory Button or Lock Indicator */}
+                              {isStepPermanent ? (
+                                <span
+                                  className="p-1.5 rounded-lg text-amber-600 bg-amber-50 border border-amber-200"
+                                  title="Permanent Signatory (locked in institutional settings)"
+                                >
+                                  <Lock className="w-3.5 h-3.5" />
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveSignatory(step.id || step.step)}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                                  title="Remove signatory from this stage"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         );
@@ -806,7 +784,14 @@ export default function LiquidationFlowBuilder({
                         >
                           <option value="">+ Choose an Institutional Signatory to Add to Stage {stage.stageIndex}...</option>
                           {activeSignatories
-                            .filter((sig) => sig.isActive !== false && isSignatoryApplicableTo(sig, 'liquidation'))
+                            .filter((sig) => {
+                              if (sig.isActive === false) return false;
+                              if (!isSignatoryApplicableTo(sig, 'liquidation')) return false;
+                              const isAlreadyAssigned = approvalChain.some(
+                                (s) => s.signatoryUid === sig.id || (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
+                              );
+                              return !isAlreadyAssigned;
+                            })
                             .map((sig) => (
                               <option key={sig.id} value={sig.id}>
                                 {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''}
