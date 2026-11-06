@@ -28,6 +28,7 @@ import {
   Trash2,
   Tag,
   Award,
+  Ban,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -69,6 +70,51 @@ import {
   type SignatoryLabelDocument,
   type CreateSignatoryLabelPayload,
 } from '../../../modules/signatories';
+
+export type DocumentAuthorityLevel = 'cannot_sign' | 'endorser' | 'approver';
+
+export interface DocumentWorkflowConfig {
+  key: WorkflowDocumentType;
+  title: string;
+  code: string;
+  badge: string;
+  description: string;
+}
+
+export const DOCUMENT_WORKFLOW_CONFIGS: DocumentWorkflowConfig[] = [
+  {
+    key: 'proposal',
+    title: 'ACTIVITY PROPOSALS (AP-01)',
+    code: 'AP-01',
+    badge: 'Events & Programs',
+    description: 'Student activities, campus events, and organizational initiatives.',
+  },
+  {
+    key: 'liquidation',
+    title: 'FINANCIAL LIQUIDATIONS (FL-01)',
+    code: 'FL-01',
+    badge: 'Cash & Expenses',
+    description: 'Expense receipts, cash advance liquidation, and financial audits.',
+  },
+  {
+    key: 'par',
+    title: 'POST-ACTIVITY REPORTS (PAR-01)',
+    code: 'PAR-01',
+    badge: 'Outcome & Metrics',
+    description: 'Post-event documentation, student attendance, and evaluation.',
+  },
+];
+
+export const getDocAuthority = (
+  workflows: WorkflowDocumentType[] | undefined,
+  canApprove: boolean | undefined,
+  doc: WorkflowDocumentType
+): DocumentAuthorityLevel => {
+  if (!workflows || !workflows.includes(doc)) {
+    return 'cannot_sign';
+  }
+  return canApprove ? 'approver' : 'endorser';
+};
 
 export default function InstitutionalSignatoryManagement() {
   const { profile } = useAdviserProfile();
@@ -285,17 +331,79 @@ export default function InstitutionalSignatoryManagement() {
     }
   };
 
-  // ─── Signatory Label Maintenance Handlers ───
+  // ─── Signatory Label Validation & Maintenance Handlers ───
+  const validateSignatoryLabelFormat = (
+    label: string
+  ): { isValid: boolean; formatted: string; error?: string } => {
+    const trimmed = label.trim();
+    if (!trimmed) {
+      return { isValid: false, formatted: '', error: 'Please enter a label type.' };
+    }
+
+    // Must end with a colon ':' (e.g. "prepared by:", "Checked by:")
+    if (!trimmed.endsWith(':')) {
+      return {
+        isValid: false,
+        formatted: trimmed,
+        error: 'Invalid format. Label must end with a colon (e.g. "prepared by:" or "Reviewed by:").',
+      };
+    }
+
+    const textBeforeColon = trimmed.slice(0, -1).trim();
+    if (textBeforeColon.length < 2) {
+      return {
+        isValid: false,
+        formatted: trimmed,
+        error: 'Label text before the colon must be at least 2 characters.',
+      };
+    }
+
+    if (!/^[A-Za-z0-9\s\/\-_&()]+:$/.test(trimmed)) {
+      return {
+        isValid: false,
+        formatted: trimmed,
+        error: 'Label can only contain letters, numbers, spaces, and hyphens ending with a colon (e.g. "prepared by:").',
+      };
+    }
+
+    return { isValid: true, formatted: trimmed };
+  };
+
+  const isDuplicateLabelName = (
+    candidateLabel: string,
+    excludeId?: string
+  ): boolean => {
+    const cleanCandidate = candidateLabel.trim().toLowerCase();
+    return signatoryLabels.some((item) => {
+      if (excludeId && item.id === excludeId) return false;
+      return item.label.trim().toLowerCase() === cleanCandidate;
+    });
+  };
+
   const handleCreateLabelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!labelFormData.label.trim()) {
-      toast.error('Please enter the formal label text (e.g. "Reviewed by:").');
+    const validation = validateSignatoryLabelFormat(labelFormData.label);
+    if (!validation.isValid) {
+      toast.error(validation.error || 'Invalid label format.');
       return;
     }
+
+    if (isDuplicateLabelName(validation.formatted)) {
+      toast.error(`A label named "${validation.formatted}" already exists. Duplicate names are not allowed.`);
+      return;
+    }
+
     setIsLabelSubmitting(true);
     try {
-      await createSignatoryLabel(labelFormData);
-      toast.success(`Label "${labelFormData.label.trim()}" added successfully!`);
+      await createSignatoryLabel({
+        label: validation.formatted,
+        isApproverLabel: labelFormData.isApproverLabel,
+        actionType: labelFormData.isApproverLabel ? 'approve' : 'endorse',
+        description: labelFormData.isApproverLabel ? 'Executive document approval' : 'Institutional endorsement and review',
+        orderIndex: signatoryLabels.length + 1,
+        isActive: true,
+      });
+      toast.success(`Label "${validation.formatted}" added successfully!`);
       setIsAddLabelModalOpen(false);
       setLabelFormData({
         label: '',
@@ -314,41 +422,34 @@ export default function InstitutionalSignatoryManagement() {
 
   const handleEditLabelSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingLabel || !editingLabel.label.trim()) {
-      toast.error('Please enter the formal label text.');
+    if (!editingLabel) return;
+
+    const validation = validateSignatoryLabelFormat(editingLabel.label);
+    if (!validation.isValid) {
+      toast.error(validation.error || 'Invalid label format.');
       return;
     }
+
+    if (isDuplicateLabelName(validation.formatted, editingLabel.id)) {
+      toast.error(`A label named "${validation.formatted}" already exists. Duplicate names are not allowed.`);
+      return;
+    }
+
     setIsLabelSubmitting(true);
     try {
       await updateSignatoryLabel(editingLabel.id, {
-        label: editingLabel.label,
-        description: editingLabel.description,
-        actionType: editingLabel.actionType,
+        label: validation.formatted,
         isApproverLabel: editingLabel.isApproverLabel,
+        actionType: editingLabel.isApproverLabel ? 'approve' : 'endorse',
+        description: editingLabel.isApproverLabel ? 'Executive document approval' : 'Institutional endorsement and review',
         isActive: editingLabel.isActive,
       });
-      toast.success(`Label "${editingLabel.label}" updated successfully.`);
+      toast.success(`Label "${validation.formatted}" updated successfully.`);
       setEditingLabel(null);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to update label.');
     } finally {
       setIsLabelSubmitting(false);
-    }
-  };
-
-  const handleDeleteLabel = async (label: SignatoryLabelDocument) => {
-    if (label.isSystemDefault) {
-      toast.error('Official system default labels cannot be deleted. You can deactivate them instead.');
-      return;
-    }
-    if (!confirm(`Are you sure you want to delete the custom label "${label.label}"?`)) {
-      return;
-    }
-    try {
-      await deleteSignatoryLabel(label.id);
-      toast.success(`Label "${label.label}" deleted.`);
-    } catch (err: any) {
-      toast.error(err?.message || 'Failed to delete label.');
     }
   };
 
@@ -366,10 +467,87 @@ export default function InstitutionalSignatoryManagement() {
     if (!q) return true;
     return (
       l.label.toLowerCase().includes(q) ||
-      (l.description && l.description.toLowerCase().includes(q)) ||
-      l.actionType.toLowerCase().includes(q)
+      (l.isApproverLabel ? 'approver' : 'endorser').includes(q)
     );
   });
+
+  // ─── Document Authority Matrix Handlers ───
+  const handleAddDocAuthorityChange = (
+    doc: WorkflowDocumentType,
+    level: DocumentAuthorityLevel
+  ) => {
+    const curWorkflows = formData.applicableWorkflows || [];
+    let nextWorkflows: WorkflowDocumentType[];
+    if (level === 'cannot_sign') {
+      nextWorkflows = curWorkflows.filter((w) => w !== doc);
+    } else {
+      nextWorkflows = curWorkflows.includes(doc) ? curWorkflows : [...curWorkflows, doc];
+    }
+
+    const nextCanApproveProposal =
+      doc === 'proposal'
+        ? level === 'approver'
+        : Boolean(formData.canApproveProposal && nextWorkflows.includes('proposal'));
+    const nextCanApproveLiquidation =
+      doc === 'liquidation'
+        ? level === 'approver'
+        : Boolean(formData.canApproveLiquidation && nextWorkflows.includes('liquidation'));
+    const nextCanApprovePar =
+      doc === 'par'
+        ? level === 'approver'
+        : Boolean(formData.canApprovePar && nextWorkflows.includes('par'));
+
+    const hasAnyApprover =
+      nextCanApproveProposal || nextCanApproveLiquidation || nextCanApprovePar;
+
+    setFormData({
+      ...formData,
+      applicableWorkflows: nextWorkflows,
+      canApproveProposal: nextCanApproveProposal,
+      canApproveLiquidation: nextCanApproveLiquidation,
+      canApprovePar: nextCanApprovePar,
+      actionType: hasAnyApprover ? 'approver' : 'endorser',
+    });
+  };
+
+  const handleEditDocAuthorityChange = (
+    doc: WorkflowDocumentType,
+    level: DocumentAuthorityLevel
+  ) => {
+    if (!editingSignatory) return;
+    const curWorkflows = editingSignatory.applicableWorkflows || [];
+    let nextWorkflows: WorkflowDocumentType[];
+    if (level === 'cannot_sign') {
+      nextWorkflows = curWorkflows.filter((w) => w !== doc);
+    } else {
+      nextWorkflows = curWorkflows.includes(doc) ? curWorkflows : [...curWorkflows, doc];
+    }
+
+    const nextCanApproveProposal =
+      doc === 'proposal'
+        ? level === 'approver'
+        : Boolean(editingSignatory.canApproveProposal && nextWorkflows.includes('proposal'));
+    const nextCanApproveLiquidation =
+      doc === 'liquidation'
+        ? level === 'approver'
+        : Boolean(editingSignatory.canApproveLiquidation && nextWorkflows.includes('liquidation'));
+    const nextCanApprovePar =
+      doc === 'par'
+        ? level === 'approver'
+        : Boolean(editingSignatory.canApprovePar && nextWorkflows.includes('par'));
+
+    const hasAnyApprover =
+      nextCanApproveProposal || nextCanApproveLiquidation || nextCanApprovePar;
+
+    setEditingSignatory({
+      ...editingSignatory,
+      applicableWorkflows: nextWorkflows,
+      canApproveProposal: nextCanApproveProposal,
+      canApproveLiquidation: nextCanApproveLiquidation,
+      canApprovePar: nextCanApprovePar,
+      actionType: hasAnyApprover ? 'approver' : 'endorser',
+    });
+  };
 
   const handleAddSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -383,14 +561,31 @@ export default function InstitutionalSignatoryManagement() {
     const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');
     const finalWorkflows: WorkflowDocumentType[] = isAccountantRole
       ? ['liquidation']
-      : (formData.applicableWorkflows && formData.applicableWorkflows.length > 0
-          ? formData.applicableWorkflows
-          : ['proposal', 'liquidation', 'par']);
+      : (formData.applicableWorkflows || []);
+
+    if (finalWorkflows.length === 0) {
+      toast.error('Please configure at least one document type for this signatory (Endorser or Approver).');
+      return;
+    }
+
+    const canApproveProp = finalWorkflows.includes('proposal') && Boolean(formData.canApproveProposal);
+    const canApproveLiq = finalWorkflows.includes('liquidation') && Boolean(formData.canApproveLiquidation);
+    const canApprovePar = finalWorkflows.includes('par') && Boolean(formData.canApprovePar);
+    const hasAnyApprover = canApproveProp || canApproveLiq || canApprovePar;
+
     const finalScope: SignatoryDocumentScope = isAccountantRole
       ? 'liquidation_only'
-      : (finalWorkflows.length === 3 ? 'all' : (finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation' ? 'liquidation_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal' ? 'proposal_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'par' ? 'par' : 'both'));
+      : (finalWorkflows.length === 3
+          ? 'all'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation'
+          ? 'liquidation_only'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal'
+          ? 'proposal_only'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'par'
+          ? 'par'
+          : 'both');
 
-    const isApprover = formData.actionType === 'approver' || formData.actionType === 'approve';
+    const isApprover = hasAnyApprover;
 
     setIsSubmitting(true);
     try {
@@ -403,10 +598,10 @@ export default function InstitutionalSignatoryManagement() {
           applicableScope: finalScope,
           applicableWorkflows: finalWorkflows,
           isPermanentSigner: false,
-          defaultSignatoryLabel: formData.defaultSignatoryLabel || (isApprover ? 'Approved by:' : 'Endorsed by:'),
-          canApproveProposal: isApprover ? Boolean(formData.canApproveProposal) : false,
-          canApproveLiquidation: isApprover ? Boolean(formData.canApproveLiquidation) : false,
-          canApprovePar: isApprover ? Boolean(formData.canApprovePar) : false,
+          defaultSignatoryLabel: isApprover ? 'Approved by:' : 'Endorsed by:',
+          canApproveProposal: canApproveProp,
+          canApproveLiquidation: canApproveLiq,
+          canApprovePar: canApprovePar,
         },
         profile?.uid || 'admin'
       );
@@ -443,14 +638,31 @@ export default function InstitutionalSignatoryManagement() {
     const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');
     const finalWorkflows: WorkflowDocumentType[] = isAccountantRole
       ? ['liquidation']
-      : (editingSignatory.applicableWorkflows && editingSignatory.applicableWorkflows.length > 0
-          ? editingSignatory.applicableWorkflows
-          : ['proposal', 'liquidation', 'par']);
+      : (editingSignatory.applicableWorkflows || []);
+
+    if (finalWorkflows.length === 0) {
+      toast.error('Please configure at least one document type for this signatory (Endorser or Approver).');
+      return;
+    }
+
+    const canApproveProp = finalWorkflows.includes('proposal') && Boolean(editingSignatory.canApproveProposal);
+    const canApproveLiq = finalWorkflows.includes('liquidation') && Boolean(editingSignatory.canApproveLiquidation);
+    const canApprovePar = finalWorkflows.includes('par') && Boolean(editingSignatory.canApprovePar);
+    const hasAnyApprover = canApproveProp || canApproveLiq || canApprovePar;
+
     const finalScope: SignatoryDocumentScope = isAccountantRole
       ? 'liquidation_only'
-      : (finalWorkflows.length === 3 ? 'all' : (finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation' ? 'liquidation_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal' ? 'proposal_only' : finalWorkflows.length === 1 && finalWorkflows[0] === 'par' ? 'par' : 'both'));
+      : (finalWorkflows.length === 3
+          ? 'all'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'liquidation'
+          ? 'liquidation_only'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'proposal'
+          ? 'proposal_only'
+          : finalWorkflows.length === 1 && finalWorkflows[0] === 'par'
+          ? 'par'
+          : 'both');
 
-    const isApprover = editingSignatory.actionType === 'approver' || editingSignatory.actionType === 'approve';
+    const isApprover = hasAnyApprover;
 
     setIsSubmitting(true);
     try {
@@ -465,10 +677,10 @@ export default function InstitutionalSignatoryManagement() {
         department: editingSignatory.department || '',
         departmentId: editingSignatory.departmentId || '',
         isPermanentSigner: Boolean(editingSignatory.isPermanentSigner),
-        defaultSignatoryLabel: editingSignatory.defaultSignatoryLabel || (isApprover ? 'Approved by:' : 'Endorsed by:'),
-        canApproveProposal: isApprover ? Boolean(editingSignatory.canApproveProposal) : false,
-        canApproveLiquidation: isApprover ? Boolean(editingSignatory.canApproveLiquidation) : false,
-        canApprovePar: isApprover ? Boolean(editingSignatory.canApprovePar) : false,
+        defaultSignatoryLabel: isApprover ? 'Approved by:' : 'Endorsed by:',
+        canApproveProposal: canApproveProp,
+        canApproveLiquidation: canApproveLiq,
+        canApprovePar: canApprovePar,
       });
       toast.success('Signatory details updated successfully.');
       setEditingSignatory(null);
@@ -809,44 +1021,60 @@ export default function InstitutionalSignatoryManagement() {
 
                     {/* Authority Capability */}
                     <td className="py-3.5 px-4">
-                      {sig.actionType === 'approver' || sig.actionType === 'approve' || sig.role === 'school_president' ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-emerald-50 text-emerald-800 text-xs font-bold rounded-lg border border-emerald-200">
-                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                          Approver Only
-                        </span>
-                      ) : sig.actionType === 'both' ? (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 text-purple-800 text-xs font-bold rounded-lg border border-purple-200">
-                          <SlidersHorizontal className="w-3.5 h-3.5 text-purple-600" />
-                          Both (Endorser & Approver)
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-sky-50 text-sky-800 text-xs font-bold rounded-lg border border-sky-200">
-                          <FileSignature className="w-3.5 h-3.5 text-sky-600" />
-                          Endorser Only
-                        </span>
-                      )}
-                      <div className="flex flex-wrap items-center gap-1 mt-1.5">
-                        {sig.defaultSignatoryLabel && (
+                      <div className="flex flex-col gap-1">
+                        {DOCUMENT_WORKFLOW_CONFIGS.map((doc) => {
+                          const level = getDocAuthority(
+                            sig.applicableWorkflows,
+                            doc.key === 'proposal'
+                              ? sig.canApproveProposal
+                              : doc.key === 'liquidation'
+                              ? sig.canApproveLiquidation
+                              : sig.canApprovePar,
+                            doc.key
+                          );
+
+                          if (level === 'cannot_sign') {
+                            return (
+                              <span
+                                key={doc.key}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-400 w-fit line-through"
+                              >
+                                {doc.code}: Cannot Sign
+                              </span>
+                            );
+                          }
+
+                          if (level === 'approver') {
+                            return (
+                              <span
+                                key={doc.key}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 w-fit shadow-2xs"
+                              >
+                                <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                                {doc.code}: Approver
+                              </span>
+                            );
+                          }
+
+                          return (
+                            <span
+                              key={doc.key}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-sky-50 text-sky-800 border border-sky-200 w-fit"
+                            >
+                              <FileSignature className="w-3 h-3 text-sky-600" />
+                              {doc.code}: Endorser
+                            </span>
+                          );
+                        })}
+                      </div>
+
+                      {sig.defaultSignatoryLabel && (
+                        <div className="mt-1.5">
                           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
                             🏷️ {sig.defaultSignatoryLabel}
                           </span>
-                        )}
-                        {sig.canApproveProposal && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">
-                            AP Approver
-                          </span>
-                        )}
-                        {sig.canApproveLiquidation && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-900">
-                            FL Approver
-                          </span>
-                        )}
-                        {sig.canApprovePar && (
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-900">
-                            PAR Approver
-                          </span>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </td>
 
                     {/* Workflow Scope */}
@@ -1006,72 +1234,52 @@ export default function InstitutionalSignatoryManagement() {
               <table className="w-full text-left text-xs">
                 <thead className="bg-gray-50/80 border-b border-gray-200 text-gray-700 uppercase tracking-wider text-[11px] font-bold">
                   <tr>
-                    <th className="py-3 px-4">Label Type</th>
-                    <th className="py-3 px-4">Authority Category</th>
-                    <th className="py-3 px-4">Action Type</th>
-                    <th className="py-3 px-4">Context / Document Usage</th>
-                    <th className="py-3 px-4">System Tier</th>
-                    <th className="py-3 px-4 text-center">Status</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
+                    <th className="py-3.5 px-6">Label Type</th>
+                    <th className="py-3.5 px-6">Authority Classification</th>
+                    <th className="py-3.5 px-6 text-center">Status</th>
+                    <th className="py-3.5 px-6 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {labelsLoading ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-gray-400 font-medium">
+                      <td colSpan={4} className="py-8 text-center text-gray-400 font-medium">
                         Loading signatory labels...
                       </td>
                     </tr>
                   ) : filteredLabels.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-8 text-center text-gray-400 font-medium">
+                      <td colSpan={4} className="py-8 text-center text-gray-400 font-medium">
                         No signatory labels match your search.
                       </td>
                     </tr>
                   ) : (
                     filteredLabels.map((lbl) => (
                       <tr key={lbl.id} className="hover:bg-gray-50/60 transition-colors">
-                        <td className="py-3.5 px-4 font-bold text-gray-900">
+                        <td className="py-3.5 px-6 font-bold text-gray-900">
                           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-slate-100 text-slate-900 border border-slate-300 text-xs shadow-2xs font-bold">
                             <Tag className="w-3.5 h-3.5 text-blue-600" />
                             <span>{lbl.label}</span>
                           </span>
                         </td>
-                        <td className="py-3.5 px-4">
+                        <td className="py-3.5 px-6">
                           {lbl.isApproverLabel ? (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold text-[10px] uppercase tracking-wider shadow-2xs">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold text-[11px] uppercase tracking-wider shadow-2xs">
                               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                               Approver
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-50 text-sky-800 border border-sky-300 font-bold text-[10px] uppercase tracking-wider shadow-2xs">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 text-sky-800 border border-sky-300 font-bold text-[11px] uppercase tracking-wider shadow-2xs">
                               <FileSignature className="w-3.5 h-3.5 text-sky-600" />
                               Endorser
                             </span>
                           )}
                         </td>
-                        <td className="py-3.5 px-4 font-semibold text-gray-700 capitalize">
-                          {lbl.actionType}
-                        </td>
-                        <td className="py-3.5 px-4 text-gray-600 max-w-xs">
-                          {lbl.description || '—'}
-                        </td>
-                        <td className="py-3.5 px-4">
-                          {lbl.isSystemDefault ? (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                              STI Official Default
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                              Custom Added
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3.5 px-4 text-center">
+                        <td className="py-3.5 px-6 text-center">
                           <button
                             type="button"
                             onClick={() => handleToggleLabelStatus(lbl)}
-                            className={`px-2.5 py-1 rounded-full text-[10px] font-bold transition-all cursor-pointer ${
+                            className={`px-3 py-1 rounded-full text-[11px] font-bold transition-all cursor-pointer ${
                               lbl.isActive
                                 ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
                                 : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
@@ -1080,27 +1288,15 @@ export default function InstitutionalSignatoryManagement() {
                             {lbl.isActive ? 'Active' : 'Inactive'}
                           </button>
                         </td>
-                        <td className="py-3.5 px-4 text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <button
-                              type="button"
-                              onClick={() => setEditingLabel({ ...lbl })}
-                              className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                              title="Edit Label"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            {!lbl.isSystemDefault && (
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteLabel(lbl)}
-                                className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                                title="Delete Custom Label"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            )}
-                          </div>
+                        <td className="py-3.5 px-6 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setEditingLabel({ ...lbl })}
+                            className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                            title="Edit Label"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
                         </td>
                       </tr>
                     ))
@@ -1115,379 +1311,260 @@ export default function InstitutionalSignatoryManagement() {
       {/* ── MODAL: Add Institutional Signatory ── */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
             {/* Modal Header */}
-            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white">
+            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white flex-shrink-0">
               <div className="flex items-center gap-2">
                 <FileSignature className="w-5 h-5 text-[#FFD41C]" />
                 <h3 className="font-bold text-lg">Add Institutional Signatory</h3>
               </div>
               <button
+                type="button"
                 onClick={() => setIsAddModalOpen(false)}
-                className="p-1 text-gray-400 hover:text-white rounded-lg transition-colors"
+                className="p-1 text-gray-400 hover:text-white rounded-lg transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Modal Form */}
-            <form onSubmit={handleAddSubmit} className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Full Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Rona Mira B. Lucañas"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Official Institutional Email *
-                </label>
-                <input
-                  type="email"
-                  required
-                  placeholder="e.g. rona.lucanas@sti.edu"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                />
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Login credentials and approval notifications will be dispatched to this email address.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Signatory Role / Position Title *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. IT Program Head, School President, Guidance Counselor, SHS Assistant Principal"
-                  value={formData.roleTitle}
-                  onChange={(e) => setFormData({ ...formData, roleTitle: e.target.value })}
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                />
-                <p className="text-[11px] text-gray-500 mt-1">
-                  The formal title that appears beneath the signature line on official documents, proposals, and printouts.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Academic Department / Office Assignment
-                </label>
-                <select
-                  value={formData.departmentId || ''}
-                  onChange={(e) => {
-                    const deptId = e.target.value;
-                    const deptObj = activeDepartments.find((d) => d.id === deptId);
-                    setFormData({
-                      ...formData,
-                      departmentId: deptId,
-                      department: deptObj ? deptObj.name : '',
-                    });
-                  }}
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                >
-                  <option value="">None / Institutional (Campus-Wide)</option>
-                  {activeDepartments.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      [{d.academicLevel || 'College'}] {d.code} — {d.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Assign to an academic department so this signatory is automatically required when an activity targets this department's students.
-                </p>
-              </div>
-
-              {/* Action Capability: Endorser Only vs Approver */}
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Signatory Authority *
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      formData.actionType === 'endorser' || formData.actionType === 'endorse' || !formData.actionType
-                        ? 'bg-sky-50 border-sky-400 ring-2 ring-sky-200 shadow-2xs'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="actionTypeAdd"
-                      value="endorser"
-                      checked={formData.actionType === 'endorser' || formData.actionType === 'endorse' || !formData.actionType}
-                      onChange={() =>
-                        setFormData({
-                          ...formData,
-                          actionType: 'endorser',
-                          canApproveProposal: false,
-                          canApproveLiquidation: false,
-                          canApprovePar: false,
-                        })
-                      }
-                      className="mt-0.5 text-sky-600 focus:ring-sky-500"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900 flex items-center gap-1.5">
-                        <FileSignature className="w-4 h-4 text-sky-600" />
-                        <span>Endorser Only</span>
-                      </div>
-                      <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
-                        Vets, checks, and endorses document workflows. Cannot grant final approval.
-                      </div>
-                    </div>
+            <form onSubmit={handleAddSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              {/* Scrollable Form Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                    Full Name *
                   </label>
-
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      formData.actionType === 'approver' || formData.actionType === 'approve'
-                        ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-200 shadow-2xs'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="actionTypeAdd"
-                      value="approver"
-                      checked={formData.actionType === 'approver' || formData.actionType === 'approve'}
-                      onChange={() =>
-                        setFormData({
-                          ...formData,
-                          actionType: 'approver',
-                          canApproveProposal: true,
-                          canApproveLiquidation: true,
-                          canApprovePar: true,
-                        })
-                      }
-                      className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900 flex items-center gap-1.5">
-                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        <span>Approver</span>
-                      </div>
-                      <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
-                        Has executive authority to grant final institutional approval.
-                      </div>
-                    </div>
-                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Rona Mira B. Lucañas"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                  />
                 </div>
 
-                {/* Granular Document Approval Authority when Approver is selected */}
-                {(formData.actionType === 'approver' || formData.actionType === 'approve') && (
-                  <div className="mt-3 p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
-                    <span className="text-[10px] font-bold text-emerald-950 uppercase tracking-wider block">
-                      Approved Document Types (Executive Authority)
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(formData.canApproveProposal)}
-                          onChange={(e) => setFormData({ ...formData, canApproveProposal: e.target.checked })}
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve Proposals (AP)</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(formData.canApproveLiquidation)}
-                          onChange={(e) => setFormData({ ...formData, canApproveLiquidation: e.target.checked })}
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve Liquidations (FL)</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(formData.canApprovePar)}
-                          onChange={(e) => setFormData({ ...formData, canApprovePar: e.target.checked })}
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve PAR</span>
-                      </label>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Document Workflow Scope */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider">
-                    Document Workflow Scope *
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                    Official Institutional Email *
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const all: WorkflowDocumentType[] = ['proposal', 'liquidation', 'par'];
-                      const current = formData.applicableWorkflows || [];
-                      const next = current.length === 3 ? ['liquidation'] : all;
-                      setFormData({ ...formData, applicableWorkflows: next });
+                  <input
+                    type="email"
+                    required
+                    placeholder="e.g. rona.lucanas@sti.edu"
+                    value={formData.email}
+                    onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Login credentials and approval notifications will be dispatched to this email address.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                    Signatory Role / Position Title *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. IT Program Head, School President, Guidance Counselor, SHS Assistant Principal"
+                    value={formData.roleTitle}
+                    onChange={(e) => setFormData({ ...formData, roleTitle: e.target.value })}
+                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    The formal title that appears beneath the signature line on official documents, proposals, and printouts.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
+                    Academic Department / Office Assignment
+                  </label>
+                  <select
+                    value={formData.departmentId || ''}
+                    onChange={(e) => {
+                      const deptId = e.target.value;
+                      const deptObj = activeDepartments.find((d) => d.id === deptId);
+                      setFormData({
+                        ...formData,
+                        departmentId: deptId,
+                        department: deptObj ? deptObj.name : '',
+                      });
                     }}
-                    className="text-[11px] text-[#0E4EBD] hover:underline font-semibold"
+                    className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
                   >
-                    {(formData.applicableWorkflows || []).length === 3 ? 'Deselect All' : 'Select All Workflows'}
-                  </button>
+                    <option value="">None / Institutional (Campus-Wide)</option>
+                    {activeDepartments.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        [{d.academicLevel || 'College'}] {d.code} — {d.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Assign to an academic department so this signatory is automatically required when an activity targets this department's students.
+                  </p>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {/* Activity Proposal */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (formData.applicableWorkflows || []).includes('proposal')
-                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(formData.applicableWorkflows || []).includes('proposal')}
-                      onChange={(e) => {
-                        const cur = formData.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'proposal'] : cur.filter((w) => w !== 'proposal');
-                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Activity Proposals</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form AP-01 (Events & activities).
-                      </div>
-                    </div>
-                  </label>
-
-                  {/* Financial Liquidation */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (formData.applicableWorkflows || []).includes('liquidation')
-                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(formData.applicableWorkflows || []).includes('liquidation')}
-                      onChange={(e) => {
-                        const cur = formData.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'liquidation'] : cur.filter((w) => w !== 'liquidation');
-                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Financial Liquidations</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form FL-01 (Cash & expense audit).
-                      </div>
-                    </div>
-                  </label>
-
-                  {/* Post-Activity Report */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (formData.applicableWorkflows || []).includes('par')
-                        ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(formData.applicableWorkflows || []).includes('par')}
-                      onChange={(e) => {
-                        const cur = formData.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'par'] : cur.filter((w) => w !== 'par');
-                        setFormData({ ...formData, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-purple-600 rounded border-gray-300 focus:ring-purple-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Post-Activity Reports</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form PAR-01 (Documentation & outcome).
-                      </div>
-                    </div>
-                  </label>
-                </div>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Select which document workflows (AP, FL, PAR) this signatory is authorized to review or endorse.
-                </p>
-              </div>
-
-              {/* Default Formal Document Label */}
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Default Formal Document Label
-                </label>
-                <select
-                  value={formData.defaultSignatoryLabel || (formData.actionType === 'approver' ? 'Approved by:' : 'Endorsed by:')}
-                  onChange={(e) => setFormData({ ...formData, defaultSignatoryLabel: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent bg-white font-medium"
-                >
-                  {activeLabels.map((lbl) => (
-                    <option key={lbl.id} value={lbl.label}>
-                      {lbl.label} ({lbl.description || (lbl.isApproverLabel ? 'Approver' : 'Endorser')})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Default formal label appearing above this signatory's signature on official documents.
-                </p>
-              </div>
-
-              {/* Temporary Password Display */}
-              <div className="bg-[#f4f6fb] border border-[#d0d7e8] rounded-xl p-3.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-bold text-[#001A4D]">
-                    <Key className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                    Temporary Password
+                {/* Document Signing & Authority Matrix */}
+                <div className="space-y-3 pt-1">
+                  <div>
+                    <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-0.5">
+                      Document Signing & Authority Configuration *
+                    </label>
+                    <p className="text-[11px] text-gray-500">
+                      Configure authority per document type: Cannot Sign, Endorser Only, or Approver.
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, temporaryPassword: generateTemporaryPassword() })
-                    }
-                    className="text-[11px] text-[#0E4EBD] hover:underline flex items-center gap-1 font-medium"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Regenerate
-                  </button>
+
+                  <div className="space-y-2.5">
+                    {DOCUMENT_WORKFLOW_CONFIGS.map((doc) => {
+                      const currentLevel = getDocAuthority(
+                        formData.applicableWorkflows,
+                        doc.key === 'proposal'
+                          ? formData.canApproveProposal
+                          : doc.key === 'liquidation'
+                          ? formData.canApproveLiquidation
+                          : formData.canApprovePar,
+                        doc.key
+                      );
+
+                      return (
+                        <div
+                          key={doc.key}
+                          className={`p-3.5 rounded-2xl border transition-all ${
+                            currentLevel === 'approver'
+                              ? 'bg-emerald-50/60 border-emerald-300 ring-1 ring-emerald-200'
+                              : currentLevel === 'endorser'
+                              ? 'bg-sky-50/60 border-sky-300 ring-1 ring-sky-200'
+                              : 'bg-gray-50/70 border-gray-200'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2.5">
+                            <span className="font-bold text-xs text-[#001A4D] tracking-wide">
+                              {doc.title}
+                            </span>
+                            <span className="text-[10px] font-semibold text-gray-500">
+                              {doc.description}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-2">
+                            {/* Cannot Sign */}
+                            <label
+                              className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                                currentLevel === 'cannot_sign'
+                                  ? 'bg-slate-200 border-slate-400 text-slate-800 font-bold shadow-2xs'
+                                  : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`authority_${doc.key}_add`}
+                                value="cannot_sign"
+                                checked={currentLevel === 'cannot_sign'}
+                                onChange={() => handleAddDocAuthorityChange(doc.key, 'cannot_sign')}
+                                className="text-slate-600 focus:ring-slate-500 cursor-pointer"
+                              />
+                              <span className="flex items-center gap-1.5">
+                                <Ban className="w-3.5 h-3.5 text-slate-500 hidden sm:inline" />
+                                <span>Cannot Sign</span>
+                              </span>
+                            </label>
+
+                            {/* Endorser Only */}
+                            <label
+                              className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                                currentLevel === 'endorser'
+                                  ? 'bg-sky-100 border-sky-400 text-sky-950 font-bold shadow-2xs ring-1 ring-sky-300'
+                                  : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`authority_${doc.key}_add`}
+                                value="endorser"
+                                checked={currentLevel === 'endorser'}
+                                onChange={() => handleAddDocAuthorityChange(doc.key, 'endorser')}
+                                className="text-sky-600 focus:ring-sky-500 cursor-pointer"
+                              />
+                              <span className="flex items-center gap-1.5">
+                                <FileSignature className="w-3.5 h-3.5 text-sky-600 hidden sm:inline" />
+                                <span>Endorser Only</span>
+                              </span>
+                            </label>
+
+                            {/* Approver */}
+                            <label
+                              className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                                currentLevel === 'approver'
+                                  ? 'bg-emerald-100 border-emerald-500 text-emerald-950 font-bold shadow-2xs ring-1 ring-emerald-300'
+                                  : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name={`authority_${doc.key}_add`}
+                                value="approver"
+                                checked={currentLevel === 'approver'}
+                                onChange={() => handleAddDocAuthorityChange(doc.key, 'approver')}
+                                className="text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                              />
+                              <span className="flex items-center gap-1.5">
+                                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 hidden sm:inline" />
+                                <span>Approver</span>
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="mt-1 font-mono font-bold text-[#001A4D] text-sm bg-white px-3 py-1.5 rounded-lg border border-gray-200">
-                  {formData.temporaryPassword}
+
+                {/* Temporary Password Display */}
+                <div className="bg-[#f4f6fb] border border-[#d0d7e8] rounded-xl p-3.5">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 text-xs font-bold text-[#001A4D]">
+                      <Key className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      Temporary Password
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData({ ...formData, temporaryPassword: generateTemporaryPassword() })
+                      }
+                      className="text-[11px] text-[#0E4EBD] hover:underline flex items-center gap-1 font-medium cursor-pointer"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Regenerate
+                    </button>
+                  </div>
+                  <div className="mt-1 font-mono font-bold text-[#001A4D] text-sm bg-white px-3 py-1.5 rounded-lg border border-gray-200">
+                    {formData.temporaryPassword}
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    The user will be prompted to change this password and upload their official e-signature upon their first login at{' '}
+                    <span className="font-semibold">/portal/login</span>.
+                  </p>
                 </div>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  The user will be prompted to change this password and upload their official e-signature upon their first login at{' '}
-                  <span className="font-semibold">/portal/login</span>.
-                </p>
               </div>
 
-              {/* Footer Actions */}
-              <div className="flex justify-end gap-3 pt-3 border-t border-gray-100">
+              {/* Sticky Footer Actions */}
+              <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/90 flex-shrink-0">
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50 transition-colors"
+                  className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="px-5 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-sm font-bold rounded-lg shadow-sm transition-all disabled:opacity-50 flex items-center gap-2"
+                  className="px-5 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-sm font-bold rounded-lg shadow-sm transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
                 >
                   {isSubmitting ? (
                     <>
@@ -1510,18 +1587,24 @@ export default function InstitutionalSignatoryManagement() {
       {/* ── MODAL: Edit Signatory Details ── */}
       {editingSignatory && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-gray-100">
-            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white">
-              <h3 className="font-bold text-lg">Edit Signatory Details</h3>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-[#FFD41C]" />
+                <h3 className="font-bold text-lg">Edit Signatory Details</h3>
+              </div>
               <button
+                type="button"
                 onClick={() => setEditingSignatory(null)}
-                className="p-1 text-gray-400 hover:text-white rounded-lg transition-colors"
+                className="p-1 text-gray-400 hover:text-white rounded-lg transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleEditSubmit} className="p-6 space-y-4">
+            <form onSubmit={handleEditSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+              {/* Scrollable Form Body */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-4">
               <div>
                 <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
                   Full Name
@@ -1585,269 +1668,148 @@ export default function InstitutionalSignatoryManagement() {
                 </p>
               </div>
 
-              {/* Action Capability: Endorser Only vs Approver */}
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Signatory Authority *
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      editingSignatory.actionType === 'endorser' || editingSignatory.actionType === 'endorse' || !editingSignatory.actionType
-                        ? 'bg-sky-50 border-sky-400 ring-2 ring-sky-200 shadow-2xs'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="actionTypeEdit"
-                      value="endorser"
-                      checked={editingSignatory.actionType === 'endorser' || editingSignatory.actionType === 'endorse' || !editingSignatory.actionType}
-                      onChange={() =>
-                        setEditingSignatory({
-                          ...editingSignatory,
-                          actionType: 'endorser',
-                          canApproveProposal: false,
-                          canApproveLiquidation: false,
-                          canApprovePar: false,
-                        })
-                      }
-                      className="mt-0.5 text-sky-600 focus:ring-sky-500"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900 flex items-center gap-1.5">
-                        <FileSignature className="w-4 h-4 text-sky-600" />
-                        <span>Endorser Only</span>
-                      </div>
-                      <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
-                        Can only vet and endorse document workflows.
-                      </div>
-                    </div>
+              {/* Document Signing & Authority Matrix */}
+              <div className="space-y-3 pt-1">
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-0.5">
+                    Document Signing & Authority Configuration *
                   </label>
-
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      editingSignatory.actionType === 'approver' || editingSignatory.actionType === 'approve'
-                        ? 'bg-emerald-50 border-emerald-400 ring-2 ring-emerald-200 shadow-2xs'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="actionTypeEdit"
-                      value="approver"
-                      checked={editingSignatory.actionType === 'approver' || editingSignatory.actionType === 'approve'}
-                      onChange={() =>
-                        setEditingSignatory({
-                          ...editingSignatory,
-                          actionType: 'approver',
-                          canApproveProposal: editingSignatory.canApproveProposal ?? true,
-                          canApproveLiquidation: editingSignatory.canApproveLiquidation ?? true,
-                          canApprovePar: editingSignatory.canApprovePar ?? true,
-                        })
-                      }
-                      className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900 flex items-center gap-1.5">
-                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                        <span>Approver</span>
-                      </div>
-                      <div className="text-[11px] text-gray-500 mt-0.5 leading-snug">
-                        Has executive authority to grant final institutional approval.
-                      </div>
-                    </div>
-                  </label>
+                  <p className="text-[11px] text-gray-500">
+                    Configure authority per document type: Cannot Sign, Endorser Only, or Approver.
+                  </p>
                 </div>
 
-                {/* Granular Document Approval Authority when Approver is selected */}
-                {(editingSignatory.actionType === 'approver' || editingSignatory.actionType === 'approve') && (
-                  <div className="mt-3 p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl space-y-2">
-                    <span className="text-[10px] font-bold text-emerald-950 uppercase tracking-wider block">
-                      Approved Document Types (Executive Authority)
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(editingSignatory.canApproveProposal)}
-                          onChange={(e) =>
-                            setEditingSignatory({ ...editingSignatory, canApproveProposal: e.target.checked })
-                          }
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve Proposals (AP)</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(editingSignatory.canApproveLiquidation)}
-                          onChange={(e) =>
-                            setEditingSignatory({ ...editingSignatory, canApproveLiquidation: e.target.checked })
-                          }
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve Liquidations (FL)</span>
-                      </label>
-                      <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(editingSignatory.canApprovePar)}
-                          onChange={(e) =>
-                            setEditingSignatory({ ...editingSignatory, canApprovePar: e.target.checked })
-                          }
-                          className="w-3.5 h-3.5 text-emerald-600 rounded border-emerald-300 focus:ring-emerald-500"
-                        />
-                        <span>Approve PAR</span>
-                      </label>
-                    </div>
-                  </div>
+                <div className="space-y-2.5">
+                  {DOCUMENT_WORKFLOW_CONFIGS.map((doc) => {
+                    const currentLevel = getDocAuthority(
+                      editingSignatory.applicableWorkflows,
+                      doc.key === 'proposal'
+                        ? editingSignatory.canApproveProposal
+                        : doc.key === 'liquidation'
+                        ? editingSignatory.canApproveLiquidation
+                        : editingSignatory.canApprovePar,
+                      doc.key
+                    );
+
+                    return (
+                      <div
+                        key={doc.key}
+                        className={`p-3.5 rounded-2xl border transition-all ${
+                          currentLevel === 'approver'
+                            ? 'bg-emerald-50/60 border-emerald-300 ring-1 ring-emerald-200'
+                            : currentLevel === 'endorser'
+                            ? 'bg-sky-50/60 border-sky-300 ring-1 ring-sky-200'
+                            : 'bg-gray-50/70 border-gray-200'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2.5">
+                          <span className="font-bold text-xs text-[#001A4D] tracking-wide">
+                            {doc.title}
+                          </span>
+                          <span className="text-[10px] font-semibold text-gray-500">
+                            {doc.description}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-2">
+                          {/* Cannot Sign */}
+                          <label
+                            className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                              currentLevel === 'cannot_sign'
+                                ? 'bg-slate-200 border-slate-400 text-slate-800 font-bold shadow-2xs'
+                                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`authority_${doc.key}_edit`}
+                              value="cannot_sign"
+                              checked={currentLevel === 'cannot_sign'}
+                              onChange={() => handleEditDocAuthorityChange(doc.key, 'cannot_sign')}
+                              className="text-slate-600 focus:ring-slate-500 cursor-pointer"
+                            />
+                            <span className="flex items-center gap-1.5">
+                              <Ban className="w-3.5 h-3.5 text-slate-500 hidden sm:inline" />
+                              <span>Cannot Sign</span>
+                            </span>
+                          </label>
+
+                          {/* Endorser Only */}
+                          <label
+                            className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                              currentLevel === 'endorser'
+                                ? 'bg-sky-100 border-sky-400 text-sky-950 font-bold shadow-2xs ring-1 ring-sky-300'
+                                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`authority_${doc.key}_edit`}
+                              value="endorser"
+                              checked={currentLevel === 'endorser'}
+                              onChange={() => handleEditDocAuthorityChange(doc.key, 'endorser')}
+                              className="text-sky-600 focus:ring-sky-500 cursor-pointer"
+                            />
+                            <span className="flex items-center gap-1.5">
+                              <FileSignature className="w-3.5 h-3.5 text-sky-600 hidden sm:inline" />
+                              <span>Endorser Only</span>
+                            </span>
+                          </label>
+
+                          {/* Approver */}
+                          <label
+                            className={`flex items-center justify-center sm:justify-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition-all ${
+                              currentLevel === 'approver'
+                                ? 'bg-emerald-100 border-emerald-500 text-emerald-950 font-bold shadow-2xs ring-1 ring-emerald-300'
+                                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`authority_${doc.key}_edit`}
+                              value="approver"
+                              checked={currentLevel === 'approver'}
+                              onChange={() => handleEditDocAuthorityChange(doc.key, 'approver')}
+                              className="text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                            />
+                            <span className="flex items-center gap-1.5">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 hidden sm:inline" />
+                              <span>Approver</span>
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Sticky Footer Actions */}
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-gray-50/90 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setEditingSignatory(null)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-5 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-sm font-bold rounded-lg shadow-sm transition-all disabled:opacity-50 flex items-center gap-2 cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Saving Changes...
+                  </>
+                ) : (
+                  'Save Changes'
                 )}
-              </div>
-
-              {/* Document Workflow Scope */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider">
-                    Document Workflow Scope *
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const all: WorkflowDocumentType[] = ['proposal', 'liquidation', 'par'];
-                      const current = editingSignatory.applicableWorkflows || [];
-                      const next = current.length === 3 ? ['liquidation'] : all;
-                      setEditingSignatory({ ...editingSignatory, applicableWorkflows: next });
-                    }}
-                    className="text-[11px] text-[#0E4EBD] hover:underline font-semibold"
-                  >
-                    {(editingSignatory.applicableWorkflows || []).length === 3 ? 'Deselect All' : 'Select All Workflows'}
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {/* Activity Proposal */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (editingSignatory.applicableWorkflows || []).includes('proposal')
-                        ? 'bg-indigo-50 border-indigo-400 ring-2 ring-indigo-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(editingSignatory.applicableWorkflows || []).includes('proposal')}
-                      onChange={(e) => {
-                        const cur = editingSignatory.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'proposal'] : cur.filter((w) => w !== 'proposal');
-                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-indigo-600 rounded border-gray-300 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Activity Proposals</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form AP-01 (Events & activities).
-                      </div>
-                    </div>
-                  </label>
-
-                  {/* Financial Liquidation */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (editingSignatory.applicableWorkflows || []).includes('liquidation')
-                        ? 'bg-amber-50 border-amber-400 ring-2 ring-amber-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(editingSignatory.applicableWorkflows || []).includes('liquidation')}
-                      onChange={(e) => {
-                        const cur = editingSignatory.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'liquidation'] : cur.filter((w) => w !== 'liquidation');
-                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-amber-600 rounded border-gray-300 focus:ring-amber-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Financial Liquidations</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form FL-01 (Cash & expense audit).
-                      </div>
-                    </div>
-                  </label>
-
-                  {/* Post-Activity Report */}
-                  <label
-                    className={`flex items-start gap-2.5 p-3 rounded-xl border text-xs cursor-pointer transition-all ${
-                      (editingSignatory.applicableWorkflows || []).includes('par')
-                        ? 'bg-purple-50 border-purple-400 ring-2 ring-purple-200'
-                        : 'bg-white border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={(editingSignatory.applicableWorkflows || []).includes('par')}
-                      onChange={(e) => {
-                        const cur = editingSignatory.applicableWorkflows || [];
-                        const next = e.target.checked ? [...cur, 'par'] : cur.filter((w) => w !== 'par');
-                        setEditingSignatory({ ...editingSignatory, applicableWorkflows: next as WorkflowDocumentType[] });
-                      }}
-                      className="mt-0.5 text-purple-600 rounded border-gray-300 focus:ring-purple-500 cursor-pointer"
-                    />
-                    <div>
-                      <div className="font-bold text-gray-900">Post-Activity Reports</div>
-                      <div className="text-[10px] text-gray-500 mt-0.5 leading-snug">
-                        Form PAR-01 (Documentation & outcome).
-                      </div>
-                    </div>
-                  </label>
-                </div>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Determines whether this signatory appears in Activity Proposals, Financial Liquidations, or Post-Activity Reports.
-                </p>
-              </div>
-
-              {/* Default Formal Document Label */}
-              <div>
-                <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                  Default Formal Document Label
-                </label>
-                <select
-                  value={editingSignatory.defaultSignatoryLabel || (editingSignatory.actionType === 'approver' ? 'Approved by:' : 'Endorsed by:')}
-                  onChange={(e) => setEditingSignatory({ ...editingSignatory, defaultSignatoryLabel: e.target.value })}
-                  className="w-full px-3 py-2 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent bg-white font-medium"
-                >
-                  {activeLabels.map((lbl) => (
-                    <option key={lbl.id} value={lbl.label}>
-                      {lbl.label} ({lbl.description || (lbl.isApproverLabel ? 'Approver' : 'Endorser')})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] text-gray-500 mt-1">
-                  Default formal label appearing above this signatory's signature on official documents.
-                </p>
-              </div>
-
-
-              <div className="flex justify-end gap-3 pt-3 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingSignatory(null)}
-                  className="px-4 py-2 border border-gray-300 text-gray-700 text-sm font-semibold rounded-lg hover:bg-gray-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-5 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-sm font-bold rounded-lg shadow-sm disabled:opacity-50"
-                >
-                  Save Changes
-                </button>
-              </div>
-            </form>
+              </button>
+            </div>
+          </form>
           </div>
         </div>
       )}
@@ -1952,18 +1914,18 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleCreateLabelSubmit} className="p-6 space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Label Text *
+                  Label Type *
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Reviewed by: or Audited by:"
+                  placeholder="e.g. prepared by:"
                   value={labelFormData.label}
                   onChange={(e) => setLabelFormData({ ...labelFormData, label: e.target.value })}
                   className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-semibold text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
                 />
                 <p className="text-[11px] text-gray-500 mt-1">
-                  The exact prefix that will appear above the signatory's signature.
+                  Must follow formal format ending with a colon (e.g. <span className="font-mono font-bold text-gray-700">prepared by:</span> or <span className="font-mono font-bold text-gray-700">Checked by:</span>).
                 </p>
               </div>
 
@@ -2013,35 +1975,6 @@ export default function InstitutionalSignatoryManagement() {
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Underlying Workflow Action
-                </label>
-                <select
-                  value={labelFormData.actionType}
-                  onChange={(e) => setLabelFormData({ ...labelFormData, actionType: e.target.value as any })}
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20"
-                >
-                  <option value="endorse">Endorse (Standard Review & Routing)</option>
-                  <option value="check">Check (Auditor / Accountant Verification)</option>
-                  <option value="approve">Approve (Final Executive Activation)</option>
-                  <option value="note">Note (Administrative Notification)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Context / Usage Guidance
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. IT Department technical compliance review"
-                  value={labelFormData.description}
-                  onChange={(e) => setLabelFormData({ ...labelFormData, description: e.target.value })}
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20"
-                />
-              </div>
-
               <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
                 <button
                   type="button"
@@ -2083,15 +2016,19 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleEditLabelSubmit} className="p-6 space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Label Text *
+                  Label Type *
                 </label>
                 <input
                   type="text"
                   required
+                  placeholder="e.g. prepared by:"
                   value={editingLabel.label}
                   onChange={(e) => setEditingLabel({ ...editingLabel, label: e.target.value })}
                   className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-semibold text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
                 />
+                <p className="text-[11px] text-gray-500 mt-1">
+                  Must follow formal format ending with a colon (e.g. <span className="font-mono font-bold text-gray-700">prepared by:</span> or <span className="font-mono font-bold text-gray-700">Checked by:</span>).
+                </p>
               </div>
 
               <div>
@@ -2105,7 +2042,7 @@ export default function InstitutionalSignatoryManagement() {
                       setEditingLabel({
                         ...editingLabel,
                         isApproverLabel: false,
-                        actionType: editingLabel.actionType === 'approve' ? 'endorse' : editingLabel.actionType,
+                        actionType: 'endorse',
                       })
                     }
                     className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
@@ -2138,34 +2075,6 @@ export default function InstitutionalSignatoryManagement() {
                     <span className="text-[10px] font-normal text-gray-500">Executive Approval</span>
                   </button>
                 </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Underlying Workflow Action
-                </label>
-                <select
-                  value={editingLabel.actionType}
-                  onChange={(e) => setEditingLabel({ ...editingLabel, actionType: e.target.value as any })}
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20"
-                >
-                  <option value="endorse">Endorse (Standard Review & Routing)</option>
-                  <option value="check">Check (Auditor / Accountant Verification)</option>
-                  <option value="approve">Approve (Final Executive Activation)</option>
-                  <option value="note">Note (Administrative Notification)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Context / Usage Guidance
-                </label>
-                <input
-                  type="text"
-                  value={editingLabel.description}
-                  onChange={(e) => setEditingLabel({ ...editingLabel, description: e.target.value })}
-                  className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-[#001A4D]/20"
-                />
               </div>
 
               <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">

@@ -163,8 +163,8 @@ export function isSignatoryApplicableTo(
     return false;
   }
 
-  // 1. Check array if explicitly set
-  if (Array.isArray(sig.applicableWorkflows) && sig.applicableWorkflows.length > 0) {
+  // 1. Check array if explicitly set (even if empty, which means Cannot Sign on all workflows)
+  if (Array.isArray(sig.applicableWorkflows)) {
     return sig.applicableWorkflows.includes(formType as WorkflowDocumentType);
   }
 

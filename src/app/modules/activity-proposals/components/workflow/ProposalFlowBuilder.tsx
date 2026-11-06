@@ -692,15 +692,13 @@ export default function ProposalFlowBuilder({
       return;
     }
 
-    const rawCap = signatory.actionType || (signatory.role === 'school_president' ? 'approver' : 'endorser');
-    let actionType: SignatoryActionType = 'endorse';
-    if (rawCap === 'approver' || rawCap === 'approve') {
-      actionType = 'approve';
-    } else if (rawCap === 'endorser' || rawCap === 'endorse') {
-      actionType = 'endorse';
-    } else {
-      actionType = stageIndex === stages.length ? 'approve' : 'endorse';
-    }
+    const canApprove = Boolean(
+      signatory.canApproveProposal ||
+      signatory.role === 'school_president' ||
+      signatory.role === 'school_administrator' ||
+      signatory.actionType === 'approver'
+    );
+    const actionType: SignatoryActionType = canApprove ? 'approve' : 'endorse';
 
     const newStep: ProposalApprovalStep = {
       id: `prop_step_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -856,7 +854,28 @@ export default function ProposalFlowBuilder({
     onChange(updated);
   };
 
-  // 11. Toggle Action Type for a specific Step
+  // 11. Set Action Type for a specific Step
+  const handleSetActionType = (stepIdOrIndex: string | number, newAction: SignatoryActionType) => {
+    const stepTarget = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (
+      isOfficerProposal &&
+      newAction === 'approve' &&
+      (stepTarget?.stageIndex === 1 || stepTarget?.role === 'sas_head' || stepTarget?.role === 'sas_coordinator')
+    ) {
+      alert('Stage 1 SAS review is strictly an Endorsement action. Final executive approval occurs in Stage 4.');
+      return;
+    }
+    const updated = approvalChain.map((s) => {
+      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+      if (match) {
+        return { ...s, actionType: newAction };
+      }
+      return s;
+    });
+    onChange(updated);
+  };
+
+  // 12. Toggle Action Type for a specific Step
   const handleToggleActionType = (stepIdOrIndex: string | number) => {
     const stepTarget = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
     if (
@@ -1150,6 +1169,15 @@ export default function ProposalFlowBuilder({
                       );
                       const isLockedSigner = isBuiltinFixedSasSigner || isPermanentSigner;
 
+                      const canSignerApprove = Boolean(
+                        matchedSig?.canApproveProposal ||
+                        matchedSig?.role === 'school_president' ||
+                        matchedSig?.role === 'school_administrator' ||
+                        step.role === 'school_president' ||
+                        step.role === 'school_administrator' ||
+                        isUserAddedStep
+                      );
+
                       return (
                         <div
                           key={step.id || `${stage.stageIndex}_${stepIdx}`}
@@ -1198,6 +1226,36 @@ export default function ProposalFlowBuilder({
                           </div>
 
                           <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                            {/* Action Type Toggle (Endorse vs Approve) */}
+                            <div className="flex items-center gap-1 bg-white p-0.5 rounded-xl border border-slate-300 shadow-2xs">
+                              <button
+                                type="button"
+                                onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                                  step.actionType === 'endorse'
+                                    ? 'bg-sky-600 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                                }`}
+                              >
+                                Endorse
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!canSignerApprove}
+                                onClick={() => handleSetActionType(step.id || step.step, 'approve')}
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all ${
+                                  !canSignerApprove ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                                } ${
+                                  step.actionType === 'approve'
+                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                                }`}
+                                title={!canSignerApprove ? 'This signatory does not have approval authority for Activity Proposals' : 'Designate as executive Approver'}
+                              >
+                                Approve
+                              </button>
+                            </div>
+
                             {/* Dynamic Formal Document Label Selector */}
                             <div className="flex items-center gap-1.5 flex-shrink-0">
                               <select
@@ -1395,12 +1453,13 @@ export default function ProposalFlowBuilder({
                               return !isAlreadyAssigned;
                             })
                             .map((sig) => {
-                              const capLabel =
-                                sig.actionType === 'both'
-                                  ? 'Both (Endorser/Approver)'
-                                  : sig.actionType === 'approver' || sig.role === 'school_president'
-                                  ? 'Approver Only'
-                                  : 'Endorser Only';
+                              const canApprove = Boolean(
+                                sig.canApproveProposal ||
+                                sig.role === 'school_president' ||
+                                sig.role === 'school_administrator'
+                              );
+                              const capLabel = canApprove ? 'Approver' : 'Endorser Only';
+
                               return (
                                 <option key={sig.id} value={sig.id}>
                                   {sig.name} — {sig.roleTitle} [{capLabel}]

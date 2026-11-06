@@ -28,10 +28,12 @@ import {
   Sparkles,
   Layers,
   Info,
+  Ban,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { changeSignatoryPassword } from '../../auth/services/password.service';
 import DigitalSignatureModal from '../components/DigitalSignatureModal';
+import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 
 interface ContextType {
   session: any;
@@ -60,6 +62,10 @@ export default function SignatoryAccountPage() {
   const isApprover = session?.actionType === 'approve';
   const isAuditor = session?.actionType === 'check';
   const authorityLevel = isApprover ? 'Institutional Approver' : isAuditor ? 'Financial Auditor' : 'Institutional Endorser';
+
+  const canAccessProp = session ? isSignatoryApplicableTo(session, 'proposal') : true;
+  const canAccessLiq = session ? isSignatoryApplicableTo(session, 'liquidation') : true;
+  const canAccessPar = session ? isSignatoryApplicableTo(session, 'par') : true;
 
   // Password strength checks
   const hasMinLength = newPassword.length >= 8;
@@ -255,7 +261,7 @@ export default function SignatoryAccountPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
+            <div className={`p-4 rounded-xl border space-y-2 ${canAccessProp ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200/60 bg-slate-100/50 opacity-75'}`}>
               <div className="flex items-center gap-2 text-[#0E4EBD]">
                 <FileText className="w-4 h-4" />
                 <span className="text-xs font-bold text-slate-800">Activity Proposals</span>
@@ -263,13 +269,20 @@ export default function SignatoryAccountPage() {
               <p className="text-[11px] text-slate-500 leading-snug">
                 Event permits, objectives, venue clearances, and budget projections.
               </p>
-              <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Authorized</span>
-              </div>
+              {canAccessProp ? (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Authorized ({session?.canApproveProposal ? 'Approver' : 'Endorser'})</span>
+                </div>
+              ) : (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
+                  <Ban className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Cannot Sign</span>
+                </div>
+              )}
             </div>
 
-            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
+            <div className={`p-4 rounded-xl border space-y-2 ${canAccessLiq ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200/60 bg-slate-100/50 opacity-75'}`}>
               <div className="flex items-center gap-2 text-[#0E4EBD]">
                 <FileSpreadsheet className="w-4 h-4" />
                 <span className="text-xs font-bold text-slate-800">Financial Liquidations</span>
@@ -277,13 +290,20 @@ export default function SignatoryAccountPage() {
               <p className="text-[11px] text-slate-500 leading-snug">
                 Disbursements, official receipts inspection, variance & surplus auditing.
               </p>
-              <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Authorized</span>
-              </div>
+              {canAccessLiq ? (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Authorized ({session?.canApproveLiquidation ? 'Approver' : 'Endorser'})</span>
+                </div>
+              ) : (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
+                  <Ban className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Cannot Sign</span>
+                </div>
+              )}
             </div>
 
-            <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
+            <div className={`p-4 rounded-xl border space-y-2 ${canAccessPar ? 'border-slate-200 bg-slate-50/70' : 'border-slate-200/60 bg-slate-100/50 opacity-75'}`}>
               <div className="flex items-center gap-2 text-[#0E4EBD]">
                 <FileCheck2 className="w-4 h-4" />
                 <span className="text-xs font-bold text-slate-800">Post-Activity Reports</span>
@@ -291,10 +311,17 @@ export default function SignatoryAccountPage() {
               <p className="text-[11px] text-slate-500 leading-snug">
                 Post-event evaluation, photo proof galleries, verified turnout certification.
               </p>
-              <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Authorized</span>
-              </div>
+              {canAccessPar ? (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-emerald-700">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Authorized ({session?.canApprovePar ? 'Approver' : 'Endorser'})</span>
+                </div>
+              ) : (
+                <div className="pt-1 flex items-center gap-1.5 text-[11px] font-bold text-slate-400">
+                  <Ban className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Cannot Sign</span>
+                </div>
+              )}
             </div>
           </div>
 

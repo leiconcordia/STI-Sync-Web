@@ -8,6 +8,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate, Navigate, NavLink, useLocation } from 'react-router';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '../../../services/firebase';
+import {
+  isSignatoryApplicableTo,
+  getSignatoryAuthorizedWorkflows,
+} from '../../modules/signatories/types/signatory.types';
 import {
   LayoutDashboard,
   FileText,
@@ -54,6 +60,39 @@ export default function SignatoryLayout() {
       }
     }
   }, []);
+
+  // Real-time synchronization of signatory record from Firestore
+  useEffect(() => {
+    if (!session?.id) return;
+    const unsub = onSnapshot(
+      doc(db, 'institutional_signatories', session.id),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const workflows = getSignatoryAuthorizedWorkflows(data as any);
+          setSession((prev: any) => {
+            if (!prev) return prev;
+            const updated = {
+              ...prev,
+              ...data,
+              id: docSnap.id,
+              applicableWorkflows: workflows,
+              applicableScope: data.applicableScope,
+              canApproveProposal: data.canApproveProposal ?? (data.actionType === 'approver'),
+              canApproveLiquidation: data.canApproveLiquidation ?? (data.actionType === 'approver'),
+              canApprovePar: data.canApprovePar ?? (data.actionType === 'approver'),
+            };
+            localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(updated));
+            return updated;
+          });
+        }
+      },
+      (err) => {
+        console.warn('Signatory live sync warning:', err);
+      }
+    );
+    return () => unsub();
+  }, [session?.id]);
 
   const handleLogout = () => {
     localStorage.removeItem(SIGNATORY_SESSION_KEY);
@@ -110,38 +149,69 @@ export default function SignatoryLayout() {
   const hasSignature = Boolean(session?.signatureUrl || session?.signatureDataUrl);
   const isTempPassActive = Boolean(session?.requiresPasswordChange);
 
+  // Dynamic workflow access capabilities
+  const canAccessProposal = session ? isSignatoryApplicableTo(session, 'proposal') : true;
+  const canAccessLiquidation = session ? isSignatoryApplicableTo(session, 'liquidation') : true;
+  const canAccessPAR = session ? isSignatoryApplicableTo(session, 'par') : true;
+
+  // Primary authorized fallback route for unauthorized document page visits
+  const defaultFallbackRoute = canAccessLiquidation
+    ? '/signatory/liquidations'
+    : canAccessProposal
+    ? '/signatory/proposals'
+    : canAccessPAR
+    ? '/signatory/post-activity-reports'
+    : '/signatory/dashboard';
+
+  // Guard direct unauthorized URL accesses
+  if (session && location.pathname.startsWith('/signatory/proposals') && !canAccessProposal) {
+    return <Navigate to={defaultFallbackRoute} replace />;
+  }
+  if (session && location.pathname.startsWith('/signatory/liquidations') && !canAccessLiquidation) {
+    return <Navigate to={defaultFallbackRoute} replace />;
+  }
+  if (session && location.pathname.startsWith('/signatory/post-activity-reports') && !canAccessPAR) {
+    return <Navigate to={defaultFallbackRoute} replace />;
+  }
+
   const navLinks = [
     {
       to: '/signatory/dashboard',
       label: 'Dashboard',
       icon: LayoutDashboard,
+      visible: true,
     },
     {
       to: '/signatory/proposals',
       label: 'Activity Proposals',
       icon: FileText,
+      visible: canAccessProposal,
     },
     {
       to: '/signatory/liquidations',
       label: 'Financial Liquidation',
       icon: FileSpreadsheet,
+      visible: canAccessLiquidation,
     },
     {
       to: '/signatory/post-activity-reports',
       label: 'Post-Activity Reports',
       icon: FileCheck2,
+      visible: canAccessPAR,
     },
     {
       to: '/signatory/reports',
       label: 'Campus Reports',
       icon: BarChart3,
+      visible: true,
     },
     {
       to: '/signatory/account',
       label: 'Account & Settings',
       icon: UserCheck,
+      visible: true,
     },
-  ];
+  ].filter((item) => item.visible);
 
   return (
     <div className="min-h-screen bg-[#F4F6F9] text-slate-800 flex flex-col md:flex-row antialiased">
@@ -329,6 +399,9 @@ export default function SignatoryLayout() {
               setSession,
               onOpenSignatureModal: () => setIsSignatureModalOpen(true),
               onOpenPasswordModal: () => setIsPasswordModalOpen(true),
+              canAccessProposal,
+              canAccessLiquidation,
+              canAccessPAR,
             }}
           />
         </div>

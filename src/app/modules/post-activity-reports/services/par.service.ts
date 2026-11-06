@@ -169,7 +169,7 @@ export async function generateDefaultPARSignatoryChain(
       const isPermanent = Boolean(tpl.isPermanent);
       const isMandatory = Boolean(tpl.isMandatory || isPermanent);
 
-      const resolvedLabel = (tpl as any).signatoryLabel || matched?.defaultSignatoryLabel || resolveSignatoryLabel({ role: resolvedRole, roleTitle: resolvedRoleTitle, actionType: tpl.actionType } as any, 'par', idx === templates.length - 1);
+      const resolvedLabel = (tpl as any).signatoryLabel || matched?.defaultSignatoryLabel || resolveSignatoryLabel({ role: resolvedRole, roleTitle: resolvedRoleTitle, actionType: tpl.actionType } as any, 'par', idx === configuredTemplate.length - 1);
 
       chain.push({
         id: tpl.id || `par_step_${idx + 1}`,

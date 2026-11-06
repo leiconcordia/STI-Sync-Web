@@ -363,6 +363,21 @@ export default function PARFlowBuilder({
     reindexAndPropagate(updated);
   };
 
+  // Set action type (endorse vs approve) for a specific step
+  const handleSetActionType = (stepIdOrIndex: string | number, newAction: 'endorse' | 'approve') => {
+    const updated = approvalChain.map((s) => {
+      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+      if (match) {
+        return {
+          ...s,
+          actionType: newAction,
+        };
+      }
+      return s;
+    });
+    reindexAndPropagate(updated);
+  };
+
   // Move signatory up or down within their stage
   const handleMoveSignatory = (stepIdOrIndex: string | number, direction: 'up' | 'down') => {
     const idx = approvalChain.findIndex((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
@@ -409,11 +424,12 @@ export default function PARFlowBuilder({
     const stageConfig = stageConfigs.find((sc) => sc.stageIndex === stageIndex);
     const stageName = stageConfig?.stageName || `Stage ${stageIndex}: Post-Activity Review`;
 
-    const isApprover =
+    const canApprove = Boolean(
+      signatory.canApprovePar ||
       signatory.role === 'school_president' ||
       signatory.role === 'school_administrator' ||
-      signatory.role === 'sas_head' ||
-      signatory.actionType === 'approver';
+      signatory.actionType === 'approver'
+    );
 
     const newStep: PARApprovalStep = {
       id: `par_step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -422,7 +438,7 @@ export default function PARFlowBuilder({
       stageName,
       role: signatory.role || 'signatory',
       roleTitle: signatory.roleTitle || signatory.title || 'Institutional Signatory',
-      actionType: isApprover ? 'approve' : 'endorse',
+      actionType: canApprove ? 'approve' : 'endorse',
       signatoryUid: signatory.uid || signatory.id,
       signatoryName: signatory.name,
       signatoryEmail: signatory.email,
@@ -681,13 +697,19 @@ export default function PARFlowBuilder({
                       </div>
                     ) : (
                       stage.steps.map((step, stepIdx) => {
-                        const isApprover = step.actionType === 'approve' || step.role === 'school_president';
-                        const isChecker = step.actionType === 'check';
                         const matchedSig = activeSignatories.find(
                           (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                         );
                         const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('par_step_') || step.id?.startsWith('step-'));
                         const isStepPermanent = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
+                        const canSignerApprove = Boolean(
+                          matchedSig?.canApprovePar ||
+                          matchedSig?.role === 'school_president' ||
+                          matchedSig?.role === 'school_administrator' ||
+                          step.role === 'school_president' ||
+                          step.role === 'school_administrator' ||
+                          (matchedSig?.actionType === 'approver' && matchedSig?.canApprovePar !== false)
+                        );
 
                         return (
                           <div
@@ -730,7 +752,41 @@ export default function PARFlowBuilder({
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0 flex-wrap">
+                              {/* Action Type Toggle: Endorse vs Approve */}
+                              <div className="flex items-center rounded-lg p-0.5 bg-slate-100 border border-slate-200">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                    step.actionType === 'endorse' || step.actionType === 'check' || !step.actionType
+                                      ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Endorse
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!canSignerApprove}
+                                  onClick={() => handleSetActionType(step.id || step.step, 'approve')}
+                                  title={
+                                    !canSignerApprove
+                                      ? 'This signatory is an Endorser Only for Post-Activity Reports and cannot be set as Approver.'
+                                      : 'Set as Approver'
+                                  }
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
+                                    step.actionType === 'approve'
+                                      ? 'bg-emerald-600 text-white shadow-2xs'
+                                      : canSignerApprove
+                                      ? 'text-slate-600 hover:text-slate-900 cursor-pointer'
+                                      : 'text-slate-300 opacity-40 cursor-not-allowed'
+                                  }`}
+                                >
+                                  Approve
+                                </button>
+                              </div>
+
                               {/* Dynamic Formal Document Label Selector */}
                               <div className="flex items-center gap-1.5 flex-shrink-0">
                                 <select
@@ -833,11 +889,14 @@ export default function PARFlowBuilder({
                                 (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
                             ) && isSignatoryApplicableTo(sig, 'par')
                         )
-                        .map((sig) => (
-                          <option key={sig.id} value={sig.id}>
-                            {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''}
-                          </option>
-                        ))}
+                        .map((sig) => {
+                          const isApprover = Boolean(sig.canApprovePar || sig.role === 'school_president' || sig.role === 'school_administrator');
+                          return (
+                            <option key={sig.id} value={sig.id}>
+                              {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''} [{isApprover ? 'Approver' : 'Endorser Only'}]
+                            </option>
+                          );
+                        })}
                     </select>
 
                     <button

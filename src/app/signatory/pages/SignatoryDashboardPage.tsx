@@ -35,15 +35,24 @@ import PAREndorsementModal from '../components/PAREndorsementModal';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
 import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
+import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 
 interface ContextType {
   session: any;
   onOpenSignatureModal: () => void;
   onOpenPasswordModal: () => void;
+  canAccessProposal?: boolean;
+  canAccessLiquidation?: boolean;
+  canAccessPAR?: boolean;
 }
 
 export default function SignatoryDashboardPage() {
-  const { session, onOpenSignatureModal } = useOutletContext<ContextType>();
+  const context = useOutletContext<ContextType>();
+  const session = context.session;
+  const onOpenSignatureModal = context.onOpenSignatureModal;
+  const canAccessProposal = context.canAccessProposal ?? isSignatoryApplicableTo(session, 'proposal');
+  const canAccessLiquidation = context.canAccessLiquidation ?? isSignatoryApplicableTo(session, 'liquidation');
+  const canAccessPAR = context.canAccessPAR ?? isSignatoryApplicableTo(session, 'par');
   const navigate = useNavigate();
 
   const {
@@ -208,93 +217,109 @@ export default function SignatoryDashboardPage() {
           <span className="text-xs text-slate-400">Dedicated institutional clearance portals</span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div
+          className={`grid ${
+            [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 4
+              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
+              : [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 3
+              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
+              : [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 2
+              ? 'grid-cols-1 sm:grid-cols-2'
+              : 'grid-cols-1'
+          } gap-4`}
+        >
           {/* Card 1: Proposals */}
-          <div
-            onClick={() => navigate('/signatory/proposals')}
-            className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0E4EBD] flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <FileText className="w-5 h-5" />
+          {canAccessProposal && (
+            <div
+              onClick={() => navigate('/signatory/proposals')}
+              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0E4EBD] flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  {pendingProposals.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
+                      {pendingProposals.length} Pending
+                    </span>
+                  )}
                 </div>
-                {pendingProposals.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                    {pendingProposals.length} Pending
-                  </span>
-                )}
+                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
+                  Activity Proposals
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
+                  Event permits, objectives, guest lists, and projected financial budgets.
+                </p>
               </div>
-              <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                Activity Proposals
-              </h3>
-              <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                Event permits, objectives, guest lists, and projected financial budgets.
-              </p>
+              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
+                <span>Review Proposals</span>
+                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
             </div>
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-              <span>Review Proposals</span>
-              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </div>
-          </div>
+          )}
 
           {/* Card 2: Liquidations */}
-          <div
-            onClick={() => navigate('/signatory/liquidations')}
-            className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <FileSpreadsheet className="w-5 h-5" />
+          {canAccessLiquidation && (
+            <div
+              onClick={() => navigate('/signatory/liquidations')}
+              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <FileSpreadsheet className="w-5 h-5" />
+                  </div>
+                  {pendingLiquidations.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
+                      {pendingLiquidations.length} Pending
+                    </span>
+                  )}
                 </div>
-                {pendingLiquidations.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                    {pendingLiquidations.length} Pending
-                  </span>
-                )}
+                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
+                  Financial Liquidation
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
+                  Disbursements, official receipts inspection, variance & surplus reconciliation.
+                </p>
               </div>
-              <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                Financial Liquidation
-              </h3>
-              <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                Disbursements, official receipts inspection, variance & surplus reconciliation.
-              </p>
+              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
+                <span>Audit Liquidations</span>
+                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
             </div>
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-              <span>Audit Liquidations</span>
-              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </div>
-          </div>
+          )}
 
           {/* Card 3: Post-Activity Reports */}
-          <div
-            onClick={() => navigate('/signatory/post-activity-reports')}
-            className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <FileCheck2 className="w-5 h-5" />
+          {canAccessPAR && (
+            <div
+              onClick={() => navigate('/signatory/post-activity-reports')}
+              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
+            >
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <FileCheck2 className="w-5 h-5" />
+                  </div>
+                  {pendingPARs.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
+                      {pendingPARs.length} Pending
+                    </span>
+                  )}
                 </div>
-                {pendingPARs.length > 0 && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                    {pendingPARs.length} Pending
-                  </span>
-                )}
+                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
+                  Post-Activity Reports
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
+                  Evaluation narratives, verified attendance turnout, and final documentation.
+                </p>
               </div>
-              <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                Post-Activity Reports
-              </h3>
-              <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                Evaluation narratives, verified attendance turnout, and final documentation.
-              </p>
+              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
+                <span>Inspect Reports</span>
+                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+              </div>
             </div>
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-              <span>Inspect Reports</span>
-              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </div>
-          </div>
+          )}
 
           {/* Card 4: Campus Reports */}
           <div

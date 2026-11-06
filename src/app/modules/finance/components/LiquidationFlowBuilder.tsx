@@ -256,13 +256,11 @@ export default function LiquidationFlowBuilder({
     const hasApprover = approvalChain.some(
       (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
     );
-    const hasChecker = approvalChain.some((s) => s.actionType === 'check' || s.role === 'accountant');
     const emptyStages = stages.filter((stg) => stg.steps.length === 0);
     const totalSignatories = approvalChain.length;
 
     return {
       hasApprover,
-      hasChecker,
       emptyStages,
       totalSignatories,
       isValid: hasApprover && totalSignatories > 0,
@@ -405,19 +403,14 @@ export default function LiquidationFlowBuilder({
       return;
     }
 
-    // Determine default action type for liquidation
-    let actionType: 'check' | 'endorse' | 'approve' | 'note' = 'endorse';
-    if (
-      signatory.role === 'accountant' ||
-      signatory.roleTitle?.toLowerCase().includes('accountant') ||
-      signatory.roleTitle?.toLowerCase().includes('auditor')
-    ) {
-      actionType = 'check';
-    } else if (signatory.role === 'school_president' || signatory.actionType === 'approver') {
-      actionType = 'approve';
-    } else {
-      actionType = 'endorse';
-    }
+    // Determine action type based on signatory authority for liquidation
+    const canApprove = Boolean(
+      signatory.canApproveLiquidation ||
+      signatory.role === 'school_president' ||
+      signatory.role === 'school_administrator' ||
+      signatory.actionType === 'approver'
+    );
+    const actionType: 'endorse' | 'approve' = canApprove ? 'approve' : 'endorse';
 
     const resolvedLabel = signatory.defaultSignatoryLabel || resolveSignatoryLabel(signatory as any, 'liquidation', false);
     const newStep: LiquidationApprovalStep = {
@@ -494,31 +487,19 @@ export default function LiquidationFlowBuilder({
     onChange([]);
   };
 
-  // 10. Cycle Action Type for a specific Step respecting signatory authority capability
-  const handleCycleActionType = (stepIdOrIndex: string | number) => {
-    const updated = approvalChain.map((s) => {
-      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
-      if (match) {
-        const matched = activeSignatories.find(
-          (sig) => sig.id === s.signatoryUid || (sig.email && sig.email.toLowerCase() === (s.signatoryEmail || '').toLowerCase())
-        );
-        const capability = matched?.actionType;
-        if (capability === 'approver') {
-          return { ...s, actionType: 'approve' as const };
+  // Set Action Type (endorse vs approve) for a specific step
+  const handleSetActionType = (stepIdOrIndex: string | number, newAction: 'endorse' | 'approve') => {
+    const updatedStages = stages.map((stg) => ({
+      ...stg,
+      steps: stg.steps.map((s) => {
+        const matches = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+        if (matches) {
+          return { ...s, actionType: newAction };
         }
-        if (capability === 'endorser') {
-          const next = s.actionType === 'check' ? 'endorse' : 'check';
-          return { ...s, actionType: next as const };
-        }
-        let nextAction: 'check' | 'endorse' | 'approve' = 'endorse';
-        if (s.actionType === 'check') nextAction = 'endorse';
-        else if (s.actionType === 'endorse') nextAction = 'approve';
-        else if (s.actionType === 'approve') nextAction = 'check';
-        return { ...s, actionType: nextAction };
-      }
-      return s;
-    });
-    onChange(updated);
+        return s;
+      }),
+    }));
+    reindexChain(updatedStages);
   };
 
   return (
@@ -585,16 +566,14 @@ export default function LiquidationFlowBuilder({
               <strong>{validation.totalSignatories}</strong> Total Signatories Assigned
             </span>
             <span className="text-slate-500">•</span>
-            {validation.hasChecker ? (
-              <span className="text-blue-300 text-[11px] font-semibold flex items-center gap-1">
-                <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
-                Auditor / Accountant Designated
-              </span>
-            ) : (
-              <span className="text-amber-300 text-[11px] font-semibold flex items-center gap-1">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                Note: No Auditor/Accountant in chain
-              </span>
+            {approvalChain.some((s) => s.actionType === 'endorse' || s.actionType === 'check') && (
+              <>
+                <span className="text-blue-300 text-[11px] font-semibold flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                  Endorsement Steps Active
+                </span>
+                <span className="text-slate-500">•</span>
+              </>
             )}
             <span className="text-slate-500">•</span>
             {validation.hasApprover ? (
@@ -751,13 +730,19 @@ export default function LiquidationFlowBuilder({
                       </div>
                     ) : (
                       stage.steps.map((step, stepIdx) => {
-                        const isApprover = step.actionType === 'approve' || step.role === 'school_president';
-                        const isChecker = step.actionType === 'check' || step.role === 'accountant';
                         const matchedSig = activeSignatories.find(
                           (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                         );
                         const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('liq_step_'));
                         const isStepPermanent = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
+                        const canSignerApprove = Boolean(
+                          matchedSig?.canApproveLiquidation ||
+                          matchedSig?.role === 'school_president' ||
+                          matchedSig?.role === 'school_administrator' ||
+                          step.role === 'school_president' ||
+                          step.role === 'school_administrator' ||
+                          (matchedSig?.actionType === 'approver' && matchedSig?.canApproveLiquidation !== false)
+                        );
 
                         return (
                           <div
@@ -801,7 +786,41 @@ export default function LiquidationFlowBuilder({
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0 flex-wrap">
+                              {/* Action Type Toggle: Endorse vs Approve */}
+                              <div className="flex items-center rounded-lg p-0.5 bg-slate-100 border border-slate-200">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                    step.actionType === 'endorse' || step.actionType === 'check' || !step.actionType
+                                      ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Endorse
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={!canSignerApprove}
+                                  onClick={() => handleSetActionType(step.id || step.step, 'approve')}
+                                  title={
+                                    !canSignerApprove
+                                      ? 'This signatory is an Endorser Only for Financial Liquidations and cannot be set as Approver.'
+                                      : 'Set as Approver'
+                                  }
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
+                                    step.actionType === 'approve'
+                                      ? 'bg-emerald-600 text-white shadow-2xs'
+                                      : canSignerApprove
+                                      ? 'text-slate-600 hover:text-slate-900 cursor-pointer'
+                                      : 'text-slate-300 opacity-40 cursor-not-allowed'
+                                  }`}
+                                >
+                                  Approve
+                                </button>
+                              </div>
+
                               {/* Dynamic Formal Document Label Selector */}
                               <div className="flex items-center gap-1.5 flex-shrink-0">
                                 <select
@@ -882,11 +901,14 @@ export default function LiquidationFlowBuilder({
                               );
                               return !isAlreadyAssigned;
                             })
-                            .map((sig) => (
-                              <option key={sig.id} value={sig.id}>
-                                {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''}
-                              </option>
-                            ))}
+                            .map((sig) => {
+                              const isApprover = Boolean(sig.canApproveLiquidation || sig.role === 'school_president' || sig.role === 'school_administrator');
+                              return (
+                                <option key={sig.id} value={sig.id}>
+                                  {sig.name} — {sig.roleTitle} {sig.department ? `(${sig.department})` : ''} [{isApprover ? 'Approver' : 'Endorser Only'}]
+                                </option>
+                              );
+                            })}
                         </select>
                       </div>
 

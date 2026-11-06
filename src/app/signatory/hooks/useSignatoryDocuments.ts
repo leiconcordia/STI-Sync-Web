@@ -13,6 +13,7 @@ import type { PostActivityReportDocument } from '../../modules/post-activity-rep
 import { subscribeToProposals } from '../../modules/activity-proposals/services/proposal.service';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
+import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 
 export function useSignatoryDocuments(session: any) {
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
@@ -47,8 +48,15 @@ export function useSignatoryDocuments(session: any) {
     return () => unsubscribe();
   }, []);
 
+  const canAccessProposal = session ? isSignatoryApplicableTo(session, 'proposal') : true;
+  const canAccessLiquidation = session ? isSignatoryApplicableTo(session, 'liquidation') : true;
+  const canAccessPAR = session ? isSignatoryApplicableTo(session, 'par') : true;
+
   // Filter Activity Proposals
   const { pendingProposals, endorsedProposals, returnedProposals } = useMemo(() => {
+    if (!canAccessProposal) {
+      return { pendingProposals: [], endorsedProposals: [], returnedProposals: [] };
+    }
     const pending: ActivityProposal[] = [];
     const endorsed: ActivityProposal[] = [];
     const returned: ActivityProposal[] = [];
@@ -122,6 +130,9 @@ export function useSignatoryDocuments(session: any) {
 
   // Filter Financial Liquidations
   const { pendingLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
+    if (!canAccessLiquidation) {
+      return { pendingLiquidations: [], endorsedLiquidations: [], returnedLiquidations: [] };
+    }
     const pending: LiquidationDocument[] = [];
     const endorsed: LiquidationDocument[] = [];
     const returned: LiquidationDocument[] = [];
@@ -181,6 +192,9 @@ export function useSignatoryDocuments(session: any) {
 
   // Filter Post-Activity Reports
   const { pendingPARs, endorsedPARs, returnedPARs } = useMemo(() => {
+    if (!canAccessPAR) {
+      return { pendingPARs: [], endorsedPARs: [], returnedPARs: [] };
+    }
     const pending: PostActivityReportDocument[] = [];
     const endorsed: PostActivityReportDocument[] = [];
     const returned: PostActivityReportDocument[] = [];

@@ -270,17 +270,16 @@ export default function ApprovalWorkflowSettings() {
     const sig = signatories.find((s) => s.id === sigId);
     if (!sig) return;
 
-    // Enforce action capability
-    let validAction: 'check' | 'endorse' | 'approve' = 'endorse';
-    if (activeDoc === 'liquidation' && (sig.role === 'accountant' || sig.roleTitle.toLowerCase().includes('accountant') || sig.roleTitle.toLowerCase().includes('auditor'))) {
-      validAction = 'check';
-    } else if (sig.actionType === 'approver' || sig.role === 'school_president') {
-      validAction = 'approve';
-    } else if (sig.actionType === 'both') {
-      validAction = 'endorse';
-    } else {
-      validAction = 'endorse';
-    }
+    // Enforce action capability based on document authorization
+    const canApprove = Boolean(
+      activeDoc === 'proposal'
+        ? sig.canApproveProposal
+        : activeDoc === 'liquidation'
+        ? sig.canApproveLiquidation
+        : sig.canApprovePar
+    ) || sig.role === 'school_president' || sig.role === 'school_administrator';
+
+    const validAction: 'endorse' | 'approve' = canApprove ? 'approve' : 'endorse';
 
     handleUpdateStep(stepId, {
       signatoryUid: sig.id,
@@ -547,7 +546,13 @@ export default function ApprovalWorkflowSettings() {
                       const selectedSig = signatories.find(
                         (s) => s.id === step.signatoryUid || (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                       );
-                      const authority = selectedSig?.actionType || 'both';
+                      const canSignerApprove = selectedSig ? Boolean(
+                        activeDoc === 'proposal'
+                          ? selectedSig.canApproveProposal
+                          : activeDoc === 'liquidation'
+                          ? selectedSig.canApproveLiquidation
+                          : selectedSig.canApprovePar
+                      ) || selectedSig.role === 'school_president' || selectedSig.role === 'school_administrator' : false;
 
                       // Find other signatories already assigned in this pipeline so they are excluded from this step's dropdown
                       const otherAssignedIds = new Set(
@@ -578,30 +583,33 @@ export default function ApprovalWorkflowSettings() {
                                   className="text-xs font-semibold text-gray-900 border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none max-w-sm"
                                 >
                                   <option value="">— Select Institutional Signer —</option>
-                                  {availableSignatoriesForStep.map((sig) => (
-                                    <option key={sig.id} value={sig.id}>
-                                      {sig.name} ({sig.roleTitle} — {sig.department || 'Campus'})
-                                    </option>
-                                  ))}
+                                  {availableSignatoriesForStep.map((sig) => {
+                                    const canSigApprove = Boolean(
+                                      activeDoc === 'proposal'
+                                        ? sig.canApproveProposal
+                                        : activeDoc === 'liquidation'
+                                        ? sig.canApproveLiquidation
+                                        : sig.canApprovePar
+                                    ) || sig.role === 'school_president' || sig.role === 'school_administrator';
+                                    return (
+                                      <option key={sig.id} value={sig.id}>
+                                        {sig.name} ({sig.roleTitle} — {sig.department || 'Campus'}) [{canSigApprove ? 'Approver' : 'Endorser'}]
+                                      </option>
+                                    );
+                                  })}
                                 </select>
 
                                 {/* Authority Capability Badge */}
                                 {selectedSig && (
                                   <span
                                     className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${
-                                      authority === 'approver' || authority === 'approve'
+                                      canSignerApprove
                                         ? 'bg-emerald-100 text-emerald-800'
-                                        : authority === 'both'
-                                        ? 'bg-purple-100 text-purple-800'
                                         : 'bg-sky-100 text-sky-800'
                                     }`}
                                   >
                                     <ShieldCheck className="w-3 h-3" />
-                                    {authority === 'approver' || authority === 'approve'
-                                      ? 'Approver Only'
-                                      : authority === 'both'
-                                      ? 'Endorser & Approver'
-                                      : 'Endorser Only'}
+                                    {canSignerApprove ? 'Approver' : 'Endorser Only'}
                                   </span>
                                 )}
                               </div>
@@ -617,44 +625,30 @@ export default function ApprovalWorkflowSettings() {
                           <div className="flex flex-wrap items-center gap-3 flex-shrink-0">
                             {/* Action Type Button Selector */}
                             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg border border-gray-200">
-                              {activeDoc === 'liquidation' && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleUpdateStep(step.id, { actionType: 'check' })}
-                                  className={`px-2.5 py-1 rounded text-xs font-bold transition-all ${
-                                    step.actionType === 'check'
-                                      ? 'bg-amber-600 text-white shadow-xs'
-                                      : 'text-gray-600 hover:text-gray-900'
-                                  }`}
-                                >
-                                  Check & Audit
-                                </button>
-                              )}
-
                               <button
                                 type="button"
-                                disabled={authority === 'approver'}
                                 onClick={() => handleUpdateStep(step.id, { actionType: 'endorse' })}
-                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all disabled:opacity-30 ${
+                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer ${
                                   step.actionType === 'endorse'
                                     ? 'bg-sky-700 text-white shadow-xs'
                                     : 'text-gray-600 hover:text-gray-900'
                                 }`}
-                                title={authority === 'approver' ? 'This signatory is restricted to Approver Only' : undefined}
                               >
                                 Endorse
                               </button>
 
                               <button
                                 type="button"
-                                disabled={authority === 'endorser'}
+                                disabled={!canSignerApprove}
                                 onClick={() => handleUpdateStep(step.id, { actionType: 'approve' })}
-                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all disabled:opacity-30 ${
+                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all ${
+                                  !canSignerApprove ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                                } ${
                                   step.actionType === 'approve'
                                     ? 'bg-emerald-700 text-white shadow-xs'
                                     : 'text-gray-600 hover:text-gray-900'
                                 }`}
-                                title={authority === 'endorser' ? 'This signatory is restricted to Endorser Only' : undefined}
+                                title={!canSignerApprove ? 'This signatory does not have approval authority for this document type' : 'Designate as executive Approver'}
                               >
                                 Approve
                               </button>

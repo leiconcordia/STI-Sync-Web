@@ -3,6 +3,7 @@ import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firesto
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { db, auth } from '../../../services/firebase';
 import { hashPassword } from '../services/password.service';
+import { getSignatoryAuthorizedWorkflows } from '../../modules/signatories/types/signatory.types';
 
 export const SESSION_KEY = 'sti_sync_officer_session';
 export const SIGNATORY_SESSION_KEY = 'sti_sync_signatory_session';
@@ -370,6 +371,7 @@ export function useOfficerAuth() {
 
       if (isSignatoryUser) {
         redirectPath = '/signatory/endorsements';
+        const workflows = getSignatoryAuthorizedWorkflows(matchedRecord);
         const signatorySession = {
           uid: matchedRecord.uid || matchedRecord.id,
           id: matchedRecord.id,
@@ -379,10 +381,16 @@ export function useOfficerAuth() {
           roleTitle: matchedRecord.roleTitle,
           actionType: matchedRecord.actionType || (matchedRecord.role === 'school_president' ? 'approve' : 'endorse'),
           department: matchedRecord.department,
+          departmentId: matchedRecord.departmentId || '',
           employeeId: matchedRecord.employeeId || '',
           signatureUrl: matchedRecord.signatureUrl || null,
           isSignatory: true,
           requiresPasswordChange: matchedRecord.requiresPasswordChange ?? false,
+          applicableScope: matchedRecord.applicableScope,
+          applicableWorkflows: workflows,
+          canApproveProposal: matchedRecord.canApproveProposal ?? (matchedRecord.actionType === 'approver'),
+          canApproveLiquidation: matchedRecord.canApproveLiquidation ?? (matchedRecord.actionType === 'approver'),
+          canApprovePar: matchedRecord.canApprovePar ?? (matchedRecord.actionType === 'approver'),
           availableWorkspaces: {
             hasSignatory: true,
             hasOfficer: officerRecords.length > 0,
