@@ -75,6 +75,10 @@ export function subscribeToSignatories(
           signatureDataUrl: data.signatureDataUrl || undefined,
           signatureUpdatedAt: data.signatureUpdatedAt,
           isPermanentSigner: Boolean(data.isPermanentSigner),
+          canApproveProposal: data.canApproveProposal ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+          canApproveLiquidation: data.canApproveLiquidation ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+          canApprovePar: data.canApprovePar ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+          defaultSignatoryLabel: data.defaultSignatoryLabel || undefined,
           applicableScope: resolvedScope,
           isActive: data.isActive !== false,
           requiresPasswordChange: data.requiresPasswordChange ?? true,
@@ -126,6 +130,10 @@ export async function getInstitutionalSignatories(): Promise<InstitutionalSignat
         status: data.status || 'active',
         signatureUrl: data.signatureUrl || undefined,
         isPermanentSigner: Boolean(data.isPermanentSigner),
+        canApproveProposal: data.canApproveProposal ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+        canApproveLiquidation: data.canApproveLiquidation ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+        canApprovePar: data.canApprovePar ?? (data.role === 'school_president' || (data.roleTitle || '').toLowerCase().includes('president')),
+        defaultSignatoryLabel: data.defaultSignatoryLabel || undefined,
         applicableScope: resolvedScope,
         isActive: data.isActive !== false,
         createdAt: data.createdAt,
@@ -190,6 +198,10 @@ export async function createInstitutionalSignatory(
       departmentId: payload.departmentId || '',
       employeeId: payload.employeeId ? payload.employeeId.trim() : '',
       isPermanentSigner: Boolean(payload.isPermanentSigner),
+      canApproveProposal: Boolean(payload.canApproveProposal),
+      canApproveLiquidation: Boolean(payload.canApproveLiquidation),
+      canApprovePar: Boolean(payload.canApprovePar),
+      defaultSignatoryLabel: payload.defaultSignatoryLabel ? payload.defaultSignatoryLabel.trim() : '',
       isMandatoryForDepartment: payload.isMandatoryForDepartment || '',
       applicableScope: payload.applicableScope || (payload.role === 'accountant' ? 'liquidation_only' : 'both'),
       isActive: true,
@@ -287,7 +299,7 @@ export async function toggleSignatoryStatus(
  */
 export async function updateSignatoryDetails(
   signatoryId: string,
-  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows'>>
+  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows' | 'canApproveProposal' | 'canApproveLiquidation' | 'canApprovePar' | 'defaultSignatoryLabel'>>
 ): Promise<void> {
   const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
   await updateDoc(docRef, {

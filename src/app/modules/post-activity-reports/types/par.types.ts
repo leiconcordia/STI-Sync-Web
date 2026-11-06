@@ -28,6 +28,7 @@ export interface PARApprovalStep {
   role: string;
   roleTitle: string;
   actionType?: 'check' | 'endorse' | 'approve';
+  signatoryLabel?: string;
   signatoryUid?: string;
   signatoryName: string;
   signatoryEmail: string;
@@ -38,6 +39,7 @@ export interface PARApprovalStep {
   remarks?: string;
   isMandatory?: boolean;
   isPermanent?: boolean;
+  isUserAdded?: boolean;
 }
 
 export interface PARRemark {

@@ -17,6 +17,7 @@ import jsPDF from 'jspdf';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { PostActivityReportDocument, PARApprovalStep } from '../types/par.types';
+import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import { STI_LOGO_BASE64 } from '../../activity-proposals/utils/sti-logo-asset';
 
 function formatPdfCurrency(amount: number | undefined | null): string {
@@ -1016,43 +1017,93 @@ export async function exportPostActivityReportPDF(
     { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
   );
 
-  // Noted by
-  drawStandaloneSection(
-    'Noted by:',
-    24.0,
-    (x, y, w) => {
-      let off = 0;
-      const sigColW = Math.floor(w / Math.min(stepsToRender.length, 3));
+  // Dynamic Formal Signatories Groups
+  if (approvalChain.length > 0) {
+    const labelGroups: { label: string; stepsWithImgs: { step: PARApprovalStep; img?: string }[] }[] = [];
+    approvalChain.forEach((step, idx) => {
+      const isLast = idx === approvalChain.length - 1;
+      const formalLabel = step.signatoryLabel || resolveSignatoryLabel(step, 'par', isLast);
+      let existingGroup = labelGroups.find((g) => g.label.toLowerCase() === formalLabel.toLowerCase());
+      if (!existingGroup) {
+        existingGroup = { label: formalLabel, stepsWithImgs: [] };
+        labelGroups.push(existingGroup);
+      }
+      existingGroup.stepsWithImgs.push({ step, img: signatorySigUrls[idx] });
+    });
 
-      stepsToRender.slice(0, 3).forEach((step, sIdx) => {
-        const sx = x + sIdx * sigColW + 2;
-        let sOff = off;
+    for (const group of labelGroups) {
+      drawStandaloneSection(
+        group.label,
+        24.0,
+        (x, y, w) => {
+          let off = 0;
+          const colCount = Math.max(1, Math.min(group.stepsWithImgs.length, 3));
+          const sigColW = Math.floor(w / colCount);
 
-        const sigImg = signatorySigUrls[sIdx];
-        if (sigImg) {
-          try {
-            docPdf.addImage(sigImg, 'PNG', sx, y + sOff, 28, 10);
-            sOff += 11;
-          } catch {}
-        } else {
-          sOff += 5;
-        }
+          group.stepsWithImgs.forEach((item, sIdx) => {
+            const col = sIdx % 3;
+            const row = Math.floor(sIdx / 3);
+            const sx = x + col * sigColW + 2;
+            let sOff = off + row * 22;
 
-        docPdf.setFont('helvetica', 'bold');
-        docPdf.setFontSize(9);
-        docPdf.setTextColor(0, 0, 0);
-        const nameLines = docPdf.splitTextToSize(step.signatoryName || 'Signatory', sigColW - 4);
-        docPdf.text(nameLines, sx, y + sOff + 3.0);
-        sOff += nameLines.length * 4.0;
+            const sigImg = item.img;
+            if (sigImg && (item.step.status === 'endorsed' || item.step.status === 'approved')) {
+              try {
+                docPdf.addImage(sigImg, 'PNG', sx, y + sOff, 28, 10);
+                sOff += 11;
+              } catch {}
+            } else if (item.step.status === 'waived') {
+              docPdf.setFont('helvetica', 'italic');
+              docPdf.setFontSize(6.5);
+              docPdf.setTextColor(130, 130, 130);
+              docPdf.text('(Waived — Clearance Granted)', sx, y + sOff + 4.0);
+              sOff += 6;
+            } else {
+              sOff += 5;
+            }
 
-        docPdf.setFont('helvetica', 'normal');
-        docPdf.setFontSize(8);
-        const titleLines = docPdf.splitTextToSize(step.roleTitle || 'Institutional Signatory', sigColW - 4);
-        docPdf.text(titleLines, sx, y + sOff + 2.5);
-      });
-    },
-    { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
-  );
+            docPdf.setFont('helvetica', 'bold');
+            docPdf.setFontSize(9);
+            docPdf.setTextColor(0, 0, 0);
+            const nameLines = docPdf.splitTextToSize(item.step.signatoryName || 'Signatory', sigColW - 4);
+            docPdf.text(nameLines, sx, y + sOff + 3.0);
+            sOff += nameLines.length * 4.0;
+
+            docPdf.setFont('helvetica', 'normal');
+            docPdf.setFontSize(8);
+            const titleLines = docPdf.splitTextToSize(item.step.roleTitle || 'Institutional Signatory', sigColW - 4);
+            docPdf.text(titleLines, sx, y + sOff + 2.5);
+          });
+        },
+        { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
+      );
+    }
+  } else {
+    // Default fallback if no chain configured
+    drawStandaloneSection(
+      'Noted by:',
+      24.0,
+      (x, y, w) => {
+        let off = 0;
+        const sigColW = Math.floor(w / 3);
+        stepsToRender.slice(0, 3).forEach((step, sIdx) => {
+          const sx = x + sIdx * sigColW + 2;
+          let sOff = off + 5;
+          docPdf.setFont('helvetica', 'bold');
+          docPdf.setFontSize(9);
+          docPdf.setTextColor(0, 0, 0);
+          const nameLines = docPdf.splitTextToSize(step.signatoryName || 'Signatory', sigColW - 4);
+          docPdf.text(nameLines, sx, y + sOff + 3.0);
+          sOff += nameLines.length * 4.0;
+          docPdf.setFont('helvetica', 'normal');
+          docPdf.setFontSize(8);
+          const titleLines = docPdf.splitTextToSize(step.roleTitle || 'Institutional Signatory', sigColW - 4);
+          docPdf.text(titleLines, sx, y + sOff + 2.5);
+        });
+      },
+      { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
+    );
+  }
 
   // ─── Step 5: Bottom Policy Note ───
   ensurePageSpace(10);

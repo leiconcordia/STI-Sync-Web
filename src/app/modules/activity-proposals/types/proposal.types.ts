@@ -60,6 +60,19 @@ export interface ProposalTargetAudience {
   sections?: string[]; // Section names or IDs (e.g., ['BSIT 3101', 'STEM 11-A'])
   yearLevels: (string | number)[]; // e.g. ['G11', 'G12', '1st Year', '2nd Year', '3rd Year', '4th Year']
   allStudents?: boolean;
+  includeFaculty?: boolean;
+  facultyCount?: number;
+  expectedReachPercentage?: number;
+  demographicBreakdown?: {
+    shsTotal: number;
+    collegeTotal: number;
+    facultyTotal?: number;
+    totalPopulation: number;
+    expectedAttendees: number;
+    expectedReachPercentage: number;
+    strandsBreakdown?: Record<string, number>;
+    programsBreakdown?: Record<string, number>;
+  };
 }
 
 export interface ProposalApprovalStep {
@@ -70,6 +83,7 @@ export interface ProposalApprovalStep {
   role: SignatoryRole | 'sas_coordinator' | (string & {});
   roleTitle: string;
   actionType?: SignatoryActionType; // 'endorse' | 'approve'
+  signatoryLabel?: string;
   signatoryUid?: string;
   signatoryName: string;
   signatoryEmail: string;
@@ -82,6 +96,7 @@ export interface ProposalApprovalStep {
   feedbackSections?: { sectionKey: string; comment: string }[];
   isMandatory?: boolean;
   isPermanent?: boolean;
+  isUserAdded?: boolean;
 }
 
 export interface ProposalSectionRemark {
@@ -147,6 +162,7 @@ export interface ActivityProposal extends SoftDeletable, Archivable {
   endTime?: string; // HH:mm
   venueId?: string;
   venueName?: string;
+  venueType?: 'inside' | 'outside';
   customVenueName?: string;
   sessions: ProposalSession[];
 

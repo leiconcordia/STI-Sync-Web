@@ -24,6 +24,7 @@
  */
 
 import jsPDF from 'jspdf';
+import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import type { ActivityProposal, ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import { STI_LOGO_BASE64 } from './sti-logo-asset';
 
@@ -775,28 +776,12 @@ export async function exportActivityProposalPDF(
 
     // ─── 7. SIGNATORY BLOCKS (MATCHING AP_FORMAT_EMPTY.DOCX) ────────────────
     const chain: ProposalApprovalStep[] = proposal.approvalChain || [];
-    const endorsers = chain.filter((s) => s.actionType !== 'approve' && s.role !== 'school_president');
-    const approvers = chain.filter((s) => s.actionType === 'approve' || s.role === 'school_president');
 
     // Default Proponents list
     const proponentsList =
       proposal.proponents && proposal.proponents.length > 0
         ? proposal.proponents
         : [proposal.createdByName ? `${proposal.createdByName} – ${proposal.creatorRole === 'sas_admin' ? 'Student Affairs Officer' : 'Activity Proponent'}` : 'Student Affairs & Services'];
-
-    // Default Endorsers list if none configured yet
-    const defaultEndorsers = [
-      { name: 'Humabona L. Gonzales', roleTitle: 'Academic Head', signatureUrl: undefined, status: 'waiting' },
-      { name: 'Engr. Sheena Joy S. Muyuela', roleTitle: 'School Administrator', signatureUrl: undefined, status: 'waiting' },
-    ];
-
-    // Default Approver if none configured yet
-    const defaultApprover = {
-      name: 'Atty. Antonio R. Lucero Jr.',
-      roleTitle: 'School President',
-      signatureUrl: undefined,
-      status: 'waiting',
-    };
 
     /**
      * Helper to render authentic STI signature line with digital ink signature image
@@ -881,27 +866,39 @@ export async function exportActivityProposalPDF(
     });
     await renderSignatories('Proposed by:', parsedProponents);
 
-    // B. Endorsed by:
-    const endorsersList = endorsers.length > 0
-      ? endorsers.map((e) => ({
-          name: e.signatoryName || 'Designated Endorser',
-          roleTitle: e.roleTitle || 'Institutional Officer',
-          signatureUrl: e.signatureUrl,
-          status: e.status,
-        }))
-      : defaultEndorsers;
-    await renderSignatories('Endorsed by:', endorsersList);
+    // Dynamic grouping of chain steps by their formal label
+    if (chain.length > 0) {
+      const labelGroups: { label: string; signers: any[] }[] = [];
+      chain.forEach((step, idx) => {
+        const isLast = idx === chain.length - 1;
+        const formalLabel = step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', isLast);
+        let existingGroup = labelGroups.find((g) => g.label.toLowerCase() === formalLabel.toLowerCase());
+        if (!existingGroup) {
+          existingGroup = { label: formalLabel, signers: [] };
+          labelGroups.push(existingGroup);
+        }
+        existingGroup.signers.push({
+          name: step.signatoryName || 'Institutional Officer',
+          roleTitle: step.roleTitle || 'Designated Signatory',
+          signatureUrl: step.signatureUrl,
+          status: step.status,
+        });
+      });
 
-    // C. Approved by:
-    const approverList = approvers.length > 0
-      ? approvers.map((a) => ({
-          name: a.signatoryName || 'School President',
-          roleTitle: a.roleTitle || 'School President',
-          signatureUrl: a.signatureUrl,
-          status: a.status,
-        }))
-      : [defaultApprover];
-    await renderSignatories('Approved by:', approverList);
+      for (const group of labelGroups) {
+        await renderSignatories(group.label, group.signers);
+      }
+    } else {
+      const defaultEndorsers = [
+        { name: 'Humabona L. Gonzales', roleTitle: 'Academic Head', signatureUrl: undefined, status: 'waiting' },
+        { name: 'Engr. Sheena Joy S. Muyuela', roleTitle: 'School Administrator', signatureUrl: undefined, status: 'waiting' },
+      ];
+      const defaultApprover = [
+        { name: 'Atty. Antonio R. Lucero Jr.', roleTitle: 'School President', signatureUrl: undefined, status: 'waiting' }
+      ];
+      await renderSignatories('Endorsed by:', defaultEndorsers);
+      await renderSignatories('Approved by:', defaultApprover);
+    }
 
     // ─── 8. MANDATORY STI POLICY FOOTNOTE ─────────────────────────────────────
     y += 2.0;

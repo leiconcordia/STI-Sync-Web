@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
+import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import {
   type InstitutionalSignatory,
@@ -168,6 +169,8 @@ export async function generateDefaultPARSignatoryChain(
       const isPermanent = Boolean(tpl.isPermanent);
       const isMandatory = Boolean(tpl.isMandatory || isPermanent);
 
+      const resolvedLabel = (tpl as any).signatoryLabel || matched?.defaultSignatoryLabel || resolveSignatoryLabel({ role: resolvedRole, roleTitle: resolvedRoleTitle, actionType: tpl.actionType } as any, 'par', idx === templates.length - 1);
+
       chain.push({
         id: tpl.id || `par_step_${idx + 1}`,
         step: idx + 1,
@@ -176,6 +179,7 @@ export async function generateDefaultPARSignatoryChain(
         role: resolvedRole,
         roleTitle: resolvedRoleTitle,
         actionType: tpl.actionType || 'endorse',
+        signatoryLabel: resolvedLabel,
         signatoryUid: resolvedUid,
         signatoryName: resolvedName,
         signatoryEmail: resolvedEmail,
@@ -274,22 +278,27 @@ export async function generateDefaultPARSignatoryChain(
 
   // ── 1 STAGE ONLY: All signatories in Stage 1 sign simultaneously in parallel ──
   const stageName = 'Stage 1: Post-Activity Review & Final Clearance';
-  const chain: PARApprovalStep[] = stageSigners.map((item, idx) => ({
-    id: `step-${Date.now()}-${idx + 1}`,
-    step: idx + 1,
-    stageIndex: 1,
-    stageName,
-    role: item.signer.role || 'signatory',
-    roleTitle: item.signer.roleTitle || item.signer.title || 'Institutional Signatory',
-    actionType: item.action,
-    signatoryUid: item.signer.uid || item.signer.id,
-    signatoryName: item.signer.name,
-    signatoryEmail: item.signer.email,
-    department: item.signer.department || '',
-    status: 'current', // ALL ACTIVE SIMULTANEOUSLY!
-    isMandatory: item.signer.isMandatory !== false,
-    isPermanent: item.signer.isPermanentSigner ?? true,
-  }));
+  const chain: PARApprovalStep[] = stageSigners.map((item, idx) => {
+    const isLast = idx === stageSigners.length - 1;
+    const resolvedLabel = item.signer.defaultSignatoryLabel || resolveSignatoryLabel({ role: item.signer.role, roleTitle: item.signer.roleTitle, actionType: item.action } as any, 'par', isLast);
+    return {
+      id: `step-${Date.now()}-${idx + 1}`,
+      step: idx + 1,
+      stageIndex: 1,
+      stageName,
+      role: item.signer.role || 'signatory',
+      roleTitle: item.signer.roleTitle || item.signer.title || 'Institutional Signatory',
+      actionType: item.action,
+      signatoryLabel: resolvedLabel,
+      signatoryUid: item.signer.uid || item.signer.id,
+      signatoryName: item.signer.name,
+      signatoryEmail: item.signer.email,
+      department: item.signer.department || '',
+      status: 'current', // ALL ACTIVE SIMULTANEOUSLY!
+      isMandatory: false,
+      isPermanent: false,
+    };
+  });
 
   return chain;
 }
@@ -637,8 +646,12 @@ export async function endorsePARStep(
     roleTitle?: string;
     role?: string;
     signatureUrl?: string;
+    actionType?: 'check' | 'endorse' | 'approve' | 'note';
+    canApprovePar?: boolean;
+    approvalDecision?: 'approve' | 'forward';
   },
-  remarks = ''
+  remarks = '',
+  approvalDecision?: 'approve' | 'forward'
 ): Promise<{ success: boolean; isFullyApproved: boolean; stageAdvanced?: boolean }> {
   const parRef = doc(db, PAR_COLLECTION, parId);
   const snap = await getDoc(parRef);
@@ -670,18 +683,66 @@ export async function endorsePARStep(
     throw new Error('No pending approval step found for your account on this Post-Activity Report.');
   }
 
+  const targetStep = chain[targetStepIdx];
+  const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
+  const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
+  const canApprove = canSignatoryApproveDocument(signatory as any, 'par', targetStep);
+  const decision = approvalDecision || signatory.approvalDecision;
+
+  const isExecutiveApprover =
+    isPresident ||
+    isSchoolAdmin ||
+    canApprove ||
+    targetStep.actionType === 'approve' ||
+    signatory.actionType === 'approve';
+
+  let newStatus: 'endorsed' | 'approved' = 'endorsed';
+  if (decision === 'approve') {
+    newStatus = 'approved';
+  } else if (decision === 'forward') {
+    newStatus = 'endorsed';
+  } else if (canApprove) {
+    if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
+      newStatus = 'approved';
+    } else {
+      newStatus = 'endorsed';
+    }
+  } else {
+    newStatus = 'endorsed';
+  }
+
   // Stamp digital signature on step
   chain[targetStepIdx] = {
     ...chain[targetStepIdx],
-    status: 'endorsed',
+    status: newStatus,
     signatureUrl: signatory.signatureUrl || chain[targetStepIdx].signatureUrl,
     signedAt: new Date().toISOString(),
     remarks: remarks || chain[targetStepIdx].remarks,
   };
 
+  // If approved by executive approver, waive remaining co-approvers in this stage
+  if (newStatus === 'approved') {
+    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
+    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
+
+    chain.forEach((s, idx) => {
+      if (
+        idx !== targetStepIdx &&
+        (s.status === 'waiting' || s.status === 'current') &&
+        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
+      ) {
+        chain[idx] = {
+          ...s,
+          status: 'waived',
+          remarks: `Step waived — PAR authorized and fully approved by ${approverTitle} (${approverName})`,
+        };
+      }
+    });
+  }
+
   const currentStageSteps = chain.filter((s) => (s.stageIndex ?? 1) === currentStage);
   const allStageStepsCompleted = currentStageSteps.every(
-    (s) => s.status === 'endorsed' || s.status === 'approved'
+    (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
   );
 
   let isFullyApproved = false;

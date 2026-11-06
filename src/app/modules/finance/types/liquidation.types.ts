@@ -13,6 +13,22 @@ export interface ReceiptAttachment {
   publicId?: string;
 }
 
+export interface DisbursementVoucherAttachment {
+  fileUrl: string;
+  fileName: string;
+  fileType: 'image' | 'pdf' | 'document' | 'other';
+  fileSize?: number;
+  publicId?: string;
+  chequeNumber?: string;
+  disbursementDate?: string; // YYYY-MM-DD
+  amountDisbursed?: number;
+  remarks?: string;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedByRole: 'adviser' | 'admin';
+  uploadedAt: string; // ISO 8601 string
+}
+
 export interface ExpenseLineItem {
   id: string;
   description: string;
@@ -60,6 +76,7 @@ export interface LiquidationApprovalStep {
   role: string; // e.g. 'accountant' | 'program_head' | 'academic_head' | 'school_administrator' | 'school_president' | etc.
   roleTitle: string; // e.g. 'Accountant / Auditor', 'Program Head', 'School Administrator', 'School President'
   actionType?: 'check' | 'endorse' | 'approve' | 'note';
+  signatoryLabel?: string;
   signatoryUid?: string;
   signatoryName: string;
   signatoryEmail: string;
@@ -70,6 +87,7 @@ export interface LiquidationApprovalStep {
   remarks?: string;
   isMandatory?: boolean;
   isPermanent?: boolean;
+  isUserAdded?: boolean;
 }
 
 export interface LiquidationDocument extends SoftDeletable, Archivable {
@@ -94,6 +112,7 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   dateSubmitted?: string;
   daysLapsed?: string;
   orNumber?: string;
+  disbursementVoucher?: DisbursementVoucherAttachment | null;
 
   allocatedBudget: number;      // Approved budget ceiling from event
   totalActualSpending: number;  // Sum of all line items

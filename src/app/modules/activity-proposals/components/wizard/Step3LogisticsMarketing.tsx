@@ -27,9 +27,16 @@ import {
   Building,
   AlertCircle,
   Filter,
+  BarChart3,
+  TrendingUp,
+  Percent,
+  Sliders,
+  Briefcase,
 } from 'lucide-react';
 import { useTargetAudienceStructure, type DynamicProgram } from '../../../academic';
 import { useStudents } from '../../../students/hooks/useStudentStream';
+import { subscribeToSignatories } from '../../../signatories/services/signatory.service';
+import type { InstitutionalSignatory } from '../../../signatories/types/signatory.types';
 import type { ProposalFormData, ProposalTargetAudience } from '../../types/proposal.types';
 
 interface Step3Props {
@@ -107,6 +114,122 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     sections: [],
     allStudents: true,
   };
+
+  // ── Faculty & Staff Signatory Roster (For demographic breakdown if included) ──
+  const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => {
+      setActiveSignatories(list.filter((s) => s.isActive !== false));
+    });
+    return () => unsub();
+  }, []);
+
+  const [includeFaculty, setIncludeFaculty] = useState<boolean>(
+    Boolean(targetAudience.includeFaculty)
+  );
+  const [facultyCount, setFacultyCount] = useState<number>(
+    targetAudience.facultyCount || (activeSignatories.length > 0 ? activeSignatories.length : 35)
+  );
+  const [expectedReachPercent, setExpectedReachPercent] = useState<number>(
+    targetAudience.expectedReachPercentage || 90
+  );
+
+  useEffect(() => {
+    if (activeSignatories.length > 0 && !targetAudience.facultyCount) {
+      setFacultyCount(activeSignatories.length);
+    }
+  }, [activeSignatories.length, targetAudience.facultyCount]);
+
+  // ── 1. Real-Time Active Students Registry Filter ──
+  const activeStudents = useMemo(() => {
+    if (!allStudentsData || allStudentsData.length === 0) return [];
+    return allStudentsData.filter((s) => {
+      const sStatus = (s.status || 'ACTIVE').toUpperCase();
+      return !(
+        (s as any).archived ||
+        sStatus === 'INACTIVE' ||
+        sStatus === 'ARCHIVED' ||
+        sStatus === 'RETURNED' ||
+        sStatus === 'DROPPED'
+      );
+    });
+  }, [allStudentsData]);
+
+  // ── 2. Dynamic Segmented Demographic Breakdown (SHS, College, per strand & program) ──
+  const demographicStats = useMemo(() => {
+    let shsTotal = 0;
+    let collegeTotal = 0;
+
+    // Track strand breakdowns
+    const strandMap: Record<string, { code: string; name: string; count: number }> = {};
+    shsPrograms.forEach((p) => {
+      strandMap[p.code.toUpperCase()] = { code: p.code, name: p.name, count: 0 };
+    });
+
+    // Track college program breakdowns
+    const programMap: Record<string, { code: string; name: string; count: number }> = {};
+    collegePrograms.forEach((p) => {
+      programMap[p.code.toUpperCase()] = { code: p.code, name: p.name, count: 0 };
+    });
+
+    activeStudents.forEach((s) => {
+      const isShs = ((): boolean => {
+        const lvl = String(s.academicLevel || '').toUpperCase();
+        if (lvl === 'SHS') return true;
+        if (lvl === 'COLLEGE') return false;
+        const c = String(s.courseCode || '').toUpperCase();
+        if (shsCourseCodes.some((code) => c.includes(code.toUpperCase()))) return true;
+        const y = String(s.yearLevel || '').toUpperCase();
+        if (y.includes('11') || y.includes('12') || y.includes('GRADE 11') || y.includes('GRADE 12')) return true;
+        return false;
+      })();
+
+      const sCourse = String(s.courseCode || '').toUpperCase().trim();
+
+      if (isShs) {
+        shsTotal++;
+        const matchedStrandKey = Object.keys(strandMap).find(
+          (k) => k === sCourse || sCourse.includes(k) || k.includes(sCourse)
+        );
+        if (matchedStrandKey) {
+          strandMap[matchedStrandKey].count++;
+        } else if (sCourse) {
+          if (!strandMap[sCourse]) {
+            strandMap[sCourse] = { code: sCourse, name: s.courseName || sCourse, count: 0 };
+          }
+          strandMap[sCourse].count++;
+        }
+      } else {
+        collegeTotal++;
+        const matchedProgKey = Object.keys(programMap).find(
+          (k) => k === sCourse || sCourse.includes(k) || k.includes(sCourse)
+        );
+        if (matchedProgKey) {
+          programMap[matchedProgKey].count++;
+        } else if (sCourse) {
+          if (!programMap[sCourse]) {
+            programMap[sCourse] = { code: sCourse, name: s.courseName || sCourse, count: 0 };
+          }
+          programMap[sCourse].count++;
+        }
+      }
+    });
+
+    const strandsList = Object.values(strandMap).sort((a, b) => b.count - a.count);
+    const programsList = Object.values(programMap).sort((a, b) => b.count - a.count);
+
+    return {
+      shsTotal,
+      collegeTotal,
+      totalStudents: activeStudents.length,
+      strandsList,
+      programsList,
+    };
+  }, [activeStudents, shsPrograms, collegePrograms, shsCourseCodes]);
+
+  const totalCampusPopulation = useMemo(() => {
+    return demographicStats.totalStudents + (includeFaculty ? facultyCount : 0);
+  }, [demographicStats.totalStudents, includeFaculty, facultyCount]);
 
   const selectedCourses: string[] = targetAudience.courses || [];
   const selectedCourseCodes: string[] = targetAudience.courseCodes || [];
@@ -415,6 +538,22 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
 
   const handleSelectMode = (newMode: AudienceMode) => {
     if (newMode === 'all') {
+      const effectiveTotal = demographicStats.totalStudents + (includeFaculty ? facultyCount : 0);
+      const calculatedAttendees = Math.max(1, Math.round(effectiveTotal * (expectedReachPercent / 100)));
+      setAttendanceCount(calculatedAttendees);
+      const qual = includeFaculty ? 'students & faculty' : 'students';
+      updateAttendance(calculatedAttendees, qual);
+
+      const strandsBreakdownObj: Record<string, number> = {};
+      demographicStats.strandsList.forEach((st) => {
+        strandsBreakdownObj[st.code] = st.count;
+      });
+
+      const programsBreakdownObj: Record<string, number> = {};
+      demographicStats.programsList.forEach((pr) => {
+        programsBreakdownObj[pr.code] = pr.count;
+      });
+
       onChange({
         targetAudience: {
           scope: 'all',
@@ -426,6 +565,19 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           courseCodes: [],
           sections: [],
           yearLevels: [],
+          includeFaculty,
+          facultyCount: includeFaculty ? facultyCount : 0,
+          expectedReachPercentage: expectedReachPercent,
+          demographicBreakdown: {
+            shsTotal: demographicStats.shsTotal,
+            collegeTotal: demographicStats.collegeTotal,
+            facultyTotal: includeFaculty ? facultyCount : 0,
+            totalPopulation: effectiveTotal,
+            expectedAttendees: calculatedAttendees,
+            expectedReachPercentage: expectedReachPercent,
+            strandsBreakdown: strandsBreakdownObj,
+            programsBreakdown: programsBreakdownObj,
+          },
         },
       });
       return;
@@ -624,6 +776,76 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
       estimatedAttendance: combined,
     });
   };
+
+  const applyExpectedReach = (percent: number, facultyIncluded = includeFaculty, customFacultyNum = facultyCount) => {
+    setExpectedReachPercent(percent);
+    const effectiveTotal = demographicStats.totalStudents + (facultyIncluded ? customFacultyNum : 0);
+    const calculatedAttendees = Math.max(1, Math.round(effectiveTotal * (percent / 100)));
+    setAttendanceCount(calculatedAttendees);
+    const qual = facultyIncluded ? 'students & faculty' : 'students';
+    updateAttendance(calculatedAttendees, qual);
+
+    const strandsBreakdownObj: Record<string, number> = {};
+    demographicStats.strandsList.forEach((st) => {
+      strandsBreakdownObj[st.code] = st.count;
+    });
+
+    const programsBreakdownObj: Record<string, number> = {};
+    demographicStats.programsList.forEach((pr) => {
+      programsBreakdownObj[pr.code] = pr.count;
+    });
+
+    onChange({
+      targetAudience: {
+        ...targetAudience,
+        allStudents: true,
+        scope: 'all',
+        includeFaculty: facultyIncluded,
+        facultyCount: facultyIncluded ? customFacultyNum : 0,
+        expectedReachPercentage: percent,
+        demographicBreakdown: {
+          shsTotal: demographicStats.shsTotal,
+          collegeTotal: demographicStats.collegeTotal,
+          facultyTotal: facultyIncluded ? customFacultyNum : 0,
+          totalPopulation: effectiveTotal,
+          expectedAttendees: calculatedAttendees,
+          expectedReachPercentage: percent,
+          strandsBreakdown: strandsBreakdownObj,
+          programsBreakdown: programsBreakdownObj,
+        },
+      },
+    });
+  };
+
+  const handleToggleFaculty = (checked: boolean) => {
+    setIncludeFaculty(checked);
+    applyExpectedReach(expectedReachPercent, checked, facultyCount);
+  };
+
+  const handleFacultyCountChange = (countVal: number) => {
+    const validCount = Math.max(1, countVal);
+    setFacultyCount(validCount);
+    applyExpectedReach(expectedReachPercent, includeFaculty, validCount);
+  };
+
+  // Auto-initialize 90% expected reach for "all" mode if attendance is unset
+  useEffect(() => {
+    if (
+      currentMode === 'all' &&
+      !formData.estAttendanceCount &&
+      !formData.estimatedAttendance &&
+      totalCampusPopulation > 0
+    ) {
+      applyExpectedReach(expectedReachPercent, includeFaculty, facultyCount);
+    }
+  }, [currentMode, totalCampusPopulation]);
+
+  // Derived effective reach percentage if user typed a custom number
+  const effectiveReachPercentage = useMemo(() => {
+    const countNum = Number(attendanceCount);
+    if (!countNum || totalCampusPopulation <= 0) return expectedReachPercent;
+    return Math.min(100, Math.round((countNum / totalCampusPopulation) * 100));
+  }, [attendanceCount, totalCampusPopulation, expectedReachPercent]);
 
   const marketingPlan = formData.marketingPlan || [];
   const [marketingInput, setMarketingInput] = useState('');
@@ -964,16 +1186,303 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           </button>
         </div>
 
-        {/* Mode Info Banner */}
+        {/* Mode Info & Dynamic Segmented Demographic Breakdown */}
         {currentMode === 'all' ? (
-          <div className="p-4 bg-blue-50/80 border border-blue-200 rounded-2xl text-xs text-blue-900 space-y-1">
-            <div className="flex items-center gap-2 font-bold text-sm text-[#001A4D]">
-              <Users className="w-4 h-4 text-[#001A4D]" />
-              <span>Campus-Wide Coverage: All Students (College & Senior High)</span>
+          <div className="space-y-4">
+            {/* Campus Overview & Policy Header */}
+            <div className="p-5 bg-gradient-to-br from-blue-50/90 via-indigo-50/50 to-white border border-blue-200/80 rounded-2xl shadow-xs space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs flex-shrink-0">
+                    <BarChart3 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-bold text-sm text-[#001A4D]">
+                        Campus-Wide Demographic Breakdown
+                      </h4>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-[#001A4D] border border-blue-200">
+                        Live Registry
+                      </span>
+                    </div>
+                    <p className="text-blue-700 text-xs mt-0.5">
+                      Dynamically computed from active STI Student Registry records. Every academic department is engaged.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Faculty Inclusion Toggle Pill */}
+                <div className="flex items-center gap-3 bg-white/95 px-3.5 py-2 rounded-xl border border-blue-200/70 shadow-2xs">
+                  <div className="flex items-center gap-2">
+                    <Briefcase className="w-4 h-4 text-[#001A4D]" />
+                    <label htmlFor="toggle-faculty-incl" className="text-xs font-semibold text-gray-800 cursor-pointer">
+                      Include Faculty & Staff
+                    </label>
+                  </div>
+                  <input
+                    id="toggle-faculty-incl"
+                    type="checkbox"
+                    checked={includeFaculty}
+                    onChange={(e) => handleToggleFaculty(e.target.checked)}
+                    className="w-4 h-4 rounded text-[#001A4D] focus:ring-[#001A4D] border-gray-300 cursor-pointer"
+                  />
+                  {includeFaculty && (
+                    <div className="flex items-center gap-1 pl-2 border-l border-gray-200">
+                      <input
+                        type="number"
+                        min="1"
+                        value={facultyCount}
+                        onChange={(e) => handleFacultyCountChange(parseInt(e.target.value, 10) || 1)}
+                        className="w-14 px-1.5 py-0.5 text-xs font-bold text-gray-900 border border-gray-300 rounded-md text-center focus:outline-none focus:ring-1 focus:ring-[#001A4D]"
+                        title="Estimated campus faculty & staff headcount"
+                      />
+                      <span className="text-[10px] text-gray-500 font-medium">staff</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 4 Summary Demographic KPI Cards */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+                <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                  <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
+                    <span>Total Target Population</span>
+                    <Users className="w-3.5 h-3.5 text-[#001A4D]" />
+                  </div>
+                  <div className="text-lg font-black text-[#001A4D] mt-1">
+                    {totalCampusPopulation.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-gray-500 mt-0.5">
+                    {demographicStats.totalStudents.toLocaleString()} students{includeFaculty ? ` + ${facultyCount} staff` : ''}
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                  <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
+                    <span>Senior High School</span>
+                    <School className="w-3.5 h-3.5 text-amber-600" />
+                  </div>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    {demographicStats.shsTotal.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-amber-700 font-medium mt-0.5">
+                    {demographicStats.totalStudents > 0
+                      ? Math.round((demographicStats.shsTotal / demographicStats.totalStudents) * 100)
+                      : 0}% of student body
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                  <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
+                    <span>Tertiary / College</span>
+                    <GraduationCap className="w-3.5 h-3.5 text-blue-600" />
+                  </div>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    {demographicStats.collegeTotal.toLocaleString()}
+                  </div>
+                  <div className="text-[10px] text-blue-700 font-medium mt-0.5">
+                    {demographicStats.totalStudents > 0
+                      ? Math.round((demographicStats.collegeTotal / demographicStats.totalStudents) * 100)
+                      : 0}% of student body
+                  </div>
+                </div>
+
+                <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
+                  <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
+                    <span>Faculty & Staff</span>
+                    <Briefcase className="w-3.5 h-3.5 text-purple-600" />
+                  </div>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    {includeFaculty ? facultyCount.toLocaleString() : 0}
+                  </div>
+                  <div className="text-[10px] text-gray-500 font-medium mt-0.5">
+                    {includeFaculty ? 'Included in Reach' : 'Not included'}
+                  </div>
+                </div>
+              </div>
             </div>
-            <p className="text-blue-700 leading-relaxed text-xs">
-              Every academic department is involved. By policy, <strong>all institutional signatories with assigned academic departments</strong> will be dynamically included in Stage 2 to review and endorse this proposal.
-            </p>
+
+            {/* Segment 1: Senior High School (SHS) Tracks & Strands */}
+            <div className="p-4 bg-white border border-gray-200 rounded-2xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-amber-50 text-amber-700 flex items-center justify-center font-bold">
+                    <School className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                      <span>Senior High School (SHS) Strands</span>
+                      <span className="text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                        {demographicStats.shsTotal.toLocaleString()} Enrolled
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-500">
+                      All Grade 11 & Grade 12 registered students across academic tracks
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold text-[#001A4D]">
+                    ~{Math.round(demographicStats.shsTotal * (expectedReachPercent / 100)).toLocaleString()} expected
+                  </span>
+                  <span className="text-[11px] text-gray-400 block">
+                    at {expectedReachPercent}% reach
+                  </span>
+                </div>
+              </div>
+
+              {demographicStats.strandsList.length === 0 ? (
+                <p className="text-xs text-gray-400 italic py-2">
+                  No active Senior High School strands registered.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {demographicStats.strandsList.map((strand) => {
+                    const strandShare = demographicStats.shsTotal > 0
+                      ? Math.round((strand.count / demographicStats.shsTotal) * 100)
+                      : 0;
+                    const expectedStrandTurnout = Math.round(strand.count * (expectedReachPercent / 100));
+                    return (
+                      <div
+                        key={strand.code}
+                        className="p-3 rounded-xl bg-slate-50/70 border border-slate-200/80 hover:border-amber-300 transition-all space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-100/70 text-amber-900 border border-amber-200/60">
+                            {strand.code}
+                          </span>
+                          <span className="text-xs font-black text-slate-800">
+                            {strand.count.toLocaleString()}{' '}
+                            <span className="text-[10px] font-normal text-gray-500">enrolled</span>
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-600 line-clamp-1 font-medium" title={strand.name}>
+                          {strand.name}
+                        </p>
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-gray-500">
+                            <span>Turnout ({expectedReachPercent}%): <strong className="text-slate-700">~{expectedStrandTurnout}</strong></span>
+                            <span>{strandShare}% share</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
+                              style={{ width: `${Math.min(100, Math.max(4, strandShare))}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Segment 2: Tertiary / College Academic Programs */}
+            <div className="p-4 bg-white border border-gray-200 rounded-2xl space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#001A4D] flex items-center justify-center font-bold">
+                    <GraduationCap className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
+                      <span>Tertiary & College Academic Programs</span>
+                      <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                        {demographicStats.collegeTotal.toLocaleString()} Enrolled
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-gray-500">
+                      All College year levels (1st to 4th Year) across all degree programs
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold text-[#001A4D]">
+                    ~{Math.round(demographicStats.collegeTotal * (expectedReachPercent / 100)).toLocaleString()} expected
+                  </span>
+                  <span className="text-[11px] text-gray-400 block">
+                    at {expectedReachPercent}% reach
+                  </span>
+                </div>
+              </div>
+
+              {demographicStats.programsList.length === 0 ? (
+                <p className="text-xs text-gray-400 italic py-2">
+                  No active College degree programs registered.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {demographicStats.programsList.map((prog) => {
+                    const progShare = demographicStats.collegeTotal > 0
+                      ? Math.round((prog.count / demographicStats.collegeTotal) * 100)
+                      : 0;
+                    const expectedProgTurnout = Math.round(prog.count * (expectedReachPercent / 100));
+                    return (
+                      <div
+                        key={prog.code}
+                        className="p-3 rounded-xl bg-slate-50/70 border border-slate-200/80 hover:border-blue-300 transition-all space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded-md text-xs font-bold bg-blue-100 text-[#001A4D] border border-blue-200/60">
+                            {prog.code}
+                          </span>
+                          <span className="text-xs font-black text-slate-800">
+                            {prog.count.toLocaleString()}{' '}
+                            <span className="text-[10px] font-normal text-gray-500">enrolled</span>
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-600 line-clamp-1 font-medium" title={prog.name}>
+                          {prog.name}
+                        </p>
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-gray-500">
+                            <span>Turnout ({expectedReachPercent}%): <strong className="text-slate-700">~{expectedProgTurnout}</strong></span>
+                            <span>{progShare}% share</span>
+                          </div>
+                          <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="bg-[#001A4D] h-1.5 rounded-full transition-all duration-300"
+                              style={{ width: `${Math.min(100, Math.max(4, progShare))}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Segment 3: Faculty & Academic Personnel (if included) */}
+            {includeFaculty && (
+              <div className="p-4 bg-purple-50/60 border border-purple-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center font-bold">
+                    <Briefcase className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-purple-950 uppercase tracking-wider flex items-center gap-2">
+                      <span>Faculty & Academic Staff Population</span>
+                      <span className="text-[10px] font-bold text-purple-800 bg-purple-100 px-2 py-0.5 rounded-full border border-purple-200">
+                        {facultyCount} Headcount
+                      </span>
+                    </h5>
+                    <p className="text-[11px] text-purple-800">
+                      Instructors, Program Heads, Academic Advisers, and Campus Coordinators
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-xs font-bold text-purple-950">
+                    ~{Math.round(facultyCount * (expectedReachPercent / 100))} expected attendees
+                  </span>
+                  <span className="text-[10px] text-purple-600 block">
+                    at {expectedReachPercent}% participation
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
@@ -1257,76 +1766,240 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           </span>
         </div>
 
-        {/* Calculated Actual Eligible Student Reach Card */}
-        <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 to-indigo-50/70 border border-blue-200/80 shadow-2xs space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs">
-                <Users className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
-                    Actual Eligible Reach
-                  </span>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-200/60 text-[#001A4D]">
-                    Live DB
-                  </span>
+        {/* Calculated Actual Eligible Student Reach Card / Dynamic Expected Reach Model */}
+        {currentMode === 'all' ? (
+          /* ── Campus-Wide Dynamic Population & Expected Reach Model ── */
+          <div className="p-5 rounded-2xl bg-gradient-to-br from-blue-50/95 via-indigo-50/70 to-blue-100/50 border border-blue-200 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs flex-shrink-0">
+                  <TrendingUp className="w-6 h-6" />
                 </div>
-                <div className="text-base sm:text-lg font-black text-[#001A4D]">
-                  {calculatedReach.toLocaleString()} <span className="text-xs font-semibold text-gray-500">eligible students enrolled</span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#001A4D]">
+                      Dynamic Population & Expected Reach Model
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#FFD41C] text-[#001A4D] shadow-2xs">
+                      {expectedReachPercent}% Reach Active
+                    </span>
+                  </div>
+                  <div className="text-base sm:text-xl font-black text-[#001A4D]">
+                    {attendanceCount || Math.round(totalCampusPopulation * (expectedReachPercent / 100))}{' '}
+                    <span className="text-xs font-semibold text-gray-600">
+                      projected attendees of {totalCampusPopulation.toLocaleString()} campus population
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Quick Turnout Presets */}
-            {calculatedReach > 0 && (
+              {/* Institutional Expected Reach Presets */}
               <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[11px] font-medium text-gray-500 mr-1">Quick Presets:</span>
+                <span className="text-[11px] font-bold text-gray-600 mr-1 flex items-center gap-1">
+                  <Sliders className="w-3.5 h-3.5 text-[#001A4D]" /> Presets:
+                </span>
                 {[
-                  { label: '25%', ratio: 0.25 },
-                  { label: '50%', ratio: 0.5 },
-                  { label: '75%', ratio: 0.75 },
-                  { label: '100%', ratio: 1.0 },
+                  { label: '90% (Standard)', pct: 90, highlight: true },
+                  { label: '85%', pct: 85 },
+                  { label: '75%', pct: 75 },
+                  { label: '50%', pct: 50 },
+                  { label: '100%', pct: 100 },
                 ].map((preset) => {
-                  const estCount = Math.max(1, Math.round(calculatedReach * preset.ratio));
+                  const isActive = expectedReachPercent === preset.pct;
                   return (
                     <button
                       key={preset.label}
                       type="button"
-                      onClick={() => {
-                        setAttendanceCount(estCount);
-                        updateAttendance(estCount, attendanceQualifier);
-                      }}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-[#001A4D] border border-blue-200 hover:bg-[#001A4D] hover:text-[#FFD41C] hover:border-[#001A4D] transition-all shadow-2xs cursor-pointer"
-                      title={`Set estimated attendance to ${estCount} (${preset.label} of eligible pool)`}
+                      onClick={() => applyExpectedReach(preset.pct)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer flex items-center gap-1 ${
+                        isActive
+                          ? 'bg-[#001A4D] text-[#FFD41C] ring-2 ring-[#001A4D]/30 shadow-xs'
+                          : preset.highlight
+                          ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
+                          : 'bg-white text-[#001A4D] border border-blue-200 hover:bg-blue-50'
+                      }`}
+                      title={`Calculate ${preset.pct}% expected attendance`}
                     >
-                      {preset.label} (~{estCount})
+                      <span>{preset.label}</span>
+                      {isActive && <Check className="w-3 h-3 text-[#FFD41C]" />}
                     </button>
                   );
                 })}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Turnout Percentage and Validation Hint */}
-          {Number(attendanceCount) > 0 && calculatedReach > 0 && (
-            <div className="pt-2 border-t border-blue-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
-              <span className="text-gray-600 font-medium">
-                Turnout projection: <strong className="text-[#001A4D]">{attendanceCount}</strong> of <strong className="text-[#001A4D]">{calculatedReach}</strong> eligible students (
-                <strong className={Number(attendanceCount) > calculatedReach ? 'text-amber-600 font-bold' : 'text-emerald-700 font-bold'}>
-                  {Math.round((Number(attendanceCount) / calculatedReach) * 100)}%
-                </strong> turnout rate)
-              </span>
-              {Number(attendanceCount) > calculatedReach && (
-                <span className="text-amber-700 font-medium text-[11px] flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  Count exceeds student pool (make sure qualifier includes external/guest attendees)
+            {/* Turnout Percentage Slider */}
+            <div className="p-3 bg-white/95 rounded-xl border border-blue-200/70 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-gray-700 flex items-center gap-1.5">
+                  <Percent className="w-3.5 h-3.5 text-[#001A4D]" /> Adjust Expected Turnout Rate:
                 </span>
+                <span className="font-black text-[#001A4D] text-sm bg-blue-50 px-2.5 py-0.5 rounded-lg border border-blue-200">
+                  {expectedReachPercent}%
+                </span>
+              </div>
+              <input
+                type="range"
+                min="10"
+                max="100"
+                step="5"
+                value={expectedReachPercent}
+                onChange={(e) => applyExpectedReach(Number(e.target.value))}
+                className="w-full accent-[#001A4D] cursor-pointer"
+              />
+              <div className="flex justify-between text-[10px] text-gray-400 font-medium">
+                <span>10% Low Turnout</span>
+                <span>50% Moderate</span>
+                <span className="text-[#001A4D] font-bold">90% STI Standard</span>
+                <span>100% Full Attendance</span>
+              </div>
+            </div>
+
+            {/* Segmented Turnout Breakdown Table */}
+            <div className="overflow-x-auto rounded-xl border border-blue-200/80 bg-white shadow-2xs">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-gray-200 text-gray-500 font-bold uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2.5 px-3">Demographic Segment</th>
+                    <th className="py-2.5 px-3 text-right">Registered Pool</th>
+                    <th className="py-2.5 px-3 text-right">Expected Turnout ({expectedReachPercent}%)</th>
+                    <th className="py-2.5 px-3 text-right">Turnout Share</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 text-gray-700 font-medium">
+                  <tr>
+                    <td className="py-2.5 px-3 flex items-center gap-1.5">
+                      <School className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Senior High School (SHS)</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-semibold">{demographicStats.shsTotal.toLocaleString()}</td>
+                    <td className="py-2.5 px-3 text-right font-bold text-amber-800">
+                      {Math.round(demographicStats.shsTotal * (expectedReachPercent / 100)).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-gray-500">
+                      {totalCampusPopulation > 0
+                        ? Math.round((demographicStats.shsTotal / totalCampusPopulation) * 100)
+                        : 0}%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3 flex items-center gap-1.5">
+                      <GraduationCap className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Tertiary / College</span>
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-semibold">{demographicStats.collegeTotal.toLocaleString()}</td>
+                    <td className="py-2.5 px-3 text-right font-bold text-blue-900">
+                      {Math.round(demographicStats.collegeTotal * (expectedReachPercent / 100)).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right text-gray-500">
+                      {totalCampusPopulation > 0
+                        ? Math.round((demographicStats.collegeTotal / totalCampusPopulation) * 100)
+                        : 0}%
+                    </td>
+                  </tr>
+                  {includeFaculty && (
+                    <tr className="bg-purple-50/40">
+                      <td className="py-2.5 px-3 flex items-center gap-1.5">
+                        <Briefcase className="w-3.5 h-3.5 text-purple-600" />
+                        <span>Faculty & Staff Personnel</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-semibold">{facultyCount.toLocaleString()}</td>
+                      <td className="py-2.5 px-3 text-right font-bold text-purple-900">
+                        {Math.round(facultyCount * (expectedReachPercent / 100)).toLocaleString()}
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-gray-500">
+                        {totalCampusPopulation > 0
+                          ? Math.round((facultyCount / totalCampusPopulation) * 100)
+                          : 0}%
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                <tfoot className="bg-blue-50/70 border-t border-blue-200 font-bold text-xs text-[#001A4D]">
+                  <tr>
+                    <td className="py-2.5 px-3 uppercase tracking-wider text-[11px]">Total Campus Projected Turnout</td>
+                    <td className="py-2.5 px-3 text-right font-black">{totalCampusPopulation.toLocaleString()}</td>
+                    <td className="py-2.5 px-3 text-right font-black text-sm">
+                      {Math.round(totalCampusPopulation * (expectedReachPercent / 100)).toLocaleString()}
+                    </td>
+                    <td className="py-2.5 px-3 text-right">100%</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        ) : (
+          /* Single-Level / Custom Selection Reach Card */
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 to-indigo-50/70 border border-blue-200/80 shadow-2xs space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs">
+                  <Users className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-blue-900">
+                      Actual Eligible Reach
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-200/60 text-[#001A4D]">
+                      Live DB
+                    </span>
+                  </div>
+                  <div className="text-base sm:text-lg font-black text-[#001A4D]">
+                    {calculatedReach.toLocaleString()} <span className="text-xs font-semibold text-gray-500">eligible students enrolled</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Turnout Presets */}
+              {calculatedReach > 0 && (
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-medium text-gray-500 mr-1">Quick Presets:</span>
+                  {[
+                    { label: '25%', ratio: 0.25 },
+                    { label: '50%', ratio: 0.5 },
+                    { label: '75%', ratio: 0.75 },
+                    { label: '100%', ratio: 1.0 },
+                  ].map((preset) => {
+                    const estCount = Math.max(1, Math.round(calculatedReach * preset.ratio));
+                    return (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          setAttendanceCount(estCount);
+                          updateAttendance(estCount, attendanceQualifier);
+                        }}
+                        className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-[#001A4D] border border-blue-200 hover:bg-[#001A4D] hover:text-[#FFD41C] hover:border-[#001A4D] transition-all shadow-2xs cursor-pointer"
+                        title={`Set estimated attendance to ${estCount} (${preset.label} of eligible pool)`}
+                      >
+                        {preset.label} (~{estCount})
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
-          )}
-        </div>
+
+            {/* Turnout Percentage and Validation Hint */}
+            {Number(attendanceCount) > 0 && calculatedReach > 0 && (
+              <div className="pt-2 border-t border-blue-200/60 flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                <span className="text-gray-600 font-medium">
+                  Turnout projection: <strong className="text-[#001A4D]">{attendanceCount}</strong> of <strong className="text-[#001A4D]">{calculatedReach}</strong> eligible students (
+                  <strong className={Number(attendanceCount) > calculatedReach ? 'text-amber-600 font-bold' : 'text-emerald-700 font-bold'}>
+                    {Math.round((Number(attendanceCount) / calculatedReach) * 100)}%
+                  </strong> turnout rate)
+                </span>
+                {Number(attendanceCount) > calculatedReach && (
+                  <span className="text-amber-700 font-medium text-[11px] flex items-center gap-1">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    Count exceeds student pool (make sure qualifier includes external/guest attendees)
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
           {/* Numbers Only Input */}

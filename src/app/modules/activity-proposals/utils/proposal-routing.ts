@@ -8,6 +8,7 @@
  * ZERO HARDCODED DATA - All signatories are queried dynamically from the Firestore database.
  */
 
+import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import {
   type InstitutionalSignatory,
   isSignatoryApplicableTo,
@@ -108,6 +109,7 @@ export function buildDynamicApprovalChain(
       role: 'sas_head',
       roleTitle: resolvedRoleTitle,
       actionType: 'endorse',
+      signatoryLabel: 'Endorsed by:',
       signatoryUid: resolvedUid,
       signatoryName: resolvedName,
       signatoryEmail: resolvedEmail,
@@ -203,6 +205,7 @@ export function buildDynamicApprovalChain(
       role: sig.role,
       roleTitle: sig.roleTitle || 'Department Head',
       actionType: resolveActionType(sig.actionType, 'endorse'),
+      signatoryLabel: sig.defaultSignatoryLabel || resolveSignatoryLabel(sig as any, 'proposal', false),
       signatoryUid: sig.id,
       signatoryName: sig.name,
       signatoryEmail: sig.email,
@@ -241,6 +244,7 @@ export function buildDynamicApprovalChain(
       role: sig.role,
       roleTitle: sig.roleTitle || 'Academic Head',
       actionType: resolveActionType(sig.actionType, 'endorse'),
+      signatoryLabel: sig.defaultSignatoryLabel || resolveSignatoryLabel(sig as any, 'proposal', false),
       signatoryUid: sig.id,
       signatoryName: sig.name,
       signatoryEmail: sig.email,
@@ -283,6 +287,7 @@ export function buildDynamicApprovalChain(
       role: sig.role,
       roleTitle: sig.roleTitle || (sig.role === 'school_president' ? 'School President' : 'School Administrator'),
       actionType: sig.role === 'school_president' ? 'approve' : resolveActionType(sig.actionType, 'approve'),
+      signatoryLabel: sig.defaultSignatoryLabel || resolveSignatoryLabel(sig as any, 'proposal', true),
       signatoryUid: sig.id,
       signatoryName: sig.name,
       signatoryEmail: sig.email,

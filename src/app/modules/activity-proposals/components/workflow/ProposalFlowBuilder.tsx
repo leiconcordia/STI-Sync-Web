@@ -10,6 +10,8 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { SIGNATORY_LABEL_OPTIONS, resolveSignatoryLabel, resolveActionTypeFromLabel } from '../../../signatories/utils/signatory-label.utils';
+import { useSignatoryLabelsStream } from '../../../signatories/hooks/useSignatoryLabelsStream';
 import {
   FileSignature,
   ShieldCheck,
@@ -46,6 +48,9 @@ import {
 import {
   getDefaultWorkflowSettings,
   getCachedWorkflowSettings,
+  subscribeToDefaultWorkflowSettings,
+  isStepConfiguredPermanent,
+  type DefaultWorkflowSettings,
 } from '../../../workflow/services/approval-workflow.service';
 
 interface ProposalFlowBuilderProps {
@@ -107,6 +112,31 @@ export default function ProposalFlowBuilder({
   });
 
   const [sasConfig, setSasConfig] = useState<SasSignatoryConfig>(DEFAULT_SAS_SIGNATORY_CONFIG);
+  const [workflowSettings, setWorkflowSettings] = useState<DefaultWorkflowSettings | null>(() => getCachedWorkflowSettings());
+  const { activeLabels } = useSignatoryLabelsStream();
+
+  const availableLabelOptions = useMemo(() => {
+    const proposalLabels = activeLabels.filter(
+      (l) => !l.applicableDocuments || l.applicableDocuments.includes('proposal')
+    );
+    if (proposalLabels.length > 0) {
+      return proposalLabels.map((l) => ({
+        value: l.label,
+        label: l.label,
+        description: l.description || '',
+      }));
+    }
+    return SIGNATORY_LABEL_OPTIONS;
+  }, [activeLabels]);
+
+  useEffect(() => {
+    const unsub = subscribeToDefaultWorkflowSettings((settings) => {
+      setWorkflowSettings(settings);
+    });
+    return () => unsub();
+  }, []);
+
+  const pipelineKey = isOfficerProposal ? 'adviser_ap' : 'admin_ap';
 
   // Real-time listener for official SAS Signatory Maintenance settings
   useEffect(() => {
@@ -582,7 +612,15 @@ export default function ProposalFlowBuilder({
       return;
     }
     const targetStage = stages.find((s) => s.stageIndex === stageIdx);
-    const hasPermanentSigner = targetStage?.steps.some((step) => Boolean(step.isPermanent));
+    const hasPermanentSigner = targetStage?.steps.some((step) => {
+      const isUserAddedStep = Boolean(
+        step.isUserAdded ||
+        step.id?.startsWith('prop_step_') ||
+        step.id?.startsWith('custom_sig_') ||
+        step.id?.startsWith('custom_')
+      );
+      return !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, isOfficerProposal);
+    });
     if (hasPermanentSigner) {
       alert('This stage contains permanent signatories configured in institutional settings and cannot be deleted.');
       return;
@@ -665,7 +703,7 @@ export default function ProposalFlowBuilder({
     }
 
     const newStep: ProposalApprovalStep = {
-      id: `step_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      id: `prop_step_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       step: approvalChain.length + 1,
       stageIndex,
       stageName: stages.find((s) => s.stageIndex === stageIndex)?.stageName || `Stage ${stageIndex}`,
@@ -677,6 +715,9 @@ export default function ProposalFlowBuilder({
       signatoryEmail: signatory.email || '',
       department: signatory.department || '',
       status: stageIndex === 1 ? 'current' : 'waiting',
+      isMandatory: false,
+      isPermanent: false,
+      isUserAdded: true,
     };
 
     const updatedStages = stages.map((stg) => {
@@ -718,6 +759,9 @@ export default function ProposalFlowBuilder({
       signatoryEmail: customSignatory.email.trim(),
       department: customSignatory.department.trim(),
       status: stageIndex === 1 ? 'current' : 'waiting',
+      isMandatory: false,
+      isPermanent: false,
+      isUserAdded: true,
     };
 
     const updatedStages = stages.map((stg) => {
@@ -741,14 +785,21 @@ export default function ProposalFlowBuilder({
   // 9. Remove Signatory from Stage
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
     const stepToRemove = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    const isUserAddedStep = Boolean(
+      stepToRemove?.isUserAdded ||
+      stepToRemove?.id?.startsWith('prop_step_') ||
+      stepToRemove?.id?.startsWith('custom_sig_') ||
+      stepToRemove?.id?.startsWith('custom_')
+    );
     if (
+      !isUserAddedStep &&
       isOfficerProposal &&
-      (stepToRemove?.stageIndex === 1 || stepToRemove?.role === 'sas_head' || stepToRemove?.role === 'sas_coordinator')
+      (stepToRemove?.role === 'sas_head' || stepToRemove?.role === 'sas_coordinator')
     ) {
-      alert('Stage 1 SAS Gatekeeper endorsement is mandatory for Student Organization proposals and cannot be removed.');
+      alert('SAS Gatekeeper endorsement is mandatory for Student Organization proposals and cannot be removed.');
       return;
     }
-    if (stepToRemove?.isPermanent) {
+    if (!isUserAddedStep && stepToRemove && isStepConfiguredPermanent(stepToRemove, pipelineKey, workflowSettings, isOfficerProposal)) {
       alert(`"${stepToRemove?.signatoryName || stepToRemove?.roleTitle}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
       return;
     }
@@ -782,6 +833,27 @@ export default function ProposalFlowBuilder({
     }
     setStageConfigs(INITIAL_STAGE_CONFIGS);
     onChange([]);
+  };
+
+  // Update Signatory Formal Label
+  const handleUpdateStepLabel = (stepIdOrIndex: string | number, newLabel: string) => {
+    const labelDoc = activeLabels.find((l) => l.label === newLabel);
+    const resolvedAction = labelDoc
+      ? labelDoc.actionType
+      : (resolveActionTypeFromLabel(newLabel) as SignatoryActionType);
+
+    const updated = approvalChain.map((s) => {
+      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+      if (match) {
+        return {
+          ...s,
+          signatoryLabel: newLabel,
+          actionType: resolvedAction,
+        };
+      }
+      return s;
+    });
+    onChange(updated);
   };
 
   // 11. Toggle Action Type for a specific Step
@@ -1064,10 +1136,17 @@ export default function ProposalFlowBuilder({
                         (s) => s.id === step.signatoryUid || (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                       );
                       const isApplicableToProposal = matchedSig ? isSignatoryApplicableTo(matchedSig, 'proposal') : true;
-                      const isPermanentSigner = Boolean(step.isPermanent);
+                      const isUserAddedStep = Boolean(
+                        step.isUserAdded ||
+                        step.id?.startsWith('prop_step_') ||
+                        step.id?.startsWith('custom_sig_') ||
+                        step.id?.startsWith('custom_')
+                      );
+                      const isPermanentSigner = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, isOfficerProposal);
                       const isBuiltinFixedSasSigner = Boolean(
+                        !isUserAddedStep &&
                         isOfficerProposal &&
-                        (stage.stageIndex === 1 || step.role === 'sas_head' || step.role === 'sas_coordinator')
+                        (step.role === 'sas_head' || step.role === 'sas_coordinator')
                       );
                       const isLockedSigner = isBuiltinFixedSasSigner || isPermanentSigner;
 
@@ -1118,51 +1197,56 @@ export default function ProposalFlowBuilder({
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 self-end sm:self-auto">
-                            {isLockedSigner ? (
-                              <div className="px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 bg-blue-50 text-blue-900 border-blue-200 shadow-2xs">
-                                <FileSignature className="w-3.5 h-3.5 text-blue-700" />
-                                <span>{isBuiltinFixedSasSigner ? 'Stage 1 SAS Endorser' : isApprover ? 'Permanent Approver' : 'Permanent Endorser'}</span>
-                              </div>
-                            ) : (
-                              <>
-                                {/* Role Capability Switch Button */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleActionType(step.id || step.step)}
-                                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
-                                    isApprover
-                                      ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                                      : 'bg-sky-50 hover:bg-sky-100 text-sky-800 border-sky-300'
-                                  }`}
-                                  title="Click to switch between Endorser and Approver"
-                                >
-                                  {isApprover ? (
+                          <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                            {/* Dynamic Formal Document Label Selector */}
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <select
+                                value={step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1)}
+                                onChange={(e) => handleUpdateStepLabel(step.id || step.step, e.target.value)}
+                                className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
+                                title="Formal Signatory Document Label"
+                              >
+                                {(() => {
+                                  const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1);
+                                  const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
+                                  return (
                                     <>
-                                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                      <span>Approver</span>
+                                      {!hasCurrent && currentVal && (
+                                        <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
+                                          {currentVal}
+                                        </option>
+                                      )}
+                                      {availableLabelOptions.map((opt) => {
+                                        const val = typeof opt === 'string' ? opt : opt.value;
+                                        const lbl = typeof opt === 'string' ? opt : opt.label;
+                                        return (
+                                          <option key={val} value={val} className="text-xs font-medium py-1">
+                                            {lbl}
+                                          </option>
+                                        );
+                                      })}
                                     </>
-                                  ) : (
-                                    <>
-                                      <FileSignature className="w-3.5 h-3.5 text-sky-600" />
-                                      <span>Endorser</span>
-                                    </>
-                                  )}
-                                  <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold bg-white/70 px-1 py-0.5 rounded ml-0.5">
-                                    Switch
-                                  </span>
-                                </button>
+                                  );
+                                })()}
+                              </select>
+                            </div>
 
-                                {/* Remove Signatory Button */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveSignatory(step.id || step.step)}
-                                  className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                                  title="Remove signatory from this stage"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </>
+                            {isLockedSigner ? (
+                              <span
+                                className="p-1.5 rounded-lg text-amber-600 bg-amber-50 border border-amber-200"
+                                title="Permanent Signatory (locked in institutional settings)"
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveSignatory(step.id || step.step)}
+                                className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
+                                title="Remove signatory from this stage"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
                             )}
                           </div>
                         </div>
@@ -1171,16 +1255,7 @@ export default function ProposalFlowBuilder({
                   )}
 
                   {/* Add Signatory Controls */}
-                  {isOfficerProposal && stage.stageIndex === 1 ? (
-                    <div className="pt-2">
-                      <div className="p-3 rounded-xl border border-amber-200/90 bg-amber-50/60 flex items-center gap-2.5 text-xs text-amber-900">
-                        <Lock className="w-4 h-4 text-amber-700 flex-shrink-0" />
-                        <span>
-                          <strong>Stage 1 Locked:</strong> Reserved exclusively for Student Affairs & Services (SAS) Gatekeeper endorsement before subsequent academic stages unlock.
-                        </span>
-                      </div>
-                    </div>
-                  ) : addingCustomToStage === stage.stageIndex ? (
+                  {addingCustomToStage === stage.stageIndex ? (
                     <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 space-y-3">
                       <div className="flex items-center justify-between">
                         <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">

@@ -974,3 +974,61 @@ export function isProposalFullySigned(chain?: any[] | null): boolean {
 
 
 
+
+
+export interface SignatoryProgress {
+  signedCount: number;
+  totalCount: number;
+  ratioText: string; // e.g. "3/5"
+  isComplete: boolean;
+  percentage: number;
+}
+
+/**
+ * Calculates the signatory progress of an event/activity proposal.
+ * Returns signed count over total designated signatories (e.g. 3/5).
+ */
+export function getSignatoryProgress(event?: Partial<EventDocument> | any | null): SignatoryProgress {
+  const chain: any[] = event?.approvalChain || [];
+  const totalCount = Array.isArray(chain) ? chain.length : 0;
+
+  const isApproved =
+    event?.proposalStatus === 'approved' ||
+    event?.status === 'approved' ||
+    (event as any)?.lifecycleStatus === 'approved' ||
+    (totalCount > 0 && isProposalFullySigned(chain));
+
+  if (totalCount === 0) {
+    return {
+      signedCount: 0,
+      totalCount: 0,
+      ratioText: isApproved ? 'Approved' : '—',
+      isComplete: isApproved,
+      percentage: isApproved ? 100 : 0,
+    };
+  }
+
+  let signedCount = chain.filter((s: any) =>
+    s && (
+      s.status === 'endorsed' ||
+      s.status === 'approved' ||
+      Boolean(s.signedAt) ||
+      Boolean(s.signatureUrl)
+    )
+  ).length;
+
+  if (isApproved && signedCount < totalCount) {
+    signedCount = totalCount;
+  }
+
+  const isComplete = signedCount >= totalCount && totalCount > 0;
+  const percentage = totalCount > 0 ? Math.round((signedCount / totalCount) * 100) : 0;
+
+  return {
+    signedCount,
+    totalCount,
+    ratioText: `${signedCount}/${totalCount}`,
+    isComplete,
+    percentage,
+  };
+}

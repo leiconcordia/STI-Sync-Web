@@ -8,7 +8,7 @@ import {
   CheckCircle2,
   Loader2,
   DollarSign,
-  FileText,
+  FileText, FileCheck,
   FileSpreadsheet,
   Image as ImageIcon,
   File,
@@ -420,6 +420,15 @@ export default function OfficerLiquidationModal({
     return null;
   }, [editingReport, activeReportId, selectedEvent, selectedEventId, initialEventId, liquidationsList]);
 
+  const activeDisbursementVoucher = useMemo(() => {
+    return (
+      effectiveReport?.disbursementVoucher ||
+      editingReport?.disbursementVoucher ||
+      selectedEvent?.disbursementVoucher ||
+      null
+    );
+  }, [effectiveReport, editingReport, selectedEvent]);
+
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -680,8 +689,13 @@ export default function OfficerLiquidationModal({
       setDetectedEmployeeSource(detectedSource);
     }
 
-    // B. Cheque Number: User explicitly specified: MANUALLY INPUTTED, NO DEFAULT VALUE!
-    // chequeNumber stays as entered or ""
+    // B. Cheque Number & Disbursement Details from Official Voucher if present
+    const attachedVoucher = selectedEvent?.disbursementVoucher || effectiveReport?.disbursementVoucher;
+    if (attachedVoucher) {
+      if (attachedVoucher.chequeNumber) setChequeNumber((prev) => (prev ? prev : attachedVoucher.chequeNumber));
+      if (attachedVoucher.disbursementDate) setDateReleased((prev) => (prev ? prev : attachedVoucher.disbursementDate));
+      if (attachedVoucher.amountDisbursed) setAmountAdvanced((prev) => (prev > 0 ? prev : attachedVoucher.amountDisbursed));
+    }
 
     // C. Purpose: Default to event title
     setPurpose((prev) => (prev ? prev : selectedEvent.title || ''));
@@ -1334,6 +1348,7 @@ export default function OfficerLiquidationModal({
         dateSubmitted: (dateSubmitted || '').trim(),
         daysLapsed: (daysLapsed || '').trim(),
         orNumber: (orNumber || '').trim(),
+        disbursementVoucher: activeDisbursementVoucher || null,
       };
 
       const sanitizedPayload = sanitizeFirestorePayload(payload);
@@ -1627,6 +1642,37 @@ export default function OfficerLiquidationModal({
               </span>
             </div>
 
+            {/* Verified Disbursement Voucher Banner */}
+            {activeDisbursementVoucher && (
+              <div className="p-3.5 bg-gradient-to-r from-emerald-50 via-white to-blue-50 border border-emerald-300 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950 mb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                    <FileCheck className="w-4 h-4 text-emerald-700" />
+                  </div>
+                  <div>
+                    <span className="font-bold flex items-center gap-2">
+                      Official Disbursement Voucher Verified
+                      <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-emerald-200/80 text-emerald-900 border border-emerald-300">
+                        Check Attached
+                      </span>
+                    </span>
+                    <p className="text-[11px] text-emerald-800 mt-0.5 font-mono">
+                      Check #{activeDisbursementVoucher.chequeNumber || 'N/A'} • Released: {activeDisbursementVoucher.disbursementDate || 'N/A'} • ₱{formatCurrency(activeDisbursementVoucher.amountDisbursed || 0)} (Uploaded by {activeDisbursementVoucher.uploadedByName})
+                    </p>
+                  </div>
+                </div>
+                <a
+                  href={activeDisbursementVoucher.fileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-xs inline-flex items-center gap-1.5 transition-all shadow-xs shrink-0 cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>View Voucher</span>
+                </a>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {/* Disbursing Employee Name */}
               <div>
@@ -1693,8 +1739,17 @@ export default function OfficerLiquidationModal({
                   type="date"
                   value={dateReleased}
                   disabled={isEffectiveReadOnly}
-                  onChange={(e) => setDateReleased(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  max={todayStr}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val > todayStr) {
+                      toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
+                      setDateReleased(todayStr);
+                    } else {
+                      setDateReleased(val);
+                    }
+                  }}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none font-mono"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
                   Date funds or cheque was released

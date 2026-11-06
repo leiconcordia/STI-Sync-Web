@@ -30,7 +30,7 @@ import {
 } from '../../modules/events/hooks/useEventConfigStream';
 import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
-import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../../modules/events/utils/event-lifecycle.utils';
+import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, getSignatoryProgress } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
 import {
   OfficerEventDetailView,
@@ -831,6 +831,7 @@ export default function EventManagement() {
                   <th className="py-3 px-4">Schedule & Venue</th>
                   <th className="py-3 px-4">Budget</th>
                   <th className="py-3 px-4">Signatory Stage</th>
+                  <th className="py-3 px-4 text-center">Signatory Status</th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
@@ -854,6 +855,7 @@ export default function EventManagement() {
                     : 'All Programs';
 
                   const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
+                  const sigProgress = getSignatoryProgress(event);
                   const currentStageIdx = (event as any).currentStageIndex || 1;
 
                   return (
@@ -981,6 +983,45 @@ export default function EventManagement() {
                             <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
                             {currentStep ? (currentStep.roleTitle || currentStep.role || 'In Review') : `Stage ${currentStageIdx} • Review`}
                           </span>
+                        )}
+                      </td>
+
+                                            {/* Signatory Status (e.g. 3/5) */}
+                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                        {sigProgress.totalCount > 0 ? (
+                          <div className="inline-flex flex-col items-center justify-center">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${
+                                sigProgress.isComplete
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : isRejected
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : isReturned
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-blue-50 text-[#001A4D] border-blue-200'
+                              }`}
+                              title={`${sigProgress.signedCount} of ${sigProgress.totalCount} signatories have signed`}
+                            >
+                              {sigProgress.isComplete ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                              ) : (
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse flex-shrink-0" />
+                              )}
+                              <span className="font-mono font-black">{sigProgress.ratioText}</span>
+                            </span>
+                            <span className="text-[10px] text-gray-500 font-medium mt-0.5">
+                              {sigProgress.isComplete
+                                ? 'Fully Signed'
+                                : `${sigProgress.signedCount} of ${sigProgress.totalCount} signed`}
+                            </span>
+                          </div>
+                        ) : isApproved ? (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            <span>Signed</span>
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 text-xs font-mono font-medium">—</span>
                         )}
                       </td>
 

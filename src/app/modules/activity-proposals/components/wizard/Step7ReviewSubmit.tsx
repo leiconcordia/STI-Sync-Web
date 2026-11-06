@@ -27,6 +27,9 @@ import {
   UserCheck,
   Download,
   RotateCcw,
+  School,
+  GraduationCap,
+  Briefcase,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ProposalFormData, ProposalApprovalStep } from '../../types/proposal.types';
@@ -73,9 +76,10 @@ export default function Step7ReviewSubmit({
     return check15DayRule(
       formData.submissionDate || new Date().toISOString(),
       formData.sessions || [],
-      formData.tasks || []
+      formData.tasks || [],
+      formData.date
     );
-  }, [formData.submissionDate, formData.sessions, formData.tasks]);
+  }, [formData.submissionDate, formData.sessions, formData.tasks, formData.date]);
 
   // Proponents List (default to logged-in creator/maker)
   const proponents = useMemo(() => {
@@ -116,12 +120,19 @@ export default function Step7ReviewSubmit({
 
   const approvalChain: ProposalApprovalStep[] = formData.approvalChain || [];
 
-  // Update isUrgent flag based on ruleCheck
+  // Synchronize isUrgent flag with ruleCheck:
+  // If under 15 days, enable urgent mode. If compliant, clear urgent mode and any stale justification.
   useEffect(() => {
-    if (!ruleCheck.isCompliant && !formData.isUrgent) {
-      onChange({ isUrgent: true });
+    if (!ruleCheck.isCompliant) {
+      if (!formData.isUrgent) {
+        onChange({ isUrgent: true });
+      }
+    } else {
+      if (formData.isUrgent) {
+        onChange({ isUrgent: false, urgentJustification: '' });
+      }
     }
-  }, [ruleCheck.isCompliant]);
+  }, [ruleCheck.isCompliant, formData.isUrgent]);
 
   const isReturnedProposal = Boolean(
     formData.status === 'returned' ||
@@ -131,7 +142,7 @@ export default function Step7ReviewSubmit({
   );
 
   const canSubmit = useMemo(() => {
-    if (!ruleCheck.isCompliant && !(formData.urgentJustification || '').trim()) {
+    if (formData.isUrgent && !(formData.urgentJustification || '').trim()) {
       return false;
     }
     if (!formData.title?.trim() || !formData.description?.trim()) {
@@ -148,12 +159,12 @@ export default function Step7ReviewSubmit({
       return false;
     }
     return true;
-  }, [ruleCheck.isCompliant, formData.urgentJustification, formData.title, formData.description, approvalChain, isReturnedProposal, formData.resubmissionNote]);
+  }, [formData.isUrgent, formData.urgentJustification, formData.title, formData.description, approvalChain, isReturnedProposal, formData.resubmissionNote]);
 
   return (
     <div className="space-y-6">
       {/* ── 15-DAY POLICY VERIFICATION STATUS BANNER ── */}
-      {ruleCheck.isCompliant ? (
+      {ruleCheck.isCompliant && !formData.isUrgent ? (
         <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-4 flex items-start gap-3 shadow-xs">
           <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-700 flex items-center justify-center flex-shrink-0 mt-0.5">
             <CheckCircle2 className="w-5 h-5" />
@@ -175,37 +186,35 @@ export default function Step7ReviewSubmit({
               <AlertTriangle className="w-5 h-5" />
             </div>
             <div className="flex-1">
-              <h4 className="text-sm font-bold text-amber-950 uppercase tracking-wider">
-                Urgent Filing Notice — Less than 15 Calendar Days ({ruleCheck.daysDiff} Days Remaining)
-              </h4>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-xs font-bold text-amber-950 uppercase tracking-wider">
+                  Urgent Filing Vetting Notice — Under 15 Calendar Days ({ruleCheck.daysDiff} Days Lead Time)
+                </h4>
+                <span className="text-[10px] font-bold bg-amber-200 text-amber-950 border border-amber-300 px-2 py-0.5 rounded-full">
+                  Fast-Track Route
+                </span>
+              </div>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
                 Official STI policy requires proposals to be submitted at least <strong>15 calendar days</strong> before the start of the initial task/event.
-                Because the earliest activity date is on <strong>{ruleCheck.earliestDate || 'soon'}</strong>, an administrative justification is required for the School President and Academic Head before fast-track endorsement can proceed.
+                Because the earliest activity date is on <strong>{ruleCheck.earliestDate || 'soon'}</strong>, an administrative justification was provided in Step 4 for the School President and Academic Head.
               </p>
-            </div>
-          </div>
 
-          {/* Urgent Justification Input */}
-          <div className="pt-2">
-            <label className="block text-xs font-bold text-amber-950 mb-1.5 flex items-center justify-between">
-              <span>Urgent Submission Justification (Required) <span className="text-red-500">*</span></span>
-              <span className="text-[11px] font-normal text-amber-800">Directly printed on executive review slip</span>
-            </label>
-            <textarea
-              rows={3}
-              value={formData.urgentJustification || ''}
-              onChange={(e) =>
-                onChange({
-                  urgentJustification: e.target.value,
-                  isUrgent: true,
-                })
-              }
-              placeholder="State the compelling reason for urgent filing (e.g. sudden availability of keynote industry practitioner, institutional calendar adjustment, or urgent regional competition endorsement)..."
-              className="w-full px-3.5 py-2.5 bg-white border border-amber-300 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500"
-            />
-            {errors.urgentJustification && (
-              <p className="text-[11px] text-red-600 mt-1 font-medium">{errors.urgentJustification}</p>
-            )}
+              {formData.urgentJustification?.trim() ? (
+                <div className="mt-3 p-3 bg-white/90 border border-amber-200 rounded-xl space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
+                    Urgent Submission Justification (Configured in Step 4):
+                  </span>
+                  <p className="text-xs text-slate-800 italic leading-relaxed">
+                    "{formData.urgentJustification.trim()}"
+                  </p>
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-red-600 font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                  <span>Missing urgent justification. Please return to Step 4 to enter your administrative reason.</span>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -474,22 +483,118 @@ export default function Step7ReviewSubmit({
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               8. Target market
             </h3>
-            <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5">
-              <div>
-                <strong className="text-slate-700">Programs / Strands:</strong>{' '}
-                <span className="text-blue-900 font-medium">
-                  {formData.targetAudience?.courseCodes?.length
-                    ? formData.targetAudience.courseCodes.join(', ')
-                    : formData.targetAudience?.departments?.join(', ') || 'All Programs'}
-                </span>
+            {formData.targetAudience?.allStudents ? (
+              <div className="p-4 bg-gradient-to-br from-blue-50/80 to-slate-50 border border-blue-200/80 rounded-2xl space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-blue-200/60 pb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
+                    <strong className="text-sm font-bold text-[#001A4D]">
+                      Campus-Wide Coverage: All Students (SHS & College)
+                    </strong>
+                  </div>
+                  {formData.targetAudience?.expectedReachPercentage && (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#001A4D] text-[#FFD41C]">
+                      {formData.targetAudience.expectedReachPercentage}% Expected Reach
+                    </span>
+                  )}
+                </div>
+
+                {formData.targetAudience?.demographicBreakdown ? (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] text-gray-500 font-semibold block">Total Target Pool</span>
+                        <span className="text-sm font-black text-[#001A4D]">
+                          {formData.targetAudience.demographicBreakdown.totalPopulation?.toLocaleString() || '—'}
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] text-amber-700 font-semibold block">Senior High School</span>
+                        <span className="text-sm font-black text-slate-800">
+                          {formData.targetAudience.demographicBreakdown.shsTotal?.toLocaleString() || '0'}
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] text-blue-700 font-semibold block">Tertiary / College</span>
+                        <span className="text-sm font-black text-slate-800">
+                          {formData.targetAudience.demographicBreakdown.collegeTotal?.toLocaleString() || '0'}
+                        </span>
+                      </div>
+                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
+                        <span className="text-[10px] text-purple-700 font-semibold block">Faculty & Staff</span>
+                        <span className="text-sm font-black text-slate-800">
+                          {formData.targetAudience.demographicBreakdown.facultyTotal
+                            ? `${formData.targetAudience.demographicBreakdown.facultyTotal} included`
+                            : 'Excluded'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Strands & Programs demographic tags */}
+                    <div className="space-y-1.5 pt-1">
+                      {formData.targetAudience.demographicBreakdown.strandsBreakdown &&
+                        Object.keys(formData.targetAudience.demographicBreakdown.strandsBreakdown).length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1">
+                              <School className="w-3 h-3 text-amber-600" /> SHS Strands:
+                            </span>
+                            {Object.entries(formData.targetAudience.demographicBreakdown.strandsBreakdown).map(
+                              ([code, count]) => (
+                                <span
+                                  key={code}
+                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200"
+                                >
+                                  {code}: {count}
+                                </span>
+                              )
+                            )}
+                          </div>
+                        )}
+
+                      {formData.targetAudience.demographicBreakdown.programsBreakdown &&
+                        Object.keys(formData.targetAudience.demographicBreakdown.programsBreakdown).length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1">
+                              <GraduationCap className="w-3 h-3 text-blue-600" /> College Programs:
+                            </span>
+                            {Object.entries(formData.targetAudience.demographicBreakdown.programsBreakdown).map(
+                              ([code, count]) => (
+                                <span
+                                  key={code}
+                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-900 border border-blue-200"
+                                >
+                                  {code}: {count}
+                                </span>
+                              )
+                            )}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-600">
+                    All academic programs and strands across Senior High School and College departments are included.
+                  </p>
+                )}
               </div>
-              <div>
-                <strong className="text-slate-700">Year Levels:</strong>{' '}
-                <span className="text-slate-800">
-                  {formData.targetAudience?.yearLevels?.join(', ') || 'All Levels'}
-                </span>
+            ) : (
+              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5">
+                <div>
+                  <strong className="text-slate-700">Programs / Strands:</strong>{' '}
+                  <span className="text-blue-900 font-medium">
+                    {formData.targetAudience?.courseCodes?.length
+                      ? formData.targetAudience.courseCodes.join(', ')
+                      : formData.targetAudience?.departments?.join(', ') || 'All Programs'}
+                  </span>
+                </div>
+                <div>
+                  <strong className="text-slate-700">Year Levels:</strong>{' '}
+                  <span className="text-slate-800">
+                    {formData.targetAudience?.yearLevels?.join(', ') || 'All Levels'}
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* 10. Marketing plan & 11. Documentation */}
@@ -661,7 +766,7 @@ export default function Step7ReviewSubmit({
             type="button"
             onClick={onSaveDraft}
             disabled={isSavingDraft || isSubmitting}
-            className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+            className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 text-xs font-semibold flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
           >
             <Save className="w-4 h-4 text-slate-500" />
             <span>{isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}</span>
@@ -671,7 +776,7 @@ export default function Step7ReviewSubmit({
             type="button"
             onClick={handleExportPdf}
             disabled={isExportingPdf}
-            className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-blue-200 bg-blue-50/70 hover:bg-blue-100 text-blue-900 text-xs font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+            className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-blue-200 bg-blue-50/70 hover:bg-blue-100 text-blue-900 text-xs font-bold flex items-center justify-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
             title="Download publication-quality PDF copy of this Activity Proposal"
           >
             <Download className="w-4 h-4 text-blue-600" />
@@ -679,38 +784,19 @@ export default function Step7ReviewSubmit({
           </button>
         </div>
 
-        <button
-          type="button"
-          onClick={onSubmit}
-          disabled={!canSubmit || isSubmitting || isSavingDraft}
-          className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all ${
-            canSubmit
-              ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20 hover:shadow-blue-500/30'
-              : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-          }`}
-        >
-          <Send className="w-4 h-4" />
-          <span>
-            {isSubmitting
-              ? isReturnedProposal
-                ? 'Resubmitting Revised Proposal...'
-                : 'Submitting Proposal...'
-              : isReturnedProposal
-              ? 'Resubmit Revised Proposal for Review'
-              : 'Submit Activity Proposal for Institutional Review'}
-          </span>
-        </button>
+        {!canSubmit && (
+          <div className="w-full sm:w-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+            <span>
+              {isReturnedProposal && !(formData.resubmissionNote || '').trim()
+                ? 'Please provide a summary of the revisions made above before resubmitting.'
+                : (formData.isUrgent || !ruleCheck.isCompliant) && !(formData.urgentJustification || '').trim()
+                ? 'Please return to Step 4 to provide an urgent submission justification before proceeding.'
+                : 'Please ensure all required fields across previous steps are filled.'}
+            </span>
+          </div>
+        )}
       </div>
-
-      {!canSubmit && (
-        <p className="text-[11px] text-slate-400 text-center">
-          {isReturnedProposal && !(formData.resubmissionNote || '').trim()
-            ? 'Please provide a summary of the revisions made above before resubmitting.'
-            : !ruleCheck.isCompliant && !(formData.urgentJustification || '').trim()
-            ? 'Please enter an urgent submission justification above before proceeding with submission.'
-            : 'Please ensure all required fields across previous steps are filled.'}
-        </p>
-      )}
     </div>
   );
 }

@@ -437,3 +437,98 @@ export function subscribeToDefaultWorkflowSettings(
     }
   );
 }
+
+/**
+ * Determines whether a given approval step is configured as permanent in institutional settings.
+ * A step is strictly permanent ONLY if:
+ * 1. For officer activity proposals (AP), it is the built-in SAS Gatekeeper (sas_head/sas_coordinator).
+ * 2. OR it matches an institutional step explicitly configured with `isPermanent: true` in the active pipeline's template.
+ * Steps added by document proponents or creators are NEVER permanent.
+ */
+export function isStepConfiguredPermanent(
+  step: {
+    id?: string;
+    signatoryUid?: string;
+    signatoryEmail?: string;
+    role?: string;
+    isPermanent?: boolean;
+    isUserAdded?: boolean;
+    stageIndex?: number;
+  },
+  pipelineKey: WorkflowPipelineKey,
+  settings?: DefaultWorkflowSettings | null,
+  isOfficerAp = false
+): boolean {
+  // 1. Proponent-added custom signers are strictly NEVER permanent and can ALWAYS be removed
+  if (
+    step.isUserAdded ||
+    (step.id && (
+      step.id.startsWith('liq_step_') ||
+      step.id.startsWith('par_step_') ||
+      step.id.startsWith('prop_step_') ||
+      step.id.startsWith('custom_sig_') ||
+      step.id.startsWith('custom_')
+    ))
+  ) {
+    return false;
+  }
+
+  // 2. Fixed SAS Gatekeeper for officer proposals (only template-provided gatekeeper, not proponent-added)
+  if (isOfficerAp && (step.role === 'sas_head' || step.role === 'sas_coordinator')) {
+    return true;
+  }
+
+  // 3. Resolve active pipeline settings with fallback to alternate pipeline key if primary has no signers
+  const hasAssignedSigners = (steps?: any[]) =>
+    Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
+
+  const effectiveSettings = settings || getCachedWorkflowSettings();
+  let templateSteps = effectiveSettings?.[pipelineKey];
+
+  if (!hasAssignedSigners(templateSteps)) {
+    let alternateKey: WorkflowPipelineKey | null = null;
+    if (pipelineKey === 'admin_fl') alternateKey = 'adviser_fl';
+    else if (pipelineKey === 'adviser_fl') alternateKey = 'admin_fl';
+    else if (pipelineKey === 'admin_ap') alternateKey = 'adviser_ap';
+    else if (pipelineKey === 'adviser_ap') alternateKey = 'admin_ap';
+    else if (pipelineKey === 'admin_par') alternateKey = 'adviser_par';
+    else if (pipelineKey === 'adviser_par') alternateKey = 'admin_par';
+
+    if (alternateKey && hasAssignedSigners(effectiveSettings?.[alternateKey])) {
+      templateSteps = effectiveSettings?.[alternateKey];
+    }
+  }
+
+  if (!templateSteps || !Array.isArray(templateSteps) || templateSteps.length === 0) {
+    return false;
+  }
+
+  // 4. Strict identity-based matching for permanent template steps
+  return templateSteps.some((tpl) => {
+    if (!tpl.isPermanent) return false;
+
+    // A. Match by exact signatoryUid
+    if (tpl.signatoryUid && step.signatoryUid && tpl.signatoryUid === step.signatoryUid) {
+      return true;
+    }
+
+    // B. Match by exact email
+    if (
+      tpl.signatoryEmail &&
+      step.signatoryEmail &&
+      tpl.signatoryEmail.trim().toLowerCase() === step.signatoryEmail.trim().toLowerCase()
+    ) {
+      return true;
+    }
+
+    // C. Generic role placeholder matching (only if template has NO specific person assigned)
+    if (!tpl.signatoryUid && !tpl.signatoryEmail) {
+      if (tpl.id && step.id && tpl.id === step.id) {
+        return true;
+      }
+    }
+
+    return false;
+  });
+}
+

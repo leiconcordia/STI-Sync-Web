@@ -23,6 +23,7 @@ import {
 } from '../utils/sti-liquidation-excel';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate, parseDateSafe } from '../../../utils/date';
+import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 
 interface LiquidationExportPreviewModalProps {
   isOpen: boolean;

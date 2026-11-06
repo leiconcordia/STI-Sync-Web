@@ -5,6 +5,7 @@
  */
 
 export * from './signatory-role.types';
+export * from './signatory-label.types';
 
 export type SignatoryRole =
   | 'program_head'
@@ -92,6 +93,10 @@ export interface InstitutionalSignatory {
   isMandatoryForDepartment?: string;
   applicableScope?: SignatoryDocumentScope; // Legacy single-value scope string
   applicableWorkflows?: WorkflowDocumentType[]; // Explicit list of workflows: ['proposal', 'liquidation', 'par']
+  canApproveProposal?: boolean;
+  canApproveLiquidation?: boolean;
+  canApprovePar?: boolean;
+  defaultSignatoryLabel?: string;
   isActive: boolean;
   requiresPasswordChange?: boolean;
   temporaryPassword?: string;
@@ -116,6 +121,10 @@ export interface CreateSignatoryPayload {
   isMandatoryForDepartment?: string;
   applicableScope?: SignatoryDocumentScope;
   applicableWorkflows?: WorkflowDocumentType[];
+  canApproveProposal?: boolean;
+  canApproveLiquidation?: boolean;
+  canApprovePar?: boolean;
+  defaultSignatoryLabel?: string;
 }
 
 /**

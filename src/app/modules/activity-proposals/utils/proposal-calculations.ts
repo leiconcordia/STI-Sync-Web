@@ -65,7 +65,8 @@ export function calculateFinancialTotals(
 export function check15DayRule(
   submissionDateStr: string,
   sessions: ProposalSession[] = [],
-  tasks: ProposalTask[] = []
+  tasks: ProposalTask[] = [],
+  eventDate?: string
 ): {
   isCompliant: boolean;
   daysDiff: number;
@@ -74,28 +75,40 @@ export function check15DayRule(
 } {
   const dates: Date[] = [];
 
-  // Parse session dates
-  sessions.forEach((s) => {
-    if (s.date) {
-      const parsed = parseISO(s.date);
-      if (isValid(parsed)) dates.push(parsed);
+  // 1. Prioritize explicit target implementation / event date
+  if (eventDate) {
+    const parsed = parseISO(eventDate);
+    if (isValid(parsed)) {
+      dates.push(parsed);
     }
-  });
+  }
 
-  // Parse task completion dates
-  tasks.forEach((t) => {
-    if (t.completionDate) {
-      const parsed = parseISO(t.completionDate);
-      if (isValid(parsed)) dates.push(parsed);
-    }
-  });
+  // 2. If no event date was specified, look at session dates
+  if (dates.length === 0 && sessions && sessions.length > 0) {
+    sessions.forEach((s) => {
+      if (s.date) {
+        const parsed = parseISO(s.date);
+        if (isValid(parsed)) dates.push(parsed);
+      }
+    });
+  }
+
+  // 3. Fallback to task completion dates ONLY if no target event or session date is specified
+  if (dates.length === 0 && tasks && tasks.length > 0) {
+    tasks.forEach((t) => {
+      if (t.completionDate) {
+        const parsed = parseISO(t.completionDate);
+        if (isValid(parsed)) dates.push(parsed);
+      }
+    });
+  }
 
   if (dates.length === 0) {
     return {
       isCompliant: true,
       daysDiff: 15,
       earliestDate: null,
-      policyRequirement: '15 calendar days before start of initial task',
+      policyRequirement: '15 calendar days before start of initial task/event',
     };
   }
 
@@ -110,7 +123,7 @@ export function check15DayRule(
     isCompliant,
     daysDiff,
     earliestDate: earliest.toISOString().split('T')[0],
-    policyRequirement: '15 calendar days before start of initial task',
+    policyRequirement: '15 calendar days before start of initial task/event',
   };
 }
 

@@ -27,6 +27,7 @@ import {
   Shield,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { format, addDays } from 'date-fns';
 
 import type {
   ProposalFormData,
@@ -112,6 +113,10 @@ function extractStepData(stepNumber: number, data: ProposalFormData | undefined)
         endTime: data.endTime || '',
         venueId: data.venueId || '',
         venueName: (data.venueName || '').trim(),
+        venueType: data.venueType || (data.venueId ? 'inside' : 'inside'),
+        customVenueName: (data.customVenueName || '').trim(),
+        isUrgent: Boolean(data.isUrgent),
+        urgentJustification: (data.urgentJustification || '').trim(),
         sessions: (data.sessions || []).map((s) => ({
           title: (s.title || '').trim(),
           date: s.date || '',
@@ -527,13 +532,63 @@ export default function CreateProposalModal({
     }
 
     if (stepNumber === 4) {
-      const hasDate = Boolean(formData.date || formData.sessions?.[0]?.date);
-      if (!hasDate) {
-        newErrors.sessions = 'Please specify the event date.';
+      const selectedDate = formData.date || formData.sessions?.[0]?.date || '';
+      if (!selectedDate) {
+        newErrors.date = 'Target Implementation Date is required.';
+        newErrors.sessions = 'Please specify the target implementation date.';
+      } else {
+        const todayStr = format(new Date(), 'yyyy-MM-dd');
+        const standardMinDate = format(addDays(new Date(), 15), 'yyyy-MM-dd');
+
+        if (selectedDate < todayStr) {
+          newErrors.date = 'Implementation date cannot be in the past.';
+          newErrors.sessions = 'Implementation date cannot be in the past.';
+        } else if (!formData.isUrgent && selectedDate < standardMinDate) {
+          newErrors.date = `Standard policy requires at least 15 calendar days advance notice (${standardMinDate} or later). Enable the Urgent Proposal toggle if filing expedited.`;
+          newErrors.sessions = `Standard policy requires at least 15 days advance notice (${standardMinDate} or later).`;
+        }
       }
+
+      if (formData.isUrgent && !formData.urgentJustification?.trim()) {
+        newErrors.urgentJustification = 'Please provide an administrative justification for this urgent proposal.';
+      }
+
       const hasVenue = Boolean(formData.venueName || formData.venueId || formData.sessions?.[0]?.venueName);
       if (!hasVenue) {
-        newErrors.sessions = 'Please select a campus venue.';
+        newErrors.sessions = newErrors.sessions ? `${newErrors.sessions} Please also specify an activity venue.` : 'Please specify an activity venue.';
+      }
+    }
+
+    if (stepNumber === 5) {
+      const eventDate = formData.date || formData.sessions?.[0]?.date || '';
+      const todayStr = format(new Date(), 'yyyy-MM-dd');
+
+      if (!formData.tasks || formData.tasks.length === 0) {
+        newErrors.tasks = 'At least one task milestone is required.';
+      } else {
+        for (let i = 0; i < formData.tasks.length; i++) {
+          const t = formData.tasks[i];
+          if (!t.taskName?.trim()) {
+            newErrors.tasks = `Task #${i + 1} is missing a description / task name.`;
+            break;
+          }
+          if (!t.assignedPerson?.trim()) {
+            newErrors.tasks = `Task #${i + 1} (${t.taskName}) is missing an assigned person or committee.`;
+            break;
+          }
+          if (!t.completionDate) {
+            newErrors.tasks = `Task #${i + 1} (${t.taskName}) is missing a completion date.`;
+            break;
+          }
+          if (t.completionDate < todayStr) {
+            newErrors.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past.`;
+            break;
+          }
+          if (eventDate && t.completionDate >= eventDate) {
+            newErrors.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot match or succeed the event date (${eventDate}). All preparatory tasks must be completed strictly prior to the implementation date.`;
+            break;
+          }
+        }
       }
     }
 
@@ -634,6 +689,27 @@ export default function CreateProposalModal({
       setIsSubmitting(false);
     }
   };
+
+  const canSubmitProposal = useMemo(() => {
+    if (formData.isUrgent && !(formData.urgentJustification || '').trim()) {
+      return false;
+    }
+    if (!formData.title?.trim() || !formData.description?.trim()) {
+      return false;
+    }
+    const chain = formData.approvalChain || [];
+    if (chain.length === 0) {
+      return false;
+    }
+    const hasApprover = chain.some((s) => s.actionType === 'approve' || s.role === 'school_president');
+    if (!hasApprover) {
+      return false;
+    }
+    if (isReturnedProposal && !(formData.resubmissionNote || '').trim()) {
+      return false;
+    }
+    return true;
+  }, [formData.isUrgent, formData.urgentJustification, formData.title, formData.description, formData.approvalChain, isReturnedProposal, formData.resubmissionNote]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
@@ -1024,11 +1100,30 @@ export default function CreateProposalModal({
               <button
                 type="button"
                 onClick={handleSubmitProposal}
-                disabled={isSubmitting}
-                className="px-6 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-blue-500/20 hover:shadow-blue-500/30 transition-all disabled:opacity-50"
+                disabled={isSubmitting || !canSubmitProposal}
+                className={`px-6 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 shadow-sm transition-all ${
+                  canSubmitProposal && !isSubmitting
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/20 hover:shadow-blue-500/30 cursor-pointer'
+                    : 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none'
+                }`}
+                title={
+                  !canSubmitProposal
+                    ? formData.isUrgent && !(formData.urgentJustification || '').trim()
+                      ? 'Please return to Step 4 to provide an urgent submission justification.'
+                      : 'Please complete all required fields before submitting.'
+                    : undefined
+                }
               >
                 <Send className="w-4 h-4" />
-                <span>{isSubmitting ? 'Submitting...' : 'Submit Proposal'}</span>
+                <span>
+                  {isSubmitting
+                    ? isReturnedProposal
+                      ? 'Resubmitting...'
+                      : 'Submitting...'
+                    : isReturnedProposal
+                    ? 'Resubmit Revised Proposal'
+                    : 'Submit Proposal'}
+                </span>
               </button>
             )}
           </div>

@@ -4,6 +4,7 @@
  * Firestore persistence engine and lifecycle management for Activity Proposals.
  */
 
+import { canSignatoryApproveDocument, resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import {
   collection,
   doc,
@@ -599,8 +600,11 @@ export async function endorseProposal(
     role?: string;
     actionType?: 'endorse' | 'approve';
     signatureUrl?: string;
+    canApproveProposal?: boolean;
+    approvalDecision?: 'approve' | 'forward';
   },
-  remarks = ''
+  remarks = '',
+  approvalDecision?: 'approve' | 'forward'
 ): Promise<{ success: boolean; nextStepIndex: number; isFullyApproved: boolean; stageAdvanced?: boolean }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
   const snap = await getDoc(docRef);
@@ -638,22 +642,30 @@ export async function endorseProposal(
   const targetStep = chain[targetStepIdx];
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
+  const canApprove = canSignatoryApproveDocument(signatory as any, 'proposal', targetStep);
+  const decision = approvalDecision || signatory.approvalDecision;
+
   const isExecutiveApprover =
     isPresident ||
     isSchoolAdmin ||
+    canApprove ||
     targetStep.actionType === 'approve' ||
     signatory.actionType === 'approve';
 
   // Determine whether this action is an approval or an endorsement
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (isPresident) {
+  if (decision === 'approve') {
     newStatus = 'approved';
-  } else if (signatory.actionType === 'approve') {
-    newStatus = 'approved';
-  } else if (signatory.actionType === 'endorse') {
+  } else if (decision === 'forward') {
     newStatus = 'endorsed';
-  } else if (targetStep.actionType === 'approve') {
-    newStatus = 'approved';
+  } else if (canApprove) {
+    if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
+      newStatus = 'approved';
+    } else {
+      newStatus = 'endorsed';
+    }
+  } else {
+    newStatus = 'endorsed';
   }
 
   // 2. Mark this signatory's step as endorsed/approved

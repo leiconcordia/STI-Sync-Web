@@ -1,5 +1,6 @@
 import { Timestamp } from 'firebase/firestore';
 import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
+import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
 
 export interface EventDocument extends SoftDeletable, Archivable {
   // ─── Identity ───

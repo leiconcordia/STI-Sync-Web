@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from 'react';
+import { canSignatoryApproveDocument } from '../../modules/signatories/utils/signatory-label.utils';
 import {
   X,
   FileCheck2,
@@ -121,23 +122,17 @@ export default function PAREndorsementModal({
 
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : chain.find((s) => s.status === 'current');
 
-  // Strict dynamic approver check based on step actionType
-  const isApprover = myStep?.actionType === 'approve' || signatorySession?.actionType === 'approve';
+  // Dynamic approval authority permission check
+  const canApprove = canSignatoryApproveDocument(signatorySession, 'par', myStep);
 
-  // Count remaining approvers in the pipeline AFTER my step
-  const subsequentApproversCount = chain.filter((s, idx) => {
-    return idx > myStepIndex && s.actionType === 'approve';
-  }).length;
-
-  const hasSubsequentApprover = isApprover && subsequentApproversCount > 0;
-  const isFinalApprover = isApprover && subsequentApproversCount === 0;
-
-  const handleEndorse = async () => {
+  const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this report.');
       onOpenSignaturePad();
       return;
     }
+
+    const action = decision === 'approve' ? 'approve' : 'endorse';
 
     setIsSubmitting(true);
     try {
@@ -150,9 +145,13 @@ export default function PAREndorsementModal({
           email: signatorySession?.email || '',
           roleTitle: signatorySession?.roleTitle || '',
           role: signatorySession?.role || '',
+          actionType: action,
           signatureUrl: activeSignatureUrl,
+          canApprovePar: signatorySession?.canApprovePar,
+          approvalDecision: decision,
         },
-        remarks
+        remarks,
+        decision
       );
 
       if (result.isFullyApproved) {
@@ -590,27 +589,48 @@ export default function PAREndorsementModal({
             >
               <RotateCcw className="w-4 h-4" /> Return for Revision
             </button>
-            <button
-              type="button"
-              disabled={isSubmitting || !hasSignature}
-              onClick={handleEndorse}
-              className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" /> Recording...
-                </>
-              ) : (
-                <>
+            {canApprove ? (
+              <>
+                <button
+                  type="button"
+                  disabled={isSubmitting || !hasSignature}
+                  onClick={() => handleEndorse('forward')}
+                  className="px-4 py-2 text-xs font-bold text-white bg-[#0E4EBD] hover:bg-blue-700 rounded-lg shadow-sm flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                  title="Digitally sign and forward to other approvers"
+                >
                   <Send className="w-4 h-4 text-[#FFD41C]" />
-                  {hasSubsequentApprover
-                    ? 'Endorse & Forward to Higher-Ups'
-                    : isFinalApprover
-                    ? 'Grant Final Approval'
-                    : 'Stamp E-Signature & Endorse Report'}
-                </>
-              )}
-            </button>
+                  <span>{isSubmitting ? 'Recording...' : 'Sign & Forward'}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmitting || !hasSignature}
+                  onClick={() => handleEndorse('approve')}
+                  className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                  title="Grant executive clearance and fully approve PAR"
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                  <span>{isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={isSubmitting || !hasSignature}
+                onClick={() => handleEndorse('forward')}
+                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" /> Recording...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    Stamp E-Signature & Endorse
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>

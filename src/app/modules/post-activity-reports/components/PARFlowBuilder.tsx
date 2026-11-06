@@ -38,6 +38,14 @@ import {
   isSignatoryApplicableTo,
 } from '../../signatories/types/signatory.types';
 import { generateDefaultPARSignatoryChain } from '../services/par.service';
+import { SIGNATORY_LABEL_OPTIONS, resolveSignatoryLabel, resolveActionTypeFromLabel } from '../../signatories/utils/signatory-label.utils';
+import { useSignatoryLabelsStream } from '../../signatories/hooks/useSignatoryLabelsStream';
+import {
+  subscribeToDefaultWorkflowSettings,
+  getCachedWorkflowSettings,
+  isStepConfiguredPermanent,
+  type DefaultWorkflowSettings,
+} from '../../workflow/services/approval-workflow.service';
 
 interface PARFlowBuilderProps {
   approvalChain: PARApprovalStep[];
@@ -57,6 +65,31 @@ export default function PARFlowBuilder({
   isSasCreator = false,
 }: PARFlowBuilderProps) {
   const [selectedSignatoryIdPerStage, setSelectedSignatoryIdPerStage] = useState<Record<number, string>>({});
+  const [workflowSettings, setWorkflowSettings] = useState<DefaultWorkflowSettings | null>(() => getCachedWorkflowSettings());
+
+  useEffect(() => {
+    const unsub = subscribeToDefaultWorkflowSettings((settings) => {
+      setWorkflowSettings(settings);
+    });
+    return () => unsub();
+  }, []);
+
+  const pipelineKey = isSasCreator ? 'admin_par' : 'adviser_par';
+  const { activeLabels } = useSignatoryLabelsStream();
+
+  const availableLabelOptions = useMemo(() => {
+    const parLabels = activeLabels.filter(
+      (l) => !l.applicableDocuments || l.applicableDocuments.includes('par')
+    );
+    if (parLabels.length > 0) {
+      return parLabels.map((l) => ({
+        value: l.label,
+        label: l.label,
+        description: l.description || '',
+      }));
+    }
+    return SIGNATORY_LABEL_OPTIONS;
+  }, [activeLabels]);
   const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number; stageName: string }[]>(() => {
     if (approvalChain && approvalChain.length > 0) {
       const map = new Map<number, string>();
@@ -202,7 +235,8 @@ export default function PARFlowBuilder({
   const handleDeleteStage = (stageIndex: number) => {
     const hasPermanent = approvalChain.some((step) => {
       if ((step.stageIndex ?? 1) !== stageIndex) return false;
-      return Boolean(step.isPermanent);
+      const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('par_step_') || step.id?.startsWith('step-'));
+      return !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
     });
     if (hasPermanent) {
       alert(`Cannot delete Stage ${stageIndex} because it contains a permanent institutional signatory configured in settings.`);
@@ -293,7 +327,8 @@ export default function PARFlowBuilder({
       }
       return s.step === stepIdOrIndex;
     });
-    if (stepToRemove?.isPermanent) {
+    const isUserAddedStep = Boolean(stepToRemove?.isUserAdded || stepToRemove?.id?.startsWith('par_step_') || stepToRemove?.id?.startsWith('step-'));
+    if (!isUserAddedStep && stepToRemove && isStepConfiguredPermanent(stepToRemove, pipelineKey, workflowSettings, false)) {
       alert(`"${stepToRemove?.signatoryName || 'This signatory'}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
       return;
     }
@@ -305,6 +340,27 @@ export default function PARFlowBuilder({
       return s.step !== stepIdOrIndex;
     });
     reindexAndPropagate(filtered);
+  };
+
+  // Update Signatory Formal Label
+  const handleUpdateStepLabel = (stepIdOrIndex: string | number, newLabel: string) => {
+    const labelDoc = activeLabels.find((l) => l.label === newLabel);
+    const resolvedAction = labelDoc
+      ? labelDoc.actionType
+      : (resolveActionTypeFromLabel(newLabel) as any);
+
+    const updated = approvalChain.map((s) => {
+      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+      if (match) {
+        return {
+          ...s,
+          signatoryLabel: newLabel,
+          actionType: resolvedAction,
+        };
+      }
+      return s;
+    });
+    reindexAndPropagate(updated);
   };
 
   // Move signatory up or down within their stage
@@ -360,7 +416,7 @@ export default function PARFlowBuilder({
       signatory.actionType === 'approver';
 
     const newStep: PARApprovalStep = {
-      id: `step-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: `par_step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: approvalChain.length + 1,
       stageIndex,
       stageName,
@@ -374,6 +430,7 @@ export default function PARFlowBuilder({
       status: stageIndex === 1 ? 'current' : 'waiting',
       isMandatory: false,
       isPermanent: false,
+      isUserAdded: true,
     };
 
     const newChain = [...approvalChain, newStep];
@@ -629,7 +686,8 @@ export default function PARFlowBuilder({
                         const matchedSig = activeSignatories.find(
                           (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                         );
-                        const isStepPermanent = Boolean(step.isPermanent);
+                        const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('par_step_') || step.id?.startsWith('step-'));
+                        const isStepPermanent = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
 
                         return (
                           <div
@@ -672,37 +730,39 @@ export default function PARFlowBuilder({
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 self-end sm:self-auto">
-                              {/* Action Type Cycle Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleCycleActionType(step.id || step.step)}
-                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
-                                  isApprover
-                                    ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
-                                    : isChecker
-                                    ? 'bg-slate-100 border-slate-300 text-slate-700 hover:bg-slate-200'
-                                    : 'bg-blue-50 border-blue-300 text-blue-800 hover:bg-blue-100'
-                                }`}
-                                title="Click to cycle role: Endorse -> Approve -> Check"
-                              >
-                                {isApprover ? (
-                                  <>
-                                    <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                                    <span>Approve</span>
-                                  </>
-                                ) : isChecker ? (
-                                  <>
-                                    <UserCheck className="w-3 h-3 text-slate-600" />
-                                    <span>Check</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <CheckCircle2 className="w-3 h-3 text-blue-600" />
-                                    <span>Endorse</span>
-                                  </>
-                                )}
-                              </button>
+                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                              {/* Dynamic Formal Document Label Selector */}
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <select
+                                  value={step.signatoryLabel || resolveSignatoryLabel(step, 'par', stepIdx === stage.steps.length - 1)}
+                                  onChange={(e) => handleUpdateStepLabel(step.id || step.step, e.target.value)}
+                                  className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
+                                  title="Formal Signatory Document Label"
+                                >
+                                  {(() => {
+                                    const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'par', stepIdx === stage.steps.length - 1);
+                                    const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
+                                    return (
+                                      <>
+                                        {!hasCurrent && currentVal && (
+                                          <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
+                                            {currentVal}
+                                          </option>
+                                        )}
+                                        {availableLabelOptions.map((opt) => {
+                                          const val = typeof opt === 'string' ? opt : opt.value;
+                                          const lbl = typeof opt === 'string' ? opt : opt.label;
+                                          return (
+                                            <option key={val} value={val} className="text-xs font-medium py-1">
+                                              {lbl}
+                                            </option>
+                                          );
+                                        })}
+                                      </>
+                                    );
+                                  })()}
+                                </select>
+                              </div>
 
                               {/* Reorder within stage */}
                               <div className="flex items-center">

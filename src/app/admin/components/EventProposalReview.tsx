@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Download, Clock, CheckCircle, CheckCircle2, XCircle, RotateCcw,
-  Calendar, Users, Shield, Receipt, FileText, History,
+  Calendar, Users, Shield, Receipt, FileText, FileCheck, History,
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
@@ -38,6 +38,7 @@ import {
   AttendanceScannersModal,
 } from '../../modules/events';
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
+import DisbursementVoucherModal from '../../modules/finance/components/DisbursementVoucherModal';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useEventTypesStream, useVenuesStream } from '../../modules/events/hooks/useEventConfigStream';
@@ -789,6 +790,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isCashModalOpen, setIsCashModalOpen] = useState(false);
+  const [isDisbursementVoucherModalOpen, setIsDisbursementVoucherModalOpen] = useState(false);
+  const currentDisbursementVoucher =
+    (activeEvent as any)?.disbursementVoucher ||
+    event.disbursementVoucher ||
+    fullProposal?.disbursementVoucher ||
+    null;
+  const hasDisbursementVoucher = Boolean(currentDisbursementVoucher?.fileUrl);
   const navItems = NAV_SECTIONS;
 
   const allVisited = navItems.every((s) => visitedSections.has(s.id));
@@ -1358,24 +1366,64 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             )}
           </button>
 
-          {/* 3. Cash Custodians */}
+          {/* Disbursement Voucher Action */}
+          {isApproved && (
+            <button
+              type="button"
+              onClick={() => setIsDisbursementVoucherModalOpen(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95 ${
+                hasDisbursementVoucher
+                  ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                  : 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-amber-400/30'
+              }`}
+              title={
+                hasDisbursementVoucher
+                  ? "View or update official Disbursement Voucher"
+                  : "Upload official Disbursement Voucher to unlock Cash Custodians & Liquidation"
+              }
+            >
+              {hasDisbursementVoucher ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                  <span>Disbursement Voucher (Attached)</span>
+                </>
+              ) : (
+                <>
+                  <FileCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
+                  <span>Upload Disbursement Voucher</span>
+                  <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/20 text-amber-200 border border-amber-400/30">
+                    Required
+                  </span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* 3. Cash Custodians (Locked if no voucher) */}
           <button
             type="button"
-            disabled={!isApproved}
+            disabled={!isApproved || !hasDisbursementVoucher}
             onClick={() => {
               if (!isApproved) {
                 toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
                 return;
               }
+              if (!hasDisbursementVoucher) {
+                toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash advance amounts.');
+                return;
+              }
               setIsCashModalOpen(true);
             }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${isApproved
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
-                : 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-              }`}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+              !isApproved || !hasDisbursementVoucher
+                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
+            }`}
             title={
               !isApproved
                 ? "Locked: Activity must achieve official approval first"
+                : !hasDisbursementVoucher
+                ? "Locked: Upload the official Disbursement Voucher first before allocating cash custodians"
                 : isOrgManagedEvent
                 ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
                 : "Allocate cash advances per task against approved budget for physical disbursement and liquidation"
@@ -1387,6 +1435,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <span>Cash Custodians</span>
                 <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
                   Locked
+                </span>
+              </>
+            ) : !hasDisbursementVoucher ? (
+              <>
+                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+                <span>Cash Custodians</span>
+                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  Voucher Required
                 </span>
               </>
             ) : isOrgManagedEvent ? (
@@ -1891,16 +1947,97 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </button>
                     <button
                       type="button"
-                      onClick={() => setIsCashModalOpen(true)}
-                      className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer ${
-                        isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900 text-[#FFD41C]' : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
+                      disabled={!hasDisbursementVoucher}
+                      onClick={() => {
+                        if (!hasDisbursementVoucher) {
+                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash custodians.');
+                          return;
+                        }
+                        setIsCashModalOpen(true);
+                      }}
+                      className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
+                        !hasDisbursementVoucher
+                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
+                          : isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900 text-[#FFD41C] cursor-pointer' : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                       }`}
                     >
-                      {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-[#FFD41C]" /> : <Coins className="w-3.5 h-3.5 text-[#FFD41C]" />}
-                      <span>{isOrgManagedEvent ? 'View Budget Custodians' : 'Allocate Cash Custodians'}</span>
+                      {!hasDisbursementVoucher ? (
+                        <>
+                          <Lock className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Custodians (Voucher Required)</span>
+                        </>
+                      ) : isOrgManagedEvent ? (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-[#FFD41C]" />
+                          <span>View Budget Custodians</span>
+                        </>
+                      ) : (
+                        <>
+                          <Coins className="w-3.5 h-3.5 text-[#FFD41C]" />
+                          <span>Allocate Cash Custodians</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
+
+                
+                {/* Disbursement Voucher Status Banner */}
+                {hasDisbursementVoucher ? (
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                      </div>
+                      <div>
+                        <span className="font-bold flex items-center gap-2">
+                          Official Disbursement Voucher Verified
+                          <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-emerald-200/80 text-emerald-900 border border-emerald-300">
+                            Attached
+                          </span>
+                        </span>
+                        <p className="text-[11px] text-emerald-800 mt-0.5 font-mono">
+                          Check #{currentDisbursementVoucher.chequeNumber || 'N/A'} • Released: {currentDisbursementVoucher.disbursementDate || 'N/A'} • ₱{formatPHP(currentDisbursementVoucher.amountDisbursed || 0)}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsDisbursementVoucherModalOpen(true)}
+                      className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>View / Update Voucher</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-4 h-4 text-amber-700" />
+                      </div>
+                      <div>
+                        <span className="font-bold flex items-center gap-2 text-amber-900">
+                          Disbursement Voucher Required
+                          <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-amber-200 text-amber-800 border border-amber-300">
+                            Locked
+                          </span>
+                        </span>
+                        <p className="text-[11px] text-amber-800 mt-0.5">
+                          Upload the official check release slip or bank voucher before cash advances can be distributed and financial liquidation can begin.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsDisbursementVoucherModalOpen(true)}
+                      className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-xs"
+                    >
+                      <FileCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
+                      <span>Upload Disbursement Voucher</span>
+                    </button>
+                  </div>
+                )}
 
                 {/* Financial Liquidation Baseline & Status Card */}
                 <div className="space-y-3">
@@ -3604,6 +3741,24 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           onClose={() => setIsAttendanceModalOpen(false)}
           activity={event}
           readOnly={isOrgManagedEvent}
+        />
+      )}
+
+      
+      {/* DISBURSEMENT VOUCHER MODAL */}
+      {isDisbursementVoucherModalOpen && (
+        <DisbursementVoucherModal
+          isOpen={isDisbursementVoucherModalOpen}
+          onClose={() => setIsDisbursementVoucherModalOpen(false)}
+          event={activeEvent || event}
+          userProfile={{
+            uid: profile?.uid,
+            displayName: profile?.displayName || 'SAS Administrator',
+            fullName: profile?.displayName || 'SAS Administrator',
+            role: 'admin',
+          }}
+          userRole="admin"
+          liquidationStatus={(activeEvent as any)?.liquidationStatus || event.liquidationStatus || fullProposal?.liquidationStatus || ''}
         />
       )}
 

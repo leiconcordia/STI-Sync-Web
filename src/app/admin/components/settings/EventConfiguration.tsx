@@ -28,7 +28,6 @@ type ModalState =
   | { type: 'delete-venue'; item: VenueDocument };
 
 const COLORS = ['#001A4D', '#002B7F', '#0E4EBD', '#1E70E8', '#22C55E', '#FFD41C', '#EF4444', '#0EA5E9'];
-const FACILITY_OPTIONS = ['Projector', 'Sound System', 'Air Conditioning', 'Stage', 'Whiteboard', 'Podium', 'Lighting', 'Tables & Chairs'];
 
 function ActiveArchivedTabs({ active, onChange }: { active: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -63,10 +62,13 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
 
   const [typeForm, setTypeForm] = useState({ name: '', color: '#1E70E8' });
   const [catForm, setCatForm] = useState({ name: '', typeId: '' });
-  const [venueForm, setVenueForm] = useState({ name: '', capacity: 50, facilities: [] as string[], status: 'available' as VenueDocument['status'] });
-  const [customFacility, setCustomFacility] = useState('');
+  const [venueForm, setVenueForm] = useState({
+    name: '',
+    venueType: 'inside' as 'inside' | 'outside',
+    status: 'available' as VenueDocument['status'],
+  });
 
-  const close = () => { setModal({ type: 'none' }); setDeleteText(''); setCustomFacility(''); };
+  const close = () => { setModal({ type: 'none' }); setDeleteText(''); };
 
   const activeTypes = eventTypes.filter(t => !t.archived);
   const archivedTypes = eventTypes.filter(t => t.archived);
@@ -81,16 +83,6 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
   const statusPill = (s: VenueDocument['status']) =>
     s === 'available' ? 'bg-green-100 text-green-700' :
     s === 'maintenance' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700';
-
-  const toggleFacility = (f: string) =>
-    setVenueForm(p => ({ ...p, facilities: p.facilities.includes(f) ? p.facilities.filter(x => x !== f) : [...p.facilities, f] }));
-
-  const handleAddCustomFacility = () => {
-    if (customFacility.trim() && !venueForm.facilities.includes(customFacility.trim())) {
-      setVenueForm(p => ({ ...p, facilities: [...p.facilities, customFacility.trim()] }));
-      setCustomFacility('');
-    }
-  };
 
   const saveType = async () => {
     const cleanName = typeForm.name.trim();
@@ -363,17 +355,16 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
               <h3 className="font-bold text-[#001A4D]">Venue Registry</h3>
               <ActiveArchivedTabs active={venueArchivedView} onChange={setVenueArchivedView} />
             </div>
-            <button onClick={() => { setVenueForm({ name: '', capacity: 50, facilities: [], status: 'available' }); setModal({ type: 'add-venue' }); }}
-              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2">
-              <Plus className="w-4 h-4" /> Add Venue
+            <button onClick={() => { setVenueForm({ name: '', venueType: 'inside', status: 'available' }); setModal({ type: 'add-venue' }); }}
+              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer">
+              <Plus className="w-4 h-4" /> Add New Venue
             </button>
           </div>
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Venue</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Capacity</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Facilities</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Location Type</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Status</th>
                 <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
               </tr>
@@ -383,12 +374,14 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 <tr key={venue.id} className="hover:bg-gray-50 transition-colors"
                   onMouseEnter={() => setHoveredRow(venue.id)} onMouseLeave={() => setHoveredRow(null)}>
                   <td className="px-4 py-3 text-sm font-medium text-gray-900">{venue.name}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{venue.capacity.toLocaleString()}</td>
                   <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {venue.facilities.slice(0, 3).map(f => <span key={f} className="px-1.5 py-0.5 bg-gray-100 text-gray-600 text-xs rounded">{f}</span>)}
-                      {venue.facilities.length > 3 && <span className="px-1.5 py-0.5 bg-gray-100 text-gray-500 text-xs rounded">+{venue.facilities.length - 3}</span>}
-                    </div>
+                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
+                      venue.venueType === 'outside'
+                        ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                        : 'bg-blue-100 text-blue-700 border border-blue-200'
+                    }`}>
+                      {venue.venueType === 'outside' ? 'Outside (Off-Campus)' : 'Inside (Campus)'}
+                    </span>
                   </td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-0.5 text-xs rounded-full font-medium capitalize ${statusPill(venue.status)}`}>{venue.status}</span>
@@ -397,13 +390,13 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                     <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === venue.id ? 'opacity-100' : 'opacity-0'}`}>
                       {!venue.archived ? (
                         <>
-                          <button onClick={() => { setVenueForm({ name: venue.name, capacity: venue.capacity, facilities: [...venue.facilities], status: venue.status }); setModal({ type: 'edit-venue', item: venue }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8]"><Edit2 className="w-4 h-4" /></button>
-                          <button onClick={() => setModal({ type: 'archive-venue', item: venue })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500"><Archive className="w-4 h-4" /></button>
+                          <button onClick={() => { setVenueForm({ name: venue.name, venueType: venue.venueType || 'inside', status: venue.status }); setModal({ type: 'edit-venue', item: venue }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer"><Edit2 className="w-4 h-4" /></button>
+                          <button onClick={() => setModal({ type: 'archive-venue', item: venue })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500 cursor-pointer"><Archive className="w-4 h-4" /></button>
                         </>
                       ) : (
                         <>
-                          <button onClick={() => setModal({ type: 'restore-venue', item: venue })} className="p-1.5 rounded hover:bg-green-50 text-green-600"><RotateCcw className="w-4 h-4" /></button>
-                          <button onClick={() => setModal({ type: 'delete-venue', item: venue })} className="p-1.5 rounded hover:bg-red-50 text-red-600"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={() => setModal({ type: 'restore-venue', item: venue })} className="p-1.5 rounded hover:bg-green-50 text-green-600 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
+                          <button onClick={() => setModal({ type: 'delete-venue', item: venue })} className="p-1.5 rounded hover:bg-red-50 text-red-600 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
                         </>
                       )}
                     </div>
@@ -411,7 +404,7 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                 </tr>
               ))}
               {(venueArchivedView ? archivedVenues : activeVenues).length === 0 && (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-400">No {venueArchivedView ? 'archived' : 'active'} venues.</td></tr>
+                <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-400">No {venueArchivedView ? 'archived' : 'active'} venues.</td></tr>
               )}
             </tbody>
           </table>
@@ -507,59 +500,70 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
             <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden">
               <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-white font-bold text-lg">{modal.type === 'add-venue' ? 'Add Venue' : 'Edit Venue'}</h3>
+                  <h3 className="text-white font-bold text-lg">{modal.type === 'add-venue' ? 'Add New Venue' : 'Edit Venue'}</h3>
                   {modal.type === 'edit-venue' && <span className="px-2 py-0.5 bg-[#1E70E8] text-white text-xs rounded-full">Editing: {modal.item.name}</span>}
                 </div>
-                <button onClick={close} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10"><X className="w-5 h-5" /></button>
+                <button onClick={close} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer"><X className="w-5 h-5" /></button>
               </div>
               <div className="p-6 space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Venue Name <span className="text-red-500">*</span></label>
                   <input type="text" value={venueForm.name} onChange={e => setVenueForm({ ...venueForm, name: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent" placeholder="e.g. Main Auditorium" />
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent" placeholder="e.g. Main Auditorium or Ormoc Superdome" />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Capacity <span className="text-red-500">*</span></label>
-                    <input type="number" value={venueForm.capacity} onChange={e => setVenueForm({ ...venueForm, capacity: Number(e.target.value) })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent" min={1} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1.5">Status</label>
-                    <select value={venueForm.status} onChange={e => setVenueForm({ ...venueForm, status: e.target.value as VenueDocument['status'] })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent">
-                      <option value="available">Available</option>
-                      <option value="maintenance">Maintenance</option>
-                      <option value="reserved">Reserved</option>
-                    </select>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Location Type <span className="text-red-500">*</span></label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label
+                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${
+                        venueForm.venueType === 'inside'
+                          ? 'border-[#001A4D] bg-blue-50/50 text-[#001A4D] font-bold shadow-2xs'
+                          : 'border-gray-200 text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="venueTypeModal"
+                        value="inside"
+                        checked={venueForm.venueType === 'inside'}
+                        onChange={() => setVenueForm({ ...venueForm, venueType: 'inside' })}
+                        className="w-4 h-4 text-[#001A4D] focus:ring-[#001A4D]"
+                      />
+                      <span className="text-xs">Inside (Campus)</span>
+                    </label>
+                    <label
+                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${
+                        venueForm.venueType === 'outside'
+                          ? 'border-[#001A4D] bg-blue-50/50 text-[#001A4D] font-bold shadow-2xs'
+                          : 'border-gray-200 text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="venueTypeModal"
+                        value="outside"
+                        checked={venueForm.venueType === 'outside'}
+                        onChange={() => setVenueForm({ ...venueForm, venueType: 'outside' })}
+                        className="w-4 h-4 text-[#001A4D] focus:ring-[#001A4D]"
+                      />
+                      <span className="text-xs">Outside (Off-Campus)</span>
+                    </label>
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Facilities</label>
-                  <div className="flex flex-wrap gap-2 mb-3">
-                    {/* Unique active facilities combining predefined and custom already added */}
-                    {Array.from(new Set([...FACILITY_OPTIONS, ...venueForm.facilities])).map(f => (
-                      <button key={f} onClick={() => toggleFacility(f)}
-                        className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${venueForm.facilities.includes(f) ? 'bg-[#001A4D] text-white border-[#001A4D]' : 'bg-white text-gray-600 border-gray-300 hover:border-[#001A4D]'}`}>
-                        {f}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input type="text" value={customFacility} onChange={e => setCustomFacility(e.target.value)}
-                      onKeyDown={e => e.key === 'Enter' && handleAddCustomFacility()}
-                      className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent" placeholder="Other facility..." />
-                    <button onClick={handleAddCustomFacility} disabled={!customFacility.trim()}
-                      className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-200 disabled:opacity-50">
-                      Add
-                    </button>
-                  </div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Status</label>
+                  <select value={venueForm.status} onChange={e => setVenueForm({ ...venueForm, status: e.target.value as VenueDocument['status'] })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent">
+                    <option value="available">Available</option>
+                    <option value="maintenance">Maintenance</option>
+                    <option value="reserved">Reserved</option>
+                  </select>
                 </div>
                 <div className="flex gap-3 pt-2">
-                  <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50">Cancel</button>
+                  <button onClick={close} className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 cursor-pointer">Cancel</button>
                   <button onClick={saveVenue} disabled={!venueForm.name || mutations.loading}
                     className="flex-1 py-2.5 bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:opacity-90 transition-opacity cursor-pointer">
-                    {mutations.loading ? 'Saving...' : (modal.type === 'add-venue' ? 'Save' : 'Save Changes')}
+                    {mutations.loading ? 'Saving...' : (modal.type === 'add-venue' ? 'Add New Venue' : 'Save Changes')}
                   </button>
                 </div>
               </div>

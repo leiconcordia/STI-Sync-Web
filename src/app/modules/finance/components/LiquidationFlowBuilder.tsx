@@ -38,6 +38,14 @@ import {
   isSignatoryApplicableTo,
 } from '../../signatories/types/signatory.types';
 import { generateDefaultLiquidationChain } from '../services/liquidation.service';
+import { SIGNATORY_LABEL_OPTIONS, resolveSignatoryLabel, resolveActionTypeFromLabel } from '../../signatories/utils/signatory-label.utils';
+import { useSignatoryLabelsStream } from '../../signatories/hooks/useSignatoryLabelsStream';
+import {
+  subscribeToDefaultWorkflowSettings,
+  getCachedWorkflowSettings,
+  isStepConfiguredPermanent,
+  type DefaultWorkflowSettings,
+} from '../../workflow/services/approval-workflow.service';
 
 interface LiquidationFlowBuilderProps {
   approvalChain: LiquidationApprovalStep[];
@@ -59,6 +67,31 @@ export default function LiquidationFlowBuilder({
   isSasCreator = false,
 }: LiquidationFlowBuilderProps) {
   const [selectedSignatoryIdPerStage, setSelectedSignatoryIdPerStage] = useState<Record<number, string>>({});
+  const [workflowSettings, setWorkflowSettings] = useState<DefaultWorkflowSettings | null>(() => getCachedWorkflowSettings());
+
+  useEffect(() => {
+    const unsub = subscribeToDefaultWorkflowSettings((settings) => {
+      setWorkflowSettings(settings);
+    });
+    return () => unsub();
+  }, []);
+
+  const pipelineKey = isSasCreator ? 'admin_fl' : 'adviser_fl';
+  const { activeLabels } = useSignatoryLabelsStream();
+
+  const availableLabelOptions = useMemo(() => {
+    const flLabels = activeLabels.filter(
+      (l) => !l.applicableDocuments || l.applicableDocuments.includes('liquidation')
+    );
+    if (flLabels.length > 0) {
+      return flLabels.map((l) => ({
+        value: l.label,
+        label: l.label,
+        description: l.description || '',
+      }));
+    }
+    return SIGNATORY_LABEL_OPTIONS;
+  }, [activeLabels]);
   const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number; stageName: string }[]>(() => {
     if (approvalChain && approvalChain.length > 0) {
       const map = new Map<number, string>();
@@ -153,12 +186,38 @@ export default function LiquidationFlowBuilder({
         }
         return step;
       });
+
+      // 4. Strictly synchronize isPermanent against institutional default workflow settings
+      filteredSteps = filteredSteps.map((step) => {
+        const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('liq_step_'));
+        if (isUserAddedStep) {
+          if (step.isPermanent) {
+            modified = true;
+            return {
+              ...step,
+              isPermanent: false,
+              isUserAdded: true,
+            };
+          }
+          return step;
+        }
+        const expectedPermanent = isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
+        if (Boolean(step.isPermanent) !== expectedPermanent) {
+          modified = true;
+          return {
+            ...step,
+            isPermanent: expectedPermanent,
+            isMandatory: expectedPermanent || Boolean(step.isMandatory),
+          };
+        }
+        return step;
+      });
     }
 
     if (modified) {
       onChange(filteredSteps);
     }
-  }, [activeSignatories, approvalChain]);
+  }, [activeSignatories, approvalChain, pipelineKey, workflowSettings]);
 
   // Group steps by stageIndex using stageConfigs or approvalChain
   const stages = useMemo(() => {
@@ -273,7 +332,10 @@ export default function LiquidationFlowBuilder({
   // 3. Delete Stage (allows removing any stage)
   const handleDeleteStage = (stageIdx: number) => {
     const targetStage = stages.find((s) => s.stageIndex === stageIdx);
-    const hasPermanent = targetStage?.steps.some((step) => Boolean(step.isPermanent));
+    const hasPermanent = targetStage?.steps.some((step) => {
+      const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('liq_step_'));
+      return !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
+    });
     if (hasPermanent) {
       alert(`Cannot delete Stage ${stageIdx} because it contains a permanent institutional signatory configured in settings.`);
       return;
@@ -357,6 +419,7 @@ export default function LiquidationFlowBuilder({
       actionType = 'endorse';
     }
 
+    const resolvedLabel = signatory.defaultSignatoryLabel || resolveSignatoryLabel(signatory as any, 'liquidation', false);
     const newStep: LiquidationApprovalStep = {
       id: `liq_step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: approvalChain.length + 1,
@@ -365,6 +428,7 @@ export default function LiquidationFlowBuilder({
       role: signatory.role || '',
       roleTitle: signatory.roleTitle || 'Institutional Signatory',
       actionType,
+      signatoryLabel: resolvedLabel,
       signatoryUid: signatory.id || (signatory as any).uid || '',
       signatoryName: signatory.name || '',
       signatoryEmail: signatory.email || '',
@@ -372,6 +436,7 @@ export default function LiquidationFlowBuilder({
       status: stageIndex === 1 ? 'current' : 'waiting',
       isPermanent: false,
       isMandatory: false,
+      isUserAdded: true,
     };
 
     const updatedStages = stages.map((stg) => {
@@ -388,7 +453,8 @@ export default function LiquidationFlowBuilder({
   // 8. Remove Signatory from Stage (permanent signatories cannot be removed)
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
     const stepToRemove = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
-    if (stepToRemove?.isPermanent) {
+    const isUserAddedStep = Boolean(stepToRemove?.isUserAdded || stepToRemove?.id?.startsWith('liq_step_'));
+    if (!isUserAddedStep && stepToRemove && isStepConfiguredPermanent(stepToRemove, pipelineKey, workflowSettings, false)) {
       alert(`"${stepToRemove?.signatoryName || 'This signatory'}" is designated as a Permanent Signatory in institutional settings and cannot be removed.`);
       return;
     }
@@ -399,6 +465,27 @@ export default function LiquidationFlowBuilder({
       step: globalStep++,
     }));
     onChange(flattened);
+  };
+
+  // Update Signatory Formal Label
+  const handleUpdateStepLabel = (stepIdOrIndex: string | number, newLabel: string) => {
+    const labelDoc = activeLabels.find((l) => l.label === newLabel);
+    const resolvedAction = labelDoc
+      ? labelDoc.actionType
+      : resolveActionTypeFromLabel(newLabel);
+
+    const updated = approvalChain.map((s) => {
+      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
+      if (match) {
+        return {
+          ...s,
+          signatoryLabel: newLabel,
+          actionType: resolvedAction,
+        };
+      }
+      return s;
+    });
+    onChange(updated);
   };
 
   // 9. Reset Stages cleanly
@@ -567,7 +654,10 @@ export default function LiquidationFlowBuilder({
             const isFirstStage = stageIdx === 0;
             const isLastStage = stageIdx === stages.length - 1;
             const selectedSigId = selectedSignatoryIdPerStage[stage.stageIndex] || '';
-            const isMandatoryStage = stage.steps.some((s) => s.isPermanent);
+            const isMandatoryStage = stage.steps.some((s) => {
+              const isUserAddedStep = Boolean(s.isUserAdded || s.id?.startsWith('liq_step_'));
+              return !isUserAddedStep && isStepConfiguredPermanent(s, pipelineKey, workflowSettings, false);
+            });
 
             return (
               <div key={stage.stageIndex} className="relative">
@@ -666,7 +756,8 @@ export default function LiquidationFlowBuilder({
                         const matchedSig = activeSignatories.find(
                           (sig) => sig.id === step.signatoryUid || (sig.email && sig.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                         );
-                        const isStepPermanent = Boolean(step.isPermanent);
+                        const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('liq_step_'));
+                        const isStepPermanent = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
 
                         return (
                           <div
@@ -710,40 +801,39 @@ export default function LiquidationFlowBuilder({
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-2 self-end sm:self-auto">
-                              {/* Action Type Cycle Button */}
-                              <button
-                                type="button"
-                                onClick={() => handleCycleActionType(step.id || step.step)}
-                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border flex items-center gap-1.5 transition-all shadow-xs cursor-pointer ${
-                                  isApprover
-                                    ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
-                                    : isChecker
-                                    ? 'bg-blue-50 hover:bg-blue-100 text-blue-800 border-blue-300'
-                                    : 'bg-sky-50 hover:bg-sky-100 text-sky-800 border-sky-300'
-                                }`}
-                                title="Click to cycle role (Auditor Check ➔ Department Endorse ➔ Executive Approve)"
-                              >
-                                {isApprover ? (
-                                  <>
-                                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                                    <span>Approver</span>
-                                  </>
-                                ) : isChecker ? (
-                                  <>
-                                    <Check className="w-3.5 h-3.5 text-blue-600" />
-                                    <span>Auditor Check</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <FileSignature className="w-3.5 h-3.5 text-sky-600" />
-                                    <span>Endorser</span>
-                                  </>
-                                )}
-                                <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold bg-white/70 px-1 py-0.5 rounded ml-0.5">
-                                  Switch
-                                </span>
-                              </button>
+                            <div className="flex items-center gap-2 self-end sm:self-auto flex-shrink-0">
+                              {/* Dynamic Formal Document Label Selector */}
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <select
+                                  value={step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1)}
+                                  onChange={(e) => handleUpdateStepLabel(step.id || step.step, e.target.value)}
+                                  className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
+                                  title="Formal Signatory Document Label"
+                                >
+                                  {(() => {
+                                    const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1);
+                                    const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
+                                    return (
+                                      <>
+                                        {!hasCurrent && currentVal && (
+                                          <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
+                                            {currentVal}
+                                          </option>
+                                        )}
+                                        {availableLabelOptions.map((opt) => {
+                                          const val = typeof opt === 'string' ? opt : opt.value;
+                                          const lbl = typeof opt === 'string' ? opt : opt.label;
+                                          return (
+                                            <option key={val} value={val} className="text-xs font-medium py-1">
+                                              {lbl}
+                                            </option>
+                                          );
+                                        })}
+                                      </>
+                                    );
+                                  })()}
+                                </select>
+                              </div>
 
                               {/* Remove Signatory Button or Lock Indicator */}
                               {isStepPermanent ? (

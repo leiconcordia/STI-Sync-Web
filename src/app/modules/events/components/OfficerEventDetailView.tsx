@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import {
   ArrowLeft, X, Edit, Calendar, MapPin, Users, Shield,
-  Receipt, FileText, History, Clock, CheckCircle2, AlertCircle,
+  Receipt, FileText, FileCheck, History, Clock, CheckCircle2, AlertCircle,
   AlertTriangle, Download, Eye, Tag, Building2, Check, RotateCcw,
   XCircle, FileImage, Lock, Unlock, UserCheck, ChevronRight,
   FolderArchive, Trash2, FileSignature, Target, Wrench,
@@ -21,6 +21,7 @@ import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
 import { useAllLiquidations } from '../../finance/hooks/useLiquidationStream';
 import OfficerLiquidationModal from '../../../officer/components/OfficerLiquidationModal';
+import DisbursementVoucherModal from '../../finance/components/DisbursementVoucherModal';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
@@ -208,6 +209,7 @@ export default function OfficerEventDetailView({
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isLiquidationModalOpen, setIsLiquidationModalOpen] = useState(false);
+  const [isDisbursementVoucherModalOpen, setIsDisbursementVoucherModalOpen] = useState(false);
 
   const { liquidations: allLiquidations = [] } = useAllLiquidations();
 
@@ -223,6 +225,13 @@ export default function OfficerEventDetailView({
       ) || null
     );
   }, [allLiquidations, event?.id, (event as any)?.liquidationReportId]);
+
+  const currentDisbursementVoucher =
+    (activeEvent as any)?.disbursementVoucher ||
+    event.disbursementVoucher ||
+    fullProposal?.disbursementVoucher ||
+    null;
+  const hasDisbursementVoucher = Boolean(currentDisbursementVoucher?.fileUrl);
 
   const liquidationStatus = useMemo(() => {
     return (linkedLiquidation?.status || (activeEvent as any)?.liquidationStatus || '').toString().toLowerCase();
@@ -842,23 +851,66 @@ export default function OfficerEventDetailView({
             )}
           </button>
 
-          {/* 3. Cash Custodians */}
+          {/* Disbursement Voucher Action */}
+          {isApproved && (
+            <button
+              type="button"
+              onClick={() => setIsDisbursementVoucherModalOpen(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95 ${
+                hasDisbursementVoucher
+                  ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                  : 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-amber-400/30'
+              }`}
+              title={
+                hasDisbursementVoucher
+                  ? "View or update official Disbursement Voucher"
+                  : "Upload official Disbursement Voucher to unlock Cash Custodians & Liquidation"
+              }
+            >
+              {hasDisbursementVoucher ? (
+                <>
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                  <span>Disbursement Voucher (Attached)</span>
+                </>
+              ) : (
+                <>
+                  <FileCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
+                  <span>Upload Disbursement Voucher</span>
+                  <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/20 text-amber-200 border border-amber-400/30">
+                    Required
+                  </span>
+                </>
+              )}
+            </button>
+          )}
+
+          {/* 3. Cash Custodians / Financial Liquidation (Locked if no voucher) */}
           <button
             type="button"
-            disabled={!isApproved}
+            disabled={!isApproved || !hasDisbursementVoucher}
             onClick={() => {
               if (!isApproved) {
                 toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
                 return;
               }
+              if (!hasDisbursementVoucher) {
+                toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
+                return;
+              }
               setIsLiquidationModalOpen(true);
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-              isApproved
-                ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
-                : 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+              !isApproved || !hasDisbursementVoucher
+                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
             }`}
-            title={isApproved ? "Allocate cash advances per task against approved budget for physical disbursement and liquidation" : "Locked: Activity must achieve official approval first"}
+            title={
+              !isApproved
+                ? "Locked: Activity must achieve official approval first"
+                : !hasDisbursementVoucher
+                ? "Locked: Upload the official Disbursement Voucher first before opening Cash Custodians & Liquidation"
+                : "Allocate cash advances per task against approved budget for physical disbursement and liquidation"
+            }
           >
             {!isApproved ? (
               <>
@@ -866,6 +918,14 @@ export default function OfficerEventDetailView({
                 <span>Financial Liquidation</span>
                 <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
                   Locked
+                </span>
+              </>
+            ) : !hasDisbursementVoucher ? (
+              <>
+                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+                <span>Financial Liquidation</span>
+                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  Voucher Required
                 </span>
               </>
             ) : (
@@ -1398,11 +1458,31 @@ export default function OfficerEventDetailView({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setIsCashModalOpen(true)}
-                      className="px-3 py-2 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                      disabled={!hasDisbursementVoucher}
+                      onClick={() => {
+                        if (!hasDisbursementVoucher) {
+                          toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
+                          return;
+                        }
+                        setIsLiquidationModalOpen(true);
+                      }}
+                      className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
+                        !hasDisbursementVoucher
+                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
+                          : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
+                      }`}
                     >
-                      <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
-                      <span>Financial Liquidation</span>
+                      {!hasDisbursementVoucher ? (
+                        <>
+                          <Lock className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Liquidation (Voucher Required)</span>
+                        </>
+                      ) : (
+                        <>
+                          <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
+                          <span>Financial Liquidation</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -2046,7 +2126,26 @@ export default function OfficerEventDetailView({
               )}
             </div>
           </section>
-        </main>
+        
+      {/* 4. DISBURSEMENT VOUCHER MODAL */}
+      {isDisbursementVoucherModalOpen && (
+        <DisbursementVoucherModal
+          isOpen={isDisbursementVoucherModalOpen}
+          onClose={() => setIsDisbursementVoucherModalOpen(false)}
+          event={activeEvent || event}
+          userProfile={{
+            uid: profile?.uid,
+            displayName: profile?.studentName || profile?.displayName || profile?.name,
+            fullName: profile?.studentName || profile?.displayName || profile?.name,
+            role: profile?.role || (profile?.isAdviser ? 'adviser' : 'officer'),
+            isAdviser: Boolean(profile?.isAdviser),
+          }}
+          userRole={profile?.isAdviser || profile?.role === 'adviser' ? 'adviser' : 'officer'}
+          liquidationStatus={liquidationStatus}
+        />
+      )}
+
+    </main>
       </div>
 
       {/* CANCEL EVENT MODAL */}

@@ -21,9 +21,10 @@ export interface EventCategoryDocument {
 export interface VenueDocument {
   id: string;
   name: string;
-  capacity: number;
-  facilities: string[];
+  capacity?: number;
+  facilities?: string[];
   status: 'available' | 'maintenance' | 'reserved';
+  venueType?: 'inside' | 'outside';
   archived: boolean;
   createdAt: Timestamp;
   updatedAt: Timestamp;

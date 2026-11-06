@@ -32,6 +32,7 @@ import {
 } from '../../finance/services/finance.service';
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
+import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
@@ -1266,3 +1267,95 @@ export async function purgeEventPermanently(eventId: string, adminUid: string, a
 }
 
 
+
+/**
+ * Saves or updates official Disbursement Voucher for an approved activity.
+ * Synchronizes the voucher details (cheque #, date, amount) to any active
+ * Financial Liquidation report already created for this event.
+ */
+export async function saveEventDisbursementVoucher(
+  eventId: string,
+  voucher: DisbursementVoucherAttachment
+): Promise<void> {
+  const updatePayload = {
+    disbursementVoucher: voucher,
+    updatedAt: serverTimestamp(),
+  };
+
+  const eventRef = doc(db, ACTIVITIES_COLLECTION, eventId);
+  await updateDoc(eventRef, updatePayload);
+
+  // If a financial liquidation already exists for this event, sync the voucher & header
+  try {
+    const liqQuery = query(
+      collection(db, LIQUIDATIONS_COLLECTION),
+      where('eventId', '==', eventId)
+    );
+    const liqSnap = await getDocs(liqQuery);
+    const activeLiqs = liqSnap.docs.filter(
+      (d) => !d.data().isDeleted && d.data().status !== 'voided'
+    );
+
+    if (activeLiqs.length > 0) {
+      const liqDoc = activeLiqs[0];
+      const liqData = liqDoc.data();
+      await updateDoc(doc(db, LIQUIDATIONS_COLLECTION, liqDoc.id), {
+        disbursementVoucher: voucher,
+        chequeNumber: liqData.chequeNumber || voucher.chequeNumber || '',
+        dateReleased: liqData.dateReleased || voucher.disbursementDate || '',
+        amountAdvanced: liqData.amountAdvanced || voucher.amountDisbursed || 0,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (syncErr) {
+    console.warn('[saveEventDisbursementVoucher] Sync to liquidation notice:', syncErr);
+  }
+
+  try {
+    await logAuditEvent({
+      action: 'UPLOAD_DISBURSEMENT_VOUCHER',
+      actionType: 'UPDATE',
+      details: `Official Disbursement Voucher (Cheque: ${voucher.chequeNumber || 'N/A'}, Amount: ₱${voucher.amountDisbursed || 0}) was attached to event by ${voucher.uploadedByName} (${voucher.uploadedByRole}).`,
+      performedBy: voucher.uploadedByName || 'User',
+      userRole: voucher.uploadedByRole === 'admin' ? 'SAO Admin' : 'Adviser',
+      targetId: eventId,
+      targetName: 'Event Disbursement Voucher',
+    });
+  } catch (auditErr) {
+    console.warn('[saveEventDisbursementVoucher] Audit log failed:', auditErr);
+  }
+}
+
+/**
+ * Removes the attached disbursement voucher from an event (admin or prior to liquidation).
+ */
+export async function removeEventDisbursementVoucher(
+  eventId: string,
+  removedByName?: string,
+  removedByRole?: string
+): Promise<void> {
+  const eventRef = doc(db, ACTIVITIES_COLLECTION, eventId);
+  await updateDoc(eventRef, {
+    disbursementVoucher: null,
+    updatedAt: serverTimestamp(),
+  });
+
+  try {
+    const liqQuery = query(
+      collection(db, LIQUIDATIONS_COLLECTION),
+      where('eventId', '==', eventId)
+    );
+    const liqSnap = await getDocs(liqQuery);
+    const activeLiqs = liqSnap.docs.filter(
+      (d) => !d.data().isDeleted && d.data().status !== 'voided'
+    );
+    if (activeLiqs.length > 0) {
+      await updateDoc(doc(db, LIQUIDATIONS_COLLECTION, activeLiqs[0].id), {
+        disbursementVoucher: null,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.warn('[removeEventDisbursementVoucher] Sync to liquidation notice:', err);
+  }
+}

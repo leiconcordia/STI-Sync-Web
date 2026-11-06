@@ -26,6 +26,7 @@ import {
   isSignatoryApplicableTo,
 } from '../../signatories/types/signatory.types';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
+import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
@@ -146,6 +147,8 @@ export async function generateDefaultLiquidationChain(
       const isPermanent = Boolean(tpl.isPermanent);
       const isMandatory = Boolean(tpl.isMandatory || isPermanent);
 
+      const resolvedLabel = (tpl as any).signatoryLabel || matched?.defaultSignatoryLabel || resolveSignatoryLabel({ role: resolvedRole, roleTitle: resolvedRoleTitle, actionType: tpl.actionType } as any, 'liquidation', idx === templates.length - 1);
+
       chain.push({
         id: tpl.id || `step_${idx + 1}`,
         step: idx + 1,
@@ -154,6 +157,7 @@ export async function generateDefaultLiquidationChain(
         role: resolvedRole,
         roleTitle: resolvedRoleTitle,
         actionType: tpl.actionType || 'endorse',
+        signatoryLabel: resolvedLabel,
         signatoryUid: resolvedUid,
         signatoryName: resolvedName,
         signatoryEmail: resolvedEmail,
@@ -311,7 +315,6 @@ export async function generateDefaultLiquidationChain(
   stageGroups.forEach((group, gIdx) => {
     const stageIndex = gIdx + 1;
     group.signers.forEach((sig, sIdx) => {
-      const isPermanent = Boolean(sig.isPermanentSigner);
       let actionType: 'check' | 'endorse' | 'approve' = group.defaultAction;
       if (sig.actionType === 'approver' || sig.role === 'school_president') {
         actionType = 'approve';
@@ -323,6 +326,8 @@ export async function generateDefaultLiquidationChain(
         actionType = 'check';
       }
 
+      const resolvedLabel = sig.defaultSignatoryLabel || resolveSignatoryLabel({ role: sig.role, roleTitle: sig.roleTitle, actionType } as any, 'liquidation', gIdx === stageGroups.length - 1);
+
       steps.push({
         id: `liq_step_${stageIndex}_${sIdx + 1}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
         step: globalStepIndex++,
@@ -331,13 +336,14 @@ export async function generateDefaultLiquidationChain(
         role: sig.role || '',
         roleTitle: sig.roleTitle || 'Institutional Signatory',
         actionType,
+        signatoryLabel: resolvedLabel,
         signatoryUid: sig.id,
         signatoryName: sig.name,
         signatoryEmail: sig.email,
         department: sig.department || '',
         status: stageIndex === 1 ? 'current' : 'waiting',
-        isMandatory: isPermanent,
-        isPermanent: isPermanent,
+        isMandatory: false,
+        isPermanent: false,
       });
     });
   });
@@ -1009,8 +1015,11 @@ export async function endorseLiquidationStep(
     role?: string;
     actionType?: 'check' | 'endorse' | 'approve' | 'note';
     signatureUrl?: string;
+    canApproveLiquidation?: boolean;
+    approvalDecision?: 'approve' | 'forward';
   },
-  remarks = ''
+  remarks = '',
+  approvalDecision?: 'approve' | 'forward'
 ): Promise<{ success: boolean; nextStepIndex: number; isFullyApproved: boolean; stageAdvanced?: boolean }> {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
   const snap = await getDoc(docRef);
@@ -1047,21 +1056,29 @@ export async function endorseLiquidationStep(
   const targetStep = chain[targetStepIdx];
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
+  const canApprove = canSignatoryApproveDocument(signatory as any, 'liquidation', targetStep);
+  const decision = approvalDecision || signatory.approvalDecision;
+
   const isExecutiveApprover =
     isPresident ||
     isSchoolAdmin ||
+    canApprove ||
     targetStep.actionType === 'approve' ||
     signatory.actionType === 'approve';
 
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (isPresident) {
+  if (decision === 'approve') {
     newStatus = 'approved';
-  } else if (signatory.actionType === 'approve') {
-    newStatus = 'approved';
-  } else if (signatory.actionType === 'endorse') {
+  } else if (decision === 'forward') {
     newStatus = 'endorsed';
-  } else if (targetStep.actionType === 'approve') {
-    newStatus = 'approved';
+  } else if (canApprove) {
+    if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
+      newStatus = 'approved';
+    } else {
+      newStatus = 'endorsed';
+    }
+  } else {
+    newStatus = 'endorsed';
   }
 
   const effectiveSigUrl = signatory.signatureUrl || targetStep.signatureUrl || '';

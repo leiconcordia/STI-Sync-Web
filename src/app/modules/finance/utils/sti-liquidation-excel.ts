@@ -2,6 +2,7 @@ import * as _XLSX from 'xlsx-js-style';
 const XLSX = (_XLSX as any).default || _XLSX;
 import type { LiquidationDocument } from '../types/liquidation.types';
 import { formatAppDate, parseDateSafe } from '../../../utils/date';
+import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 
 export interface StiSignatory {
   id: string;
@@ -163,40 +164,7 @@ function resolveOfficialSignatories(
 
   const officerName = options.officerName || report.submittedByName || report.createdByName || '';
   const dateSubmitted = options.dateSubmitted || formatAppDate(report.submittedAt || report.createdAt, '');
-
   const chain = report.approvalChain || [];
-
-  const findSigner = (predicate: (s: any) => boolean) => {
-    return chain.find(predicate);
-  };
-
-  const accountantStep = findSigner(
-    (s) =>
-      s.role === 'accountant' ||
-      s.roleTitle?.toLowerCase().includes('accountant') ||
-      s.actionType === 'check'
-  );
-
-  const supervisorStep = findSigner(
-    (s) =>
-      s.role === 'adviser' ||
-      s.role === 'sas_head' ||
-      s.roleTitle?.toLowerCase().includes('adviser') ||
-      s.roleTitle?.toLowerCase().includes('supervisor')
-  );
-
-  const adminStep = findSigner(
-    (s) =>
-      s.role === 'school_administrator' ||
-      s.roleTitle?.toLowerCase().includes('administrator') ||
-      s.roleTitle?.toLowerCase().includes('principal')
-  );
-
-  const presidentStep = findSigner(
-    (s) =>
-      s.role === 'school_president' ||
-      s.roleTitle?.toLowerCase().includes('president')
-  );
 
   const formatSignerDate = (step?: any) => {
     if (!step) return '';
@@ -204,7 +172,7 @@ function resolveOfficialSignatories(
     return rawDate ? formatAppDate(rawDate, '') : '';
   };
 
-  return [
+  const signatoriesList: StiSignatory[] = [
     {
       id: 'sig_submitted',
       type: 'Submitted By:',
@@ -212,42 +180,23 @@ function resolveOfficialSignatories(
       role: '(Name of Employee / Treasurer)',
       date: dateSubmitted,
     },
-    {
-      id: 'sig_checked',
-      type: 'Checked By:',
-      name: accountantStep?.signatoryName || 'Emily L. Rojas',
-      role: '(Accountant)',
-      date: formatSignerDate(accountantStep),
-    },
-    {
-      id: 'sig_indorsed',
-      type: 'Indorsed By:',
-      name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-      role: '(Supervisor)',
-      date: formatSignerDate(supervisorStep),
-    },
-    {
-      id: 'sig_recommending',
-      type: 'Recommending Approval:',
-      name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-      role: '(Supervisor)',
-      date: formatSignerDate(supervisorStep),
-    },
-    {
-      id: 'sig_approved',
-      type: 'Approved By:',
-      name: adminStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-      role: '(Administrator)',
-      date: formatSignerDate(adminStep),
-    },
-    {
-      id: 'sig_noted',
-      type: 'Noted By:',
-      name: presidentStep?.signatoryName || 'ATTY. ANTONIO R. LUCERO JR.',
-      role: '(President)',
-      date: formatSignerDate(presidentStep),
-    },
   ];
+
+  if (chain.length > 0) {
+    chain.forEach((step, idx) => {
+      const isLast = idx === chain.length - 1;
+      const formalLabel = step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', isLast);
+      signatoriesList.push({
+        id: step.id || `sig_step_${idx + 1}`,
+        type: formalLabel,
+        name: step.signatoryName || '',
+        role: step.roleTitle ? `(${step.roleTitle})` : '',
+        date: formatSignerDate(step),
+      });
+    });
+  }
+
+  return signatoriesList;
 }
 
 /**
