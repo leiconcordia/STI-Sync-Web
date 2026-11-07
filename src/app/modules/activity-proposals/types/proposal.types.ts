@@ -15,10 +15,24 @@ export type ProposalStatus =
   | 'approved_president'
   | 'activated';
 
+export type ActivityFundingSource = 'organization_funds' | 'school_budget' | 'zero_budget';
+
+export interface ProposalHistoricalReference {
+  eventId: string;
+  eventTitle: string;
+  schoolYear?: string;
+  originalTotalAmount: number;
+  isManuallyEdited: boolean;
+  isLocked: boolean;
+  linkedAt?: any;
+}
+
 export interface FinancialLineItem {
   id: string;
   description: string;
   lastYearActual: number;
+  originalLastYearActual?: number;
+  isHistoricalEdited?: boolean;
   thisYearProposed: number;
   totalAmount: number;
   adjustment: number;
@@ -169,8 +183,12 @@ export interface ActivityProposal extends SoftDeletable, Archivable {
   // 13. Task list
   tasks: ProposalTask[];
 
-  // 14. Financial projections (6-column STI format)
+  // 14. Financial projections (6-column STI format) & Funding Source
   financialProjections: FinancialProjections;
+  fundingSource?: ActivityFundingSource;
+  fundingSourceNote?: string;
+  organizationLedgerBalanceAtSubmission?: number;
+  historicalReference?: ProposalHistoricalReference | null;
 
 
   // 7. Approval Chain & Workflow

@@ -24,6 +24,7 @@ import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { formatAppDate, format12HourTime } from '../../utils/date';
+import ActivityCalendar from '../../modules/events/components/ActivityCalendar';
 
 const getTimestampMs = (val: any): number => {
   if (!val) return 0;
@@ -453,71 +454,17 @@ export default function OfficerDashboardPage() {
 
       {/* Two-column section */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Approved Activities Schedule (Approved activities cleared for execution) */}
-        <div className="lg:col-span-7 bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden shadow-xs flex flex-col justify-between">
-          <div>
-            <div className="p-5 border-b border-[#E0E0E0] flex items-center justify-between">
-              <div>
-                <h3 className="text-[#001A4D] text-[16px] font-bold">Approved Activities Schedule</h3>
-                <p className="text-xs text-gray-400 mt-0.5">Approved activities cleared for execution this term</p>
-              </div>
-              <Link to="/officer/events" className="text-[#0E4EBD] text-[13px] font-bold hover:underline flex items-center gap-1">
-                View All Activities <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
-            <div className="p-5 space-y-4">
-              {eventsLoading ? (
-                <div className="text-center text-gray-400 py-6 text-xs">Loading activities...</div>
-              ) : approvedActivitiesList.length === 0 ? (
-                <div className="text-center text-gray-500 py-8 text-sm">
-                  No approved activities currently scheduled. Submit an activity proposal in Activity Management for review and approval.
-                </div>
-              ) : (
-                approvedActivitiesList.slice(0, 5).map((activity) => {
-                  const firstSession = activity.sessions && activity.sessions[0];
-                  const dateStr = firstSession ? formatAppDate(firstSession.date, 'TBD') : (activity as any).targetImplementationDate || 'TBD';
-                  const timeStr = firstSession && firstSession.startTime ? `${format12HourTime(firstSession.startTime)}${firstSession.endTime ? ` – ${format12HourTime(firstSession.endTime)}` : ''}` : '';
-                  const taskCount = Array.isArray(activity.tasks) ? activity.tasks.length : 0;
-                  const hostAcronym =
-                    activity.hostingOrgId === 'sas' || (activity as any).isSas || !activity.hostingOrgId
-                      ? 'STI SAS'
-                      : (activeOrg?.acronym || 'STI SAS');
-
-                  return (
-                    <div key={activity.id} className="flex items-start gap-3 pb-4 border-b border-gray-100 last:border-0 last:pb-0">
-                      <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full mt-2 flex-shrink-0" />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1 flex-wrap">
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#001A4D] text-[#FFD41C] uppercase tracking-wider">
-                            {hostAcronym}
-                          </span>
-                          <h4 className="text-[#001A4D] text-[14px] font-bold">{activity.title}</h4>
-                          {taskCount > 0 && (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-600">
-                              {taskCount} {taskCount === 1 ? 'Task' : 'Tasks'}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-3 text-gray-500 text-[12px]">
-                          <div className="flex items-center gap-1">
-                            <Clock className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                            <span>{dateStr} {timeStr ? `· ${timeStr}` : ''}</span>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            <MapPin className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                            <span>{activity.customVenueName || firstSession?.venueName || 'On-Campus'}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-full text-[11px] font-bold flex-shrink-0">
-                        Approved
-                      </span>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+        {/* Calendar of Activities Section (Filtered to active organization) */}
+        <div className="lg:col-span-7">
+          <ActivityCalendar
+            activities={approvedActivitiesList}
+            title="Calendar of Activities"
+            subtitle="Approved activities scheduled for your organization by implementation date"
+            viewAllLink="/officer/events"
+            isOfficer={true}
+            activeOrgAcronym={activeOrg?.acronym || 'ORG'}
+            layoutMode="stacked"
+          />
         </div>
 
         {/* Pending Action Items (5 rows, FIFO created date) */}

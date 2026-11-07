@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, KeyboardEvent } from 'react';
-import { Lock, Upload, Tag, X, Check, Plus, Edit2, Sparkles, AlertCircle, Clock } from 'lucide-react';
+import { Lock, Upload, Tag, X, Check, Plus, Edit2, Sparkles, AlertCircle, Clock, History } from 'lucide-react';
 import { toast } from 'sonner';
 import { useOrganizationStream } from '../../../organizations';
 import { useOrgOfficers } from '../../../organizations/hooks/useOrgOfficers';
 import { useRoles } from '../../../roles/hooks/useRoles';
 import { useEventTypesStream } from '../../hooks/useEventConfigStream';
+import { useAllEvents } from '../../hooks/useEventStream';
+import { filterHistoricalMatches, type HistoricalActivityMatch } from '../../../activity-proposals/services/historical-budget.service';
 import { createEventType } from '../../services/event-config.service';
 import type { EventFormData } from '../../types/event.types';
 import { useOfficerProfile } from '../../../../auth/hooks/useOfficerProfile';
@@ -31,6 +33,14 @@ export default function Step1EventDetails({ data, onUpdate, isOfficer, errors = 
   const { data: roles = [] } = useRoles();
   const effectiveOrgId = data.hostingOrgId || officerProfile?.activeOrganizationId || '';
   const { officers = [] } = useOrgOfficers(effectiveOrgId);
+  const { events: allEvents = [] } = useAllEvents();
+  const [dismissedSuggestions, setDismissedSuggestions] = useState(false);
+
+  const titleMatches: HistoricalActivityMatch[] = useMemo(() => {
+    const raw = data.title?.trim() || '';
+    if (raw.length < 2) return [];
+    return filterHistoricalMatches(allEvents, raw, data.id, 4);
+  }, [allEvents, data.title, data.id]);
 
   // Custom Event Type Modal State
   const [showCustomTypeModal, setShowCustomTypeModal] = useState(false);
@@ -373,7 +383,10 @@ export default function Step1EventDetails({ data, onUpdate, isOfficer, errors = 
                 type="text"
                 placeholder="Enter event title..."
                 value={data.title || ''}
-                onChange={(e) => updateField('title', e.target.value)}
+                onChange={(e) => {
+                  if (dismissedSuggestions) setDismissedSuggestions(false);
+                  updateField('title', e.target.value);
+                }}
                 className={`w-full px-4 py-2.5 border rounded-lg focus:ring-2 focus:border-transparent transition-colors ${errors.title
                     ? 'border-red-500 ring-2 ring-red-200 focus:ring-red-500'
                     : `border-gray-300 ${accentFocusRing}`
@@ -384,6 +397,51 @@ export default function Step1EventDetails({ data, onUpdate, isOfficer, errors = 
                   <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>{errors.title}</span>
                 </p>
+              )}
+
+              {/* Similar Past Activity Suggestions */}
+              {titleMatches.length > 0 && !dismissedSuggestions && (
+                <div className="mt-2 p-3 bg-blue-50/80 border border-blue-200/90 rounded-xl space-y-2 text-xs shadow-2xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-[#001A4D]">
+                      <History className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      <span>Found {titleMatches.length} Similar Past {titleMatches.length === 1 ? 'Event' : 'Events'}:</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDismissedSuggestions(true)}
+                      className="text-gray-400 hover:text-gray-600 p-0.5 rounded cursor-pointer"
+                      title="Dismiss suggestions"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {titleMatches.map((m) => (
+                      <div
+                        key={m.id}
+                        className="p-2 bg-white border border-blue-100 rounded-lg flex items-center justify-between gap-2 shadow-2xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="font-bold text-gray-900 truncate block">{m.title}</span>
+                          <span className="text-[10px] text-gray-500">
+                            {m.schoolYear ? `SY ${m.schoolYear} • ` : ''}Past Budget: ₱{(m.totalApprovedBudget || 0).toLocaleString()}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateField('title', m.title);
+                            toast.success(`Title adopted: "${m.title}"`);
+                          }}
+                          className="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] font-bold text-[11px] rounded transition-colors shrink-0 cursor-pointer"
+                        >
+                          Use Title
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
 

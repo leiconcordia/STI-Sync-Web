@@ -1374,12 +1374,15 @@ async function postLiquidationToLedger(
   const semesterId = data?.semesterId || null;
   const eventId = data?.eventId || null;
 
-  const isClubLiquidation = Boolean(
-    data?.organizationId &&
-    data.organizationId !== 'sas' &&
-    data.organizationId !== 'sas_admin' &&
-    data.createdByRole !== 'admin'
-  );
+  const isClubLiquidation =
+    data?.fundingSource === 'organization_funds' ||
+    (!data?.fundingSource &&
+      Boolean(
+        data?.organizationId &&
+        data.organizationId !== 'sas' &&
+        data.organizationId !== 'sas_admin' &&
+        data.createdByRole !== 'admin'
+      ));
 
   const description = isSurplus
     ? `Liquidation Surplus Returned – ${eventTitle}`

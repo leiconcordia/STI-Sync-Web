@@ -1205,6 +1205,21 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Funding Source Badge */}
+          {((fullProposal?.fundingSource || (event as any).fundingSource) === 'organization_funds') ? (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-purple-900/80 text-purple-200 border border-purple-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>💼 Club Treasury</span>
+            </div>
+          ) : ((fullProposal?.fundingSource || (event as any).fundingSource) === 'zero_budget') ? (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/80 text-emerald-200 border border-emerald-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>📄 ₱0 Budget</span>
+            </div>
+          ) : (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-blue-900/80 text-blue-200 border border-blue-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>🏛️ School Budget</span>
+            </div>
+          )}
+
           {/* Status Badge */}
           <div className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${currentStatus.bg}`}>
             <StatusIcon className="w-3.5 h-3.5" />
@@ -2436,6 +2451,48 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             />
 
             <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-xs space-y-6 p-5">
+              {/* Historical Reference Reviewer Banner */}
+              {(() => {
+                const histRef = fullProposal?.historicalReference || (event as any)?.historicalReference;
+                if (!histRef) return null;
+
+                const hasModifiedHistorical = Boolean(
+                  histRef.isManuallyEdited ||
+                  [...(financialProjections.revenues || []), ...(financialProjections.expenses || [])].some(
+                    (i: any) => i.isHistoricalEdited || (i.originalLastYearActual !== undefined && i.lastYearActual !== i.originalLastYearActual)
+                  )
+                );
+
+                if (hasModifiedHistorical) {
+                  return (
+                    <div className="p-3.5 bg-amber-50 border-2 border-amber-300 rounded-xl text-xs text-amber-950 flex items-start gap-2.5 shadow-2xs">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="leading-relaxed">
+                        <strong className="block font-bold text-amber-900">
+                          ⚠️ Reviewer Notice — Historical Budget Manually Adjusted:
+                        </strong>
+                        The proposer referenced previous activity{' '}
+                        <strong>"{histRef.eventTitle}"</strong> ({histRef.schoolYear ? `SY ${histRef.schoolYear} • ` : ''}Original Past Budget: {formatPHP(histRef.originalTotalAmount)}), but one or more figures in <em>"Last Year's Actual"</em> were{' '}
+                        <strong>manually modified</strong>. Modified lines display the original recorded database baseline below.
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-950 flex items-start gap-2.5 shadow-2xs">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <strong className="block font-bold text-emerald-900">
+                        🔒 Verified Historical Baseline (Form AP-01 Comparative):
+                      </strong>
+                      The figures in <em>"Last Year's Actual"</em> are directly linked to the official past record of{' '}
+                      <strong>"{histRef.eventTitle}"</strong> ({histRef.schoolYear ? `SY ${histRef.schoolYear} • ` : ''}Total: {formatPHP(histRef.originalTotalAmount)}) and have <strong>not been modified</strong>.
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Revenues Table (if present) */}
               {financialProjections.revenues && financialProjections.revenues.length > 0 && (
                 <div>
@@ -2460,7 +2517,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           <tr key={rev.id || i} className="hover:bg-emerald-50/20">
                             <td className="px-3 py-2 text-gray-400 font-mono">{i + 1}</td>
                             <td className="px-3 py-2 font-medium text-gray-900">{rev.description}</td>
-                            <td className="px-3 py-2 text-right font-mono text-gray-500">{formatPHP(rev.lastYearActual || 0)}</td>
+                            <td className="px-3 py-2 text-right font-mono text-gray-500">
+                              {formatPHP(rev.lastYearActual || 0)}
+                              {rev.originalLastYearActual !== undefined && rev.lastYearActual !== rev.originalLastYearActual && (
+                                <span className="block text-[10px] text-amber-700 font-semibold" title={`Original recorded baseline was ${formatPHP(rev.originalLastYearActual)}`}>
+                                  (orig: {formatPHP(rev.originalLastYearActual)})
+                                </span>
+                              )}
+                            </td>
                             <td className="px-3 py-2 text-right font-mono text-gray-700">{formatPHP(rev.thisYearProposed || 0)}</td>
                             <td className="px-3 py-2 text-right font-mono font-bold text-emerald-700">{formatPHP(rev.totalAmount || 0)}</td>
                             <td className="px-3 py-2 text-gray-500">{rev.remarks || '—'}</td>
@@ -2502,7 +2566,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           <tr key={exp.id || i} className="hover:bg-blue-50/20">
                             <td className="px-3 py-2.5 text-blue-700 font-mono font-bold">{letter}.</td>
                             <td className="px-3 py-2.5 font-semibold text-gray-900">{exp.description}</td>
-                            <td className="px-3 py-2.5 text-right font-mono text-gray-500">{formatPHP(exp.lastYearActual || 0)}</td>
+                            <td className="px-3 py-2.5 text-right font-mono text-gray-500">
+                              {formatPHP(exp.lastYearActual || 0)}
+                              {exp.originalLastYearActual !== undefined && exp.lastYearActual !== exp.originalLastYearActual && (
+                                <span className="block text-[10px] text-amber-700 font-semibold" title={`Original recorded baseline was ${formatPHP(exp.originalLastYearActual)}`}>
+                                  (orig: {formatPHP(exp.originalLastYearActual)})
+                                </span>
+                              )}
+                            </td>
                             <td className="px-3 py-2.5 text-right font-mono text-gray-700">{formatPHP(exp.thisYearProposed || 0)}</td>
                             <td className="px-3 py-2.5 text-right font-mono font-bold text-[#001A4D]">{formatPHP(exp.totalAmount || 0)}</td>
                             <td className="px-3 py-2.5 text-gray-500">{exp.remarks || '—'}</td>

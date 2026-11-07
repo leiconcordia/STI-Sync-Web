@@ -58,11 +58,12 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
   const { data: orgLedgerData, loading: orgLedgerLoading } = useOrgLedger(data.hostingOrgId || null);
   const { data: saoLedgerData, loading: saoLedgerLoading } = useSaoLedger();
 
-  const isClubEvent = isOfficer || (Boolean(data.hostingOrgId) && data.hostingOrgId !== 'sas');
-  const ledger = isClubEvent ? orgLedgerData : saoLedgerData;
-  const ledgerLoading = isClubEvent ? orgLedgerLoading : saoLedgerLoading;
+  const isClubEvent = (data.fundingSource === 'organization_funds') || (!data.fundingSource && (isOfficer || (Boolean(data.hostingOrgId) && data.hostingOrgId !== 'sas')));
+  const ledger = (data.fundingSource === 'school_budget') ? saoLedgerData : (isClubEvent ? orgLedgerData : saoLedgerData);
+  const ledgerLoading = (data.fundingSource === 'school_budget') ? saoLedgerLoading : (isClubEvent ? orgLedgerLoading : saoLedgerLoading);
 
   const availableTreasuryBalance = useMemo(() => {
+    if (data.fundingSource === 'zero_budget') return 0;
     const totalIncome = ledger
       .filter((t) => String(t.type || '').toLowerCase() === 'income')
       .reduce((s, t) => s + (Number(t.amount) || 0), 0);
@@ -70,7 +71,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
       .filter((t) => String(t.type || '').toLowerCase() === 'expense')
       .reduce((s, t) => s + (Number(t.amount) || 0), 0);
     return Math.max(0, totalIncome - totalExpenses);
-  }, [ledger]);
+  }, [ledger, data.fundingSource]);
 
   // Sync available balance to formData for validation
   useEffect(() => {
@@ -198,7 +199,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
               </div>
               <div>
                 <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                  {isClubEvent ? 'Organization Treasury' : 'SAS Fund Balance'}
+                  {isClubEvent ? 'Organization Treasury' : 'School Budget Balance'}
                 </div>
                 <div className="text-xl font-black text-gray-900">
                   {ledgerLoading ? 'Loading...' : formatCurrency(availableTreasuryBalance)}

@@ -17,9 +17,18 @@ import {
   Sparkles,
   Wand2,
   PenTool,
+  History,
+  Check,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useOrganizationStream } from '../../../../modules/organizations/hooks/useOrganizationStream';
+import { useAllEvents } from '../../../events/hooks/useEventStream';
+import {
+  filterHistoricalMatches,
+  mapHistoricalLineItems,
+  type HistoricalActivityMatch,
+} from '../../services/historical-budget.service';
 import type { ProposalFormData } from '../../types/proposal.types';
 import {
   AIAssistButton,
@@ -51,6 +60,20 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
   const [isAILoading, setIsAILoading] = useState(false);
   const [aiTargetField, setAiTargetField] = useState<'title' | 'description'>('title');
   const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
+
+  const { events: allEvents = [] } = useAllEvents();
+  const [dismissedSuggestions, setDismissedSuggestions] = useState(false);
+
+  const titleMatches: HistoricalActivityMatch[] = useMemo(() => {
+    const raw = formData.title?.trim() || '';
+    if (raw.length < 2) return [];
+    return filterHistoricalMatches(allEvents, raw, formData.id, 5);
+  }, [allEvents, formData.title, formData.id]);
+
+  const handleTitleChange = (newTitle: string) => {
+    if (dismissedSuggestions) setDismissedSuggestions(false);
+    onChange({ title: newTitle });
+  };
 
   const orgSuggestions = useMemo(() => {
     const list: string[] = ['Student Affairs & Services (SAS)'];
@@ -324,18 +347,169 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             tooltip="Transform informal title (e.g. christmas party) into formal STI options"
           />
         </div>
-        <input
-          type="text"
-          value={formData.title || ''}
-          onChange={(e) => onChange({ title: e.target.value })}
-          placeholder="e.g. IT Expert Talk #1: Cybersecurity Awareness and Ethical Hacking"
-          className={`w-full px-4 py-2.5 bg-white border rounded-xl text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-all ${
-            errors.title
-              ? 'border-red-300 focus:ring-red-200 focus:border-red-500'
-              : 'border-gray-300 focus:ring-[#001A4D]/20 focus:border-[#001A4D]'
-          }`}
-        />
+        <div className="relative">
+          <input
+            type="text"
+            value={formData.title || ''}
+            onChange={(e) => handleTitleChange(e.target.value)}
+            placeholder="e.g. IT Expert Talk #1: Cybersecurity Awareness and Ethical Hacking"
+            className={`w-full px-4 py-2.5 bg-white border rounded-xl text-sm font-semibold text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-all ${
+              errors.title
+                ? 'border-red-300 focus:ring-red-200 focus:border-red-500'
+                : 'border-gray-300 focus:ring-[#001A4D]/20 focus:border-[#001A4D]'
+            }`}
+          />
+        </div>
         {errors.title && <p className="text-xs text-red-600 mt-1 font-medium">{errors.title}</p>}
+
+        {/* Real-time Past Activity Suggestions */}
+        {titleMatches.length > 0 && !dismissedSuggestions && (
+          <div className="mt-2.5 p-3 bg-blue-50/80 border border-blue-200/90 rounded-xl space-y-2.5 shadow-2xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-[#001A4D]">
+                <History className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>Found {titleMatches.length} Similar Past {titleMatches.length === 1 ? 'Activity' : 'Activities'}:</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-gray-500 hidden sm:inline">
+                  Click to adopt title or link budget baseline
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setDismissedSuggestions(true)}
+                  className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors cursor-pointer"
+                  title="Dismiss suggestions"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              {titleMatches.map((m) => {
+                const isLinked = formData.historicalReference?.eventId === m.id;
+                const formattedBudget = new Intl.NumberFormat('en-PH', {
+                  style: 'currency',
+                  currency: 'PHP',
+                  minimumFractionDigits: 2,
+                }).format(m.totalApprovedBudget || 0);
+
+                return (
+                  <div
+                    key={m.id}
+                    className={`p-2.5 rounded-lg border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition-colors ${
+                      isLinked
+                        ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                        : 'bg-white border-blue-100 hover:border-blue-300 text-gray-900 shadow-2xs'
+                    }`}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-gray-900 truncate">
+                          {m.title}
+                        </span>
+                        {m.schoolYear && (
+                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
+                            SY {m.schoolYear}
+                          </span>
+                        )}
+                        <span className="text-[11px] font-mono font-semibold text-emerald-700">
+                          Past Budget: {formattedBudget}
+                        </span>
+                      </div>
+                      {m.organizationName && (
+                        <p className="text-[10px] text-gray-500 mt-0.5">
+                          Organized by {m.organizationName}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onChange({ title: m.title });
+                          toast.success(`Title adopted: "${m.title}"`);
+                        }}
+                        className="px-2.5 py-1 text-[11px] font-semibold text-[#001A4D] bg-blue-100/70 hover:bg-blue-200/80 rounded-md transition-colors cursor-pointer"
+                        title="Use this exact past title"
+                      >
+                        Use Title
+                      </button>
+
+                      {isLinked ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 text-white text-[11px] font-bold rounded-md shadow-2xs">
+                          <Check className="w-3 h-3" />
+                          <span>Budget Linked</span>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const currentProjections = formData.financialProjections || {
+                              revenues: [],
+                              expenses: [],
+                              totalRevenue: 0,
+                              totalExpenses: 0,
+                              balance: 0,
+                            };
+                            const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
+                              m,
+                              currentProjections
+                            );
+                            onChange({
+                              financialProjections: recalculatedProjections,
+                              historicalReference: {
+                                eventId: m.id,
+                                eventTitle: m.title,
+                                schoolYear: m.schoolYear,
+                                originalTotalAmount: originalHistoricalTotal,
+                                isManuallyEdited: false,
+                                isLocked: true,
+                                linkedAt: new Date().toISOString(),
+                              },
+                            });
+                            toast.success(`Linked "${m.title}" budget to Step 6 Financials!`, {
+                              description: 'Historical figures will be auto-filled in the Last Year\'s Actual column.',
+                            });
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-bold bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-md transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"
+                          title="Auto-fill Last Year's Actual column in Step 6"
+                        >
+                          <History className="w-3 h-3" />
+                          <span>Link Budget</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Badge if historical reference is already linked */}
+        {formData.historicalReference && (
+          <div className="mt-2.5 px-3 py-2 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900 shadow-2xs">
+            <div className="flex items-center gap-2">
+              <Lock className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+              <span>
+                Linked Historical Budget: <strong>{formData.historicalReference.eventTitle}</strong>
+                {formData.historicalReference.schoolYear && ` (SY ${formData.historicalReference.schoolYear})`}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                onChange({ historicalReference: null });
+                toast.info('Historical reference unlinked.');
+              }}
+              className="text-[11px] font-bold text-emerald-800 hover:text-rose-600 transition-colors ml-2 cursor-pointer"
+            >
+              Unlink
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Section 2: Description */}

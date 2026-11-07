@@ -350,7 +350,7 @@ export default function Step7ReviewSubmit({
         {/* Document Body */}
         <div className="p-6 sm:p-8 space-y-6 text-slate-800">
           {/* Top Meta: Date, Proposed By, and Organizers */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 pb-6 border-b border-slate-100 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-4 pb-6 border-b border-slate-100 text-xs">
             <div>
               <span className="text-slate-400 block uppercase tracking-wider text-[10px] font-bold">
                 Date (Submission Date)
@@ -394,6 +394,26 @@ export default function Step7ReviewSubmit({
               <span className="font-semibold text-slate-800 text-sm mt-0.5 block">
                 {formData.estimatedAttendance || '—'}
               </span>
+            </div>
+            <div>
+              <span className="text-slate-400 block uppercase tracking-wider text-[10px] font-bold">
+                Funding Source
+              </span>
+              <div className="mt-1">
+                {formData.fundingSource === 'organization_funds' ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+                    💼 Club Treasury
+                  </span>
+                ) : formData.fundingSource === 'zero_budget' ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                    📄 Non-Monetary (₱0)
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                    🏛️ School Budget
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -712,6 +732,35 @@ export default function Step7ReviewSubmit({
                 </span>
               </div>
             </div>
+
+            {/* Historical Budget Reference Status Badge */}
+            {formData.historicalReference && (
+              <div
+                className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 ${
+                  formData.historicalReference.isManuallyEdited
+                    ? 'bg-amber-50 border-amber-300 text-amber-950'
+                    : 'bg-blue-50 border-blue-200 text-blue-950'
+                }`}
+              >
+                {formData.historicalReference.isManuallyEdited ? (
+                  <>
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Historical Baseline Reference (Manually Adjusted):</strong> Referenced from{' '}
+                      <em>"{formData.historicalReference.eventTitle}"</em> ({formData.historicalReference.schoolYear ? `SY ${formData.historicalReference.schoolYear} • ` : ''}Original Past Budget: {formatPHP(formData.historicalReference.originalTotalAmount)}), but one or more figures in Last Year's Actual were modified. Reviewers will see that adjustments were made.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>Historical Baseline Reference (Audit-Verified):</strong> "Last Year's Actual" figures are verified and locked to official past record{' '}
+                      <em>"{formData.historicalReference.eventTitle}"</em> ({formData.historicalReference.schoolYear ? `SY ${formData.historicalReference.schoolYear} • ` : ''}Past Total: {formatPHP(formData.historicalReference.originalTotalAmount)}) without modifications.
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 15. Signatories & Dynamic Multi-Stage Approval Flow */}
@@ -733,6 +782,7 @@ export default function Step7ReviewSubmit({
               creatorName={formData.createdByName}
               creatorEmail={formData.createdByEmail}
               creatorRole={formData.creatorRole}
+              fundingSource={formData.fundingSource}
             />
           </div>
         </div>

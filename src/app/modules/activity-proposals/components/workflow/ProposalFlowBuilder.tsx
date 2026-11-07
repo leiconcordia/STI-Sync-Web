@@ -33,7 +33,7 @@ import {
   X,
   Lock,
 } from 'lucide-react';
-import type { ProposalApprovalStep, ProposalTargetAudience } from '../../types/proposal.types';
+import type { ProposalApprovalStep, ProposalTargetAudience, ActivityFundingSource } from '../../types/proposal.types';
 import {
   type InstitutionalSignatory,
   type SignatoryActionType,
@@ -61,6 +61,7 @@ interface ProposalFlowBuilderProps {
   creatorName?: string;
   creatorEmail?: string;
   creatorRole?: string;
+  fundingSource?: ActivityFundingSource;
 }
 
 const INITIAL_STAGE_CONFIGS = [
@@ -75,6 +76,7 @@ export default function ProposalFlowBuilder({
   creatorName,
   creatorEmail,
   creatorRole,
+  fundingSource,
 }: ProposalFlowBuilderProps) {
   const isOfficerProposal = useMemo(() => {
     if (creatorRole === 'officer') return true;

@@ -66,6 +66,9 @@ export interface EventDocument extends SoftDeletable, Archivable {
   scannerUserIds: string[];                // denormalized officerUserIds for mobile query
 
   // ─── Budget ───
+  fundingSource?: 'organization_funds' | 'school_budget' | 'zero_budget';
+  fundingSourceNote?: string;
+  historicalReference?: any | null;
   budgetItems: BudgetLineItem[];
   totalApprovedBudget: number;
   budgetCustodians?: BudgetCustodianAllocation[];

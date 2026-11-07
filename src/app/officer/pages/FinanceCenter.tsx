@@ -278,7 +278,7 @@ function AddOrgIncomeModal({
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Description</label>
             <textarea
               rows={2}
-              placeholder="e.g. Initial club fund, Sponsorship, Club budget allocation, SAS Subsidy"
+              placeholder="e.g. Initial club fund, Sponsorship, Club budget allocation, School Budget Allocation"
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] resize-none"
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}

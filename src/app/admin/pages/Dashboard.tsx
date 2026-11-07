@@ -23,6 +23,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/ca
 import { Button } from "../../components/ui/button";
 import { Progress } from "../../components/ui/progress";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
+import ActivityCalendar from "../../modules/events/components/ActivityCalendar";
 
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
@@ -574,113 +575,15 @@ export function Dashboard() {
         </Card>
       </div>
 
-      {/* Approved Activities Schedule Section */}
-      <Card className="border-[#E0E0E0] shadow-sm rounded-2xl overflow-hidden bg-white">
-        <CardHeader className="border-b border-gray-100 py-4 px-6 flex flex-row items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center">
-              <CalendarDays className="w-5 h-5 text-[#0E4EBD]" />
-            </div>
-            <div>
-              <CardTitle className="text-[#001A4D] text-lg font-bold">Approved Activities Schedule</CardTitle>
-              <p className="text-xs text-gray-500 mt-0.5">
-                Official institutional (STI SAS) and organization activities approved for execution
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="px-3 py-1 bg-[#001A4D] text-white rounded-full text-xs font-mono font-bold">
-              {approvedActivities.length} Approved
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => navigate("/home/event-approvals?tab=approved")}
-              className="text-[#0E4EBD] hover:text-[#001A4D] font-bold text-xs flex items-center gap-1 cursor-pointer"
-            >
-              View All Activities <ArrowRight className="w-3.5 h-3.5" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="p-6">
-          {approvedActivities.length === 0 ? (
-            <div className="py-12 text-center text-gray-400 space-y-2">
-              <CalendarDays className="w-10 h-10 text-gray-300 mx-auto" />
-              <p className="font-semibold text-sm text-gray-600">No approved activities currently scheduled</p>
-              <p className="text-xs text-gray-400 max-w-md mx-auto">
-                Once activity proposals receive final clearance from the School President, their execution schedule will appear here.
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {approvedActivities.slice(0, 4).map((activity) => {
-                const hostInfo = orgMap.get(activity.hostingOrgId);
-                const firstSession = activity.sessions && activity.sessions[0];
-                const dateStr = firstSession?.date ? formatAppDate(firstSession.date, 'TBD') : (activity as any).targetImplementationDate || 'TBD';
-                const timeStr = firstSession?.startTime
-                  ? `${format12HourTime(firstSession.startTime)}${firstSession.endTime ? ` – ${format12HourTime(firstSession.endTime)}` : ''}`
-                  : '';
-                const venueStr = activity.customVenueName || firstSession?.venueName || 'On-Campus';
-                const audienceStr = (activity as any).estimatedAttendance || (activity as any).estAttendanceCount
-                  ? `${(activity as any).estAttendanceCount || (activity as any).estimatedAttendance} Participants`
-                  : 'Campus Community';
-
-                return (
-                  <div
-                    key={activity.id}
-                    className="p-4 rounded-xl border border-gray-200 hover:border-blue-300 hover:shadow-xs transition-all bg-gray-50/40 flex flex-col justify-between space-y-3"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#001A4D] text-[#FFD41C] uppercase tracking-wider">
-                            {hostInfo?.acronym || hostInfo?.name || "STI SAS"}
-                          </span>
-                          <span className="text-[11px] text-gray-400 font-mono">
-                            {(activity as any).referenceNo || (activity as any).referenceNumber || ''}
-                          </span>
-                        </div>
-                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                          Approved for Execution
-                        </span>
-                      </div>
-
-                      <h4 className="text-sm font-bold text-[#001A4D] line-clamp-1 mb-2">
-                        {activity.title}
-                      </h4>
-
-                      <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
-                        <div className="flex items-center gap-1.5 truncate">
-                          <Clock className="w-3.5 h-3.5 text-[#0E4EBD] flex-shrink-0" />
-                          <span className="truncate">{dateStr} {timeStr ? `· ${timeStr}` : ''}</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 truncate">
-                          <MapPin className="w-3.5 h-3.5 text-[#0E4EBD] flex-shrink-0" />
-                          <span className="truncate">{venueStr}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="pt-2 border-t border-gray-200/80 flex items-center justify-between">
-                      <span className="text-[11px] text-gray-500 font-medium">
-                        Target Audience: <strong className="text-gray-700">{audienceStr}</strong>
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => navigate(`/home/event-approvals?id=${activity.id}`)}
-                        className="text-[#0E4EBD] hover:text-[#001A4D] hover:bg-blue-50 text-xs font-bold h-7 px-2.5 cursor-pointer"
-                      >
-                        Inspect Activity
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* Calendar of Activities Section */}
+      <ActivityCalendar
+        activities={approvedActivities}
+        orgMap={orgMap}
+        title="Calendar of Activities"
+        subtitle="Official institutional (STI SAS) and organization activities approved for execution"
+        viewAllLink="/home/event-approvals?tab=approved"
+        layoutMode="auto"
+      />
 
       {/* 7-Step Activity Proposal (AP) Wizard Modal */}
       <CreateProposalModal

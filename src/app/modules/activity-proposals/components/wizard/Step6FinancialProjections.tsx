@@ -24,6 +24,7 @@ import {
   AlertCircle,
   CheckCircle2,
   ShieldCheck,
+  Lock,
 } from 'lucide-react';
 import type {
   ProposalFormData,
@@ -34,6 +35,12 @@ import {
   calculateFinancialTotals,
   formatPHP,
 } from '../../utils/proposal-calculations';
+import FundingSourceSelector from './FundingSourceSelector';
+import HistoricalBudgetPicker from './HistoricalBudgetPicker';
+import {
+  mapHistoricalLineItems,
+  type HistoricalActivityMatch,
+} from '../../services/historical-budget.service';
 
 interface Step6Props {
   formData: ProposalFormData;
@@ -43,7 +50,7 @@ interface Step6Props {
 
 const DEFAULT_REVENUE_PRESETS = [
   {
-    description: 'SAS Institutional Activity Subsidy / Budget',
+    description: 'School Budget Allocation',
     lastYearActual: 0,
     thisYearProposed: 5000,
     adjustment: 0,
@@ -90,6 +97,19 @@ const DEFAULT_EXPENSE_PRESETS = [
 ];
 
 export default function Step6FinancialProjections({ formData, onChange, errors = {} }: Step6Props) {
+  const isOfficerProposal = Boolean(
+    formData.isOfficerProposal ||
+    formData.creatorRole === 'officer' ||
+    formData.creatorRole === 'student_officer' ||
+    (formData.organizationId && formData.organizationId !== 'sas')
+  );
+
+  React.useEffect(() => {
+    if (!isOfficerProposal && formData.fundingSource !== 'school_budget') {
+      onChange({ fundingSource: 'school_budget' });
+    }
+  }, [isOfficerProposal, formData.fundingSource]);
+
   const currentProjections: FinancialProjections = formData.financialProjections || {
     revenues: [
       {
@@ -125,9 +145,21 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     val: any
   ) => {
     const list = [...currentProjections[type]];
+    const prevItem = list[index];
+    const isEditingHist = field === 'lastYearActual';
+    const numVal = isEditingHist ? (parseFloat(val) || 0) : val;
+
+    const isModifiedFromBaseline =
+      isEditingHist &&
+      prevItem.originalLastYearActual !== undefined &&
+      numVal !== prevItem.originalLastYearActual;
+
     list[index] = {
-      ...list[index],
-      [field]: val,
+      ...prevItem,
+      [field]: numVal,
+      ...(isEditingHist
+        ? { isHistoricalEdited: isModifiedFromBaseline }
+        : {}),
     };
 
     const recalculated = calculateFinancialTotals(
@@ -135,8 +167,81 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       type === 'expenses' ? list : currentProjections.expenses
     );
 
-    onChange({ financialProjections: recalculated });
+    const anyItemEdited = [...recalculated.revenues, ...recalculated.expenses].some(
+      (i) => i.isHistoricalEdited === true || (i.originalLastYearActual !== undefined && i.lastYearActual !== i.originalLastYearActual)
+    );
+
+    const updatedHistRef = formData.historicalReference
+      ? {
+          ...formData.historicalReference,
+          isManuallyEdited: anyItemEdited,
+        }
+      : formData.historicalReference;
+
+    onChange({
+      financialProjections: recalculated,
+      historicalReference: updatedHistRef,
+    });
   };
+
+  const handleSelectHistorical = (match: HistoricalActivityMatch) => {
+    const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
+      match,
+      currentProjections
+    );
+    onChange({
+      financialProjections: recalculatedProjections,
+      historicalReference: {
+        eventId: match.id,
+        eventTitle: match.title,
+        schoolYear: match.schoolYear,
+        originalTotalAmount: originalHistoricalTotal,
+        isManuallyEdited: false,
+        isLocked: true,
+        linkedAt: new Date().toISOString(),
+      },
+    });
+  };
+
+  const handleToggleHistoricalLock = (isLocked: boolean) => {
+    if (!formData.historicalReference) return;
+    onChange({
+      historicalReference: {
+        ...formData.historicalReference,
+        isLocked,
+      },
+    });
+  };
+
+  const handleClearHistoricalReference = () => {
+    const cleanRevs = currentProjections.revenues.map((r) => {
+      const { originalLastYearActual, isHistoricalEdited, ...rest } = r;
+      return rest as FinancialLineItem;
+    });
+    const cleanExps = currentProjections.expenses.map((e) => {
+      const { originalLastYearActual, isHistoricalEdited, ...rest } = e;
+      return rest as FinancialLineItem;
+    });
+    onChange({
+      financialProjections: {
+        ...currentProjections,
+        revenues: cleanRevs,
+        expenses: cleanExps,
+      },
+      historicalReference: null,
+    });
+  };
+
+  const isHistoricalLocked = Boolean(
+    formData.historicalReference && formData.historicalReference.isLocked !== false
+  );
+
+  const isManuallyEditedOverall = Boolean(
+    formData.historicalReference?.isManuallyEdited ||
+      [...currentProjections.revenues, ...currentProjections.expenses].some(
+        (i) => i.isHistoricalEdited || (i.originalLastYearActual !== undefined && i.lastYearActual !== i.originalLastYearActual)
+      )
+  );
 
   const handleAddLineItem = (type: 'revenues' | 'expenses') => {
     const newItem: FinancialLineItem = {
@@ -222,14 +327,95 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
         </div>
       </div>
 
-      {/* Pure SAS Proposal Policy Badge */}
-      <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl text-xs text-blue-800 flex items-center gap-2">
-        <ShieldCheck className="w-4 h-4 text-blue-600 flex-shrink-0" />
-        <span>
-          <strong>SAS Institutional Policy:</strong> Proposals reviewed by Student Affairs are educational and co-curricular.
-          They operate under school subsidy and do not charge commercial student admission fees.
-        </span>
-      </div>
+      {/* Funding Source Selector & Real-Time Treasury Status — Only for Student Clubs / Officers */}
+      {isOfficerProposal ? (
+        <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+          <FundingSourceSelector
+            value={formData.fundingSource || 'organization_funds'}
+            onChange={(source) => {
+              const updates: Partial<ProposalFormData> = { fundingSource: source };
+              if (source === 'zero_budget') {
+                const zeroed = calculateFinancialTotals(
+                  [
+                    {
+                      id: 'rev-zero',
+                      description: 'Non-Monetary Activity (₱0)',
+                      lastYearActual: 0,
+                      thisYearProposed: 0,
+                      totalAmount: 0,
+                      adjustment: 0,
+                      remarks: 'Non-monetary event',
+                    },
+                  ],
+                  [
+                    {
+                      id: 'exp-zero',
+                      description: 'Zero Budget Repertoire',
+                      lastYearActual: 0,
+                      thisYearProposed: 0,
+                      totalAmount: 0,
+                      adjustment: 0,
+                      remarks: 'No financial disbursement required',
+                    },
+                  ]
+                );
+                updates.financialProjections = zeroed;
+              } else if (source === 'organization_funds') {
+                const orgLabel = formData.organizationName ? `${formData.organizationName} Treasury` : 'Organization Treasury';
+                if (
+                  currentProjections.revenues.length > 0 &&
+                  (!currentProjections.revenues[0].description ||
+                    currentProjections.revenues[0].description.includes('Subsidy') ||
+                    currentProjections.revenues[0].description.includes('School Budget') ||
+                    currentProjections.revenues[0].description.includes('Non-Monetary'))
+                ) {
+                  const list = [...currentProjections.revenues];
+                  list[0] = { ...list[0], description: `${orgLabel} Ledger Funds` };
+                  updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
+                }
+              } else if (source === 'school_budget') {
+                if (
+                  currentProjections.revenues.length > 0 &&
+                  (!currentProjections.revenues[0].description ||
+                    currentProjections.revenues[0].description.includes('Treasury') ||
+                    currentProjections.revenues[0].description.includes('Non-Monetary'))
+                ) {
+                  const list = [...currentProjections.revenues];
+                  list[0] = { ...list[0], description: 'School Budget Allocation' };
+                  updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
+                }
+              }
+              onChange(updates);
+            }}
+            organizationId={formData.organizationId || (formData as any).hostingOrgId}
+            organizationName={formData.organizationName}
+            proposedBudget={currentProjections.totalExpenses}
+          />
+        </div>
+      ) : (
+        <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-2xl flex items-center justify-between text-xs text-blue-950 shadow-2xs">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
+            <span>
+              <strong>Budget Origin:</strong> School Budget Allocation (SAS Administrator Activity)
+            </span>
+          </div>
+          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md bg-blue-100 text-[#001A4D] border border-blue-200">
+            School Budget
+          </span>
+        </div>
+      )}
+
+      {/* Historical Budget Reference & Auto-Populate */}
+      <HistoricalBudgetPicker
+        currentTitle={formData.title}
+        excludeEventId={formData.id}
+        historicalReference={formData.historicalReference}
+        onSelectHistorical={handleSelectHistorical}
+        onToggleLock={handleToggleHistoricalLock}
+        onClearReference={handleClearHistoricalReference}
+        isManuallyEdited={isManuallyEditedOverall}
+      />
 
       {/* ── SECTION A: REVENUES ── */}
       <div className="space-y-3">
@@ -274,25 +460,48 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                       onChange={(e) =>
                         handleUpdateLineItem('revenues', idx, 'description', e.target.value)
                       }
-                      placeholder="e.g. Institutional Subsidy"
+                      placeholder="e.g. School Budget Allocation"
                       className="w-full px-2.5 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 font-medium"
                     />
                   </td>
                   <td className="p-2.5">
-                    <input
-                      type="number"
-                      min="0"
-                      value={item.lastYearActual || 0}
-                      onChange={(e) =>
-                        handleUpdateLineItem(
-                          'revenues',
-                          idx,
-                          'lastYearActual',
-                          parseFloat(e.target.value) || 0
-                        )
-                      }
-                      className="w-full px-2 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs text-right"
-                    />
+                    {isHistoricalLocked ? (
+                      <div className="relative">
+                        <input
+                          type="number"
+                          value={item.lastYearActual || 0}
+                          readOnly
+                          disabled
+                          className="w-full pl-6 pr-2 py-1.5 bg-gray-100 border border-gray-200 rounded-lg text-xs text-right text-gray-700 cursor-not-allowed select-none font-mono font-medium"
+                          title="Locked to historical baseline. Click 'Unlock to Edit' in the reference card above to modify."
+                        />
+                        <Lock className="w-3 h-3 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
+                    ) : (
+                      <input
+                        type="number"
+                        min="0"
+                        value={item.lastYearActual || 0}
+                        onChange={(e) =>
+                          handleUpdateLineItem(
+                            'revenues',
+                            idx,
+                            'lastYearActual',
+                            parseFloat(e.target.value) || 0
+                          )
+                        }
+                        className={`w-full px-2 py-1.5 border rounded-lg text-xs text-right ${
+                          item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
+                            ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
+                            : 'bg-slate-50/60 border-slate-200'
+                        }`}
+                        title={
+                          item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
+                            ? `Manually adjusted from original baseline (${item.originalLastYearActual})`
+                            : undefined
+                        }
+                      />
+                    )}
                   </td>
                   <td className="p-2.5">
                     <input
@@ -421,20 +630,43 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                     />
                   </td>
                   <td className="p-2.5">
-                    <input
-                      type="number"
-                      min="0"
-                      value={item.lastYearActual || 0}
-                      onChange={(e) =>
-                        handleUpdateLineItem(
-                          'expenses',
-                          idx,
-                          'lastYearActual',
-                          parseFloat(e.target.value) || 0
-                        )
-                      }
-                      className="w-full px-2 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs text-right"
-                    />
+                    {isHistoricalLocked ? (
+                      <div className="relative">
+                        <input
+                          type="number"
+                          value={item.lastYearActual || 0}
+                          readOnly
+                          disabled
+                          className="w-full pl-6 pr-2 py-1.5 bg-gray-100 border border-gray-200 rounded-lg text-xs text-right text-gray-700 cursor-not-allowed select-none font-mono font-medium"
+                          title="Locked to historical baseline. Click 'Unlock to Edit' in the reference card above to modify."
+                        />
+                        <Lock className="w-3 h-3 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
+                    ) : (
+                      <input
+                        type="number"
+                        min="0"
+                        value={item.lastYearActual || 0}
+                        onChange={(e) =>
+                          handleUpdateLineItem(
+                            'expenses',
+                            idx,
+                            'lastYearActual',
+                            parseFloat(e.target.value) || 0
+                          )
+                        }
+                        className={`w-full px-2 py-1.5 border rounded-lg text-xs text-right ${
+                          item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
+                            ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
+                            : 'bg-slate-50/60 border-slate-200'
+                        }`}
+                        title={
+                          item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
+                            ? `Manually adjusted from original baseline (${item.originalLastYearActual})`
+                            : undefined
+                        }
+                      />
+                    )}
                   </td>
                   <td className="p-2.5">
                     <input

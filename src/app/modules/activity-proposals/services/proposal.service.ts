@@ -29,6 +29,7 @@ import type {
 import {
   removeLedgerTransactionsForLiquidation,
   removeLedgerTransactionsForEvent,
+  deductApprovedEventBudget,
 } from '../../finance/services/finance.service';
 import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
@@ -195,6 +196,19 @@ export async function syncProposalToEventsCollection(
         marketingPlan: (proposal as any).marketingPlan || existingData.marketingPlan || [],
         documentationPlan: (proposal as any).documentationPlan || existingData.documentationPlan || [],
         financialProjections: (proposal as any).financialProjections || existingData.financialProjections || null,
+        fundingSource:
+          proposal.fundingSource ||
+          existingData.fundingSource ||
+          (isOfficerProposalVal ? 'organization_funds' : 'school_budget'),
+        fundingSourceNote: proposal.fundingSourceNote || existingData.fundingSourceNote || null,
+        organizationLedgerBalanceAtSubmission:
+          proposal.organizationLedgerBalanceAtSubmission ??
+          existingData.organizationLedgerBalanceAtSubmission ??
+          null,
+        historicalReference:
+          (proposal as any).historicalReference !== undefined
+            ? (proposal as any).historicalReference
+            : existingData.historicalReference || null,
         approvalChain: (proposal as any).approvalChain || existingData.approvalChain || [],
         currentStepIndex: (proposal as any).currentStepIndex ?? existingData.currentStepIndex ?? 0,
         currentStageIndex: (proposal as any).currentStageIndex ?? existingData.currentStageIndex ?? 1,
@@ -844,6 +858,17 @@ export async function endorseProposal(
       await autoArchiveApprovedEvent(proposalId, userUid || signatory.email, remarks);
     } catch (archErr) {
       console.warn('[endorseProposal] Auto-archive to EDMS notice:', archErr);
+    }
+
+    // Encumber club treasury ledger if club-funded
+    const effectiveFunding = (data as any).fundingSource || (data.isOfficerProposal ? 'organization_funds' : 'school_budget');
+    const totalExp = Number(data.financialProjections?.totalExpenses || (data as any).totalApprovedBudget || 0);
+    if (effectiveFunding === 'organization_funds' && totalExp > 0) {
+      try {
+        await deductApprovedEventBudget(proposalId, userUid || signatory.uid || 'system');
+      } catch (deductErr) {
+        console.warn('[endorseProposal] Club ledger encumbrance notice:', deductErr);
+      }
     }
   }
 
