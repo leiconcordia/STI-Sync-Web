@@ -46,6 +46,7 @@ import {
   isStepConfiguredPermanent,
   type DefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
+import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 
 interface LiquidationFlowBuilderProps {
   approvalChain: LiquidationApprovalStep[];
@@ -92,18 +93,10 @@ export default function LiquidationFlowBuilder({
     }
     return SIGNATORY_LABEL_OPTIONS;
   }, [activeLabels]);
-  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number; stageName: string }[]>(() => {
+  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number }[]>(() => {
     if (approvalChain && approvalChain.length > 0) {
-      const map = new Map<number, string>();
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx)) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      return Array.from(map.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([stageIndex, stageName]) => ({ stageIndex, stageName }));
+      const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
+      return Array.from({ length: maxIdx }, (_, i) => ({ stageIndex: i + 1 }));
     }
     return [];
   });
@@ -111,27 +104,12 @@ export default function LiquidationFlowBuilder({
   // Synchronize stage configs dynamically from approvalChain
   useEffect(() => {
     if (!approvalChain || approvalChain.length === 0) {
-      // If approvalChain is empty and no stages exist, keep clean
       return;
     }
+    const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
     setStageConfigs((prev) => {
-      const map = new Map<number, string>();
-      prev.forEach((p) => map.set(p.stageIndex, p.stageName));
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx) || (step.stageName && !prev.some((p) => p.stageIndex === idx))) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      const chainIndices = new Set(approvalChain.map((s) => s.stageIndex ?? 1));
-      const allIndices = new Set([...Array.from(chainIndices), ...prev.map((p) => p.stageIndex)]);
-      const sorted = Array.from(allIndices)
-        .sort((a, b) => a - b)
-        .map((stageIndex) => ({
-          stageIndex,
-          stageName: map.get(stageIndex) || `Stage ${stageIndex}`,
-        }));
-      return sorted;
+      const currentMax = Math.max(maxIdx, ...prev.map((p) => p.stageIndex));
+      return Array.from({ length: currentMax }, (_, i) => ({ stageIndex: i + 1 }));
     });
   }, [approvalChain]);
 
@@ -219,36 +197,38 @@ export default function LiquidationFlowBuilder({
     }
   }, [activeSignatories, approvalChain, pipelineKey, workflowSettings]);
 
-  // Group steps by stageIndex using stageConfigs or approvalChain
+  // Group steps by stageIndex using contiguous sequential indexing
   const stages = useMemo(() => {
+    const maxIndex = Math.max(
+      0,
+      ...stageConfigs.map((c) => c.stageIndex),
+      ...(approvalChain || []).map((s) => s.stageIndex ?? 1)
+    );
+
+    if (maxIndex === 0) return [];
+
     const stageMap: Record<number, LiquidationApprovalStep[]> = {};
-    approvalChain.forEach((step) => {
-      const sIdx = step.stageIndex ?? 1;
+    for (let i = 1; i <= maxIndex; i++) {
+      stageMap[i] = [];
+    }
+
+    (approvalChain || []).forEach((step) => {
+      const sIdx = Math.max(1, step.stageIndex ?? 1);
       if (!stageMap[sIdx]) stageMap[sIdx] = [];
       stageMap[sIdx].push(step);
     });
 
-    if (stageConfigs.length > 0) {
-      return stageConfigs.map((c) => ({
-        stageIndex: c.stageIndex,
-        stageName: c.stageName,
-        steps: stageMap[c.stageIndex] || [],
-      }));
-    }
-
-    const uniqueStageIndices = Array.from(new Set(approvalChain.map((s) => s.stageIndex ?? 1))).sort((a, b) => a - b);
-    if (uniqueStageIndices.length > 0) {
-      return uniqueStageIndices.map((idx) => {
-        const firstStep = approvalChain.find((s) => (s.stageIndex ?? 1) === idx);
-        return {
-          stageIndex: idx,
-          stageName: firstStep?.stageName || `Stage ${idx}`,
-          steps: stageMap[idx] || [],
-        };
+    const result = [];
+    for (let i = 1; i <= maxIndex; i++) {
+      const steps = stageMap[i] || [];
+      result.push({
+        stageIndex: i,
+        stageName: formatStageTitle(i, steps.length),
+        steps,
       });
     }
 
-    return [];
+    return result;
   }, [approvalChain, stageConfigs]);
 
   // Validation Checks
@@ -267,21 +247,21 @@ export default function LiquidationFlowBuilder({
     };
   }, [approvalChain, stages]);
 
-  // Renumber and rebuild steps helper while preserving stage definitions
+  // Renumber and rebuild steps helper while preserving contiguous stage definitions
   const reindexChain = (
-    updatedStages: { stageIndex: number; stageName: string; steps: LiquidationApprovalStep[] }[]
+    updatedStages: { stageIndex: number; stageName?: string; steps: LiquidationApprovalStep[] }[]
   ) => {
     let globalStep = 1;
     const flattened: LiquidationApprovalStep[] = [];
-    const newConfigs: { stageIndex: number; stageName: string }[] = [];
+    const newConfigs: { stageIndex: number }[] = [];
 
     updatedStages.forEach((stg, stgIdx) => {
       const newStageNumber = stgIdx + 1;
-      const stageName = stg.stageName || `Stage ${newStageNumber}: Review & Endorsement`;
+      const count = stg.steps.length;
+      const stageName = formatStageTitle(newStageNumber, count);
 
       newConfigs.push({
         stageIndex: newStageNumber,
-        stageName,
       });
 
       stg.steps.forEach((step) => {
@@ -308,19 +288,16 @@ export default function LiquidationFlowBuilder({
       activeSignatories,
       isSasCreator
     );
-    onChange(suggested);
+    onChange(normalizeApprovalStages(suggested));
   };
 
   // 2. Add New Empty Stage
   const handleAddStage = () => {
     const newStageNumber = stages.length + 1;
-    const defaultName = `Stage ${newStageNumber}: Review & Endorsement`;
-
     const newStages = [
       ...stages,
       {
         stageIndex: newStageNumber,
-        stageName: defaultName,
         steps: [],
       },
     ];
@@ -417,7 +394,7 @@ export default function LiquidationFlowBuilder({
       id: `liq_step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: approvalChain.length + 1,
       stageIndex,
-      stageName: stages.find((s) => s.stageIndex === stageIndex)?.stageName || `Stage ${stageIndex}`,
+      stageName: stages.find((s) => s.stageIndex === stageIndex)?.stageName || formatStageTitle(stageIndex, 1),
       role: signatory.role || '',
       roleTitle: signatory.roleTitle || 'Institutional Signatory',
       actionType,
@@ -457,7 +434,7 @@ export default function LiquidationFlowBuilder({
       ...step,
       step: globalStep++,
     }));
-    onChange(flattened);
+    onChange(normalizeApprovalStages(flattened));
   };
 
   // Update Signatory Formal Label
@@ -659,13 +636,9 @@ export default function LiquidationFlowBuilder({
                       </div>
                       <div className="flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <input
-                            type="text"
-                            value={stage.stageName}
-                            onChange={(e) => handleStageNameChange(stage.stageIndex, e.target.value)}
-                            placeholder={`Stage ${stage.stageIndex} Title...`}
-                            className="font-bold text-slate-800 text-sm bg-transparent hover:bg-slate-50 focus:bg-white px-2 py-0.5 rounded border border-transparent hover:border-slate-200 focus:border-blue-400 outline-none transition-all max-w-[340px]"
-                          />
+                          <h4 className="font-bold text-slate-800 text-sm">
+                            {formatStageTitle(stage.stageIndex, stage.steps.length)}
+                          </h4>
                           <span className="text-[11px] font-semibold text-slate-400">
                             ({stage.steps.length} {stage.steps.length === 1 ? 'Signer' : 'Signers'})
                           </span>

@@ -48,6 +48,7 @@ import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisio
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { diffFinancialLiquidation } from '../../modules/workflow/utils/document-diff-engine';
+import { formatStageTitle } from '../../modules/workflow/utils/stage-normalization.utils';
 import {
   buildLiquidationReturnSteps,
   type LiquidationDocument,
@@ -1182,7 +1183,7 @@ export default function LiquidationEndorsementModal({
                 <div className="space-y-0.5">
                   <h5 className="text-xs font-bold text-purple-950">Pipeline Preview Mode</h5>
                   <p className="text-[11px] text-purple-800 leading-relaxed">
-                    This liquidation is undergoing Stage {currentStage} audit review. You are scheduled to sign in <strong>Stage {myFutureStep.stageIndex}: {myFutureStep.stageName || myFutureStep.roleTitle}</strong>. You may inspect all expenses, receipts, and line items in advance.
+                    This liquidation is undergoing Stage {currentStage} audit review. You are scheduled to sign in <strong>{formatStageTitle(myFutureStep.stageIndex || 1, 1)} ({myFutureStep.roleTitle})</strong>. You may inspect all expenses, receipts, and line items in advance.
                   </p>
                 </div>
               </div>

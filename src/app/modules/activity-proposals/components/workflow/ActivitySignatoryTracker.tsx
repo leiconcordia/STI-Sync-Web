@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { ProposalApprovalStep } from '../../types/proposal.types';
 import { formatAppDateTime } from '../../../../utils/date';
+import { formatStageTitle } from '../../../workflow/utils/stage-normalization.utils';
 
 interface ActivitySignatoryTrackerProps {
   approvalChain?: ProposalApprovalStep[];
@@ -175,7 +176,7 @@ export default function ActivitySignatoryTracker({
                   </div>
                   <div>
                     <h5 className="text-xs font-bold text-slate-900">
-                      Stage {stageNumber}: {steps[0]?.stageName || (stageNumber === 1 ? 'Academic & Department Endorsements' : 'Executive Presidential Authorization')}
+                      {formatStageTitle(stageNumber, steps.length)}
                     </h5>
                   </div>
                 </div>

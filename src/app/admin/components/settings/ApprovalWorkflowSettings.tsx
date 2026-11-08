@@ -49,6 +49,7 @@ import {
   resetWorkflowPipeline,
   getBuiltinDefaultWorkflow,
 } from '../../../modules/workflow/services/approval-workflow.service';
+import { formatStageTitle, normalizeApprovalStages } from '../../../modules/workflow/utils/stage-normalization.utils';
 import {
   subscribeToSignatories,
 } from '../../../modules/signatories/services/signatory.service';
@@ -138,14 +139,18 @@ export default function ApprovalWorkflowSettings() {
       if (!map.has(idx)) {
         map.set(idx, {
           stageIndex: idx,
-          stageName: step.stageName || `Stage ${idx}`,
+          stageName: formatStageTitle(idx, 0),
           steps: [],
         });
       }
       map.get(idx)!.steps.push(step);
     });
 
-    return Array.from(map.values()).sort((a, b) => a.stageIndex - b.stageIndex);
+    const result = Array.from(map.values()).sort((a, b) => a.stageIndex - b.stageIndex);
+    return result.map((s) => ({
+      ...s,
+      stageName: formatStageTitle(s.stageIndex, s.steps.length),
+    }));
   }, [currentSteps]);
 
   // Validation: Check if there is an executive approver
@@ -161,7 +166,7 @@ export default function ApprovalWorkflowSettings() {
       id: `step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: currentSteps.length + 1,
       stageIndex: nextStageIdx,
-      stageName: `Stage ${nextStageIdx}: Review & Endorsement`,
+      stageName: formatStageTitle(nextStageIdx, 1),
       role: 'program_head',
       roleTitle: 'Department Head',
       actionType: 'endorse',
@@ -172,15 +177,6 @@ export default function ApprovalWorkflowSettings() {
     toast.info(`Added Stage ${nextStageIdx}`);
   };
 
-  const handleUpdateStageName = (stageIndex: number, newName: string) => {
-    const updated = currentSteps.map((step) => {
-      if (step.stageIndex === stageIndex) {
-        return { ...step, stageName: newName };
-      }
-      return step;
-    });
-    handleUpdateSteps(updated);
-  };
 
   const handleDeleteStage = (stageIndex: number) => {
     if (stages.length <= 1) {
@@ -188,23 +184,15 @@ export default function ApprovalWorkflowSettings() {
       return;
     }
     const filtered = currentSteps.filter((step) => step.stageIndex !== stageIndex);
-    // Renumber remaining stages consecutively
-    const uniqueRemaining = Array.from(new Set(filtered.map((s) => s.stageIndex))).sort((a, b) => a - b);
-    const renumbered = filtered.map((step) => {
-      const newStageIndex = uniqueRemaining.indexOf(step.stageIndex) + 1;
-      return {
-        ...step,
-        stageIndex: newStageIndex,
-        stageName: step.stageName.replace(/Stage \d+:/, `Stage ${newStageIndex}:`),
-      };
-    });
+    const renumbered = normalizeApprovalStages(filtered);
     handleUpdateSteps(renumbered);
     toast.success(`Stage removed.`);
   };
 
   const handleAddStepToStage = (stageIndex: number) => {
     const targetStage = stages.find((s) => s.stageIndex === stageIndex);
-    const stageName = targetStage?.stageName || `Stage ${stageIndex}`;
+    const stepCount = (targetStage?.steps.length || 0) + 1;
+    const stageName = formatStageTitle(stageIndex, stepCount);
 
     // Find next eligible signatory not yet used anywhere in this workflow
     const usedIds = new Set(
@@ -275,8 +263,8 @@ export default function ApprovalWorkflowSettings() {
       activeDoc === 'proposal'
         ? sig.canApproveProposal
         : activeDoc === 'liquidation'
-        ? sig.canApproveLiquidation
-        : sig.canApprovePar
+          ? sig.canApproveLiquidation
+          : sig.canApprovePar
     ) || sig.role === 'school_president' || sig.role === 'school_administrator';
 
     const validAction: 'endorse' | 'approve' = canApprove ? 'approve' : 'endorse';
@@ -343,10 +331,7 @@ export default function ApprovalWorkflowSettings() {
       {/* ── Studio Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-gray-200">
         <div>
-          <div className="flex items-center gap-2 text-xs font-bold text-[#0E4EBD] uppercase tracking-wider">
-            <GitBranch className="w-4 h-4 text-[#FFD41C]" />
-            Workflow Governance Studio
-          </div>
+
           <h2 className="text-xl font-bold text-[#001A4D] mt-0.5">
             Default Approval Workflows
           </h2>
@@ -397,26 +382,24 @@ export default function ApprovalWorkflowSettings() {
         <div className="flex border-b border-gray-200">
           <button
             onClick={() => setActiveGroup('adviser')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
-              activeGroup === 'adviser'
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${activeGroup === 'adviser'
                 ? 'border-[#001A4D] text-[#001A4D] bg-[#001A4D]/5'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
+              }`}
           >
             <Users className="w-4 h-4 text-[#0E4EBD]" />
-            Student Club & Adviser Pipelines
+            Student Organization Pipelines
           </button>
 
           <button
             onClick={() => setActiveGroup('admin')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${
-              activeGroup === 'admin'
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-bold border-b-2 transition-all ${activeGroup === 'admin'
                 ? 'border-[#001A4D] text-[#001A4D] bg-[#001A4D]/5'
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}
+              }`}
           >
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            Admin & SAS Institutional Pipelines
+            SAS Institutional Pipelines
           </button>
         </div>
 
@@ -424,11 +407,10 @@ export default function ApprovalWorkflowSettings() {
         <div className="flex items-center gap-2 pt-1">
           <button
             onClick={() => setActiveDoc('proposal')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              activeDoc === 'proposal'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${activeDoc === 'proposal'
                 ? 'bg-indigo-900 text-white shadow-xs'
                 : 'bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
-            }`}
+              }`}
           >
             <FileSignature className="w-3.5 h-3.5 text-[#FFD41C]" />
             Activity Proposals (AP)
@@ -436,11 +418,10 @@ export default function ApprovalWorkflowSettings() {
 
           <button
             onClick={() => setActiveDoc('liquidation')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              activeDoc === 'liquidation'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${activeDoc === 'liquidation'
                 ? 'bg-amber-900 text-white shadow-xs'
                 : 'bg-amber-50 text-amber-900 hover:bg-amber-100'
-            }`}
+              }`}
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-[#FFD41C]" />
             Financial Liquidations (FL)
@@ -448,11 +429,10 @@ export default function ApprovalWorkflowSettings() {
 
           <button
             onClick={() => setActiveDoc('par')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${
-              activeDoc === 'par'
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all ${activeDoc === 'par'
                 ? 'bg-purple-900 text-white shadow-xs'
                 : 'bg-purple-50 text-purple-800 hover:bg-purple-100'
-            }`}
+              }`}
           >
             <FileCheck2 className="w-3.5 h-3.5 text-[#FFD41C]" />
             Post-Activity Reports (PAR)
@@ -501,13 +481,9 @@ export default function ApprovalWorkflowSettings() {
                   <span className="w-7 h-7 rounded-xl bg-[#001A4D] text-[#FFD41C] text-xs font-bold flex items-center justify-center shadow-xs flex-shrink-0">
                     {stage.stageIndex}
                   </span>
-                  <input
-                    type="text"
-                    value={stage.stageName}
-                    onChange={(e) => handleUpdateStageName(stage.stageIndex, e.target.value)}
-                    placeholder={`Stage ${stage.stageIndex} Title`}
-                    className="font-bold text-sm text-[#001A4D] bg-white border border-gray-300 px-3 py-1 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none w-full max-w-md shadow-2xs"
-                  />
+                  <h4 className="font-bold text-sm text-[#001A4D]">
+                    {formatStageTitle(stage.stageIndex, stage.steps.length)}
+                  </h4>
                   <span className="text-[11px] text-gray-500 font-medium">
                     ({stage.steps.length} {stage.steps.length === 1 ? 'signer' : 'signers'})
                   </span>
@@ -550,8 +526,8 @@ export default function ApprovalWorkflowSettings() {
                         activeDoc === 'proposal'
                           ? selectedSig.canApproveProposal
                           : activeDoc === 'liquidation'
-                          ? selectedSig.canApproveLiquidation
-                          : selectedSig.canApprovePar
+                            ? selectedSig.canApproveLiquidation
+                            : selectedSig.canApprovePar
                       ) || selectedSig.role === 'school_president' || selectedSig.role === 'school_administrator' : false;
 
                       // Find other signatories already assigned in this pipeline so they are excluded from this step's dropdown
@@ -588,8 +564,8 @@ export default function ApprovalWorkflowSettings() {
                                       activeDoc === 'proposal'
                                         ? sig.canApproveProposal
                                         : activeDoc === 'liquidation'
-                                        ? sig.canApproveLiquidation
-                                        : sig.canApprovePar
+                                          ? sig.canApproveLiquidation
+                                          : sig.canApprovePar
                                     ) || sig.role === 'school_president' || sig.role === 'school_administrator';
                                     return (
                                       <option key={sig.id} value={sig.id}>
@@ -602,11 +578,10 @@ export default function ApprovalWorkflowSettings() {
                                 {/* Authority Capability Badge */}
                                 {selectedSig && (
                                   <span
-                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${
-                                      canSignerApprove
+                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${canSignerApprove
                                         ? 'bg-emerald-100 text-emerald-800'
                                         : 'bg-sky-100 text-sky-800'
-                                    }`}
+                                      }`}
                                   >
                                     <ShieldCheck className="w-3 h-3" />
                                     {canSignerApprove ? 'Approver' : 'Endorser Only'}
@@ -628,11 +603,10 @@ export default function ApprovalWorkflowSettings() {
                               <button
                                 type="button"
                                 onClick={() => handleUpdateStep(step.id, { actionType: 'endorse' })}
-                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer ${
-                                  step.actionType === 'endorse'
+                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all cursor-pointer ${step.actionType === 'endorse'
                                     ? 'bg-sky-700 text-white shadow-xs'
                                     : 'text-gray-600 hover:text-gray-900'
-                                }`}
+                                  }`}
                               >
                                 Endorse
                               </button>
@@ -641,13 +615,11 @@ export default function ApprovalWorkflowSettings() {
                                 type="button"
                                 disabled={!canSignerApprove}
                                 onClick={() => handleUpdateStep(step.id, { actionType: 'approve' })}
-                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all ${
-                                  !canSignerApprove ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
-                                } ${
-                                  step.actionType === 'approve'
+                                className={`px-2.5 py-1 rounded text-xs font-bold transition-all ${!canSignerApprove ? 'opacity-30 cursor-not-allowed' : 'cursor-pointer'
+                                  } ${step.actionType === 'approve'
                                     ? 'bg-emerald-700 text-white shadow-xs'
                                     : 'text-gray-600 hover:text-gray-900'
-                                }`}
+                                  }`}
                                 title={!canSignerApprove ? 'This signatory does not have approval authority for this document type' : 'Designate as executive Approver'}
                               >
                                 Approve
@@ -656,11 +628,10 @@ export default function ApprovalWorkflowSettings() {
 
                             {/* Permanent / Lock Signatory Checkbox */}
                             <label
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer select-none ${
-                                step.isPermanent
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-bold transition-all cursor-pointer select-none ${step.isPermanent
                                   ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-2xs'
                                   : 'bg-gray-50 border-gray-200 text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-                              }`}
+                                }`}
                               title="Permanent Signatory: when checked, this person cannot be deleted or removed by document creators when creating an AP, FL, or PAR"
                             >
                               <input

@@ -28,6 +28,7 @@ import {
   getDefaultWorkflowSettings,
   getBuiltinDefaultWorkflow,
 } from '../../workflow/services/approval-workflow.service';
+import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 import type {
   PostActivityReportDocument,
   PARApprovalStep,
@@ -191,7 +192,7 @@ export async function generateDefaultPARSignatoryChain(
     });
 
     if (chain.length > 0) {
-      return chain;
+      return normalizeApprovalStages(chain);
     }
   }
 
@@ -277,7 +278,7 @@ export async function generateDefaultPARSignatoryChain(
   }
 
   // ── 1 STAGE ONLY: All signatories in Stage 1 sign simultaneously in parallel ──
-  const stageName = 'Stage 1: Post-Activity Review & Final Clearance';
+  const stageName = formatStageTitle(1, stageSigners.length);
   const chain: PARApprovalStep[] = stageSigners.map((item, idx) => {
     const isLast = idx === stageSigners.length - 1;
     const resolvedLabel = item.signer.defaultSignatoryLabel || resolveSignatoryLabel({ role: item.signer.role, roleTitle: item.signer.roleTitle, actionType: item.action } as any, 'par', isLast);
@@ -300,7 +301,7 @@ export async function generateDefaultPARSignatoryChain(
     };
   });
 
-  return chain;
+  return normalizeApprovalStages(chain);
 }
 
 /**

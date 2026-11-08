@@ -16,6 +16,7 @@ import {
 import type { ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import type { SasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { getCachedWorkflowSettings } from '../../workflow/services/approval-workflow.service';
+import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 
 export function buildDynamicApprovalChain(
   targetAudience: ProposalTargetAudience,
@@ -76,20 +77,14 @@ export function buildDynamicApprovalChain(
   //   Stage 2: Institutional Review & Endorsements
   //   Stage 3: Executive Administration & Approval
   const deptStageIndex = isSasCreator ? 1 : 2;
-  const deptStageName = isSasCreator
-    ? 'Stage 1: Department & Program Endorsements'
-    : 'Stage 2: Department & Program Endorsements';
+  const deptStageName = formatStageTitle(deptStageIndex);
   const deptStatus = isSasCreator ? 'current' : 'waiting';
 
   const acadStageIndex = isSasCreator ? 2 : 3;
-  const acadStageName = isSasCreator
-    ? 'Stage 2: Institutional Review & Endorsements'
-    : 'Stage 3: Institutional Review & Endorsements';
+  const acadStageName = formatStageTitle(acadStageIndex);
 
   const execStageIndex = isSasCreator ? 3 : 4;
-  const execStageName = isSasCreator
-    ? 'Stage 3: Executive Administration & Approval'
-    : 'Stage 4: Executive Administration & Approval';
+  const execStageName = formatStageTitle(execStageIndex);
 
   const usedSignatoryIds = new Set<string>();
 
@@ -105,7 +100,7 @@ export function buildDynamicApprovalChain(
       id: `step_${stepIndex}`,
       step: stepIndex++,
       stageIndex: 1,
-      stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+      stageName: formatStageTitle(1, 1),
       role: 'sas_head',
       roleTitle: resolvedRoleTitle,
       actionType: 'endorse',
@@ -297,5 +292,5 @@ export function buildDynamicApprovalChain(
     });
   });
 
-  return chain;
+  return normalizeApprovalStages(chain);
 }

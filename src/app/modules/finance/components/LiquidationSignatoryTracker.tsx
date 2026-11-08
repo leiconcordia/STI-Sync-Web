@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { LiquidationApprovalStep } from '../types/liquidation.types';
 import { formatAppDateTime } from '../../../utils/date';
+import { formatStageTitle } from '../../workflow/utils/stage-normalization.utils';
 
 interface LiquidationSignatoryTrackerProps {
   approvalChain?: LiquidationApprovalStep[];
@@ -156,7 +157,7 @@ export default function LiquidationSignatoryTracker({
                   </div>
                   <div>
                     <h5 className="text-xs font-bold text-slate-900">
-                      Stage {stageNumber}: {stageTitle}
+                      {formatStageTitle(stageNumber, steps.length)}
                     </h5>
                   </div>
                 </div>

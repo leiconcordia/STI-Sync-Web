@@ -40,6 +40,7 @@ import {
   isSignatoryApplicableTo,
 } from '../../../signatories/types/signatory.types';
 import { buildDynamicApprovalChain } from '../../utils/proposal-routing';
+import { formatStageTitle, normalizeApprovalStages } from '../../../workflow/utils/stage-normalization.utils';
 import {
   subscribeToSasSignatoryConfig,
   DEFAULT_SAS_SIGNATORY_CONFIG,
@@ -65,7 +66,7 @@ interface ProposalFlowBuilderProps {
 }
 
 const INITIAL_STAGE_CONFIGS = [
-  { stageIndex: 1, stageName: 'Stage 1: Endorsement & Review' },
+  { stageIndex: 1 },
 ];
 
 export default function ProposalFlowBuilder({
@@ -87,18 +88,10 @@ export default function ProposalFlowBuilder({
   }, [creatorRole, creatorName]);
 
   const [selectedSignatoryIdPerStage, setSelectedSignatoryIdPerStage] = useState<Record<number, string>>({});
-  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number; stageName: string }[]>(() => {
+  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number }[]>(() => {
     if (approvalChain && approvalChain.length > 0) {
-      const map = new Map<number, string>();
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx)) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      return Array.from(map.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([stageIndex, stageName]) => ({ stageIndex, stageName }));
+      const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
+      return Array.from({ length: maxIdx }, (_, i) => ({ stageIndex: i + 1 }));
     }
     return INITIAL_STAGE_CONFIGS;
   });
@@ -234,41 +227,46 @@ export default function ProposalFlowBuilder({
     }
   }, [activeSignatories, isOfficerProposal]);
 
-  // Synchronize custom stage names or indices from approvalChain into stageConfigs
+  // Synchronize stage counts from approvalChain into stageConfigs
   React.useEffect(() => {
     if (!approvalChain || approvalChain.length === 0) return;
+    const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
     setStageConfigs((prev) => {
-      const map = new Map<number, string>();
-      prev.forEach((p) => map.set(p.stageIndex, p.stageName));
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx) || (step.stageName && !prev.some((p) => p.stageIndex === idx))) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      const sorted = Array.from(map.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([stageIndex, stageName]) => ({ stageIndex, stageName }));
-      return sorted;
+      const currentMax = Math.max(maxIdx, ...prev.map((p) => p.stageIndex));
+      return Array.from({ length: currentMax }, (_, i) => ({ stageIndex: i + 1 }));
     });
   }, [approvalChain]);
 
-  // Group steps by stageIndex using stageConfigs as stage skeleton
+  // Group steps by stageIndex using contiguous sequential indexing
   const stages = useMemo(() => {
+    const maxIndex = Math.max(
+      1,
+      ...stageConfigs.map((c) => c.stageIndex),
+      ...(approvalChain || []).map((s) => s.stageIndex ?? 1)
+    );
+
     const stageMap: Record<number, ProposalApprovalStep[]> = {};
-    approvalChain.forEach((step) => {
-      const sIdx = step.stageIndex ?? 1;
+    for (let i = 1; i <= maxIndex; i++) {
+      stageMap[i] = [];
+    }
+
+    (approvalChain || []).forEach((step) => {
+      const sIdx = Math.max(1, step.stageIndex ?? 1);
       if (!stageMap[sIdx]) stageMap[sIdx] = [];
       stageMap[sIdx].push(step);
     });
 
-    const configs = stageConfigs.length > 0 ? stageConfigs : INITIAL_STAGE_CONFIGS;
+    const result = [];
+    for (let i = 1; i <= maxIndex; i++) {
+      const steps = stageMap[i] || [];
+      result.push({
+        stageIndex: i,
+        stageName: formatStageTitle(i, steps.length),
+        steps,
+      });
+    }
 
-    return configs.map((c) => ({
-      stageIndex: c.stageIndex,
-      stageName: c.stageName,
-      steps: stageMap[c.stageIndex] || [],
-    }));
+    return result;
   }, [approvalChain, stageConfigs]);
 
   // Validation Checks
@@ -285,26 +283,26 @@ export default function ProposalFlowBuilder({
     };
   }, [approvalChain, stages]);
 
-  // Renumber and rebuild steps helper while preserving stage definitions
+  // Renumber and rebuild steps helper while preserving contiguous stage definitions
   const reindexChain = (
-    updatedStages: { stageIndex: number; stageName: string; steps: ProposalApprovalStep[] }[]
+    updatedStages: { stageIndex: number; stageName?: string; steps: ProposalApprovalStep[] }[]
   ) => {
     let globalStep = 1;
     const flattened: ProposalApprovalStep[] = [];
-    const newConfigs: { stageIndex: number; stageName: string }[] = [];
+    const newConfigs: { stageIndex: number }[] = [];
 
     let processedStages = [...updatedStages];
     if (processedStages.length === 0) {
-      processedStages = [{ stageIndex: 1, stageName: 'Stage 1: Endorsement & Review', steps: [] }];
+      processedStages = [{ stageIndex: 1, stageName: formatStageTitle(1, 0), steps: [] }];
     }
 
     processedStages.forEach((stg, stgIdx) => {
       const newStageNumber = stgIdx + 1;
-      const stageName = stg.stageName || `Stage ${newStageNumber}: Endorsement & Review`;
+      const count = stg.steps.length;
+      const stageName = formatStageTitle(newStageNumber, count);
 
       newConfigs.push({
         stageIndex: newStageNumber,
-        stageName,
       });
 
       stg.steps.forEach((step) => {
@@ -469,7 +467,7 @@ export default function ProposalFlowBuilder({
     if (!stageExists) {
       updatedStages.push({
         stageIndex: stageIdx,
-        stageName: `Stage ${stageIdx}: Department & Program Endorsements`,
+        stageName: formatStageTitle(stageIdx, 1),
         steps: [newStep],
       });
       updatedStages.sort((a, b) => a.stageIndex - b.stageIndex);
@@ -576,7 +574,7 @@ export default function ProposalFlowBuilder({
       });
 
       if (chain.length > 0) {
-        onChange(chain);
+        onChange(normalizeApprovalStages(chain));
         return;
       }
     }
@@ -593,13 +591,10 @@ export default function ProposalFlowBuilder({
   // 2. Add New Empty Stage
   const handleAddStage = () => {
     const newStageNumber = stages.length + 1;
-    const defaultName = `Stage ${newStageNumber}: Endorsement & Review`;
-
     const newStages = [
       ...stages,
       {
         stageIndex: newStageNumber,
-        stageName: defaultName,
         steps: [],
       },
     ];
@@ -809,7 +804,7 @@ export default function ProposalFlowBuilder({
       ...step,
       step: globalStep++,
     }));
-    onChange(flattened);
+    onChange(normalizeApprovalStages(flattened));
   };
 
   // 10. Reset Stages to Clean Pipeline
@@ -1065,18 +1060,9 @@ export default function ProposalFlowBuilder({
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <input
-                          type="text"
-                          value={stage.stageName}
-                          onChange={(e) => handleStageNameChange(stage.stageIndex, e.target.value)}
-                          placeholder={`Stage ${stage.stageIndex} Title...`}
-                          disabled={isOfficerProposal && stage.stageIndex === 1}
-                          className={`font-bold text-slate-800 text-sm bg-transparent px-2 py-0.5 rounded border outline-none transition-all max-w-[340px] ${
-                            isOfficerProposal && stage.stageIndex === 1
-                              ? 'border-transparent cursor-default'
-                              : 'border-transparent hover:bg-slate-50 focus:bg-white hover:border-slate-200 focus:border-blue-400'
-                          }`}
-                        />
+                        <h4 className="font-bold text-slate-800 text-sm">
+                          {formatStageTitle(stage.stageIndex, stage.steps.length)}
+                        </h4>
                         <span className="text-[11px] font-semibold text-slate-400">
                           ({stage.steps.length} {stage.steps.length === 1 ? 'Signer' : 'Signers'})
                         </span>

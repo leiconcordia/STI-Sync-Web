@@ -46,6 +46,7 @@ import {
   isStepConfiguredPermanent,
   type DefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
+import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 
 interface PARFlowBuilderProps {
   approvalChain: PARApprovalStep[];
@@ -90,20 +91,12 @@ export default function PARFlowBuilder({
     }
     return SIGNATORY_LABEL_OPTIONS;
   }, [activeLabels]);
-  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number; stageName: string }[]>(() => {
+  const [stageConfigs, setStageConfigs] = useState<{ stageIndex: number }[]>(() => {
     if (approvalChain && approvalChain.length > 0) {
-      const map = new Map<number, string>();
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx)) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      return Array.from(map.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([stageIndex, stageName]) => ({ stageIndex, stageName }));
+      const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
+      return Array.from({ length: maxIdx }, (_, i) => ({ stageIndex: i + 1 }));
     }
-    return [{ stageIndex: 1, stageName: 'Stage 1: Post-Activity Review & Final Clearance' }];
+    return [{ stageIndex: 1 }];
   });
 
   // Synchronize stage configs dynamically from approvalChain
@@ -111,54 +104,43 @@ export default function PARFlowBuilder({
     if (!approvalChain || approvalChain.length === 0) {
       return;
     }
+    const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
     setStageConfigs((prev) => {
-      const map = new Map<number, string>();
-      prev.forEach((p) => map.set(p.stageIndex, p.stageName));
-      approvalChain.forEach((step) => {
-        const idx = step.stageIndex ?? 1;
-        if (!map.has(idx) || (step.stageName && !prev.some((p) => p.stageIndex === idx))) {
-          map.set(idx, step.stageName || `Stage ${idx}`);
-        }
-      });
-      const chainIndices = new Set(approvalChain.map((s) => s.stageIndex ?? 1));
-      const allIndices = new Set([...Array.from(chainIndices), ...prev.map((p) => p.stageIndex)]);
-      const sorted = Array.from(allIndices)
-        .sort((a, b) => a - b)
-        .map((stageIndex) => ({
-          stageIndex,
-          stageName: map.get(stageIndex) || `Stage ${stageIndex}`,
-        }));
-      return sorted;
+      const currentMax = Math.max(maxIdx, ...prev.map((p) => p.stageIndex));
+      return Array.from({ length: currentMax }, (_, i) => ({ stageIndex: i + 1 }));
     });
   }, [approvalChain]);
 
-  // Group steps by stageIndex
+  // Group steps by stageIndex using contiguous sequential indexing
   const stages = useMemo(() => {
-    const stageMap = new Map<number, PARApprovalStep[]>();
+    const maxIndex = Math.max(
+      1,
+      ...stageConfigs.map((c) => c.stageIndex),
+      ...(approvalChain || []).map((s) => s.stageIndex ?? 1)
+    );
 
-    (stageConfigs || []).forEach((sc) => {
-      stageMap.set(sc.stageIndex, []);
-    });
+    const stageMap: Record<number, PARApprovalStep[]> = {};
+    for (let i = 1; i <= maxIndex; i++) {
+      stageMap[i] = [];
+    }
 
     (approvalChain || []).forEach((step) => {
-      const idx = step.stageIndex ?? 1;
-      if (!stageMap.has(idx)) {
-        stageMap.set(idx, []);
-      }
-      stageMap.get(idx)!.push(step);
+      const sIdx = Math.max(1, step.stageIndex ?? 1);
+      if (!stageMap[sIdx]) stageMap[sIdx] = [];
+      stageMap[sIdx].push(step);
     });
 
-    return Array.from(stageMap.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([stageIndex, steps]) => {
-        const found = stageConfigs.find((sc) => sc.stageIndex === stageIndex);
-        const stageName = found?.stageName || steps[0]?.stageName || `Stage ${stageIndex}`;
-        return {
-          stageIndex,
-          stageName,
-          steps,
-        };
+    const result = [];
+    for (let i = 1; i <= maxIndex; i++) {
+      const steps = stageMap[i] || [];
+      result.push({
+        stageIndex: i,
+        stageName: formatStageTitle(i, steps.length),
+        steps,
       });
+    }
+
+    return result;
   }, [approvalChain, stageConfigs]);
 
   // Validation metrics
@@ -274,18 +256,13 @@ export default function PARFlowBuilder({
   // Add new stage
   const handleAddStage = () => {
     const nextIdx = stages.length + 1;
-    const newStageName = `Stage ${nextIdx}: Clearance & Review`;
-    setStageConfigs((prev) => [...prev, { stageIndex: nextIdx, stageName: newStageName }]);
+    setStageConfigs((prev) => [...prev, { stageIndex: nextIdx }]);
   };
 
   // Helper: cleanly reindexes steps 1..N and ensures Stage 1 steps are 'current'
   const reindexAndPropagate = (steps: PARApprovalStep[]) => {
-    const reindexed = steps.map((s, idx) => ({
-      ...s,
-      step: idx + 1,
-      status: (s.stageIndex ?? 1) === 1 ? 'current' : s.status || 'waiting',
-    }));
-    onChange(reindexed);
+    const normalized = normalizeApprovalStages(steps);
+    onChange(normalized);
   };
 
   // Cycle actionType between 'endorse' -> 'approve' -> 'check' respecting signatory authority capability
@@ -421,8 +398,7 @@ export default function PARFlowBuilder({
       return;
     }
 
-    const stageConfig = stageConfigs.find((sc) => sc.stageIndex === stageIndex);
-    const stageName = stageConfig?.stageName || `Stage ${stageIndex}: Post-Activity Review`;
+    const stageName = formatStageTitle(stageIndex, 1);
 
     const canApprove = Boolean(
       signatory.canApprovePar ||
@@ -624,13 +600,9 @@ export default function PARFlowBuilder({
                       </div>
                       <div className="flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <input
-                            type="text"
-                            value={stage.stageName}
-                            onChange={(e) => handleStageNameChange(stage.stageIndex, e.target.value)}
-                            placeholder={`Stage ${stage.stageIndex} Title...`}
-                            className="font-bold text-slate-800 text-sm bg-transparent hover:bg-slate-50 focus:bg-white px-2 py-0.5 rounded border border-transparent hover:border-slate-200 focus:border-blue-400 outline-none transition-all max-w-[340px]"
-                          />
+                          <h4 className="font-bold text-slate-800 text-sm">
+                            {formatStageTitle(stage.stageIndex, stage.steps.length)}
+                          </h4>
                           <span className="text-[11px] font-semibold text-slate-400">
                             ({stage.steps.length} {stage.steps.length === 1 ? 'Signer' : 'Signers'})
                           </span>

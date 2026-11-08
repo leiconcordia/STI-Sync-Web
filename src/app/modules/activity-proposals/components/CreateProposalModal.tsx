@@ -255,7 +255,7 @@ export default function CreateProposalModal({
             id: 'step_sas_gatekeeper',
             step: 1,
             stageIndex: 1,
-            stageName: 'Stage 1: Student Affairs & Services (SAS) Endorsement',
+            stageName: 'Stage 1 Signer',
             role: 'sas_head',
             roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
             actionType: 'endorse',

@@ -43,6 +43,7 @@ import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationSt
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
 import { formatCurrency, formatVariance } from '../../utils/currency';
+import { formatStageTitle } from '../../modules/workflow/utils/stage-normalization.utils';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
@@ -732,7 +733,7 @@ export default function SignatoryEndorsementsPage() {
                           const curStage = proposal.currentStageIndex ?? 1;
                           const stageSteps = (proposal.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
                           const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived').length;
-                          const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
+                          const stageTitle = formatStageTitle(curStage, stageSteps.length);
                           const isApproverForMe = (proposal.approvalChain || []).some(
                             (s) => (s.stageIndex ?? 1) === curStage && matchesSignatory(s) && (s.actionType === 'approve' || s.role === 'school_president')
                           );
@@ -741,7 +742,7 @@ export default function SignatoryEndorsementsPage() {
                             <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
                               <span className="font-medium">Active Stage:</span>
                               <span className="font-bold text-blue-900 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg flex items-center gap-1.5">
-                                <span>Stage {curStage}: {stageTitle}</span>
+                                <span>{stageTitle}</span>
                                 {stageSteps.length > 1 && (
                                   <span className="text-[10px] text-blue-700 bg-blue-200/60 px-1.5 py-0.2 rounded-full font-black">
                                     {completedCount}/{stageSteps.length} Signed
@@ -864,7 +865,7 @@ export default function SignatoryEndorsementsPage() {
                   const curStage = liquidation.currentStageIndex ?? 1;
                   const stageSteps = (liquidation.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
                   const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived').length;
-                  const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
+                  const stageTitle = formatStageTitle(curStage, stageSteps.length);
 
                   const isApproverForMe = (liquidation.approvalChain || []).some(
                     (s) =>
@@ -925,7 +926,7 @@ export default function SignatoryEndorsementsPage() {
                         <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
                           <span className="font-medium">Active Stage:</span>
                           <span className="font-bold text-blue-900 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg flex items-center gap-1.5">
-                            <span>Stage {curStage}: {stageTitle}</span>
+                            <span>{stageTitle}</span>
                             {stageSteps.length > 1 && (
                               <span className="text-[10px] text-blue-700 bg-blue-200/60 px-1.5 py-0.2 rounded-full font-black">
                                 {completedCount}/{stageSteps.length} Signed
@@ -1030,7 +1031,7 @@ export default function SignatoryEndorsementsPage() {
                   const curStage = parDoc.currentStageIndex ?? 1;
                   const stageSteps = (parDoc.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === curStage);
                   const completedCount = stageSteps.filter((s) => s.status === 'endorsed' || s.status === 'approved').length;
-                  const stageTitle = stageSteps[0]?.stageName || `Stage ${curStage}`;
+                  const stageTitle = formatStageTitle(curStage, stageSteps.length);
 
                   const isApproverForMe = (parDoc.approvalChain || []).some(
                     (s) =>
@@ -1090,7 +1091,7 @@ export default function SignatoryEndorsementsPage() {
                         <div className="pt-1 flex items-center gap-2 text-[11px] text-slate-500 flex-wrap">
                           <span className="font-medium">Active Stage:</span>
                           <span className="font-bold text-blue-900 bg-blue-50 border border-blue-200/80 px-2 py-0.5 rounded-lg flex items-center gap-1.5">
-                            <span>Stage {curStage}: {stageTitle}</span>
+                            <span>{stageTitle}</span>
                             {stageSteps.length > 1 && (
                               <span className="text-[10px] text-blue-700 bg-blue-200/60 px-1.5 py-0.2 rounded-full font-black">
                                 {completedCount}/{stageSteps.length} Signed
