@@ -970,6 +970,7 @@ export default function PostActivityReportWizardModal({
                         label="Polish Mechanics"
                         onClick={handleEnhanceActualMechanics}
                         isLoading={isAILoading && aiTargetField === 'mechanics'}
+                        disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'mechanics'))}
                         tooltip="Polish actual mechanics notes into formal narrative"
                       />
                     </div>
@@ -1055,6 +1056,7 @@ export default function PostActivityReportWizardModal({
                     label="Enhance Narrative"
                     onClick={handleEnhanceNarrative}
                     isLoading={isAILoading && aiTargetField === 'narrative'}
+                    disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'narrative'))}
                     tooltip="Draft or elevate accomplishment narrative using attendance and event data"
                   />
                 </div>
@@ -1078,6 +1080,7 @@ export default function PostActivityReportWizardModal({
                       label="Suggest Learnings"
                       onClick={handleSuggestKeyLearningsAction}
                       isLoading={isAILoading && aiTargetField === 'learnings'}
+                      disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'learnings'))}
                       tooltip="Generate key learnings from executed activity"
                     />
                     <span className="text-[11px] text-slate-400 font-medium">
@@ -1232,6 +1235,7 @@ export default function PostActivityReportWizardModal({
                   label="Auto-Draft 4 Recommendations"
                   onClick={handleAutoDraft4Recommendations}
                   isLoading={isGeneratingRecs}
+                  disabled={isAILoading || isGeneratingRecs}
                   variant="primary"
                   tooltip="Generate observations and recommendations for Program Flow, Engagement, Tech Setup, and Prep"
                 />

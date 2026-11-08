@@ -255,7 +255,15 @@ export default function LiquidationFlowBuilder({
     const flattened: LiquidationApprovalStep[] = [];
     const newConfigs: { stageIndex: number }[] = [];
 
-    updatedStages.forEach((stg, stgIdx) => {
+    let processedStages = [...updatedStages];
+    while (processedStages.length > 1 && processedStages[0].steps.length === 0) {
+      processedStages.shift();
+    }
+    if (processedStages.length === 0) {
+      processedStages = [{ stageIndex: 1, stageName: formatStageTitle(1, 0), steps: [] }];
+    }
+
+    processedStages.forEach((stg, stgIdx) => {
       const newStageNumber = stgIdx + 1;
       const count = stg.steps.length;
       const stageName = formatStageTitle(newStageNumber, count);
@@ -434,7 +442,10 @@ export default function LiquidationFlowBuilder({
       ...step,
       step: globalStep++,
     }));
-    onChange(normalizeApprovalStages(flattened));
+    const normalized = normalizeApprovalStages(flattened);
+    const maxStage = Math.max(1, ...normalized.map((s) => s.stageIndex ?? 1));
+    setStageConfigs(Array.from({ length: maxStage }, (_, i) => ({ stageIndex: i + 1 })));
+    onChange(normalized);
   };
 
   // Update Signatory Formal Label

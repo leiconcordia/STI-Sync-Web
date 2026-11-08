@@ -222,7 +222,7 @@ export function exportOfficialStiLiquidationXlsx(
   let fallbackDeadline = '';
   const parsedEnd = parseDateSafe(activityEndDate || report.createdAt);
   if (parsedEnd) {
-    const deadDate = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
     fallbackDeadline = formatAppDate(deadDate, '');
   }
   const submissionDeadline = (options.submissionDeadline || fallbackDeadline).replace(/Z$/, '').trim();
@@ -628,7 +628,7 @@ export function exportOfficialStiLiquidationXml(
   let fallbackDeadline = '';
   const parsedEnd = parseDateSafe(activityEndDate || report.createdAt);
   if (parsedEnd) {
-    const deadDate = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
     fallbackDeadline = formatAppDate(deadDate, '');
   }
   const submissionDeadline = (options.submissionDeadline || fallbackDeadline).replace(/Z$/, '').trim();

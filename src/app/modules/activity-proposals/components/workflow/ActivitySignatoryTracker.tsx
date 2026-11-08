@@ -17,7 +17,7 @@ import {
 } from 'lucide-react';
 import type { ProposalApprovalStep } from '../../types/proposal.types';
 import { formatAppDateTime } from '../../../../utils/date';
-import { formatStageTitle } from '../../../workflow/utils/stage-normalization.utils';
+import { formatStageTitle, normalizeApprovalStages } from '../../../workflow/utils/stage-normalization.utils';
 
 interface ActivitySignatoryTrackerProps {
   approvalChain?: ProposalApprovalStep[];
@@ -51,9 +51,24 @@ export default function ActivitySignatoryTracker({
     );
   }
 
+  // Defensive: Normalize approval chain so stages are always contiguous 1..M in sequence
+  const normalizedChain = React.useMemo(() => {
+    const norm = normalizeApprovalStages(approvalChain);
+    // Hardening: If all steps belong to a single stage that isn't 1, clamp strictly to Stage 1
+    const uniqueStages = Array.from(new Set(norm.map((s) => s.stageIndex ?? 1)));
+    if (uniqueStages.length === 1 && uniqueStages[0] !== 1) {
+      return norm.map((s) => ({
+        ...s,
+        stageIndex: 1,
+        stageName: formatStageTitle(1, norm.length),
+      }));
+    }
+    return norm;
+  }, [approvalChain]);
+
   // Group steps by stageIndex (defaults to 1 if unset)
   const stageMap = new Map<number, ProposalApprovalStep[]>();
-  approvalChain.forEach((step) => {
+  normalizedChain.forEach((step) => {
     const sIdx = step.stageIndex ?? 1;
     const existing = stageMap.get(sIdx) || [];
     existing.push(step);
@@ -61,16 +76,18 @@ export default function ActivitySignatoryTracker({
   });
 
   const stages = Array.from(stageMap.entries()).sort(([a], [b]) => a - b);
+  const maxStage = stages.length > 0 ? Math.max(...stages.map(([s]) => s)) : 1;
+  const effectiveCurrentStageIndex = Math.min(Math.max(1, currentStageIndex), maxStage);
 
   // Calculate statistics
-  const totalSteps = approvalChain.length;
-  const completedSteps = approvalChain.filter(
+  const totalSteps = normalizedChain.length;
+  const completedSteps = normalizedChain.filter(
     (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
   ).length;
   const percentComplete = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0;
 
   const isFullyApproved = proposalStatus === 'approved' || completedSteps === totalSteps;
-  const isReturned = proposalStatus === 'returned' || approvalChain.some((s) => s.status === 'returned');
+  const isReturned = proposalStatus === 'returned' || normalizedChain.some((s) => s.status === 'returned');
   const isRejected = proposalStatus === 'rejected';
 
   return (
@@ -105,7 +122,7 @@ export default function ActivitySignatoryTracker({
                   ? 'Returned for Revision'
                   : isRejected
                   ? 'Declined'
-                  : `Stage ${currentStageIndex} in Progress`}
+                  : `Stage ${effectiveCurrentStageIndex} in Progress`}
               </span>
             </div>
             <h4 className="text-sm font-bold text-white mt-1">
@@ -145,8 +162,8 @@ export default function ActivitySignatoryTracker({
       {/* ── Stages & Signatories List ── */}
       <div className="space-y-3">
         {stages.map(([stageNumber, steps]) => {
-          const isCurrentStage = stageNumber === currentStageIndex && !isFullyApproved;
-          const isPassedStage = stageNumber < currentStageIndex || isFullyApproved;
+          const isCurrentStage = stageNumber === effectiveCurrentStageIndex && !isFullyApproved;
+          const isPassedStage = stageNumber < effectiveCurrentStageIndex || isFullyApproved;
           const isStageFinished = steps.every((s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived');
 
           return (

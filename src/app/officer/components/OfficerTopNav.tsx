@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Bell, ChevronDown, Settings, LogOut, Zap } from 'lucide-react';
+import { ChevronDown, Settings, LogOut, Zap } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { DevDataSeederModal } from '../../../dev/components/DevDataSeederModal';
+import { NotificationDropdown } from '../../modules/notifications';
 
 interface OfficerTopNavProps {
   title: string;
@@ -51,13 +52,12 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
           <span className="hidden sm:inline">Dev Seeder</span>
         </button>
 
-        {/* Notifications */}
-        <button className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors">
-          <Bell className="w-5 h-5 text-[#001A4D]" />
-          <span className="absolute top-1 right-1 w-5 h-5 bg-[#E24B4A] rounded-full flex items-center justify-center text-white text-[10px] font-bold">
-            5
-          </span>
-        </button>
+        {/* Real-time Notifications */}
+        <NotificationDropdown
+          role="officer"
+          orgId={profile?.activeOrganizationId || undefined}
+          userId={profile?.studentId}
+        />
 
         {/* User Menu */}
         <div className="relative">

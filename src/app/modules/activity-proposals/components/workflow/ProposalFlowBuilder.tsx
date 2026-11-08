@@ -229,13 +229,26 @@ export default function ProposalFlowBuilder({
 
   // Synchronize stage counts from approvalChain into stageConfigs
   React.useEffect(() => {
-    if (!approvalChain || approvalChain.length === 0) return;
+    if (!approvalChain || approvalChain.length === 0) {
+      setStageConfigs([{ stageIndex: 1 }]);
+      return;
+    }
+    const normalized = normalizeApprovalStages(approvalChain);
+    const isDifferent = normalized.some((ns, idx) => {
+      const cur = approvalChain[idx];
+      return !cur || cur.stageIndex !== ns.stageIndex || cur.step !== ns.step;
+    });
+    if (isDifferent) {
+      onChange(normalized);
+      return;
+    }
     const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
     setStageConfigs((prev) => {
-      const currentMax = Math.max(maxIdx, ...prev.map((p) => p.stageIndex));
-      return Array.from({ length: currentMax }, (_, i) => ({ stageIndex: i + 1 }));
+      const prevMax = prev.length > 0 ? Math.max(...prev.map((p) => p.stageIndex)) : 1;
+      const targetCount = Math.max(maxIdx, Math.min(prevMax, maxIdx + 1));
+      return Array.from({ length: targetCount }, (_, i) => ({ stageIndex: i + 1 }));
     });
-  }, [approvalChain]);
+  }, [approvalChain, onChange]);
 
   // Group steps by stageIndex using contiguous sequential indexing
   const stages = useMemo(() => {
@@ -292,6 +305,10 @@ export default function ProposalFlowBuilder({
     const newConfigs: { stageIndex: number }[] = [];
 
     let processedStages = [...updatedStages];
+    // Strip leading empty stages if subsequent stages have signers
+    while (processedStages.length > 1 && processedStages[0].steps.length === 0) {
+      processedStages.shift();
+    }
     if (processedStages.length === 0) {
       processedStages = [{ stageIndex: 1, stageName: formatStageTitle(1, 0), steps: [] }];
     }
@@ -819,7 +836,10 @@ export default function ProposalFlowBuilder({
       ...step,
       step: globalStep++,
     }));
-    onChange(normalizeApprovalStages(flattened));
+    const normalized = normalizeApprovalStages(flattened);
+    const maxStage = Math.max(1, ...normalized.map((s) => s.stageIndex ?? 1));
+    setStageConfigs(Array.from({ length: maxStage }, (_, i) => ({ stageIndex: i + 1 })));
+    onChange(normalized);
   };
 
   // 10. Reset Stages to Clean Pipeline

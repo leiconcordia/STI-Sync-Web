@@ -22,6 +22,7 @@ import type { EventDocument } from '../../events/types/event.types';
 import type { DisbursementVoucherAttachment } from '../types/liquidation.types';
 import { formatCurrency } from '../../../utils/currency';
 import { toast } from 'sonner';
+import { isSasCreatedEvent } from '../../events/utils/organization-display.utils';
 
 interface DisbursementVoucherModalProps {
   isOpen: boolean;
@@ -68,7 +69,12 @@ export default function DisbursementVoucherModal({
   // Lifecycle & Role Based Read-Only Controls:
   // 1. Student officers have read-only inspection access
   // 2. Once liquidation is submitted to signatories (under_review / pending) or approved, the voucher is locked
+  // 3. SAS Admin viewing an organization's activity cannot upload disbursement receipts (Read-Only)
   const isOfficer = (userRole === 'officer' || userProfile?.role === 'officer') && !userProfile?.isAdviser;
+  const isAdmin = userRole === 'admin' || userProfile?.role === 'admin' || userProfile?.role === 'sas_admin' || userRole === 'sas_admin';
+  const isOrgEvent = !isSasCreatedEvent(event);
+  const isSasAdminOnOrgEvent = isAdmin && isOrgEvent;
+
   const normalizedStatus = (liquidationStatus || (event as any)?.liquidationStatus || '').toString().toLowerCase().trim();
   const isSubmittedOrApproved =
     normalizedStatus === 'under_review' ||
@@ -77,7 +83,7 @@ export default function DisbursementVoucherModal({
     normalizedStatus === 'submitted';
 
   const isLockedByLiquidation = Boolean(existingVoucher?.fileUrl) && isSubmittedOrApproved;
-  const isEffectiveReadOnly = Boolean(readOnly || isOfficer || isLockedByLiquidation);
+  const isEffectiveReadOnly = Boolean(readOnly || isOfficer || isLockedByLiquidation || isSasAdminOnOrgEvent);
 
   const [fileUrl, setFileUrl] = useState<string>('');
   const [fileName, setFileName] = useState<string>('');
@@ -275,7 +281,11 @@ export default function DisbursementVoucherModal({
             <div>
               <h3 className="text-base font-bold text-white tracking-tight flex items-center gap-2">
                 Official Disbursement Voucher
-                {isEffectiveReadOnly ? (
+                {isSasAdminOnOrgEvent ? (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/30 inline-flex items-center gap-1">
+                    <Shield className="w-2.5 h-2.5 text-amber-300" /> Club Managed • Read Only
+                  </span>
+                ) : isEffectiveReadOnly ? (
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 inline-flex items-center gap-1">
                     <Lock className="w-2.5 h-2.5" /> View Only
                   </span>
@@ -406,9 +416,13 @@ export default function DisbursementVoucherModal({
             ) : isEffectiveReadOnly ? (
               <div className="border-2 border-dashed border-slate-200 rounded-2xl p-6 text-center space-y-2 bg-slate-50">
                 <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
-                <h4 className="text-xs font-bold text-slate-700">No Disbursement Voucher Attached</h4>
+                <h4 className="text-xs font-bold text-slate-700">
+                  {isSasAdminOnOrgEvent ? 'Organization-Managed Activity (Read Only)' : 'No Disbursement Voucher Attached'}
+                </h4>
                 <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
-                  The official voucher must be uploaded by the Club Adviser or SAS Administration once funds are disbursed.
+                  {isSasAdminOnOrgEvent
+                    ? 'This activity belongs to a student organization. Official disbursement receipts or vouchers are managed exclusively by the organization adviser and officers.'
+                    : 'The official voucher must be uploaded by the Club Adviser once funds are disbursed.'}
                 </p>
               </div>
             ) : (

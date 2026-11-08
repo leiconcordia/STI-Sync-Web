@@ -5,6 +5,7 @@ import {
 import { db } from '../../../../services/firebase';
 import type { DocumentDocument, DocStatus } from '../types/document.types';
 import { logAuditEvent } from '../../audit/services/audit.service';
+import { createNotification } from '../../notifications';
 
 const COLLECTION_NAME = 'documents';
 export const DOCUMENTS_COLLECTION = COLLECTION_NAME;
@@ -39,6 +40,20 @@ export async function createDocument(
         fileType: data.fileType,
         orgId: data.submittedByOrgId,
       },
+    }).catch(console.error);
+
+    createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'incoming_document',
+      title: `Document Submitted: ${data.title}`,
+      message: `${data.submittedByOrgName || 'Student Organization'} submitted "${data.title}" (${data.category}) for SAS review.`,
+      resourceId: docRef.id,
+      resourceType: 'document',
+      actionRoute: `/home/documents/${docRef.id}/review`,
+      targetOrgId: data.submittedByOrgId,
+      targetOrgName: data.submittedByOrgName,
+      senderName: data.submittedBy,
     }).catch(console.error);
   } else if (data.type === 'broadcast') {
     logAuditEvent({

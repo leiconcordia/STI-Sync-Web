@@ -4,7 +4,6 @@ import {
   CalendarCheck,
   Receipt,
   Building2,
-  Shield,
   TrendingUp,
   UserCheck,
   Users,
@@ -17,13 +16,20 @@ import {
   MapPin,
   Clock,
   ArrowRight,
+  AlertTriangle,
+  Bell,
+  Shield,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { MetricCard } from "../components/dashboard/MetricCard";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Progress } from "../../components/ui/progress";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
-import ActivityCalendar from "../../modules/events/components/ActivityCalendar";
+import { CalendarAndActivityMonitorPane } from "../components/dashboard/CalendarAndActivityMonitorPane";
+import { SendLiquidationReminderModal } from "../../modules/finance/components/SendLiquidationReminderModal";
+import { resolveCleanOrgName } from "../../modules/events/utils/organization-display.utils";
 
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
@@ -53,6 +59,13 @@ interface ApprovalItem {
 export function Dashboard() {
   const navigate = useNavigate();
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
+  const [isRightPaneExpanded, setIsRightPaneExpanded] = useState(false);
+  const [selectedReminderItem, setSelectedReminderItem] = useState<{
+    event: any;
+    daysRemaining: number;
+    deadlineDateStr: string;
+    concludedDateStr: string;
+  } | null>(null);
 
   // ─── Real-Time Data Streams ────────────────────────────────────────────────
   const { profile } = useAdviserProfile();
@@ -165,6 +178,53 @@ export function Dashboard() {
     });
   }, [events]);
 
+  // Activities monitored by Calendar & Compliance Monitor (all approved, active, and concluded activities)
+  const monitoredActivities = useMemo(() => {
+    return events.filter((e) => {
+      if ((e as any).isArchived || (e as any).isDeleted) return false;
+
+      const pStatus = (e.proposalStatus || '').toLowerCase();
+      const status = ((e as any).status || '').toLowerCase();
+      const lifecycle = (((e as any).lifecycleStatus || '') as string).toLowerCase();
+
+      // Exclude cancelled / rejected / drafts
+      if (
+        status === 'cancelled' ||
+        pStatus === 'cancelled' ||
+        lifecycle === 'cancelled' ||
+        status === 'rejected' ||
+        pStatus === 'rejected' ||
+        status === 'draft' ||
+        pStatus === 'draft'
+      ) {
+        return false;
+      }
+
+      // Must be an approved or concluded activity
+      const isApprovedOrConcluded =
+        pStatus === 'approved' ||
+        pStatus === 'activated' ||
+        pStatus === 'approved_president' ||
+        pStatus === 'concluded' ||
+        pStatus === 'completed' ||
+        status === 'approved' ||
+        status === 'activated' ||
+        status === 'concluded' ||
+        status === 'completed' ||
+        lifecycle === 'approved' ||
+        lifecycle === 'concluded' ||
+        lifecycle === 'completed' ||
+        (e as any).isApproved === true;
+
+      return isApprovedOrConcluded;
+    }).sort((a, b) => {
+      const dateA = a.sessions?.[0]?.date || (a as any).targetImplementationDate || '';
+      const dateB = b.sessions?.[0]?.date || (b as any).targetImplementationDate || '';
+      if (dateA && dateB) return dateB.localeCompare(dateA);
+      return getMillis(b.createdAt) - getMillis(a.createdAt);
+    });
+  }, [events]);
+
   const activeOrgs = useMemo(() => {
     return organizations.filter((o) => !o.archived && o.status === "active");
   }, [organizations]);
@@ -202,14 +262,14 @@ export function Dashboard() {
     // 2. Pending Activity Proposals (Route directly to specific activity proposal review)
     pendingActivities.forEach((e) => {
       const ms = getMillis(e.createdAt);
-      const hostInfo = orgMap.get(e.hostingOrgId);
+      const cleanOrg = resolveCleanOrgName(e, orgMap);
       items.push({
         id: `activity-${e.id}`,
         rawId: e.id,
         domain: "activity",
         domainLabel: "Activity Proposal",
         title: e.title || "Untitled Proposal",
-        subtitle: `${hostInfo?.acronym || hostInfo?.name || "STI SAS"} · Proposed`,
+        subtitle: `${cleanOrg} · Proposed`,
         timestampMs: ms,
         dateFormatted: formatTimestampDate(e.createdAt),
         route: `/home/event-approvals?tab=pending&id=${e.id}`,
@@ -221,7 +281,7 @@ export function Dashboard() {
     pendingLiquidations.forEach((l) => {
       const ms = getMillis(l.submittedAt || l.updatedAt || l.createdAt);
       const totalExp = Number(l.totalActualSpending ?? (l as any).totalExpenses ?? (l as any).totalAmount ?? 0);
-      const orgName = l.organizationName || orgMap.get(l.organizationId)?.name || (l.isSas || !l.organizationId ? "STI SAS" : "STI College");
+      const orgName = resolveCleanOrgName(l, orgMap);
       const title = l.eventTitle || (l as any).eventName || (l as any).title || "Financial Liquidation";
       items.push({
         id: `liq-${l.id}`,
@@ -240,13 +300,14 @@ export function Dashboard() {
     // 4. Pending Post-Activity Reports (Route directly to specific PAR review)
     pendingPARs.forEach((par) => {
       const ms = getMillis(par.createdAt || (par as any).updatedAt);
+      const orgName = resolveCleanOrgName(par, orgMap);
       items.push({
         id: `par-${par.id}`,
         rawId: par.id,
         domain: "par",
         domainLabel: "Post-Activity Report",
         title: par.eventTitle || par.referenceNo || "Post-Activity Report",
-        subtitle: `${par.organizationAcronym || par.organizationName || "Student Org"} · Post-Activity Report`,
+        subtitle: `${orgName} · Post-Activity Report`,
         timestampMs: ms,
         dateFormatted: formatTimestampDate(par.createdAt || (par as any).updatedAt),
         route: `/home/post-activity-reports?id=${par.id}`,
@@ -281,309 +342,246 @@ export function Dashboard() {
   }, [activeOrgs, events]);
 
   return (
-    <div className="space-y-6 pb-6">
-      {/* Dynamic Welcome Banner */}
-      <div className="relative bg-gradient-to-br from-[#001A4D] via-[#002B7F] to-[#0A47B8] rounded-3xl p-8 text-white overflow-hidden shadow-lg shadow-[#001A4D]/10 border border-blue-900/40">
-        <div className="absolute left-0 top-0 bottom-0 w-2.5 bg-[#FFD41C]" />
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <div className="flex flex-wrap items-center gap-2 mb-1.5">
-              <span className="px-3 py-0.5 rounded-full text-xs font-bold bg-[#FFD41C] text-[#001A4D] uppercase tracking-wider">
-                SAO Portal
-              </span>
-              {activeCollegePeriod && (
-                <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-white/20 text-white">
-                  College: {activeCollegePeriod.semester}
-                </span>
-              )}
-              {activeShsPeriod && (
-                <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-amber-400/25 text-amber-200 border border-amber-400/30">
-                  SHS: {activeShsPeriod.semester}
-                </span>
-              )}
-            </div>
-            <h2 className="text-3xl font-bold tracking-tight">
-              {greeting}, {adviserDisplayName}.
-            </h2>
-            <p className="text-white/80 text-sm mt-1 max-w-2xl">
-              STI College Ormoc — Real-time overview of student activities, approved activity schedules, post-activity reports, and financial liquidations.
-            </p>
-          </div>
+    <div className="space-y-6 pb-6 relative">
+      {/* Floating Right Edge Rail Trigger (When unexpanded) */}
+      {!isRightPaneExpanded && (
+        <button
+          type="button"
+          onClick={() => setIsRightPaneExpanded(true)}
+          className="fixed right-0 top-1/2 -translate-y-1/2 z-30 bg-[#001A4D] hover:bg-[#0E4EBD] text-white py-3.5 px-2 rounded-l-2xl shadow-2xl border-l-2 border-y-2 border-[#FFD41C] flex flex-col items-center gap-2 cursor-pointer transition-all hover:pr-3 group"
+          title="Expand Calendar of Activities & Monitor to the right"
+        >
+          <CalendarDays className="w-5 h-5 text-[#FFD41C]" />
+          <span className="text-[10px] font-bold tracking-wider uppercase [writing-mode:vertical-rl] rotate-180 text-white/90 group-hover:text-white">
+            Activities & Calendar
+          </span>
+          <ChevronLeft className="w-4 h-4 text-[#FFD41C] animate-pulse" />
+        </button>
+      )}
 
-          <div className="flex items-center gap-3 z-10 flex-shrink-0">
-
-          </div>
-        </div>
-        <Shield className="absolute right-6 top-1/2 -translate-y-1/2 w-44 h-44 opacity-10 pointer-events-none" />
-      </div>
-
-      {/* Top 5 Real-Time Reactive Metric Cards (Non-redirecting informative summary cards) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        {/* 1. Enrolled Students */}
-        <MetricCard
-          title="Enrolled Students"
-          value={activeStudents.length}
-          icon={Users}
-          gradient="navy"
-          change="Officially enrolled roster"
-        />
-
-        {/* 2. Pending Activities */}
-        <MetricCard
-          title="Pending Activities"
-          value={pendingActivities.length}
-          icon={CalendarCheck}
-          gradient="blue"
-          change="Proposals awaiting SAO"
-        />
-
-        {/* 3. Approved Activities */}
-        <MetricCard
-          title="Approved Activities"
-          value={approvedActivities.length}
-          icon={CalendarDays}
-          gradient="green"
-          change="Cleared for execution"
-        />
-
-        {/* 4. Pending Liquidations */}
-        <MetricCard
-          title="Pending Liquidations"
-          value={pendingLiquidations.length}
-          icon={Receipt}
-          gradient="gold"
-          change="Post-activity reviews"
-        />
-
-        {/* 5. Post-Activity Reports */}
-        <MetricCard
-          title="Post-Activity Reports"
-          value={pendingPARs.length}
-          icon={FileCheck2}
-          gradient="red-orange"
-          change="PAR reviews awaiting SAO"
-        />
-      </div>
-
-      {/* 3-Column Fixed Height Hub Cards (Top Pushed Rows, Zero Top Whitespace) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* 1. Unified Approvals Queue (Fixed Height h-[420px], Rows Pushed Directly to Top) */}
-        <Card className="lg:col-span-5 h-[420px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
-          <CardHeader className="border-b border-gray-100 py-3 px-4 flex-shrink-0">
-            <div className="flex items-center justify-between">
+      {/* Responsive Layout: Full Width when Unexpanded, 2-Column Split when Expanded */}
+      <div className={isRightPaneExpanded ? "grid grid-cols-1 xl:grid-cols-12 gap-6 items-start" : "space-y-6"}>
+        {/* ── Main Section (Spans 8 cols when 3rd pane expanded, full width when collapsed) ── */}
+        <div className={isRightPaneExpanded ? "xl:col-span-8 space-y-6" : "space-y-6"}>
+          {/* Dynamic Welcome Banner (Top Blue Card with Personalized Greeting) */}
+          <div className="relative bg-gradient-to-br from-[#001A4D] via-[#002B7F] to-[#0A47B8] rounded-3xl p-6 sm:p-8 text-white overflow-hidden shadow-lg shadow-[#001A4D]/10 border border-blue-900/40">
+            <div className="absolute left-0 top-0 bottom-0 w-2.5 bg-[#FFD41C]" />
+            <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
               <div>
-                <div className="flex items-center gap-2">
-                  <FileCheck className="w-5 h-5 text-[#0E4EBD]" />
-                  <CardTitle className="text-[#001A4D] text-lg font-bold">Pending Approvals Queue</CardTitle>
+                <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                  <span className="px-3 py-0.5 rounded-full text-xs font-bold bg-[#FFD41C] text-[#001A4D] uppercase tracking-wider">
+                    SAO Portal
+                  </span>
+                  {activeCollegePeriod && (
+                    <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-white/20 text-white">
+                      College: {activeCollegePeriod.semester}
+                    </span>
+                  )}
+                  {activeShsPeriod && (
+                    <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-amber-400/25 text-amber-200 border border-amber-400/30">
+                      SHS: {activeShsPeriod.semester}
+                    </span>
+                  )}
                 </div>
-                <p className="text-[11px] text-gray-500 mt-0.5">
-                  Showing 4 oldest pending submissions (FIFO)
+                <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">
+                  {greeting}, {adviserDisplayName}.
+                </h2>
+                <p className="text-white/80 text-xs sm:text-sm mt-1 max-w-2xl leading-relaxed">
+                  STI College Ormoc — Real-time overview of student activities, approved activity schedules, post-activity reports, and financial liquidations.
                 </p>
               </div>
-              <span className="px-2.5 py-0.5 bg-[#001A4D] text-white rounded-full text-xs font-mono font-bold">
-                {unifiedApprovalsQueue.length} Total
-              </span>
-            </div>
-          </CardHeader>
-          <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start">
-            {/* Rows Pushed Directly to Top - Non-scrollable FIFO queue limited to 4 items */}
-            <div className="space-y-2 flex-1 pt-0 mt-0">
-              {unifiedApprovalsQueue.length === 0 ? (
-                <div className="py-10 text-center text-gray-500">
-                  <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-2" />
-                  <p className="font-bold text-[#001A4D]">All Approval Queues are Clear!</p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    There are currently no pending items awaiting adviser review.
-                  </p>
-                </div>
-              ) : (
-                unifiedApprovalsQueue.slice(0, 4).map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-3 p-2.5 hover:bg-gray-50/80 rounded-xl transition-colors border border-gray-100"
+
+              <div className="flex items-center gap-3 z-10 flex-shrink-0">
+                {!isRightPaneExpanded && (
+                  <Button
+                    type="button"
+                    onClick={() => setIsRightPaneExpanded(true)}
+                    className="bg-[#FFD41C] hover:bg-amber-400 text-[#001A4D] font-bold text-xs rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-transform active:scale-95"
                   >
-                    <div className={`w-2.5 h-2.5 rounded-full ${item.badgeColor} flex-shrink-0`} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1.5">
-                        <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                          {item.domainLabel}
-                        </span>
-                        {item.dateFormatted && (
-                          <span className="text-[10px] text-gray-400 font-medium">
-                            Submitted: {item.dateFormatted}
-                          </span>
-                        )}
-                      </div>
-                      <div className="font-semibold text-[#001A4D] text-xs truncate">{item.title}</div>
-                      <div className="text-[11px] text-gray-500 truncate mt-0.5">{item.subtitle}</div>
-                    </div>
-                    {/* Review Button Redirecting Directly to Specific Item Review Page */}
-                    <Button
-                      size="sm"
-                      onClick={() => navigate(item.route)}
-                      className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-semibold h-7 px-3 flex-shrink-0 cursor-pointer"
-                    >
-                      Review
-                    </Button>
-                  </div>
-                ))
-              )}
+                    <CalendarDays className="w-4 h-4 text-[#001A4D]" />
+                    <span>Activities & Calendar</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
             </div>
-          </CardContent>
-        </Card>
+            <Shield className="absolute right-6 top-1/2 -translate-y-1/2 w-44 h-44 opacity-10 pointer-events-none" />
+          </div>
 
-        {/* 2. Organization Activity (Fixed Height h-[420px], Rows Pushed Directly to Top) */}
-        <Card className="lg:col-span-4 h-[420px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
-          <CardHeader className="border-b border-gray-100 py-3.5 px-4 pb-3 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Building2 className="w-5 h-5 text-[#0E4EBD]" />
-              <CardTitle className="text-[#001A4D] text-lg font-bold">Organization Activity</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start overflow-hidden">
-            {/* Rows Pushed Directly to Top - Scrollable without visible scrollbar */}
-            <div className="space-y-2 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden pt-0 mt-0">
-              {organizationActivityList.length === 0 ? (
-                <div className="py-10 text-center text-gray-400">
-                  <Building2 className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-                  <p className="text-sm font-medium">No active organizations found.</p>
+          {/* Top 4 Real-Time Reactive Metric Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* 1. Pending Activities */}
+            <MetricCard
+              title="Pending Activities"
+              value={pendingActivities.length}
+              icon={CalendarCheck}
+              gradient="blue"
+              change="Proposals awaiting SAO"
+            />
+
+            {/* 2. Approved Activities */}
+            <MetricCard
+              title="Approved Activities"
+              value={approvedActivities.length}
+              icon={CalendarDays}
+              gradient="green"
+              change="Cleared for execution"
+            />
+
+            {/* 3. Pending Liquidations */}
+            <MetricCard
+              title="Pending Liquidations"
+              value={pendingLiquidations.length}
+              icon={Receipt}
+              gradient="gold"
+              change="Post-activity reviews"
+            />
+
+            {/* 4. Post-Activity Reports */}
+            <MetricCard
+              title="Post-Activity Reports"
+              value={pendingPARs.length}
+              icon={FileCheck2}
+              gradient="red-orange"
+              change="PAR reviews awaiting SAO"
+            />
+          </div>
+
+          {/* 2 Hub Cards: Pending Approvals Queue & Organization Activity */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* 1. Unified Approvals Queue (Fixed Height h-[500px], Rows Pushed Directly to Top) */}
+            <Card className="h-[500px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
+              <CardHeader className="border-b border-gray-100 py-3.5 px-4 flex-shrink-0">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <FileCheck className="w-5 h-5 text-[#0E4EBD]" />
+                      <CardTitle className="text-[#001A4D] text-lg font-bold">Pending Approvals Queue</CardTitle>
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-0.5">
+                      Showing oldest pending submissions (FIFO)
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-0.5 bg-[#001A4D] text-white rounded-full text-xs font-mono font-bold">
+                    {unifiedApprovalsQueue.length} Total
+                  </span>
                 </div>
-              ) : (
-                organizationActivityList.map((org) => (
-                  <div key={org.id} className="p-2.5 bg-gray-50/60 rounded-xl border border-gray-100">
-                    <div className="flex items-center gap-2.5 mb-1.5">
-                      <div className="w-8 h-8 bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-lg flex items-center justify-center text-white font-bold text-xs uppercase overflow-hidden flex-shrink-0 shadow-xs">
-                        {org.logoUrl ? (
-                          <img src={org.logoUrl} alt={org.name} className="w-full h-full object-cover" />
-                        ) : (
-                          org.name.slice(0, 3)
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-bold text-[#001A4D] text-xs truncate">{org.fullName}</div>
-                        <div className="text-[11px] text-gray-500 flex items-center justify-between mt-0.5">
-                          <span>{org.activitiesCount} activity(ies) approved</span>
-                          <span>{org.memberCount} member(s)</span>
-                        </div>
-                      </div>
+              </CardHeader>
+              <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start overflow-hidden">
+                {/* Rows Pushed Directly to Top - Scrollable FIFO queue without visible scrollbar */}
+                <div className="space-y-2 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden pt-0 mt-0">
+                  {unifiedApprovalsQueue.length === 0 ? (
+                    <div className="py-16 text-center text-gray-500">
+                      <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-2" />
+                      <p className="font-bold text-[#001A4D]">All Approval Queues are Clear!</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        There are currently no pending items awaiting adviser review.
+                      </p>
                     </div>
-                    <Progress value={org.progress} className="h-1.5 bg-gray-200" />
-                  </div>
-                ))
-              )}
-            </div>
+                  ) : (
+                    unifiedApprovalsQueue.slice(0, 6).map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3 p-2.5 hover:bg-gray-50/80 rounded-xl transition-colors border border-gray-100"
+                      >
+                        <div className={`w-2.5 h-2.5 rounded-full ${item.badgeColor} flex-shrink-0`} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                              {item.domainLabel}
+                            </span>
+                            {item.dateFormatted && (
+                              <span className="text-[10px] text-gray-400 font-medium">
+                                Submitted: {item.dateFormatted}
+                              </span>
+                            )}
+                          </div>
+                          <div className="font-semibold text-[#001A4D] text-xs truncate">{item.title}</div>
+                          <div className="text-[11px] text-gray-500 truncate mt-0.5">{item.subtitle}</div>
+                        </div>
+                        {/* Review Button Redirecting Directly to Specific Item Review Page */}
+                        <Button
+                          size="sm"
+                          onClick={() => navigate(item.route)}
+                          className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-semibold h-7 px-3 flex-shrink-0 cursor-pointer"
+                        >
+                          Review
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CardContent>
+            </Card>
 
-            {/* Bottom Button */}
-            <Button
-              variant="outline"
-              onClick={() => navigate("/home/organizations")}
-              className="w-full border-gray-200 text-[#001A4D] hover:bg-gray-50 font-semibold text-xs mt-2 flex-shrink-0 cursor-pointer"
-            >
-              View All Recognized Clubs →
-            </Button>
-          </CardContent>
-        </Card>
+            {/* 2. Organization Activity (Fixed Height h-[500px], Rows Pushed Directly to Top) */}
+            <Card className="h-[500px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
+              <CardHeader className="border-b border-gray-100 py-3.5 px-4 pb-3 flex-shrink-0">
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-[#0E4EBD]" />
+                  <CardTitle className="text-[#001A4D] text-lg font-bold">Organization Activity</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start overflow-hidden">
+                {/* Rows Pushed Directly to Top - Scrollable without visible scrollbar */}
+                <div className="space-y-2 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden pt-0 mt-0">
+                  {organizationActivityList.length === 0 ? (
+                    <div className="py-16 text-center text-gray-400">
+                      <Building2 className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                      <p className="text-sm font-medium">No active organizations found.</p>
+                    </div>
+                  ) : (
+                    organizationActivityList.map((org) => (
+                      <div key={org.id} className="p-2.5 bg-gray-50/60 rounded-xl border border-gray-100">
+                        <div className="flex items-center gap-2.5 mb-1.5">
+                          <div className="w-8 h-8 bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-lg flex items-center justify-center text-white font-bold text-xs uppercase overflow-hidden flex-shrink-0 shadow-xs">
+                            {org.logoUrl ? (
+                              <img src={org.logoUrl} alt={org.name} className="w-full h-full object-cover" />
+                            ) : (
+                              org.name.slice(0, 3)
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-[#001A4D] text-xs truncate">{org.fullName}</div>
+                            <div className="text-[11px] text-gray-500 flex items-center justify-between mt-0.5">
+                              <span>{org.activitiesCount} activity(ies) approved</span>
+                              <span>{org.memberCount} member(s)</span>
+                            </div>
+                          </div>
+                        </div>
+                        <Progress value={org.progress} className="h-1.5 bg-gray-200" />
+                      </div>
+                    ))
+                  )}
+                </div>
 
-        {/* 3. Quick Actions Panel (Fixed Height h-[420px], Rows Pushed Directly to Top) */}
-        <Card className="lg:col-span-3 h-[420px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
-          <CardHeader className="border-b border-gray-100 py-3.5 px-4 pb-3 flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-[#FFC107]" />
-              <CardTitle className="text-[#001A4D] text-lg font-bold">Quick Actions</CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start space-y-2 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-            <Button
-              onClick={() => navigate("/home/students")}
-              className="w-full bg-[#001A4D] hover:bg-[#0E4EBD] text-white justify-between font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <span className="flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-[#FFD41C]" />
-                Student Registry
-              </span>
-              <span className="px-2 py-0.5 bg-white/20 text-white rounded-full text-[11px] font-bold">
-                {activeStudents.length} Active
-              </span>
-            </Button>
+                {/* Bottom Button */}
+                <Button
+                  variant="outline"
+                  onClick={() => navigate("/home/organizations")}
+                  className="w-full border-gray-200 text-[#001A4D] hover:bg-gray-50 font-semibold text-xs mt-2 flex-shrink-0 cursor-pointer"
+                >
+                  View All Recognized Clubs →
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
 
-            <Button
-              onClick={() => navigate("/home/event-approvals?tab=pending")}
-              variant="outline"
-              className="w-full border-gray-300 text-[#001A4D] hover:bg-gray-50 justify-between font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <span className="flex items-center gap-2">
-                <CalendarCheck className="w-4 h-4 text-[#0E4EBD]" />
-                Activity Approvals
-              </span>
-              {pendingActivities.length > 0 && (
-                <span className="px-2 py-0.5 bg-blue-500 text-white rounded-full text-[11px] font-bold">
-                  {pendingActivities.length}
-                </span>
-              )}
-            </Button>
-
-            <Button
-              onClick={() => navigate("/home/liquidations?tab=pending")}
-              variant="outline"
-              className="w-full border-gray-300 text-[#001A4D] hover:bg-gray-50 justify-between font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <span className="flex items-center gap-2">
-                <Receipt className="w-4 h-4 text-amber-600" />
-                Review Liquidations
-              </span>
-              {pendingLiquidations.length > 0 && (
-                <span className="px-2 py-0.5 bg-amber-500 text-white rounded-full text-[11px] font-bold">
-                  {pendingLiquidations.length}
-                </span>
-              )}
-            </Button>
-
-            <Button
-              onClick={() => navigate("/home/post-activity-reports")}
-              variant="outline"
-              className="w-full border-gray-300 text-[#001A4D] hover:bg-gray-50 justify-between font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <span className="flex items-center gap-2">
-                <FileCheck2 className="w-4 h-4 text-[#FF5E36]" />
-                Post-Activity Reports
-              </span>
-              {pendingPARs.length > 0 && (
-                <span className="px-2 py-0.5 bg-[#FF5E36] text-white rounded-full text-[11px] font-bold">
-                  {pendingPARs.length}
-                </span>
-              )}
-            </Button>
-
-            <Button
-              onClick={() => navigate("/home/organizations")}
-              variant="outline"
-              className="w-full border-gray-300 text-[#001A4D] hover:bg-gray-50 justify-start font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <Building2 className="w-4 h-4 mr-2 text-[#0E4EBD]" />
-              Manage Clubs & Roster
-            </Button>
-
-            <Button
-              onClick={() => navigate("/home/attendance")}
-              variant="outline"
-              className="w-full border-gray-300 text-[#001A4D] hover:bg-gray-50 justify-start font-semibold text-xs py-3.5 cursor-pointer"
-            >
-              <TrendingUp className="w-4 h-4 mr-2 text-green-600" />
-              Attendance Monitoring
-            </Button>
-          </CardContent>
-        </Card>
+        {/* ── Right 3rd Pane (Expanded to right when isRightPaneExpanded is true) ── */}
+        {isRightPaneExpanded && (
+          <div className="xl:col-span-4 sticky top-6">
+            <CalendarAndActivityMonitorPane
+              activities={monitoredActivities}
+              liquidations={liquidations}
+              postActivityReports={postActivityReports}
+              orgMap={orgMap}
+              onOpenReminder={setSelectedReminderItem}
+              onCollapse={() => setIsRightPaneExpanded(false)}
+            />
+          </div>
+        )}
       </div>
-
-      {/* Calendar of Activities Section */}
-      <ActivityCalendar
-        activities={approvedActivities}
-        orgMap={orgMap}
-        title="Calendar of Activities"
-        subtitle="Official institutional (STI SAS) and organization activities approved for execution"
-        viewAllLink="/home/event-approvals?tab=approved"
-        layoutMode="auto"
-      />
 
       {/* 7-Step Activity Proposal (AP) Wizard Modal */}
       <CreateProposalModal
@@ -596,6 +594,18 @@ export function Dashboard() {
           role: 'sas_admin',
         }}
       />
+
+      {/* Send Liquidation Reminder Modal */}
+      {selectedReminderItem && (
+        <SendLiquidationReminderModal
+          isOpen={Boolean(selectedReminderItem)}
+          onClose={() => setSelectedReminderItem(null)}
+          event={selectedReminderItem.event}
+          daysRemaining={selectedReminderItem.daysRemaining}
+          deadlineDateStr={selectedReminderItem.deadlineDateStr}
+          concludedDateStr={selectedReminderItem.concludedDateStr}
+        />
+      )}
     </div>
   );
 }

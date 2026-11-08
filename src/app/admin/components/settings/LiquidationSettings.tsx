@@ -21,7 +21,7 @@ export default function LiquidationSettings({ onUnsavedChange }: LiquidationSett
             </label>
             <input
               type="number"
-              defaultValue={7}
+              defaultValue={15}
               onChange={onUnsavedChange}
               className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]"
             />

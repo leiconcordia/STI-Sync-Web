@@ -33,6 +33,11 @@ import {
   deleteEvent,
 } from "../../modules/events";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
+import {
+  resolveCleanOrgName,
+  resolveCleanOrgAcronym,
+  isSasCreatedEvent,
+} from "../../modules/events/utils/organization-display.utils";
 import type { EventDocument } from "../../modules/events/types/event.types";
 import { formatCurrency } from "../../utils/currency";
 import { formatAppDateTime } from "../../utils/date";
@@ -236,19 +241,50 @@ export function EventApprovals() {
     setCurrentPage(1);
   }, [searchQuery, filterOrg, filterDateRange, filterCategory, filterSemester, customFrom, customTo]);
 
-  const getOrgName = (orgId: string) => {
+  const orgMap = useMemo(() => {
+    const map = new Map<string, { name: string; acronym?: string; logoUrl?: string | null }>();
+    (orgs || []).forEach((o: any) => {
+      map.set(o.id, { name: o.name, acronym: o.acronym || o.name, logoUrl: o.logoUrl });
+    });
+    return map;
+  }, [orgs]);
+
+  const getOrgName = (input: any) => {
+    if (typeof input === 'object' && input !== null) {
+      return resolveCleanOrgName(input, orgMap);
+    }
+    const orgId = String(input || '');
     if (["sas", "sas_admin", "sao", "sao_admin"].includes(orgId)) return "Student Affairs & Services";
     const found = orgs.find((o) => o.id === orgId);
     return found ? (found.name || found.acronym || orgId) : orgId || "Student Org";
   };
 
-  const getOrgAcronym = (orgId: string) => {
+  const getOrgAcronym = (input: any) => {
+    if (typeof input === 'object' && input !== null) {
+      return resolveCleanOrgAcronym(input, orgMap);
+    }
+    const orgId = String(input || '');
     if (["sas", "sas_admin", "sao", "sao_admin"].includes(orgId)) return "SAS";
     const found = orgs.find((o) => o.id === orgId);
     return found ? (found.acronym || found.name.slice(0, 4).toUpperCase()) : "ORG";
   };
 
-  const getOrgLogo = (orgId: string) => {
+  const getOrgLogo = (input: any) => {
+    if (typeof input === 'object' && input !== null) {
+      const isSas = isSasCreatedEvent(input, orgMap);
+      if (isSas) return stiOrmocLogo;
+      const hId = input.hostingOrgId || input.organizationId;
+      if (hId && orgMap.has(hId)) return orgMap.get(hId)?.logoUrl || null;
+      const cleanName = resolveCleanOrgName(input, orgMap).toLowerCase();
+      const cleanAcr = resolveCleanOrgAcronym(input, orgMap).toLowerCase();
+      for (const [, meta] of orgMap.entries()) {
+        if (meta.name.toLowerCase() === cleanName || (meta.acronym && meta.acronym.toLowerCase() === cleanAcr)) {
+          return meta.logoUrl || null;
+        }
+      }
+      return null;
+    }
+    const orgId = String(input || '');
     if (["sas", "sas_admin", "sao", "sao_admin"].includes(orgId) || !orgId) return stiOrmocLogo;
     return orgs.find((o) => o.id === orgId)?.logoUrl || null;
   };
@@ -353,7 +389,7 @@ export function EventApprovals() {
         if (q) {
           const titleMatch = event.title?.toLowerCase().includes(q);
           const refMatch = event.referenceId?.toLowerCase().includes(q);
-          const orgMatch = getOrgName(event.hostingOrgId).toLowerCase().includes(q);
+          const orgMatch = getOrgName(event).toLowerCase().includes(q);
           const venueMatch = getVenueName(event.venueId).toLowerCase().includes(q);
           if (!titleMatch && !refMatch && !orgMatch && !venueMatch) return false;
         }
@@ -523,7 +559,7 @@ export function EventApprovals() {
     const headers = ["Event Title", "Organization", "Category", "Date", "Venue", "Budget", "Submitted", "Status"];
     const rows = (activeList as EventDocument[]).map((e) => [
       `"${(e.title || "").replace(/"/g, '""')}"`,
-      `"${getOrgAcronym(e.hostingOrgId || "")}"`,
+      `"${getOrgAcronym(e)}"`,
       `"${getCategoryName(e.eventCategoryId || "")}"`,
       `"${getFirstSessionDate(e) || "TBD"}"`,
       `"${getVenueName(e.venueId)}"`,
@@ -1082,10 +1118,10 @@ export function EventApprovals() {
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-2">
                             <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] flex items-center justify-center flex-shrink-0">
-                              {getOrgAcronym(draft.hostingOrgId || "").slice(0, 2)}
+                              {getOrgAcronym(draft).slice(0, 2)}
                             </div>
                             <span className="font-semibold text-gray-800 text-xs">
-                              {getOrgAcronym(draft.hostingOrgId || "")}
+                              {getOrgAcronym(draft)}
                             </span>
                           </div>
                         </td>
@@ -1140,8 +1176,8 @@ export function EventApprovals() {
                   })
                 ) : (
                   (paginatedItems as EventDocument[]).map((event) => {
-                    const orgAcronym = getOrgAcronym(event.hostingOrgId);
-                    const orgLogo = getOrgLogo(event.hostingOrgId);
+                    const orgAcronym = getOrgAcronym(event);
+                    const orgLogo = getOrgLogo(event);
                     const isRejected = event.proposalStatus === "rejected";
                     const isReturned =
                       event.proposalStatus === "returned" ||
@@ -1416,7 +1452,7 @@ export function EventApprovals() {
                               </>
                             ) : (
                               <>
-                                {isApproved && event.status !== 'completed' && (
+                                {isApproved && event.status !== 'completed' && isSasCreatedEvent(event, orgMap) && (
                                   <button
                                     onClick={() => setConcludingEvent(event)}
                                     className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1427,7 +1463,7 @@ export function EventApprovals() {
                                   </button>
                                 )}
 
-                                {(event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && (
+                                {(event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && isSasCreatedEvent(event, orgMap) && (
                                   <button
                                     onClick={() => setArchivingEvent(event)}
                                     className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"

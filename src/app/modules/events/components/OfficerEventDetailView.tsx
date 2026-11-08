@@ -17,6 +17,7 @@ import { useOrganizationStream } from '../../organizations/hooks/useOrganization
 import { useEventTypesStream, useVenuesStream } from '../hooks/useEventConfigStream';
 import { useDepartments, useCourses, useSections } from '../../academic/hooks/useAcademicStream';
 import ActivitySignatoryTracker from '../../activity-proposals/components/workflow/ActivitySignatoryTracker';
+import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
 import { useAllLiquidations } from '../../finance/hooks/useLiquidationStream';
@@ -34,6 +35,12 @@ import { withdrawProposal } from '../services/event.service';
 import { toast } from 'sonner';
 import { formatAppDate, formatAppDateTime, format12HourTime } from '../../../utils/date';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
+import {
+  isEventLiquidationExempt,
+  isSasCreatedEvent,
+  resolveCleanOrgName,
+  resolveCleanOrgAcronym,
+} from '../utils/organization-display.utils';
 
 interface OfficerEventDetailViewProps {
   event: EventDocument;
@@ -245,10 +252,48 @@ export default function OfficerEventDetailView({
   const editCheck = canEditProposal(event, 'officer', profile?.uid, profile?.activeOrganizationId);
   const isEditable = editCheck.canEdit;
 
-  const isSas = !event.hostingOrgId || event.hostingOrgId === 'sas';
-  const orgObj = orgs.find((o) => o.id === event.hostingOrgId);
-  const orgName = isSas ? 'Student Affairs & Services (SAS)' : (orgObj?.name || event.hostingOrgId || 'My Organization');
-  const orgAcronym = isSas ? 'SAS' : (orgObj?.acronym || 'Club');
+  const orgMap = useMemo(() => {
+    const map = new Map<string, { name: string; acronym?: string; logoUrl?: string | null }>();
+    (orgs || []).forEach((o) => {
+      map.set(o.id, { name: o.name, acronym: o.acronym, logoUrl: o.logoUrl || o.logo || null });
+    });
+    return map;
+  }, [orgs]);
+
+  // Combine proposal and event payload so organization and authoring data is completely resolved
+  const unifiedEventEntity = useMemo(() => {
+    return {
+      ...event,
+      ...activeEvent,
+      ...(fullProposal || {}),
+      id: activeEvent?.id || event?.id,
+      title: fullProposal?.title || activeEvent?.title || event?.title,
+      organizers: (fullProposal?.organizers && fullProposal.organizers.length > 0)
+        ? fullProposal.organizers
+        : (activeEvent?.organizers && activeEvent.organizers.length > 0)
+        ? activeEvent.organizers
+        : (event as any)?.organizers || [],
+      organizationName: fullProposal?.organizationName || activeEvent?.organizationName || (event as any)?.organizationName,
+      hostingOrgId: activeEvent?.hostingOrgId || (event as any)?.hostingOrgId || (fullProposal as any)?.hostingOrgId,
+      organizationId: activeEvent?.organizationId || (event as any)?.organizationId || (fullProposal as any)?.organizationId,
+      fundingSource: fullProposal?.fundingSource || activeEvent?.fundingSource || (event as any)?.fundingSource,
+      isOfficerProposal: activeEvent?.isOfficerProposal ?? (event as any)?.isOfficerProposal ?? fullProposal?.isOfficerProposal,
+      creatorRole: (activeEvent as any)?.createdByRole || (activeEvent as any)?.creatorRole || fullProposal?.creatorRole || (event as any)?.creatorRole || (event as any)?.createdByRole,
+    };
+  }, [event, activeEvent, fullProposal]);
+
+  // Determine if this activity was created directly by SAS / SAO Admin
+  const isSasCreated = useMemo(() => {
+    return isSasCreatedEvent(unifiedEventEntity, orgMap);
+  }, [unifiedEventEntity, orgMap]);
+
+  const isSas = isSasCreated;
+  const orgName = useMemo(() => resolveCleanOrgName(unifiedEventEntity, orgMap), [unifiedEventEntity, orgMap]);
+  const orgAcronym = useMemo(() => resolveCleanOrgAcronym(unifiedEventEntity, orgMap), [unifiedEventEntity, orgMap]);
+  const orgObj = useMemo(() => {
+    const hId = unifiedEventEntity.hostingOrgId || unifiedEventEntity.organizationId;
+    return (orgs || []).find((o) => o.id === hId);
+  }, [orgs, unifiedEventEntity.hostingOrgId, unifiedEventEntity.organizationId]);
   const orgLogo = isSas ? null : (orgObj?.logoUrl || orgObj?.logo || null);
   const eventTypeName = eventTypes.find((t) => t.id === event.eventTypeId)?.name || 'General Activity';
   const venueObj = venues.find((v) => v.id === event.venueId);
@@ -299,6 +344,32 @@ export default function OfficerEventDetailView({
     Number(financialProjections.totalRevenue) ||
     financialProjections.revenues.reduce((s: number, r: any) => s + Number(r.totalAmount || 0), 0);
   const projectedBalance = totalRevenueAmount - totalExpenseAmount;
+
+  const totalApprovedBudget =
+    totalExpenseAmount ||
+    Number((event as any).totalApprovedBudget || (activeEvent as any)?.totalApprovedBudget || 0);
+
+  const effectiveFundingSource =
+    fullProposal?.fundingSource ||
+    (activeEvent as any)?.fundingSource ||
+    (event as any)?.fundingSource ||
+    (isSas ? 'school_budget' : 'organization_funds');
+
+  const isOrgLedger = effectiveFundingSource === 'organization_funds';
+  const isZeroBudget = effectiveFundingSource === 'zero_budget';
+  const isSchoolBudget = effectiveFundingSource === 'school_budget';
+
+  const isLiquidationExempt = useMemo(() => {
+    return isEventLiquidationExempt({
+      ...event,
+      ...activeEvent,
+      ...fullProposal,
+      financialProjections,
+      totalApprovedBudget,
+    });
+  }, [event, activeEvent, fullProposal, financialProjections, totalApprovedBudget]);
+
+  const isVoucherRequired = !isLiquidationExempt && isSchoolBudget && (Number(totalApprovedBudget) > 0);
 
   // Official Form AP-01 PDF Export
   const handleExportPDF = async () => {
@@ -397,84 +468,7 @@ export default function OfficerEventDetailView({
     }
   };
 
-  // Determine if this activity was created directly by SAS / SAO Admin
-  const isSasCreated = useMemo(() => {
-    // 1. Explicit officer indicators take absolute precedence
-    if (
-      activeEvent.isOfficerProposal === true ||
-      (event as any).isOfficerProposal === true ||
-      fullProposal?.isOfficerProposal === true
-    ) {
-      return false;
-    }
 
-    const creatorRole = (
-      (activeEvent as any).createdByRole ||
-      (activeEvent as any).creatorRole ||
-      fullProposal?.creatorRole ||
-      (event as any).creatorRole ||
-      (event as any).createdByRole ||
-      ''
-    ).toLowerCase().trim();
-    if (creatorRole === 'officer' || creatorRole === 'student_officer') {
-      return false;
-    }
-
-    // 2. Direct publish or direct SAS flag
-    if (
-      (activeEvent as any).isDirectPublished === true ||
-      (activeEvent as any).isSasDirect === true ||
-      (event as any).isSasDirect === true ||
-      fullProposal?.isSasDirect === true
-    ) {
-      return true;
-    }
-
-    // 3. If an approval chain with multiple signatories exists and creator is not explicitly admin, treat as routed proposal
-    const chain =
-      fullProposal?.approvalChain ||
-      (activeEvent as any).approvalChain ||
-      (event as any).approvalChain ||
-      [];
-    if (chain.length > 0 && creatorRole !== 'admin' && creatorRole !== 'sas_admin' && creatorRole !== 'sao_admin') {
-      return false;
-    }
-
-    if (creatorRole === 'admin' || creatorRole === 'sas' || creatorRole === 'sas_admin' || creatorRole === 'sao_admin') {
-      return true;
-    }
-
-    const createdByEmail = (
-      activeEvent.createdByEmail ||
-      fullProposal?.createdByEmail ||
-      (event as any).createdByEmail ||
-      ''
-    ).toLowerCase().trim();
-    if (createdByEmail === 'sao@ormoc.sti.edu.ph' || createdByEmail.startsWith('sas@') || createdByEmail.startsWith('sao@')) {
-      return true;
-    }
-
-    const createdByName = (
-      activeEvent.createdByName ||
-      fullProposal?.createdByName ||
-      (event as any).createdByName ||
-      ''
-    ).toLowerCase().trim();
-    if (createdByName === 'sao admin' || createdByName === 'sas' || createdByName.includes('student affairs & services')) {
-      return true;
-    }
-
-    const hOrg = (activeEvent.hostingOrgId || (event as any).hostingOrgId || '').toLowerCase().trim();
-    if ((hOrg === 'sas' || hOrg === 'sas_admin' || hOrg === 'sao' || hOrg === 'sao_admin') && chain.length === 0) {
-      return true;
-    }
-
-    if (activeEvent.isOfficerProposal === false || (event as any).isOfficerProposal === false) {
-      return true;
-    }
-
-    return false;
-  }, [activeEvent, event, fullProposal]);
 
   const timing = getEventTimingStatus(activeEvent);
   const isCompleted =
@@ -661,16 +655,15 @@ export default function OfficerEventDetailView({
 
   // Effective Approval Chain across all sources (live Firestore document, full proposal, and event prop)
   const displayApprovalChain = useMemo(() => {
+    let raw: ProposalApprovalStep[] = [];
     if (activeEvent?.approvalChain && Array.isArray(activeEvent.approvalChain) && activeEvent.approvalChain.length > 0) {
-      return activeEvent.approvalChain;
+      raw = activeEvent.approvalChain;
+    } else if (fullProposal?.approvalChain && Array.isArray(fullProposal.approvalChain) && fullProposal.approvalChain.length > 0) {
+      raw = fullProposal.approvalChain;
+    } else if ((event as any)?.approvalChain && Array.isArray((event as any).approvalChain) && (event as any).approvalChain.length > 0) {
+      raw = (event as any).approvalChain;
     }
-    if (fullProposal?.approvalChain && Array.isArray(fullProposal.approvalChain) && fullProposal.approvalChain.length > 0) {
-      return fullProposal.approvalChain;
-    }
-    if ((event as any)?.approvalChain && Array.isArray((event as any).approvalChain) && (event as any).approvalChain.length > 0) {
-      return (event as any).approvalChain;
-    }
-    return [];
+    return normalizeApprovalStages(raw);
   }, [activeEvent.approvalChain, fullProposal?.approvalChain, (event as any)?.approvalChain]);
 
   // Effective Proposal History across all sources + synthesized from signed steps if empty
@@ -728,6 +721,21 @@ export default function OfficerEventDetailView({
         </div>
 
         <div className="flex items-center gap-3">
+          {/* Funding Source Badge */}
+          {isOrgLedger ? (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-purple-900/80 text-purple-200 border border-purple-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>💼 Club Treasury</span>
+            </div>
+          ) : isZeroBudget ? (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-900/80 text-emerald-200 border border-emerald-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>📄 ₱0 Budget</span>
+            </div>
+          ) : (
+            <div className="px-3 py-1 rounded-full text-xs font-bold bg-blue-900/80 text-blue-200 border border-blue-400/40 flex items-center gap-1.5 shadow-2xs">
+              <span>🏛️ School Budget</span>
+            </div>
+          )}
+
           {/* Status Badge */}
           <div className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${currentStatus.bg}`}>
             <StatusIcon className="w-3.5 h-3.5" />
@@ -855,24 +863,50 @@ export default function OfficerEventDetailView({
           {isApproved && (
             <button
               type="button"
-              onClick={() => setIsDisbursementVoucherModalOpen(true)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-95 ${
+              disabled={isSasCreated && !hasDisbursementVoucher}
+              onClick={() => {
+                if (isSasCreated && !hasDisbursementVoucher) {
+                  toast.info('Institutional Activity: Official disbursement voucher is managed directly by Student Affairs & Services (SAS).');
+                  return;
+                }
+                setIsDisbursementVoucherModalOpen(true);
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
                 hasDisbursementVoucher
-                  ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
-                  : 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-amber-400/30'
+                  ? isSasCreated
+                    ? 'bg-slate-800 hover:bg-slate-700 text-sky-200 border border-slate-700 cursor-pointer'
+                    : 'bg-emerald-700 hover:bg-emerald-800 text-white cursor-pointer active:scale-95'
+                  : isSasCreated
+                  ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                  : isVoucherRequired
+                  ? 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-amber-400/30 cursor-pointer active:scale-95'
+                  : 'bg-slate-800 hover:bg-slate-700 text-purple-200 border border-purple-500/30 cursor-pointer active:scale-95'
               }`}
               title={
                 hasDisbursementVoucher
-                  ? "View or update official Disbursement Voucher"
-                  : "Upload official Disbursement Voucher to unlock Cash Custodians & Liquidation"
+                  ? isSasCreated
+                    ? "View official SAS institutional disbursement voucher"
+                    : isOrgLedger
+                    ? "View or update attached Organization disbursement receipt / slip"
+                    : "View or update official Disbursement Voucher"
+                  : isSasCreated
+                  ? "SAS Institutional Activity: Disbursement voucher is managed by SAS Administration"
+                  : isVoucherRequired
+                  ? "Upload official Disbursement Voucher to unlock Cash Custodians & Liquidation"
+                  : "Optionally attach an acknowledgment receipt or check copy from organization treasury"
               }
             >
               {hasDisbursementVoucher ? (
                 <>
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
-                  <span>Disbursement Voucher (Attached)</span>
+                  {isSasCreated ? <Eye className="w-3.5 h-3.5 text-sky-300" /> : <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />}
+                  <span>{isSasCreated ? 'View SAS Voucher' : isOrgLedger ? 'Org Receipt (Attached)' : 'Disbursement Voucher (Attached)'}</span>
                 </>
-              ) : (
+              ) : isSasCreated ? (
+                <>
+                  <Lock className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Voucher (SAS Managed)</span>
+                </>
+              ) : isVoucherRequired ? (
                 <>
                   <FileCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
                   <span>Upload Disbursement Voucher</span>
@@ -880,34 +914,50 @@ export default function OfficerEventDetailView({
                     Required
                   </span>
                 </>
+              ) : (
+                <>
+                  <FileText className="w-3.5 h-3.5 text-purple-300" />
+                  <span>Attach Receipt (Optional)</span>
+                  <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-purple-400/20 text-purple-200 border border-purple-400/30">
+                    Org Funds
+                  </span>
+                </>
               )}
             </button>
           )}
 
-          {/* 3. Cash Custodians / Financial Liquidation (Locked if no voucher) */}
+          {/* 3. Cash Custodians / Financial Liquidation */}
           <button
             type="button"
-            disabled={!isApproved || !hasDisbursementVoucher}
+            disabled={!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)}
             onClick={() => {
+              if (isLiquidationExempt) {
+                toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
+                return;
+              }
               if (!isApproved) {
                 toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
                 return;
               }
-              if (!hasDisbursementVoucher) {
+              if (isVoucherRequired && !hasDisbursementVoucher) {
                 toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
                 return;
               }
               setIsLiquidationModalOpen(true);
             }}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-              !isApproved || !hasDisbursementVoucher
+              !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
                 ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
+                : isLiquidationExempt
+                ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 cursor-pointer'
                 : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
             }`}
             title={
-              !isApproved
+              isLiquidationExempt
+                ? "Liquidation Exempt: Activity has no budget and no financial projections"
+                : !isApproved
                 ? "Locked: Activity must achieve official approval first"
-                : !hasDisbursementVoucher
+                : (isVoucherRequired && !hasDisbursementVoucher)
                 ? "Locked: Upload the official Disbursement Voucher first before opening Cash Custodians & Liquidation"
                 : "Allocate cash advances per task against approved budget for physical disbursement and liquidation"
             }
@@ -920,7 +970,15 @@ export default function OfficerEventDetailView({
                   Locked
                 </span>
               </>
-            ) : !hasDisbursementVoucher ? (
+            ) : isLiquidationExempt ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Liquidation</span>
+                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Exempt (₱0)
+                </span>
+              </>
+            ) : (isVoucherRequired && !hasDisbursementVoucher) ? (
               <>
                 <Lock className="w-3.5 h-3.5 text-amber-400/80" />
                 <span>Financial Liquidation</span>
@@ -961,7 +1019,7 @@ export default function OfficerEventDetailView({
           )}
 
           {/* Conclude Event Action */}
-          {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && (
+          {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isSasCreated && (
             <button
               type="button"
               onClick={() => setShowConcludeModal(true)}
@@ -974,7 +1032,7 @@ export default function OfficerEventDetailView({
           )}
 
           {/* Archive Event Action */}
-          {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && (
+          {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isSasCreated && (
             <button
               type="button"
               onClick={() => setShowArchiveModal(true)}
@@ -1458,21 +1516,32 @@ export default function OfficerEventDetailView({
                     </button>
                     <button
                       type="button"
-                      disabled={!hasDisbursementVoucher}
+                      disabled={!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher}
                       onClick={() => {
-                        if (!hasDisbursementVoucher) {
+                        if (isLiquidationExempt) {
+                          toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
+                          return;
+                        }
+                        if (isVoucherRequired && !hasDisbursementVoucher) {
                           toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
                           return;
                         }
                         setIsLiquidationModalOpen(true);
                       }}
                       className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
-                        !hasDisbursementVoucher
+                        isLiquidationExempt
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer'
+                          : isVoucherRequired && !hasDisbursementVoucher
                           ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
                           : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                       }`}
                     >
-                      {!hasDisbursementVoucher ? (
+                      {isLiquidationExempt ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Liquidation (Exempt — ₱0)</span>
+                        </>
+                      ) : isVoucherRequired && !hasDisbursementVoucher ? (
                         <>
                           <Lock className="w-3.5 h-3.5 text-slate-400" />
                           <span>Liquidation (Voucher Required)</span>
@@ -1495,67 +1564,90 @@ export default function OfficerEventDetailView({
                       Financial Liquidation (Form LF-01 Readiness)
                     </span>
                     <span className="font-mono text-slate-600">
-                      Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount || totalApprovedBudget)}</strong>
+                      Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalApprovedBudget)}</strong>
                     </span>
                   </div>
 
-                  <div className="p-4 bg-gradient-to-br from-blue-50/70 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-[#001A4D]">
-                          Proposed Expense Baseline Guide
-                        </span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-300">
-                          Guidance Ceiling
-                        </span>
+                  {isLiquidationExempt ? (
+                    <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-emerald-950">
+                            Non-Monetary Activity — No Financial Liquidation Required
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                            Liquidation Exempt
+                          </span>
+                        </div>
+                        <p className="text-xs text-emerald-800 max-w-xl">
+                          This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is not required for clearance, compliance, or archiving.
+                        </p>
                       </div>
-                      <p className="text-xs text-slate-600 max-w-xl">
-                        The proposal budget serves as an approved spending baseline. Click <strong>"Financial Liquidation"</strong> to add your actual purchases line-by-line with official receipts (ORs) and track your remaining balance in real time.
-                      </p>
-                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setIsLiquidationModalOpen(true)}
-                      className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0 ${
-                        isLiquidationApproved
-                          ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
-                          : isLiquidationSubmitted
-                          ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                          : isLiquidationReturned
-                          ? 'bg-amber-600 hover:bg-amber-700 text-white'
-                          : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
-                      }`}
-                    >
-                      {isLiquidationApproved ? (
-                        <>
-                          <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                          <span>View Liquidation (Approved)</span>
-                        </>
-                      ) : isLiquidationSubmitted ? (
-                        <>
-                          <Eye className="w-4 h-4 text-blue-200" />
-                          <span>View Liquidation (Under Review)</span>
-                        </>
-                      ) : isLiquidationReturned ? (
-                        <>
-                          <RotateCcw className="w-4 h-4 text-amber-200" />
-                          <span>Revise Liquidation (Returned)</span>
-                        </>
-                      ) : isLiquidationDraft ? (
-                        <>
-                          <Receipt className="w-4 h-4 text-[#FFD41C]" />
-                          <span>Continue Liquidation (Draft)</span>
-                        </>
-                      ) : (
-                        <>
-                          <Receipt className="w-4 h-4 text-[#FFD41C]" />
-                          <span>Open Financial Liquidation</span>
-                        </>
-                      )}
-                      <ChevronRight className="w-3.5 h-3.5 opacity-70" />
-                    </button>
-                  </div>
+                      <div className="px-3.5 py-2 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 shrink-0">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-700" />
+                        <span>Liquidation Exempt (₱0)</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-gradient-to-br from-blue-50/70 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-[#001A4D]">
+                            Proposed Expense Baseline Guide
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-900 border border-blue-300">
+                            Guidance Ceiling
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 max-w-xl">
+                          The proposal budget serves as an approved spending baseline. Click <strong>"Financial Liquidation"</strong> to add your actual purchases line-by-line with official receipts (ORs) and track your remaining balance in real time.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setIsLiquidationModalOpen(true)}
+                        className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0 ${
+                          isLiquidationApproved
+                            ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                            : isLiquidationSubmitted
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                            : isLiquidationReturned
+                            ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                            : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
+                        }`}
+                      >
+                        {isLiquidationApproved ? (
+                          <>
+                            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                            <span>View Liquidation (Approved)</span>
+                          </>
+                        ) : isLiquidationSubmitted ? (
+                          <>
+                            <Eye className="w-4 h-4 text-blue-200" />
+                            <span>View Liquidation (Under Review)</span>
+                          </>
+                        ) : isLiquidationReturned ? (
+                          <>
+                            <RotateCcw className="w-4 h-4 text-amber-200" />
+                            <span>Revise Liquidation (Returned)</span>
+                          </>
+                        ) : isLiquidationDraft ? (
+                          <>
+                            <Receipt className="w-4 h-4 text-[#FFD41C]" />
+                            <span>Continue Liquidation (Draft)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Receipt className="w-4 h-4 text-[#FFD41C]" />
+                            <span>Open Financial Liquidation</span>
+                          </>
+                        )}
+                        <ChevronRight className="w-3.5 h-3.5 opacity-70" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -2141,6 +2233,7 @@ export default function OfficerEventDetailView({
             isAdviser: Boolean(profile?.isAdviser),
           }}
           userRole={profile?.isAdviser || profile?.role === 'adviser' ? 'adviser' : 'officer'}
+          readOnly={isSasCreated}
           liquidationStatus={liquidationStatus}
         />
       )}
@@ -2169,7 +2262,11 @@ export default function OfficerEventDetailView({
       {/* CONCLUDE EVENT MODAL */}
       {showConcludeModal && (
         <ConcludeEventModal
-          event={event}
+          event={{
+            ...event,
+            ...(activeEvent || {}),
+            totalApprovedBudget,
+          }}
           isOpen={showConcludeModal}
           onClose={() => setShowConcludeModal(false)}
           adminUid={profile?.uid || 'officer-user'}
@@ -2184,7 +2281,11 @@ export default function OfficerEventDetailView({
       {/* ARCHIVE EVENT MODAL */}
       {showArchiveModal && (
         <ArchiveEventModal
-          event={event}
+          event={{
+            ...event,
+            ...(activeEvent || {}),
+            totalApprovedBudget,
+          }}
           isOpen={showArchiveModal}
           onClose={() => setShowArchiveModal(false)}
           adminUid={profile?.uid || 'officer-user'}
@@ -2217,6 +2318,7 @@ export default function OfficerEventDetailView({
           isOpen={isPublishModalOpen}
           onClose={() => setIsPublishModalOpen(false)}
           activity={event}
+          readOnly={isSasCreated}
         />
       )}
 
@@ -2226,6 +2328,7 @@ export default function OfficerEventDetailView({
           isOpen={isAttendanceModalOpen}
           onClose={() => setIsAttendanceModalOpen(false)}
           activity={activeEvent}
+          readOnly={isSasCreated}
           onUpdated={() => {
             // Live listener automatically receives updates; trigger parent refresh if applicable
           }}

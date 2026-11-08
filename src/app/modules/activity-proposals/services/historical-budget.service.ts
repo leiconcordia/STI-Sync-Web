@@ -21,6 +21,7 @@ export interface HistoricalActivityMatch {
   financialProjections?: FinancialProjections | null;
   budgetItems?: any[];
   matchScore: number;
+  rawProposal?: any;
 }
 
 const STOP_WORDS = new Set([
@@ -107,6 +108,7 @@ export function filterHistoricalMatches(
         financialProjections: data.financialProjections || null,
         budgetItems: Array.isArray(data.budgetItems) ? data.budgetItems : [],
         matchScore: score,
+        rawProposal: data,
       });
     }
   });

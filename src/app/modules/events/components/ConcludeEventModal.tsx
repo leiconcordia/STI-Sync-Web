@@ -16,6 +16,7 @@ import { toast } from 'sonner';
 import type { EventDocument } from '../types/event.types';
 import { concludeEvent } from '../services/event-lifecycle.service';
 import { areEventSessionsOver } from '../utils/event-lifecycle.utils';
+import { isEventLiquidationExempt } from '../utils/organization-display.utils';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
 
 interface ConcludeEventModalProps {
@@ -78,7 +79,8 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
     );
   }, [event]);
 
-  const isLiquidationCompulsory = totalApprovedBudget > 0 || hasCashCustodians;
+  const isExempt = useMemo(() => isEventLiquidationExempt(event), [event]);
+  const isLiquidationCompulsory = !isExempt && (totalApprovedBudget > 0 || hasCashCustodians);
 
   if (!isOpen || !event) return null;
 
@@ -224,7 +226,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
                 <span className="font-bold text-slate-900 dark:text-white">
                   {isLiquidationCompulsory
                     ? 'Compulsory Financial Liquidation Ready'
-                    : 'Zero-Budget Event (Liquidation Exempt)'}
+                    : 'Zero-Budget / No Financial Projection (Liquidation Exempt)'}
                 </span>
                 <span
                   className={`text-[10px] font-bold px-2 py-0.2 rounded-full uppercase tracking-wider ${
@@ -239,7 +241,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               <p className="text-slate-600 dark:text-slate-400">
                 {isLiquidationCompulsory
                   ? `This event has an approved baseline budget ceiling of ₱${formatPHP(totalApprovedBudget)}. Officers can record actual purchases line-by-line and attach official receipts for institutional liquidation (Form LF-01).`
-                  : 'This event has ₱0.00 approved funds and no cash advances. No financial liquidation report is required.'}
+                  : 'This event has no monetary budget allocation or expense projections. No financial liquidation report is required.'}
               </p>
             </div>
           </div>

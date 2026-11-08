@@ -5,6 +5,8 @@
  */
 
 import { canSignatoryApproveDocument, resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
+import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
+import { stripSasPhrases } from '../../events/utils/organization-display.utils';
 import {
   collection,
   doc,
@@ -33,6 +35,7 @@ import {
 } from '../../finance/services/finance.service';
 import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
+import { createNotification } from '../../notifications';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -97,11 +100,31 @@ export async function syncProposalToEventsCollection(
         ? 'pending_review'
         : mappedStatus;
 
+      const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+      const rawHostingOrg = String(
+        (proposal as any).hostingOrgId ||
+        (proposal as any).organizationId ||
+        existingData.hostingOrgId ||
+        existingData.organizationId ||
+        ''
+      ).trim();
+      const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
+
+      const hasStudentOrgName = Boolean(
+        ((proposal as any).organizationName && stripSasPhrases((proposal as any).organizationName).length > 0) ||
+        (existingData.organizationName && stripSasPhrases(existingData.organizationName).length > 0)
+      );
+
+      const hasStudentOrg = ((proposal as any).organizers || existingData.organizers || []).some(
+        (o: any) => typeof o === 'string' && stripSasPhrases(o).length > 0
+      );
       const isOfficerProposalVal =
         (proposal as any).isOfficerProposal !== undefined
           ? Boolean((proposal as any).isOfficerProposal)
           : existingData.isOfficerProposal !== undefined
           ? Boolean(existingData.isOfficerProposal)
+          : (hasStudentOrgId || hasStudentOrgName || hasStudentOrg)
+          ? true
           : proposal.creatorRole === 'officer' || proposal.creatorRole === 'student_officer';
 
       const resolvedOrgId =
@@ -157,8 +180,13 @@ export async function syncProposalToEventsCollection(
         eventCategoryId: 'campus_activity',
         customEventCategoryName: 'Official Campus Activity',
         isOfficerProposal: isOfficerProposalVal,
+        isSasDirect: !isOfficerProposalVal && Boolean((proposal as any).isSasDirect),
         hostingOrgId: resolvedOrgId,
         organizationId: (proposal as any).organizationId || existingData.organizationId || resolvedOrgId,
+        organizationName:
+          (proposal as any).organizationName ||
+          existingData.organizationName ||
+          (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
         semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
         schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
         targetAcademicLevel,
@@ -271,9 +299,21 @@ export async function saveProposalDraft(
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
+  const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+  const rawHostingOrg = String(formData.hostingOrgId || formData.organizationId || user.organizationId || '').trim();
+  const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
+  const hasStudentOrgName = Boolean(formData.organizationName && stripSasPhrases(formData.organizationName).length > 0);
+  const hasStudentOrgInOrganizers = (formData.organizers || []).some(
+    (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
+  );
+
   const isOfficer =
     formData.isOfficerProposal === true ||
+    hasStudentOrgId ||
+    hasStudentOrgName ||
+    hasStudentOrgInOrganizers ||
     user.role === 'officer' ||
+    user.role === 'student_officer' ||
     formData.creatorRole === 'officer' ||
     formData.creatorRole === 'student_officer';
 
@@ -291,11 +331,16 @@ export async function saveProposalDraft(
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
     creatorRole: formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin'),
-    isOfficerProposal: formData.isOfficerProposal !== undefined ? formData.isOfficerProposal : isOfficer,
+    isOfficerProposal: isOfficer,
+    isSasDirect: !isOfficer && ['sas_admin', 'admin', 'sao_admin', 'sas'].includes(((formData.creatorRole || user.role || '') as string).toLowerCase().trim()),
     organizationId: formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || (isOfficer ? 'student_org' : 'sas'),
     hostingOrgId: formData.hostingOrgId || formData.organizationId || (user as any).organizationId || (isOfficer ? 'student_org' : 'sas'),
     updatedAt: serverTimestamp(),
   };
+
+  if (Array.isArray(formData.approvalChain) && formData.approvalChain.length > 0) {
+    payload.approvalChain = normalizeApprovalStages(formData.approvalChain);
+  }
 
   if (!existingId && !formData.id) {
     payload.createdAt = serverTimestamp();
@@ -324,8 +369,19 @@ export async function submitProposalForReview(
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
+  const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+  const rawHostingOrg = String(formData.hostingOrgId || formData.organizationId || user.organizationId || '').trim();
+  const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
+  const hasStudentOrgName = Boolean(formData.organizationName && stripSasPhrases(formData.organizationName).length > 0);
+  const hasStudentOrgInOrganizers = (formData.organizers || []).some(
+    (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
+  );
+
   const isOfficer =
     formData.isOfficerProposal === true ||
+    hasStudentOrgId ||
+    hasStudentOrgName ||
+    hasStudentOrgInOrganizers ||
     ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'officer' ||
     ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'student_officer';
 
@@ -351,8 +407,8 @@ export async function submitProposalForReview(
     currentVersion += 1;
   }
 
-  // Initialize or reset approval chain statuses for multi-stage execution
-  const chain = [...(formData.approvalChain || [])];
+  // Initialize or reset approval chain statuses for multi-stage execution (strictly normalized 1..M)
+  const chain = normalizeApprovalStages(formData.approvalChain || []);
   const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
   if (hasStages) {
     chain.forEach((step, idx) => {
@@ -506,6 +562,31 @@ export async function submitProposalForReview(
 
   // Sync to events collection as pending review (must follow signatory pipeline)
   await syncProposalToEventsCollection(payload, 'pending');
+
+  // Real-time submission notification dispatched to SAS Admin
+  try {
+    const orgName = formData.organizers || formData.hostingOrgId || 'Student Organization';
+    await createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'activity_proposal',
+      title: isResubmission
+        ? `Proposal Revised (v${currentVersion}.0): ${payload.title || 'Activity Proposal'}`
+        : `New Proposal Submitted: ${payload.title || 'Activity Proposal'}`,
+      message: `${orgName} submitted ${referenceNo} for institutional review.`,
+      resourceId: docId,
+      resourceType: 'event',
+      actionRoute: `/home/event-approvals?tab=pending&id=${docId}`,
+      isUrgent: Boolean(payload.isUrgent),
+      targetOrgId: formData.hostingOrgId || undefined,
+      targetOrgName: orgName,
+      senderId: user.uid,
+      senderName: user.name,
+      senderRoleTitle: user.role || 'Officer',
+    });
+  } catch (notifErr) {
+    console.warn('[submitProposalForReview] Notification dispatch error:', notifErr);
+  }
 
   return { success: true, id: docId, referenceNo };
 }
@@ -872,6 +953,35 @@ export async function endorseProposal(
     }
   }
 
+  // Real-time endorsement/approval notification to Officers
+  try {
+    const orgId = data.hostingOrgId;
+    const eventTitle = data.title || (data as any).eventName || 'Activity Proposal';
+    if (orgId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: orgId,
+        targetOrgName: (data as any).organizers || orgId,
+        type: isFullyApproved ? 'document_approved' : 'document_submission',
+        category: 'activity_proposal',
+        title: isFullyApproved
+          ? `Proposal Fully Approved: ${eventTitle}`
+          : `Proposal Endorsed by ${signerName}: ${eventTitle}`,
+        message: isFullyApproved
+          ? `Your activity proposal has received full institutional approval and is cleared for execution.`
+          : `${signerName} (${signerRoleTitle || 'Signatory'}) endorsed your proposal for Stage ${nextStageIndex}.`,
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: `/officer/events`,
+        senderId: userUid || signatory.uid,
+        senderName: signerName,
+        senderRoleTitle: signerRoleTitle,
+      });
+    }
+  } catch (notifErr) {
+    console.warn('[endorseProposal] Officer notification error:', notifErr);
+  }
+
   return {
     success: true,
     nextStepIndex: targetStepIdx + 1,
@@ -1026,6 +1136,34 @@ export async function returnProposalForRevision(
       returnDeadline: effectiveDeadline,
     }
   );
+
+  // Real-time return notification dispatched to Officers
+  try {
+    const orgId = data.hostingOrgId;
+    const eventTitle = data.title || (data as any).eventName || 'Activity Proposal';
+    if (orgId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: orgId,
+        targetOrgName: (data as any).organizers || orgId,
+        type: 'document_returned',
+        category: 'activity_proposal',
+        title: `Proposal Returned for Revision: ${eventTitle}`,
+        message: remarks
+          ? `${signerName} (${signerRoleTitle || 'Signatory'}): "${remarks}"`
+          : `${signerName} returned your proposal for revision. Please review feedback remarks.`,
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: `/officer/events`,
+        isUrgent: true,
+        senderId: signerUid,
+        senderName: signerName,
+        senderRoleTitle: signerRoleTitle,
+      });
+    }
+  } catch (notifErr) {
+    console.warn('[returnProposalForRevision] Officer notification error:', notifErr);
+  }
 
   return { success: true };
 }

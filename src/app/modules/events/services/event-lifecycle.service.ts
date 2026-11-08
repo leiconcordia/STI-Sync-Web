@@ -30,6 +30,7 @@ import { logAuditEvent } from '../../audit/services/audit.service';
 import { finalizeEventAttendance } from '../../attendance/services/attendance.service';
 import type { EventDocument, EventProposalHistoryLog } from '../types/event.types';
 import { getEventTimingStatus, areEventSessionsOver } from '../utils/event-lifecycle.utils';
+import { isEventLiquidationExempt } from '../utils/organization-display.utils';
 
 export interface EventArchiveReadinessSummary {
   eventTitle: string;
@@ -148,7 +149,8 @@ export async function concludeEvent(
     Array.isArray(eventData.budgetCustodians) &&
     eventData.budgetCustodians.some((c) => Number(c.allocatedAmount || 0) > 0);
 
-  const isLiquidationRequired = totalApprovedBudget > 0 || hasCashCustodians;
+  const isExempt = isEventLiquidationExempt(eventData);
+  const isLiquidationRequired = !isExempt && (totalApprovedBudget > 0 || hasCashCustodians);
 
   // Finalize attendance if enabled with strict 7s safety timeout to prevent hanging
   let absenteesCount = 0;
@@ -284,11 +286,9 @@ export async function checkEventArchiveReadiness(
 
     unapprovedLiqs = unapproved.length;
 
-    const hasBudget =
-      Number(eventData.totalApprovedBudget || 0) > 0 ||
-      (eventData.budgetItems && eventData.budgetItems.length > 0);
+    const isLiqExempt = isEventLiquidationExempt(eventData);
 
-    if (totalLiqs > 0 || hasBudget) {
+    if (!isLiqExempt && (totalLiqs > 0 || Number(eventData.totalApprovedBudget || 0) > 0)) {
       if (unapprovedLiqs > 0) {
         liquidationStatus = 'pending';
         blockingReasons.push(
@@ -297,6 +297,8 @@ export async function checkEventArchiveReadiness(
       } else {
         liquidationStatus = 'approved';
       }
+    } else if (isLiqExempt) {
+      liquidationStatus = 'none_required';
     }
   } catch (err) {
     console.warn('[checkEventArchiveReadiness] Liquidation check failure:', err);

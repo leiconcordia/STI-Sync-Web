@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Bell, ChevronDown, LogOut, Settings, Zap } from "lucide-react";
+import { ChevronDown, LogOut, Settings, Zap } from "lucide-react";
 import { useAdviserProfile, signOutAdviser } from '../../../modules/auth';
 import { DevDataSeederModal } from '../../../../dev/components/DevDataSeederModal';
+import { NotificationDropdown } from '../../../modules/notifications';
 
 interface TopNavProps {
   title: string;
@@ -51,11 +52,8 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
           <span className="hidden sm:inline">Dev Seeder</span>
         </button>
 
-        {/* Notifications */}
-        <button className="relative p-2 hover:bg-gray-100 rounded-lg transition-colors">
-          <Bell className="w-5 h-5 text-[#001A4D]" />
-          <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
-        </button>
+        {/* Real-time Notifications */}
+        <NotificationDropdown role="admin" userId={profile?.id} />
 
         {/* User Menu */}
         <div className="relative">

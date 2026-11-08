@@ -32,12 +32,25 @@ import {
   Percent,
   Sliders,
   Briefcase,
+  Wand2,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTargetAudienceStructure, type DynamicProgram } from '../../../academic';
 import { useStudents } from '../../../students/hooks/useStudentStream';
 import { subscribeToSignatories } from '../../../signatories/services/signatory.service';
 import type { InstitutionalSignatory } from '../../../signatories/types/signatory.types';
 import type { ProposalFormData, ProposalTargetAudience } from '../../types/proposal.types';
+import {
+  AIAssistButton,
+  AISuggestionModal,
+  enhanceMaterialsList,
+  enhanceMarketingPlan,
+  enhanceDocumentationPlan,
+  generateMaterialsFromPrompt,
+  generateMarketingPlanFromPrompt,
+  generateDocumentationPlanFromPrompt,
+  validateMeaningfulInput,
+} from '../../../ai';
 
 interface Step3Props {
   formData: ProposalFormData;
@@ -1031,6 +1044,191 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     onChange({ documentationPlan: documentationPlan.filter((_, idx) => idx !== index) });
   };
 
+  // ── AI State & Handlers for Step 3 ──
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiModalTitle, setAiModalTitle] = useState('');
+  const [aiModalDesc, setAiModalDesc] = useState('');
+  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
+  const [activeGeneratingField, setActiveGeneratingField] = useState<'materials' | 'marketing' | 'documentation' | null>(null);
+  const [aiTargetField, setAiTargetField] = useState<'materials' | 'marketing' | 'documentation'>('materials');
+  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
+
+  const hasMaterialsInput = (formData.materials || []).some((m) => m.trim().length > 0);
+  const hasMarketingInput = (formData.marketingPlan || []).some((m) => m.trim().length > 0);
+  const hasDocInput = (formData.documentationPlan || []).some((d) => d.trim().length > 0);
+
+  const handleEnhanceMaterialsAction = async () => {
+    if (activeGeneratingField) return;
+    const rawList = (formData.materials || []).filter((m) => m.trim().length > 0);
+    if (rawList.length === 0) {
+      handleCreateMaterialsPrompt();
+      return;
+    }
+    const action = async () => {
+      setActiveGeneratingField('materials');
+      try {
+        const list = await enhanceMaterialsList(rawList);
+        if (list && list.length > 0) {
+          setAiTargetField('materials');
+          setAiModalTitle('Enhance Materials Checklist');
+          setAiModalDesc('Standardized into formal campus equipment & specifications:');
+          setAiSuggestionList(list);
+          setAiModalOpen(true);
+        } else {
+          toast.info('Could not enhance materials. Please verify your items.');
+        }
+      } catch (err) {
+        console.error('Error enhancing materials:', err);
+        toast.error('Failed to enhance materials. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleCreateMaterialsPrompt = () => {
+    if (activeGeneratingField) return;
+    setAiTargetField('materials');
+    setAiModalTitle('Generate Materials Checklist with AI');
+    setAiModalDesc('Prompt special equipment, technical setup, or supplies needed:');
+    setAiSuggestionList([]);
+    setAiModalOpen(true);
+  };
+
+  const handleEnhanceMarketingAction = async () => {
+    if (activeGeneratingField) return;
+    const rawList = (formData.marketingPlan || []).filter((m) => m.trim().length > 0);
+    if (rawList.length === 0) {
+      handleCreateMarketingPrompt();
+      return;
+    }
+    const action = async () => {
+      setActiveGeneratingField('marketing');
+      try {
+        const list = await enhanceMarketingPlan(rawList);
+        if (list && list.length > 0) {
+          setAiTargetField('marketing');
+          setAiModalTitle('Enhance Marketing Strategy');
+          setAiModalDesc('Elevated to formal campus campaign promotional tactics:');
+          setAiSuggestionList(list);
+          setAiModalOpen(true);
+        } else {
+          toast.info('Could not enhance marketing plan. Please verify your entries.');
+        }
+      } catch (err) {
+        console.error('Error enhancing marketing plan:', err);
+        toast.error('Failed to enhance marketing plan. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleCreateMarketingPrompt = () => {
+    if (activeGeneratingField) return;
+    setAiTargetField('marketing');
+    setAiModalTitle('Generate Marketing Strategy with AI');
+    setAiModalDesc('Prompt how you wish to promote this event or reach students:');
+    setAiSuggestionList([]);
+    setAiModalOpen(true);
+  };
+
+  const handleEnhanceDocumentationAction = async () => {
+    if (activeGeneratingField) return;
+    const rawList = (formData.documentationPlan || []).filter((d) => d.trim().length > 0);
+    if (rawList.length === 0) {
+      handleCreateDocumentationPrompt();
+      return;
+    }
+    const action = async () => {
+      setActiveGeneratingField('documentation');
+      try {
+        const list = await enhanceDocumentationPlan(rawList);
+        if (list && list.length > 0) {
+          setAiTargetField('documentation');
+          setAiModalTitle('Enhance Documentation Deliverables');
+          setAiModalDesc('Standardized into official Post-Activity Report (PAR) deliverables:');
+          setAiSuggestionList(list);
+          setAiModalOpen(true);
+        } else {
+          toast.info('Could not enhance documentation deliverables. Please verify your items.');
+        }
+      } catch (err) {
+        console.error('Error enhancing documentation:', err);
+        toast.error('Failed to enhance documentation. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleCreateDocumentationPrompt = () => {
+    if (activeGeneratingField) return;
+    setAiTargetField('documentation');
+    setAiModalTitle('Generate Documentation Deliverables with AI');
+    setAiModalDesc('Prompt custom post-event reporting, media, or documentation requirements:');
+    setAiSuggestionList([]);
+    setAiModalOpen(true);
+  };
+
+  const handleGenerateFromPrompt = async (prompt: string) => {
+    if (activeGeneratingField) return;
+    const validation = validateMeaningfulInput(prompt);
+    if (!validation.isValid) {
+      toast.warning(validation.error || 'Please enter meaningful words.');
+      return;
+    }
+
+    const title = formData.title?.trim() || 'Campus Activity';
+    setActiveGeneratingField(aiTargetField);
+
+    try {
+      if (aiTargetField === 'materials') {
+        const list = await generateMaterialsFromPrompt(title, prompt, formData.category);
+        if (list && list.length > 0) setAiSuggestionList(list);
+        else toast.info('No materials could be generated from that prompt.');
+      } else if (aiTargetField === 'marketing') {
+        const list = await generateMarketingPlanFromPrompt(
+          title,
+          targetAudience.academicLevels?.join(', ') || 'College & SHS',
+          prompt
+        );
+        if (list && list.length > 0) setAiSuggestionList(list);
+        else toast.info('No marketing strategies could be generated from that prompt.');
+      } else if (aiTargetField === 'documentation') {
+        const list = await generateDocumentationPlanFromPrompt(title, prompt);
+        if (list && list.length > 0) setAiSuggestionList(list);
+        else toast.info('No documentation items could be generated from that prompt.');
+      }
+    } catch (e) {
+      console.error('Error generating from prompt:', e);
+      toast.error('Failed to generate suggestions. Please try again.');
+    } finally {
+      setActiveGeneratingField(null);
+    }
+  };
+
+  const handleApplyAIList = (selectedItems: string[]) => {
+    if (selectedItems.length === 0) return;
+
+    if (aiTargetField === 'materials') {
+      onChange({ materials: selectedItems });
+      toast.success(`${hasMaterialsInput ? 'Updated' : 'Added'} ${selectedItems.length} material item(s)!`);
+    } else if (aiTargetField === 'marketing') {
+      onChange({ marketingPlan: selectedItems });
+      toast.success(`${hasMarketingInput ? 'Updated' : 'Added'} ${selectedItems.length} marketing channel(s)!`);
+    } else if (aiTargetField === 'documentation') {
+      onChange({ documentationPlan: selectedItems });
+      toast.success(`${hasDocInput ? 'Updated' : 'Added'} ${selectedItems.length} documentation deliverable(s)!`);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* ── Section 7: Materials ── */}
@@ -1044,9 +1242,37 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               Materials
             </label>
           </div>
-          <span className="text-[11px] text-gray-400">
-            {materials.length} item{materials.length === 1 ? '' : 's'} recorded
-          </span>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label={hasMaterialsInput ? 'Enhance Materials' : 'Generate with AI'}
+              isLoading={activeGeneratingField === 'materials'}
+              disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'materials')}
+              options={
+                hasMaterialsInput
+                  ? [
+                      {
+                        id: 'enhance-mat',
+                        label: 'Enhance Materials Checklist',
+                        description: 'Standardize into formal campus equipment & specifications',
+                        icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleEnhanceMaterialsAction,
+                      },
+                    ]
+                  : [
+                      {
+                        id: 'generate-mat',
+                        label: 'Generate Materials from Prompt',
+                        description: 'Type needed equipment, audio-visual, or logistics supplies',
+                        icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleCreateMaterialsPrompt,
+                      },
+                    ]
+              }
+            />
+            <span className="text-[11px] text-gray-400">
+              {materials.length} item{materials.length === 1 ? '' : 's'} recorded
+            </span>
+          </div>
         </div>
 
         {/* Selected materials chips */}
@@ -2080,9 +2306,37 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               Marketing plan
             </label>
           </div>
-          <span className="text-[11px] text-gray-400">
-            {marketingPlan.length} channels
-          </span>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label={hasMarketingInput ? 'Enhance Marketing' : 'Generate with AI'}
+              isLoading={activeGeneratingField === 'marketing'}
+              disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'marketing')}
+              options={
+                hasMarketingInput
+                  ? [
+                      {
+                        id: 'enhance-mkt',
+                        label: 'Enhance Existing Marketing Plan',
+                        description: 'Elevate into formal campus promotion strategies',
+                        icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleEnhanceMarketingAction,
+                      },
+                    ]
+                  : [
+                      {
+                        id: 'generate-mkt',
+                        label: 'Generate Marketing Plan from Prompt',
+                        description: 'Type campaign channels or promotion ideas',
+                        icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleCreateMarketingPrompt,
+                      },
+                    ]
+              }
+            />
+            <span className="text-[11px] text-gray-400">
+              {marketingPlan.length} channels
+            </span>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -2141,9 +2395,37 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               Documentation
             </label>
           </div>
-          <span className="text-[11px] text-gray-400">
-            {documentationPlan.length} deliverables
-          </span>
+          <div className="flex items-center gap-2">
+            <AIAssistButton
+              label={hasDocInput ? 'Enhance Documentation' : 'Generate with AI'}
+              isLoading={activeGeneratingField === 'documentation'}
+              disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'documentation')}
+              options={
+                hasDocInput
+                  ? [
+                      {
+                        id: 'enhance-doc',
+                        label: 'Enhance Existing Documentation',
+                        description: 'Elevate into official STI Post-Activity Report deliverables',
+                        icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleEnhanceDocumentationAction,
+                      },
+                    ]
+                  : [
+                      {
+                        id: 'generate-doc',
+                        label: 'Generate Documentation from Prompt',
+                        description: 'Type required reporting or media deliverables',
+                        icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                        onClick: handleCreateDocumentationPrompt,
+                      },
+                    ]
+              }
+            />
+            <span className="text-[11px] text-gray-400">
+              {documentationPlan.length} deliverables
+            </span>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -2190,6 +2472,29 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           </button>
         </div>
       </div>
+
+      {/* AI Suggestion Modal */}
+      <AISuggestionModal
+        isOpen={aiModalOpen}
+        onClose={() => setAiModalOpen(false)}
+        title={aiModalTitle}
+        description={aiModalDesc}
+        suggestionList={aiSuggestionList}
+        mode="list"
+        isLoading={Boolean(activeGeneratingField)}
+        onApplyList={handleApplyAIList}
+        onGenerateFromPrompt={handleGenerateFromPrompt}
+        promptPlaceholder={
+          aiTargetField === 'materials'
+            ? 'Prompt equipment or items needed (e.g. "sound system, 2 wireless mics, projector")...'
+            : aiTargetField === 'marketing'
+            ? 'Prompt promotion tactics (e.g. "Facebook teasers, classroom visits")...'
+            : 'Prompt reporting outputs (e.g. "attendance sheets, photo documentation, evaluation tally")...'
+        }
+        onRegenerate={() => {
+          if (activeAIAction) activeAIAction();
+        }}
+      />
     </div>
   );
 }

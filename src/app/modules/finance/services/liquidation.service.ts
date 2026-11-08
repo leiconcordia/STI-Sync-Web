@@ -28,6 +28,7 @@ import {
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { createNotification } from '../../notifications';
 import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
@@ -710,6 +711,27 @@ export const submitLiquidationReport = async (
     }
   } catch (evtErr) {
     console.warn('[submitLiquidationReport] Event sync notice:', evtErr);
+  }
+
+  // Real-time submission notification to SAS Admin
+  try {
+    const orgName = data?.organizationName || data?.organizationId || 'Student Organization';
+    const eventName = data?.eventTitle || (data as any)?.eventName || 'Completed Event';
+    await createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'financial_liquidation',
+      title: `Financial Liquidation Submitted: ${eventName}`,
+      message: `${orgName} submitted Form LF-01 liquidation for "${eventName}".`,
+      resourceId: id,
+      resourceType: 'liquidation',
+      actionRoute: `/home/liquidations?tab=pending&id=${id}`,
+      targetOrgId: data?.organizationId,
+      targetOrgName: orgName,
+      senderName: authorName || 'Officer',
+    });
+  } catch (notifErr) {
+    console.warn('[submitLiquidationReport] Notification dispatch notice:', notifErr);
   }
 };
 

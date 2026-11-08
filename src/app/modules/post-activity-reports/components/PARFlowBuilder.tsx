@@ -176,7 +176,15 @@ export default function PARFlowBuilder({
     let globalStep = 1;
     const flattened: PARApprovalStep[] = [];
 
-    updatedStages.forEach((stage, i) => {
+    let processed = [...updatedStages];
+    while (processed.length > 1 && processed[0].steps.length === 0) {
+      processed.shift();
+    }
+    if (processed.length === 0) {
+      processed = [{ stageIndex: 1, stageName: formatStageTitle(1, 0), steps: [] }];
+    }
+
+    processed.forEach((stage, i) => {
       const stageIdx = i + 1;
       const count = stage.steps.length;
       const stageName = formatStageTitle(stageIdx, count);
@@ -192,7 +200,7 @@ export default function PARFlowBuilder({
       });
     });
 
-    setStageConfigs(updatedStages.map((_, i) => ({ stageIndex: i + 1 })));
+    setStageConfigs(processed.map((_, i) => ({ stageIndex: i + 1 })));
     onChange(flattened);
   };
 
@@ -301,7 +309,10 @@ export default function PARFlowBuilder({
       }
       return s.step !== stepIdOrIndex;
     });
-    reindexAndPropagate(filtered);
+    const normalized = normalizeApprovalStages(filtered);
+    const maxStage = Math.max(1, ...normalized.map((s) => s.stageIndex ?? 1));
+    setStageConfigs(Array.from({ length: maxStage }, (_, i) => ({ stageIndex: i + 1 })));
+    onChange(normalized);
   };
 
   // Update Signatory Formal Label

@@ -146,6 +146,7 @@ export default function ProposalEndorsementModal({
   const userUid = signatorySession?.id || signatorySession?.uid;
   const userEmail = (signatorySession?.email || '').toLowerCase();
   const userRole = signatorySession?.role || '';
+  const userRoleTitle = signatorySession?.roleTitle || '';
   const currentStage = proposal.currentStageIndex ?? 1;
 
   const currentStep =
@@ -194,6 +195,14 @@ export default function ProposalEndorsementModal({
 
   // Dynamic approval authority permission check
   const canApprove = canSignatoryApproveDocument(signatorySession, 'proposal', myStep);
+
+  // Subsequent approvers after my step in the pipeline
+  const subsequentApproversCount = chain.filter((s, idx) => {
+    return idx > myStepIndex && (s.actionType === 'approve' || (s as any).canApproveProposal || (s as any).isFinalApprover);
+  }).length;
+
+  const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
+  const isFinalApprover = Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0));
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (!hasSignature) {

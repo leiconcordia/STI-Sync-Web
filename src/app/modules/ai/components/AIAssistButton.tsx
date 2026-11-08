@@ -57,12 +57,15 @@ export default function AIAssistButton({
     };
   }, [isOpen]);
 
-  const hasOptions = options && options.length > 0;
+  const hasMultipleOptions = Boolean(options && options.length > 1);
+  const singleOption = options && options.length === 1 ? options[0] : null;
 
   const handleButtonClick = () => {
     if (isLoading || disabled) return;
-    if (hasOptions) {
+    if (hasMultipleOptions) {
       setIsOpen(!isOpen);
+    } else if (singleOption) {
+      singleOption.onClick();
     } else if (onClick) {
       onClick();
     }
@@ -85,22 +88,26 @@ export default function AIAssistButton({
       ? 'bg-blue-50/90 hover:bg-blue-100/90 text-[#001A4D] border border-blue-200/80 shadow-2xs'
       : 'hover:bg-slate-100 text-slate-700 border border-transparent';
 
+  const displayLabel = isLoading
+    ? 'AI Generating...'
+    : label || singleOption?.label || 'AI Assist';
+
   return (
     <div className={`relative inline-block ${className}`} ref={containerRef}>
       <button
         type="button"
         onClick={handleButtonClick}
         disabled={disabled || isLoading}
-        title={tooltip || 'Enhance with Gemini AI'}
-        className={`inline-flex items-center font-bold transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed ${sizeClasses} ${variantClasses}`}
+        title={tooltip || (isLoading ? 'AI is generating...' : 'Enhance with Gemini AI')}
+        className={`inline-flex items-center font-bold transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${sizeClasses} ${variantClasses}`}
       >
         {isLoading ? (
           <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0E4EBD]" />
         ) : (
           <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />
         )}
-        <span>{isLoading ? 'AI Thinking...' : label}</span>
-        {hasOptions && !isLoading && (
+        <span>{displayLabel}</span>
+        {hasMultipleOptions && !isLoading && (
           <ChevronDown
             className={`w-3 h-3 text-[#0E4EBD] transition-transform duration-150 ${
               isOpen ? 'rotate-180' : ''
@@ -110,7 +117,7 @@ export default function AIAssistButton({
       </button>
 
       {/* Floating Action Menu */}
-      {isOpen && hasOptions && (
+      {isOpen && hasMultipleOptions && options && (
         <div className="absolute right-0 top-full mt-1.5 z-40 w-64 bg-white rounded-xl shadow-xl border border-gray-100 py-1.5 animate-in fade-in zoom-in-95 duration-150">
           <div className="px-3 py-1.5 border-b border-gray-100 flex items-center justify-between">
             <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1">
@@ -124,7 +131,7 @@ export default function AIAssistButton({
                 key={opt.id}
                 type="button"
                 onClick={() => handleOptionSelect(opt)}
-                className="w-full text-left px-3 py-2 text-xs hover:bg-blue-50/80 flex items-start gap-2.5 transition-colors group"
+                className="w-full text-left px-3 py-2 text-xs hover:bg-blue-50/80 flex items-start gap-2.5 transition-colors group cursor-pointer"
               >
                 {opt.icon && (
                   <span className="mt-0.5 text-gray-500 group-hover:text-[#001A4D] transition-colors">

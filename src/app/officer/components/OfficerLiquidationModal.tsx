@@ -39,6 +39,7 @@ import {
   isSasInstitutionalActivity,
   isEventConcluded,
 } from '../../modules/events/utils/event-lifecycle.utils';
+import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import {
   createLiquidationReport,
   updateLiquidationReport,
@@ -367,6 +368,11 @@ export default function OfficerLiquidationModal({
         return false;
       }
 
+      // If no budget or no financial projection, no liquidation is required
+      if (!isEditingThisEvent && isEventLiquidationExempt(e)) {
+        return false;
+      }
+
       return true;
     });
   }, [allEvents, orgId, orgName, userRole, liquidatedEventIds, editingReport, initialEventId]);
@@ -383,6 +389,7 @@ export default function OfficerLiquidationModal({
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resubmissionNote, setResubmissionNote] = useState('');
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   const selectedEvent = useMemo(() => {
     return (
@@ -535,6 +542,10 @@ export default function OfficerLiquidationModal({
     return isEventConcluded(selectedEvent);
   }, [selectedEvent]);
 
+  const isSelectedEventExempt = useMemo(() => {
+    return isEventLiquidationExempt(selectedEvent);
+  }, [selectedEvent]);
+
   // Form LF-01 Official Header Information
   const [employeeName, setEmployeeName] = useState<string>('');
   const [detectedEmployeeSource, setDetectedEmployeeSource] = useState<'club_adviser' | 'sas_admin' | 'manual'>('manual');
@@ -598,7 +609,7 @@ export default function OfficerLiquidationModal({
     setActivityEndDate(val);
     const parsed = parseDateSafely(val);
     if (parsed) {
-      const newDeadline = new Date(parsed.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const newDeadline = new Date(parsed.getTime() + 15 * 24 * 60 * 60 * 1000);
       const newDeadStr = format(newDeadline, 'yyyy-MM-dd');
       setSubmissionDeadline(newDeadStr);
 
@@ -736,11 +747,11 @@ export default function OfficerLiquidationModal({
     setDateReleased((prev) => (prev ? prev : relDateStr));
     setActivityEndDate((prev) => (prev ? prev : endDateStr));
 
-    // F. Deadline (+7 days from activityEndDate)
+    // F. Deadline (+15 days from activityEndDate)
     if (endDateStr) {
       const parsedEnd = parseDateSafely(endDateStr);
       if (parsedEnd) {
-        const deadDate = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
         const deadStr = format(deadDate, 'yyyy-MM-dd');
         setSubmissionDeadline((prev) => (prev ? prev : deadStr));
 
@@ -1513,7 +1524,12 @@ export default function OfficerLiquidationModal({
 
               {selectedEvent && (
                 <div>
-                  {isConcluded ? (
+                  {isSelectedEventExempt ? (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Liquidation Exempt (₱0 Budget)
+                    </span>
+                  ) : isConcluded ? (
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-2xs">
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                       Event Concluded (Ready to Submit)
@@ -1527,6 +1543,18 @@ export default function OfficerLiquidationModal({
                 </div>
               )}
             </div>
+
+            {isSelectedEventExempt && (
+              <div className="mb-3 p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-2.5 text-xs text-emerald-900">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold uppercase tracking-wider text-[11px] text-emerald-800">Non-Monetary Activity — Liquidation Exempt:</span>
+                  <p className="mt-0.5 text-emerald-800 leading-relaxed">
+                    This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is strictly exempt and not required for compliance, clearing, or archiving.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {isEventBudgetFlagged && eventBudgetFeedback && (
               <div className="mb-3 p-3 bg-amber-100/70 border border-amber-300 rounded-lg text-xs text-amber-950 flex items-start gap-2">
@@ -1775,10 +1803,10 @@ export default function OfficerLiquidationModal({
                 </span>
               </div>
 
-              {/* Deadline for Submission (+7 days) */}
+              {/* Deadline for Submission (+15 days) */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Liquidation Deadline <span className="text-xs text-blue-600">(+7 Days)</span>
+                  Liquidation Deadline <span className="text-xs text-blue-600">(+15 Days)</span>
                 </label>
                 <input
                   type="date"
@@ -1788,7 +1816,7 @@ export default function OfficerLiquidationModal({
                   className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
-                  Standard 7-day liquidation policy
+                  Standard 15-day liquidation policy
                 </span>
               </div>
 

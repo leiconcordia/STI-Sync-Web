@@ -33,6 +33,7 @@ import {
   FileCheck2,
   DollarSign,
   Layers,
+  Users,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';

@@ -171,7 +171,7 @@ export function LiquidationExportPreviewModal({
       // Fallback baseline for activity end date and deadline from report.createdAt
       const fallbackEndDate = parseLocalDate(report.createdAt) || new Date();
       const initialEndStr = format(fallbackEndDate, 'MMM d, yyyy');
-      const initialDeadDate = new Date(fallbackEndDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const initialDeadDate = new Date(fallbackEndDate.getTime() + 15 * 24 * 60 * 60 * 1000);
       const initialDeadStr = format(initialDeadDate, 'MMM d, yyyy');
 
       if (!initialEndDateVal) setActivityEndDate(initialEndStr);
@@ -307,7 +307,7 @@ export function LiquidationExportPreviewModal({
         // Apply enriched event values if not already persisted on the report
         if (!initialEndDateVal && eventEndParsed) {
           const endStr = format(eventEndParsed, 'MMM d, yyyy');
-          const deadlineDate = new Date(eventEndParsed.getTime() + 7 * 24 * 60 * 60 * 1000);
+          const deadlineDate = new Date(eventEndParsed.getTime() + 15 * 24 * 60 * 60 * 1000);
           const deadlineStr = format(deadlineDate, 'MMM d, yyyy');
 
           setActivityEndDate(endStr);
@@ -351,12 +351,12 @@ export function LiquidationExportPreviewModal({
     };
   }, [isOpen, report?.id, report?.eventId]);
 
-  // Handle dynamic Activity End Date change -> auto calculates deadline (+7 days) and lapse
+  // Handle dynamic Activity End Date change -> auto calculates deadline (+15 days) and lapse
   const handleActivityEndDateChange = (val: string) => {
     setActivityEndDate(val);
     const parsed = parseLocalDate(val);
     if (parsed) {
-      const newDeadline = new Date(parsed.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const newDeadline = new Date(parsed.getTime() + 15 * 24 * 60 * 60 * 1000);
       const newDeadlineStr = format(newDeadline, 'MMM d, yyyy');
       setSubmissionDeadline(newDeadlineStr);
 
@@ -379,12 +379,12 @@ export function LiquidationExportPreviewModal({
   const handleResetToStandard = () => {
     const parsedEnd = parseLocalDate(activityEndDate);
     if (parsedEnd) {
-      const standardDeadline = new Date(parsedEnd.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const standardDeadline = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
       const deadStr = format(standardDeadline, 'MMM d, yyyy');
       setSubmissionDeadline(deadStr);
       const subParsed = parseLocalDate(dateSubmitted) || new Date();
       setDaysLapsed(calculateDaysLapse(subParsed, standardDeadline));
-      toast.info('Recalculated 7-day deadline and lapse from activity end date.');
+      toast.info('Recalculated 15-day deadline and lapse from activity end date.');
     }
   };
 
@@ -923,7 +923,7 @@ export function LiquidationExportPreviewModal({
                   <button
                     onClick={handleResetToStandard}
                     className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
-                    title="Recalculate 7-day deadline and lapse"
+                    title="Recalculate 15-day deadline and lapse"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                   </button>
@@ -984,7 +984,7 @@ export function LiquidationExportPreviewModal({
                     placeholder="e.g. Oct 15, 2026"
                     className="w-full p-2.5 bg-gray-50/50 border border-gray-300 rounded-lg text-gray-900 focus:bg-white focus:border-[#0E4EBD] focus:ring-1 focus:ring-[#0E4EBD] outline-none font-medium"
                   />
-                  <p className="text-[10px] text-emerald-600 mt-1">Auto-calculated: 7 days after activity end (STI Policy)</p>
+                  <p className="text-[10px] text-emerald-600 mt-1">Auto-calculated: 15 days after activity end (STI Policy)</p>
                 </div>
 
                 <div>

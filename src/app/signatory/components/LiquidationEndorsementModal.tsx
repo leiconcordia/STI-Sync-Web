@@ -438,12 +438,21 @@ export default function LiquidationEndorsementModal({
 
   const hasSignature = Boolean(activeSignatureUrl);
   const chain = liquidation.approvalChain || [];
+  const activeVoucher = (liquidation as any)?.disbursementVoucher || (liquidation as any)?.voucher || null;
   const myStepIndex = chain.findIndex((s) => matchesCurrentSigner(s));
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
 
   // Dynamic approval authority permission check
   const isChecker = myStep?.actionType === 'check' || signatorySession?.actionType === 'check';
   const canApprove = canSignatoryApproveDocument(signatorySession, 'liquidation', myStep);
+
+  // Subsequent approvers after my step in the pipeline
+  const subsequentApproversCount = chain.filter((s, idx) => {
+    return idx > myStepIndex && (s.actionType === 'approve' || (s as any).canApproveLiquidation || (s as any).isFinalApprover);
+  }).length;
+
+  const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
+  const isFinalApprover = Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0));
 
   const allocatedBudget = liquidation.allocatedBudget || 0;
   const totalActualSpending =

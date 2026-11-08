@@ -20,15 +20,18 @@ import {
   History,
   Check,
   Lock,
+  Copy,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useOrganizationStream } from '../../../../modules/organizations/hooks/useOrganizationStream';
+import { stripSasPhrases } from '../../../events/utils/organization-display.utils';
 import { useAllEvents } from '../../../events/hooks/useEventStream';
 import {
   filterHistoricalMatches,
   mapHistoricalLineItems,
   type HistoricalActivityMatch,
 } from '../../services/historical-budget.service';
+import { getProposalById } from '../../services/proposal.service';
 import type { ProposalFormData } from '../../types/proposal.types';
 import {
   AIAssistButton,
@@ -36,6 +39,9 @@ import {
   rewriteTitle,
   expandDescription,
   polishGrammar,
+  generateTitleFromConcept,
+  createDescriptionFromPrompt,
+  validateMeaningfulInput,
 } from '../../../ai';
 
 interface Step1Props {
@@ -57,9 +63,12 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
   const [aiSuggestionText, setAiSuggestionText] = useState('');
   const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
   const [aiModalMode, setAiModalMode] = useState<'text' | 'choice' | 'list'>('text');
-  const [isAILoading, setIsAILoading] = useState(false);
+  const [activeGeneratingField, setActiveGeneratingField] = useState<'title' | 'description' | null>(null);
   const [aiTargetField, setAiTargetField] = useState<'title' | 'description'>('title');
   const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
+
+  const hasTitleInput = Boolean(formData.title && formData.title.trim().length > 0);
+  const hasDescInput = Boolean(formData.description && formData.description.trim().length > 0);
 
   const { events: allEvents = [] } = useAllEvents();
   const [dismissedSuggestions, setDismissedSuggestions] = useState(false);
@@ -92,10 +101,55 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     ? formData.proponents
     : [formData.createdByName || 'Student Affairs & Services'];
 
+  const handleSelectHostOrg = (selectedVal: string) => {
+    if (!selectedVal || selectedVal === 'sas') {
+      onChange({
+        organizationId: 'sas',
+        hostingOrgId: 'sas',
+        organizationName: 'Student Affairs & Services (SAS)',
+        organizers: ['Student Affairs & Services (SAS)'],
+        isOfficerProposal: false,
+      });
+      return;
+    }
+    const match = organizations.find((o: any) => o.id === selectedVal || o.name === selectedVal);
+    if (match) {
+      onChange({
+        organizationId: match.id,
+        hostingOrgId: match.id,
+        organizationName: match.name,
+        organizers: [match.name],
+        isOfficerProposal: true,
+      });
+    }
+  };
+
   const addOrganizer = (org: string) => {
     const trimmed = org.trim();
     if (!trimmed || organizers.includes(trimmed)) return;
-    onChange({ organizers: [...organizers, trimmed] });
+
+    // If list currently only has the default SAS placeholder and we are adding a student club, replace it
+    const isAddingStudentOrg = stripSasPhrases(trimmed).length > 0;
+    const hasOnlySas = organizers.length === 1 && stripSasPhrases(organizers[0]).length === 0;
+    const nextList = hasOnlySas && isAddingStudentOrg ? [trimmed] : [...organizers, trimmed];
+
+    const match = organizations.find(
+      (o: any) =>
+        o.name.toLowerCase() === trimmed.toLowerCase() ||
+        (o.acronym && o.acronym.toLowerCase() === trimmed.toLowerCase())
+    );
+
+    const updates: Partial<ProposalFormData> = {
+      organizers: nextList,
+      ...(isAddingStudentOrg ? { isOfficerProposal: true } : {}),
+    };
+    if (match) {
+      updates.organizationId = match.id;
+      updates.hostingOrgId = match.id;
+      updates.organizationName = match.name;
+      updates.isOfficerProposal = true;
+    }
+    onChange(updates);
     setOrganizerInput('');
   };
 
@@ -119,52 +173,181 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     });
   };
 
+  // ── "Use as Template" Handler ──
+  const handleUseAsTemplate = async (match: HistoricalActivityMatch) => {
+    try {
+      // 1. Retrieve full proposal doc from match or fetch fresh from Firestore
+      let templateDoc: any = match.rawProposal;
+      if (!templateDoc || !templateDoc.objectives) {
+        const fetched = await getProposalById(match.id);
+        if (fetched) {
+          templateDoc = { ...(templateDoc || {}), ...fetched };
+        }
+      }
+
+      if (!templateDoc) {
+        templateDoc = match;
+      }
+
+      // 2. Map financial projections for Step 6 with Last Year's Actual populated
+      const currentProjections = formData.financialProjections || {
+        revenues: [],
+        expenses: [],
+        totalRevenue: 0,
+        totalExpenses: 0,
+        balance: 0,
+      };
+
+      const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
+        match,
+        currentProjections
+      );
+
+      // 3. Assemble populated proposal data, strictly preserving date-sensitive & approval fields
+      const updates: Partial<ProposalFormData> = {
+        // Step 1: General Info
+        description: templateDoc.description || formData.description,
+        organizers: (templateDoc.organizers && templateDoc.organizers.length > 0)
+          ? templateDoc.organizers
+          : (templateDoc.organizationName ? [templateDoc.organizationName] : formData.organizers),
+        theme: templateDoc.theme || templateDoc.subtitle || formData.theme,
+        category: templateDoc.category || templateDoc.activityType || formData.category,
+
+        // Step 2: Objectives & Mechanics
+        objectives: (templateDoc.objectives && templateDoc.objectives.length > 0)
+          ? templateDoc.objectives
+          : formData.objectives,
+        successIndicators: (templateDoc.successIndicators && templateDoc.successIndicators.length > 0)
+          ? templateDoc.successIndicators
+          : formData.successIndicators,
+        mechanics: (templateDoc.mechanics && templateDoc.mechanics.length > 0)
+          ? templateDoc.mechanics
+          : formData.mechanics,
+
+        // Step 3: Logistics & Marketing
+        materials: (templateDoc.materials && templateDoc.materials.length > 0)
+          ? templateDoc.materials
+          : formData.materials,
+        targetAudience: templateDoc.targetAudience || formData.targetAudience,
+        estimatedAttendance: templateDoc.estimatedAttendance || formData.estimatedAttendance,
+        estAttendanceCount: templateDoc.estAttendanceCount ?? formData.estAttendanceCount,
+        estAttendanceQualifier: templateDoc.estAttendanceQualifier || formData.estAttendanceQualifier,
+        marketingPlan: (templateDoc.marketingPlan && templateDoc.marketingPlan.length > 0)
+          ? templateDoc.marketingPlan
+          : formData.marketingPlan,
+        documentationPlan: (templateDoc.documentationPlan && templateDoc.documentationPlan.length > 0)
+          ? templateDoc.documentationPlan
+          : formData.documentationPlan,
+
+        // Step 6: Financials
+        financialProjections: recalculatedProjections,
+        historicalReference: {
+          eventId: match.id,
+          eventTitle: match.title,
+          schoolYear: match.schoolYear,
+          originalTotalAmount: originalHistoricalTotal,
+          isManuallyEdited: false,
+          isLocked: true,
+          linkedAt: new Date().toISOString(),
+        },
+      };
+
+      onChange(updates);
+      toast.success(`Applied "${match.title}" as template!`, {
+        description: 'Description, organizers, objectives, mechanics, materials, marketing, and last year\'s budget populated.',
+      });
+    } catch (err) {
+      console.error('Failed to apply template:', err);
+      toast.error('Failed to load full template details. Please try again.');
+    }
+  };
+
+  // ── AI Writing Handlers ──
   const handleRewriteTitleAction = async () => {
+    if (activeGeneratingField) return;
     const raw = formData.title?.trim();
     if (!raw) {
-      toast.info('Please type a draft title first (e.g. "christmas party" or "bball tourna").', {
-        id: 'enter-title-hint',
-      });
+      handleCreateTitleWithAI();
       return;
     }
+
+    const validation = validateMeaningfulInput(raw);
+    if (!validation.isValid) {
+      toast.warning(validation.error || 'Please enter meaningful words in the title.');
+      return;
+    }
+
     const action = async () => {
-      setIsAILoading(true);
-      const suggestions = await rewriteTitle(raw);
-      setIsAILoading(false);
-      if (suggestions && suggestions.length > 0) {
-        setAiTargetField('title');
-        setAiModalTitle('AI Title Suggestions');
-        setAiModalDesc('Choose a formal, institutional title for STI College official records:');
-        setAiOriginalText(raw);
-        setAiSuggestionList(suggestions);
-        setAiModalMode('choice');
-        setAiModalOpen(true);
+      setActiveGeneratingField('title');
+      try {
+        const suggestions = await rewriteTitle(raw);
+        if (suggestions && suggestions.length > 0) {
+          setAiTargetField('title');
+          setAiModalTitle('Enhance Activity Title');
+          setAiModalDesc('Choose a formal, institutional title for STI College official records:');
+          setAiOriginalText(raw);
+          setAiSuggestionList(suggestions);
+          setAiModalMode('choice');
+          setAiModalOpen(true);
+        } else {
+          toast.info('No title suggestions generated. Please try refining your draft title.');
+        }
+      } catch (err) {
+        console.error('Error enhancing title:', err);
+        toast.error('Failed to enhance title. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
       }
     };
     setActiveAIAction(() => action);
     await action();
   };
 
+  const handleCreateTitleWithAI = () => {
+    if (activeGeneratingField) return;
+    setAiTargetField('title');
+    setAiModalTitle('Generate Activity Title from Prompt');
+    setAiModalDesc('Type what this event is about or desired theme, and AI will generate 3 formal titles:');
+    setAiOriginalText('');
+    setAiSuggestionList([]);
+    setAiModalMode('choice');
+    setAiModalOpen(true);
+  };
+
   const handlePolishDescriptionAction = async () => {
+    if (activeGeneratingField) return;
     const raw = formData.description?.trim();
     if (!raw) {
-      toast.info('Please type some rough notes or sentences in the description first.', {
-        id: 'enter-desc-hint',
-      });
+      handleCreateDescriptionWithAI();
       return;
     }
+
+    const validation = validateMeaningfulInput(raw);
+    if (!validation.isValid) {
+      toast.warning(validation.error || 'Please enter meaningful words in the description.');
+      return;
+    }
+
     const action = async () => {
-      setIsAILoading(true);
-      const polished = await polishGrammar(raw, 'Activity Proposal Description');
-      setIsAILoading(false);
-      if (polished) {
-        setAiTargetField('description');
-        setAiModalTitle('Polish Grammar & Tone');
-        setAiModalDesc('Proofread and elevated to formal STI institutional standards:');
-        setAiOriginalText(raw);
-        setAiSuggestionText(polished);
-        setAiModalMode('text');
-        setAiModalOpen(true);
+      setActiveGeneratingField('description');
+      try {
+        const polished = await polishGrammar(raw, 'Activity Proposal Description');
+        if (polished) {
+          setAiTargetField('description');
+          setAiModalTitle('Enhance & Polish Description');
+          setAiModalDesc('Elevated to formal STI institutional standards while preserving your exact meaning:');
+          setAiOriginalText(raw);
+          setAiSuggestionText(polished);
+          setAiModalMode('text');
+          setAiModalOpen(true);
+        } else {
+          toast.info('No changes suggested.');
+        }
+      } catch (err) {
+        console.error('Error polishing description:', err);
+        toast.error('Failed to polish description. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
       }
     };
     setActiveAIAction(() => action);
@@ -172,30 +355,97 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
   };
 
   const handleExpandDescriptionAction = async () => {
+    if (activeGeneratingField) return;
     const raw = formData.description?.trim() || '';
     const title = formData.title?.trim() || '';
     if (!raw && !title) {
-      toast.info('Please enter at least an Activity Title or a few bullet points.', {
-        id: 'enter-notes-hint',
-      });
+      handleCreateDescriptionWithAI();
       return;
     }
+
+    if (raw) {
+      const validation = validateMeaningfulInput(raw);
+      if (!validation.isValid) {
+        toast.warning(validation.error || 'Please enter meaningful notes.');
+        return;
+      }
+    }
+
     const action = async () => {
-      setIsAILoading(true);
-      const expanded = await expandDescription(title, raw, formData.organizers);
-      setIsAILoading(false);
-      if (expanded) {
-        setAiTargetField('description');
-        setAiModalTitle('Elaborate & Expand Description');
-        setAiModalDesc('Fleshed out into full background rationale, targeted competencies, and student impact:');
-        setAiOriginalText(raw);
-        setAiSuggestionText(expanded);
-        setAiModalMode('text');
-        setAiModalOpen(true);
+      setActiveGeneratingField('description');
+      try {
+        const expanded = await expandDescription(title, raw, formData.organizers);
+        if (expanded) {
+          setAiTargetField('description');
+          setAiModalTitle('Expand Notes into Concise Rationale');
+          setAiModalDesc('Structured into 1 compact paragraph (60–90 words) aligned with STI student development:');
+          setAiOriginalText(raw);
+          setAiSuggestionText(expanded);
+          setAiModalMode('text');
+          setAiModalOpen(true);
+        } else {
+          toast.info('Could not expand description. Please add more details.');
+        }
+      } catch (err) {
+        console.error('Error expanding description:', err);
+        toast.error('Failed to expand description. Please try again.');
+      } finally {
+        setActiveGeneratingField(null);
       }
     };
     setActiveAIAction(() => action);
     await action();
+  };
+
+  const handleCreateDescriptionWithAI = () => {
+    if (activeGeneratingField) return;
+    setAiTargetField('description');
+    setAiModalTitle('Generate Description from Prompt');
+    setAiModalDesc('Prompt what this activity is about, and AI will generate 1 concise rationale (60–90 words):');
+    setAiOriginalText(formData.description || '');
+    setAiSuggestionText('');
+    setAiModalMode('text');
+    setAiModalOpen(true);
+  };
+
+  const handleGenerateFromPrompt = async (prompt: string) => {
+    if (activeGeneratingField) return;
+    const validation = validateMeaningfulInput(prompt);
+    if (!validation.isValid) {
+      toast.warning(validation.error || 'Please enter meaningful words.');
+      return;
+    }
+
+    setActiveGeneratingField(aiTargetField);
+    try {
+      if (aiTargetField === 'title') {
+        const titles = await generateTitleFromConcept(prompt, formData.category);
+        if (titles && titles.length > 0) {
+          setAiSuggestionList(titles);
+          setAiModalMode('choice');
+        } else {
+          toast.info('No titles could be generated from that prompt. Please try different keywords.');
+        }
+      } else if (aiTargetField === 'description') {
+        const desc = await createDescriptionFromPrompt(
+          formData.title || '',
+          prompt,
+          formData.organizers,
+          formData.targetAudience?.academicLevels?.join(', ')
+        );
+        if (desc) {
+          setAiSuggestionText(desc);
+          setAiModalMode('text');
+        } else {
+          toast.info('Could not generate description from that prompt.');
+        }
+      }
+    } catch (err) {
+      console.error('Error generating from prompt:', err);
+      toast.error('Generation failed. Please try again.');
+    } finally {
+      setActiveGeneratingField(null);
+    }
   };
 
   const handleApplyAIText = (appliedText: string, applyMode: 'replace' | 'append') => {
@@ -341,10 +591,30 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             1. Activity title <span className="text-red-500">*</span>
           </label>
           <AIAssistButton
-            label="Rewrite Title"
-            onClick={handleRewriteTitleAction}
-            isLoading={isAILoading && aiTargetField === 'title'}
-            tooltip="Transform informal title (e.g. christmas party) into formal STI options"
+            label={hasTitleInput ? 'Enhance Title' : 'Generate with AI'}
+            isLoading={activeGeneratingField === 'title'}
+            disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'title')}
+            options={
+              hasTitleInput
+                ? [
+                    {
+                      id: 'enhance-title',
+                      label: 'Enhance Title',
+                      description: 'Transforms informal draft into 3 official STI titles',
+                      icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                      onClick: handleRewriteTitleAction,
+                    },
+                  ]
+                : [
+                    {
+                      id: 'generate-title',
+                      label: 'Generate Title from Prompt',
+                      description: 'Enter your event theme or concept first',
+                      icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                      onClick: handleCreateTitleWithAI,
+                    },
+                  ]
+            }
           />
         </div>
         <div className="relative">
@@ -424,7 +694,17 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
                       )}
                     </div>
 
-                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+                    <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => handleUseAsTemplate(m)}
+                        className="px-2.5 py-1 text-[11px] font-bold bg-[#FFD41C] hover:bg-[#e6be17] text-[#001A4D] rounded-md transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"
+                        title="Use as template: copies description, organizers, objectives, mechanics, materials, marketing, and populates Last Year's Actual budget"
+                      >
+                        <Copy className="w-3 h-3 text-[#001A4D]" />
+                        <span>Use as Template</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => {
@@ -519,24 +799,37 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             2. Description <span className="text-red-500">*</span>
           </label>
           <AIAssistButton
-            label="AI Assist"
-            isLoading={isAILoading && aiTargetField === 'description'}
-            options={[
-              {
-                id: 'expand',
-                label: 'Expand Rough Notes',
-                description: 'Flesh out short sentences or bullet points into formal text',
-                icon: <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                onClick: handleExpandDescriptionAction,
-              },
-              {
-                id: 'polish',
-                label: 'Fix Grammar & Polish',
-                description: 'Proofread and elevate vocabulary without changing meaning',
-                icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                onClick: handlePolishDescriptionAction,
-              },
-            ]}
+            label={hasDescInput ? 'Enhance Description' : 'Generate with AI'}
+            isLoading={activeGeneratingField === 'description'}
+            disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'description')}
+            options={
+              hasDescInput
+                ? [
+                    {
+                      id: 'polish-desc',
+                      label: 'Enhance & Polish Grammar',
+                      description: 'Proofread and elevate vocabulary to STI standard without changing meaning',
+                      icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                      onClick: handlePolishDescriptionAction,
+                    },
+                    {
+                      id: 'expand-desc',
+                      label: 'Expand Notes (1 Compact Paragraph)',
+                      description: 'Flesh out rough notes into a concise 60-90 word rationale',
+                      icon: <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                      onClick: handleExpandDescriptionAction,
+                    },
+                  ]
+                : [
+                    {
+                      id: 'generate-desc',
+                      label: 'Generate Description from Prompt',
+                      description: 'Prompt what the event is about first to generate a concise rationale',
+                      icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
+                      onClick: handleCreateDescriptionWithAI,
+                    },
+                  ]
+            }
           />
         </div>
         <textarea
@@ -557,9 +850,34 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
 
       {/* Section 3: Organizer/s */}
       <div>
-        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-          3. Organizer/s <span className="text-red-500">*</span>
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
+            3. Organizer/s <span className="text-red-500">*</span>
+          </label>
+          <span className="text-[11px] text-gray-400">
+            Select primary host or add co-organizers
+          </span>
+        </div>
+
+        {/* Quick Organization Selector */}
+        <div className="mb-2.5">
+          <select
+            value={formData.hostingOrgId || formData.organizationId || (stripSasPhrases(organizers[0] || '').length > 0 ? '' : 'sas')}
+            onChange={(e) => handleSelectHostOrg(e.target.value)}
+            className="w-full px-3.5 py-2 bg-white border border-gray-300 rounded-xl text-xs font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] shadow-2xs"
+          >
+            {formData.isOfficerProposal !== true && (
+              <option value="sas">🏛️ Student Affairs & Services (SAS) — Institutional Activity</option>
+            )}
+            <optgroup label="Recognized Student Organizations">
+              {organizations.filter((o: any) => !o.archived).map((o: any) => (
+                <option key={o.id} value={o.id}>
+                  👥 {o.name} {o.acronym ? `(${o.acronym})` : ''}
+                </option>
+              ))}
+            </optgroup>
+          </select>
+        </div>
         
         {/* Active Organizers Badges */}
         <div className="flex flex-wrap gap-2 mb-2.5">
@@ -581,7 +899,7 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
           ))}
         </div>
 
-        {/* Input & Quick Presets */}
+        {/* Input */}
         <div className="flex gap-2">
           <input
             type="text"
@@ -593,7 +911,7 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
                 addOrganizer(organizerInput);
               }
             }}
-            placeholder="Type custom organizer or committee name..."
+            placeholder="Type organizer or committee name and press Enter..."
             className="flex-1 px-3.5 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
           />
           <button
@@ -604,24 +922,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             <Plus className="w-3.5 h-3.5" />
             Add
           </button>
-        </div>
-
-        {/* Organization preset chips from database */}
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-500">
-          <span className="font-semibold text-gray-500 flex items-center gap-1">
-            <Building className="w-3 h-3 text-[#0E4EBD]" />
-            <span>Campus Organizations:</span>
-          </span>
-          {orgSuggestions.map((sug, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => addOrganizer(sug)}
-              className="px-2.5 py-1 bg-slate-100 hover:bg-blue-50 hover:text-[#0E4EBD] hover:border-blue-300 text-slate-700 border border-slate-200 rounded-lg transition-colors cursor-pointer font-medium"
-            >
-              + {sug}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -635,8 +935,14 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
         suggestionText={aiSuggestionText}
         suggestionList={aiSuggestionList}
         mode={aiModalMode}
-        isLoading={isAILoading}
+        isLoading={Boolean(activeGeneratingField)}
         onApplyText={handleApplyAIText}
+        onGenerateFromPrompt={handleGenerateFromPrompt}
+        promptPlaceholder={
+          aiTargetField === 'title'
+            ? 'Describe your event theme or concept (e.g. "Cybersecurity hackathon for BSIT students")...'
+            : 'Prompt what you want (e.g. "Hands-on robotics workshop teaching Arduino basics")...'
+        }
         onRegenerate={() => {
           if (activeAIAction) activeAIAction();
         }}

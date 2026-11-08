@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import type { EventDocument, EventSession } from '../types/event.types';
 import { formatAppDate, format12HourTime } from '../../../utils/date';
+import { resolveCleanOrgAcronym } from '../utils/organization-display.utils';
 
 interface OrganizationMeta {
   name: string;
@@ -249,18 +250,10 @@ export default function ActivityCalendar({
 
   // Resolve acronym for an activity
   const resolveHostAcronym = (act: EventDocument): string => {
-    if (act.hostingOrgId === 'sas' || (act as any).isSas || !act.hostingOrgId) {
-      return 'STI SAS';
-    }
     if (activeOrgAcronym && isOfficer) {
       return activeOrgAcronym;
     }
-    if (orgMap) {
-      const found = orgMap.get(act.hostingOrgId);
-      if (found?.acronym) return found.acronym;
-      if (found?.name) return found.name;
-    }
-    return 'STI SAS';
+    return resolveCleanOrgAcronym(act, orgMap as any);
   };
 
   // Formatted selected date text

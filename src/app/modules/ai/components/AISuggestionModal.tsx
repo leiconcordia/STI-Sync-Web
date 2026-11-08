@@ -5,7 +5,7 @@
  * Gives user full transparency and control over what gets applied to their form.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Sparkles,
   Check,
@@ -15,8 +15,12 @@ import {
   Plus,
   ArrowRight,
   CheckCircle2,
+  AlertCircle,
+  Send,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { validateMeaningfulInput } from '../utils/ai-validation.utils';
 
 export interface AISuggestionModalProps {
   isOpen: boolean;
@@ -30,6 +34,9 @@ export interface AISuggestionModalProps {
   onApplyText?: (applied: string, mode: 'replace' | 'append') => void;
   onApplyList?: (selectedItems: string[]) => void;
   onRegenerate?: () => void;
+  onGenerateFromPrompt?: (customPrompt: string) => void | Promise<void>;
+  promptPlaceholder?: string;
+  initialPrompt?: string;
   isLoading?: boolean;
 }
 
@@ -45,21 +52,52 @@ export default function AISuggestionModal({
   onApplyText,
   onApplyList,
   onRegenerate,
+  onGenerateFromPrompt,
+  promptPlaceholder = 'Tell AI what to generate or refine (e.g. "Hands-on cybersecurity CTF tournament for BSIT students")...',
+  initialPrompt = '',
   isLoading = false,
 }: AISuggestionModalProps) {
   // For choice mode (e.g. 3 titles)
   const [selectedChoiceIndex, setSelectedChoiceIndex] = useState(0);
+
+  // Custom prompt input state
+  const [customPrompt, setCustomPrompt] = useState(initialPrompt);
+  const [promptValidationError, setPromptValidationError] = useState<string | null>(null);
+
+  // Sync initialPrompt
+  useEffect(() => {
+    if (isOpen) {
+      setCustomPrompt(initialPrompt);
+      setPromptValidationError(null);
+    }
+  }, [isOpen, initialPrompt]);
 
   // For list mode (e.g. objectives or mechanics)
   const [selectedListIndices, setSelectedListIndices] = useState<number[]>(() =>
     suggestionList.map((_, i) => i)
   );
 
+  useEffect(() => {
+    setSelectedListIndices(suggestionList.map((_, i) => i));
+    setSelectedChoiceIndex(0);
+  }, [suggestionList]);
+
   if (!isOpen) return null;
 
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success('Copied to clipboard');
+  };
+
+  const handlePromptSubmit = () => {
+    if (!onGenerateFromPrompt) return;
+    const validation = validateMeaningfulInput(customPrompt);
+    if (!validation.isValid) {
+      setPromptValidationError(validation.error || 'Please enter meaningful words.');
+      return;
+    }
+    setPromptValidationError(null);
+    onGenerateFromPrompt(customPrompt.trim());
   };
 
   const toggleListItem = (index: number) => {
@@ -111,6 +149,68 @@ export default function AISuggestionModal({
 
         {/* Body */}
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
+          {/* Prompt-First Guidance Box */}
+          {onGenerateFromPrompt && (
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-700 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                  Custom AI Guidance / Prompt
+                </span>
+                <span className="text-[10px] text-slate-400 font-normal">
+                  (Prompt first • AI will generate structured content)
+                </span>
+              </label>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={customPrompt}
+                  onChange={(e) => {
+                    setCustomPrompt(e.target.value);
+                    if (promptValidationError) setPromptValidationError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handlePromptSubmit();
+                    }
+                  }}
+                  placeholder={promptPlaceholder}
+                  className={`flex-1 px-3 py-2 bg-white border rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-all ${
+                    promptValidationError
+                      ? 'border-red-300 focus:ring-red-100 focus:border-red-500'
+                      : 'border-gray-300 focus:ring-[#001A4D]/20 focus:border-[#001A4D]'
+                  }`}
+                />
+                <button
+                  type="button"
+                  onClick={handlePromptSubmit}
+                  disabled={isLoading}
+                  className="px-3.5 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl transition-all shadow-2xs flex items-center gap-1.5 disabled:opacity-50 shrink-0 cursor-pointer"
+                >
+                  {isLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFD41C]" />
+                  ) : (
+                    <Send className="w-3.5 h-3.5 text-[#FFD41C]" />
+                  )}
+                  <span>{isLoading ? 'Thinking...' : 'Generate'}</span>
+                </button>
+              </div>
+
+              {/* Anti-Gibberish Alert Banner */}
+              {promptValidationError && (
+                <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2 text-xs text-red-700 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="font-semibold text-red-800">Invalid Input Detected</p>
+                    <p className="text-[11px] text-red-700 mt-0.5 leading-relaxed">{promptValidationError}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Comparison for text mode */}
           {mode === 'text' && (
             <div className="space-y-4">

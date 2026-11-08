@@ -44,6 +44,7 @@ import { formatCurrency } from '../../utils/currency';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
+import { isSasCreatedEvent } from '../../modules/events/utils/organization-display.utils';
 
 type EventStatusTab = 'all' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'cancelled' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -507,7 +508,7 @@ export default function EventManagement() {
   useEffect(() => {
     const tabParam = searchParams.get('tab');
     if (tabParam && ['all', 'draft', 'pending', 'approved', 'completed', 'archived', 'rejected', 'returned', 'cancelled', 'trash'].includes(tabParam)) {
-      setActiveTab(tabParam as EventStatusTab);
+      setActiveStatus(tabParam as EventStatusTab);
       setCurrentPage(1);
     }
   }, [searchParams]);
@@ -1163,7 +1164,7 @@ export default function EventManagement() {
                               )}
 
                               {/* Approved Lifecycle: Conclude & Archive */}
-                              {isApproved && event.status !== 'completed' && (
+                              {isApproved && event.status !== 'completed' && !isSasCreatedEvent(event) && (
                                 <button
                                   onClick={() => setConcludingEvent(event)}
                                   className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1174,7 +1175,7 @@ export default function EventManagement() {
                                 </button>
                               )}
 
-                              {isEventCompleted(event) && (
+                              {isEventCompleted(event) && !isSasCreatedEvent(event) && (
                                 <button
                                   onClick={() => setArchivingEvent(event)}
                                   className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1288,7 +1289,7 @@ export default function EventManagement() {
               next.delete('id');
               next.delete('eventId');
               const qs = next.toString();
-              navigate(qs ? `?${qs}` : `?tab=${activeTab}`, { replace: true });
+              navigate(qs ? `?${qs}` : `?tab=${activeStatus}`, { replace: true });
             }
           }}
           onEdit={async () => {

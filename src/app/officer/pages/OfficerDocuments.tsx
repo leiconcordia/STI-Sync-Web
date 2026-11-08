@@ -131,7 +131,7 @@ Academic Year 2025-2026
 
 1. Accreditation & Re-Recognition Guidelines
 2. Student Activity Permit Protocols & Lead Times (submit 10 school days prior)
-3. Financial Handling & Strict 7-Day Liquidation Policy
+3. Financial Handling & Strict 15-Day Liquidation Policy
 4. Disciplinary Rules & Brand Identity Compliance
 5. Campus Signatory Hierarchy & Digital Endorsements in STI Sync`;
   }

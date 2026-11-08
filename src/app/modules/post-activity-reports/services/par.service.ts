@@ -28,6 +28,7 @@ import {
   getDefaultWorkflowSettings,
   getBuiltinDefaultWorkflow,
 } from '../../workflow/services/approval-workflow.service';
+import { createNotification } from '../../notifications';
 import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 import type {
   PostActivityReportDocument,
@@ -629,6 +630,32 @@ export async function saveOrSubmitPAR(
     }));
   } catch (err) {
     console.warn('[saveOrSubmitPAR] Notice updating event doc with PAR reference:', err);
+  }
+
+  // Real-time submission notification to SAS Admin if submitted
+  if (submit) {
+    try {
+      const orgName = payload.organizationAcronym || payload.organizationName || 'Student Organization';
+      const eventTitle = payload.eventTitle || 'Post-Activity Report';
+      await createNotification({
+        recipientRole: 'admin',
+        type: 'document_submission',
+        category: 'post_activity_report',
+        title: isResubmission
+          ? `PAR Revised (v${currentVersion}.0): ${eventTitle}`
+          : `Post-Activity Report Submitted: ${eventTitle}`,
+        message: `${orgName} submitted Post-Activity Report (${referenceNo}) for "${eventTitle}".`,
+        resourceId: docId,
+        resourceType: 'par',
+        actionRoute: `/home/post-activity-reports?id=${docId}`,
+        targetOrgId: payload.organizationId,
+        targetOrgName: orgName,
+        senderId: user.uid,
+        senderName: user.name,
+      });
+    } catch (notifErr) {
+      console.warn('[saveOrSubmitPAR] Notification dispatch notice:', notifErr);
+    }
   }
 
   return { success: true, id: docId, referenceNo };

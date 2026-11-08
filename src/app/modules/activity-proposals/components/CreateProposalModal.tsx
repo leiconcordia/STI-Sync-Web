@@ -177,11 +177,27 @@ export default function CreateProposalModal({
     role: 'sas_admin',
   },
 }: CreateProposalModalProps) {
+  const isOfficerProp =
+    currentUser.role === 'officer' ||
+    currentUser.role === 'student_officer' ||
+    Boolean(currentUser.organizationId && !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin'].includes(currentUser.organizationId.toLowerCase()));
+
+  const defaultOrgName = currentUser.organizationName || (isOfficerProp ? 'Student Organization' : 'Student Affairs & Services (SAS)');
+  const defaultOrgId = currentUser.organizationId || (isOfficerProp ? 'student_org' : 'sas');
+
   const [currentStep, setCurrentStep] = useState(1);
-  const [formData, setFormData] = useState<ProposalFormData>({
+  const [formData, setFormData] = useState<ProposalFormData>(() => ({
     title: '',
     description: '',
-    organizers: ['Student Affairs & Services (SAS)'],
+    organizers: [defaultOrgName],
+    organizationId: defaultOrgId,
+    hostingOrgId: defaultOrgId,
+    organizationName: defaultOrgName,
+    isOfficerProposal: isOfficerProp,
+    creatorRole: currentUser.role || (isOfficerProp ? 'officer' : 'sas_admin'),
+    createdByName: currentUser.name || '',
+    createdByEmail: currentUser.email || '',
+    fundingSource: isOfficerProp ? 'organization_funds' : 'school_budget',
     objectives: [''],
     successIndicators: [''],
     mechanics: [''],
@@ -236,7 +252,7 @@ export default function CreateProposalModal({
       totalExpenses: 0,
       balance: 0,
     },
-  });
+  }));
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -245,7 +261,10 @@ export default function CreateProposalModal({
 
   // Sync initial data or set default reference number
   useEffect(() => {
-    const isOfficer = currentUser.role === 'officer' || currentUser.role === 'student_officer';
+    const isOfficer =
+      currentUser.role === 'officer' ||
+      currentUser.role === 'student_officer' ||
+      Boolean(currentUser.organizationId && !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin'].includes(currentUser.organizationId.toLowerCase()));
     const sasCfg = getCachedSasSignatoryConfig();
 
     // For Student Org proposals, Stage 1 is mandatory SAS Review Gatekeeper (Ma'am Riselle)
@@ -270,9 +289,25 @@ export default function CreateProposalModal({
 
 
       if (initialData) {
+        const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+        const rawInitHostingOrg = String(
+          (initialData as any).hostingOrgId ||
+          initialData.organizationId ||
+          ''
+        ).trim();
+        const hasOrgInInitial = Boolean(rawInitHostingOrg && !SAS_ORGS.includes(rawInitHostingOrg.toLowerCase()));
+        const hasOrgNameInInitial = Boolean(
+          initialData.organizationName && stripSasPhrases(initialData.organizationName).length > 0
+        );
+        const hasOrgInOrganizers = (initialData.organizers || []).some(
+          (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
+        );
+
         const isOfficerInitial =
           (initialData as any).isOfficerProposal !== undefined
             ? Boolean((initialData as any).isOfficerProposal)
+            : hasOrgInInitial || hasOrgNameInInitial || hasOrgInOrganizers || isOfficer
+            ? true
             : initialData.creatorRole === 'officer' || initialData.creatorRole === 'student_officer';
 
         setFormData((prev) => ({
@@ -500,92 +535,101 @@ export default function CreateProposalModal({
     return currentJson !== initialJson;
   };
 
-  // Step validation before advancing
-  const validateStep = (stepNumber: number): boolean => {
-    const newErrors: Record<string, string> = {};
+  // Pure validation checker: returns error map for a given step without mutating component error state
+  const getStepValidationErrors = (stepNumber: number, data: ProposalFormData): Record<string, string> => {
+    const errs: Record<string, string> = {};
 
     if (stepNumber === 1) {
-      if (!formData.title?.trim()) {
-        newErrors.title = 'Activity Title is required.';
+      if (!data.title?.trim()) {
+        errs.title = 'Activity Title is required.';
       }
-      if (!formData.description?.trim()) {
-        newErrors.description = 'Activity Description / Rationale is required.';
+      if (!data.description?.trim()) {
+        errs.description = 'Activity Description / Rationale is required.';
       }
-      if (!formData.organizers || formData.organizers.length === 0) {
-        newErrors.organizers = 'At least one organizing body is required.';
+      const orgs = Array.isArray(data.organizers)
+        ? data.organizers.filter((o) => typeof o === 'string' && o.trim())
+        : [];
+      if (orgs.length === 0) {
+        errs.organizers = 'At least one organizing body is required.';
       }
     }
 
     if (stepNumber === 2) {
-      if (!formData.objectives || formData.objectives.length === 0) {
-        newErrors.objectives = 'At least one objective is required.';
+      const objs = Array.isArray(data.objectives)
+        ? data.objectives.filter((o) => typeof o === 'string' && o.trim())
+        : [];
+      if (objs.length === 0) {
+        errs.objectives = 'At least one objective is required.';
       }
-      if (!formData.successIndicators || formData.successIndicators.length === 0) {
-        newErrors.successIndicators = 'At least one success indicator is required.';
+      const indicators = Array.isArray(data.successIndicators)
+        ? data.successIndicators.filter((s) => typeof s === 'string' && s.trim())
+        : [];
+      if (indicators.length === 0) {
+        errs.successIndicators = 'At least one success indicator is required.';
       }
     }
 
     if (stepNumber === 3) {
-      if (!formData.estimatedAttendance?.trim() && !formData.estAttendanceCount) {
-        newErrors.estimatedAttendance = 'Estimated attendance is required.';
+      if (!data.estimatedAttendance?.toString().trim() && !data.estAttendanceCount) {
+        errs.estimatedAttendance = 'Estimated attendance is required.';
       }
     }
 
     if (stepNumber === 4) {
-      const selectedDate = formData.date || formData.sessions?.[0]?.date || '';
+      const selectedDate = data.date || data.sessions?.[0]?.date || '';
       if (!selectedDate) {
-        newErrors.date = 'Target Implementation Date is required.';
-        newErrors.sessions = 'Please specify the target implementation date.';
+        errs.date = 'Target Implementation Date is required.';
+        errs.sessions = 'Please specify the target implementation date.';
       } else {
         const todayStr = format(new Date(), 'yyyy-MM-dd');
         const standardMinDate = format(addDays(new Date(), 15), 'yyyy-MM-dd');
 
         if (selectedDate < todayStr) {
-          newErrors.date = 'Implementation date cannot be in the past.';
-          newErrors.sessions = 'Implementation date cannot be in the past.';
-        } else if (!formData.isUrgent && selectedDate < standardMinDate) {
-          newErrors.date = `Standard policy requires at least 15 calendar days advance notice (${standardMinDate} or later). Enable the Urgent Proposal toggle if filing expedited.`;
-          newErrors.sessions = `Standard policy requires at least 15 days advance notice (${standardMinDate} or later).`;
+          errs.date = 'Implementation date cannot be in the past.';
+          errs.sessions = 'Implementation date cannot be in the past.';
+        } else if (!data.isUrgent && selectedDate < standardMinDate) {
+          errs.date = `Standard policy requires at least 15 calendar days advance notice (${standardMinDate} or later). Enable the Urgent Proposal toggle if filing expedited.`;
+          errs.sessions = `Standard policy requires at least 15 days advance notice (${standardMinDate} or later).`;
         }
       }
 
-      if (formData.isUrgent && !formData.urgentJustification?.trim()) {
-        newErrors.urgentJustification = 'Please provide an administrative justification for this urgent proposal.';
+      if (data.isUrgent && !data.urgentJustification?.trim()) {
+        errs.urgentJustification = 'Please provide an administrative justification for this urgent proposal.';
       }
 
-      const hasVenue = Boolean(formData.venueName || formData.venueId || formData.sessions?.[0]?.venueName);
+      const hasVenue = Boolean(data.venueName || data.venueId || data.sessions?.[0]?.venueName);
       if (!hasVenue) {
-        newErrors.sessions = newErrors.sessions ? `${newErrors.sessions} Please also specify an activity venue.` : 'Please specify an activity venue.';
+        errs.sessions = errs.sessions ? `${errs.sessions} Please also specify an activity venue.` : 'Please specify an activity venue.';
       }
     }
 
     if (stepNumber === 5) {
-      const eventDate = formData.date || formData.sessions?.[0]?.date || '';
+      const eventDate = data.date || data.sessions?.[0]?.date || '';
       const todayStr = format(new Date(), 'yyyy-MM-dd');
 
-      if (!formData.tasks || formData.tasks.length === 0) {
-        newErrors.tasks = 'At least one task milestone is required.';
+      if (!data.tasks || data.tasks.length === 0) {
+        errs.tasks = 'At least one task milestone is required.';
       } else {
-        for (let i = 0; i < formData.tasks.length; i++) {
-          const t = formData.tasks[i];
+        for (let i = 0; i < data.tasks.length; i++) {
+          const t = data.tasks[i];
           if (!t.taskName?.trim()) {
-            newErrors.tasks = `Task #${i + 1} is missing a description / task name.`;
+            errs.tasks = `Task #${i + 1} is missing a description / task name.`;
             break;
           }
           if (!t.assignedPerson?.trim()) {
-            newErrors.tasks = `Task #${i + 1} (${t.taskName}) is missing an assigned person or committee.`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) is missing an assigned person or committee.`;
             break;
           }
           if (!t.completionDate) {
-            newErrors.tasks = `Task #${i + 1} (${t.taskName}) is missing a completion date.`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) is missing a completion date.`;
             break;
           }
           if (t.completionDate < todayStr) {
-            newErrors.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past.`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past.`;
             break;
           }
           if (eventDate && t.completionDate >= eventDate) {
-            newErrors.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot match or succeed the event date (${eventDate}). All preparatory tasks must be completed strictly prior to the implementation date.`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot match or succeed the event date (${eventDate}). All preparatory tasks must be completed strictly prior to the implementation date.`;
             break;
           }
         }
@@ -593,25 +637,98 @@ export default function CreateProposalModal({
     }
 
     if (stepNumber === 7) {
-      if (formData.isUrgent && !formData.urgentJustification?.trim()) {
-        newErrors.urgentJustification = 'An urgent submission justification is required.';
+      if (data.isUrgent && !data.urgentJustification?.trim()) {
+        errs.urgentJustification = 'An urgent submission justification is required.';
       }
     }
 
+    return errs;
+  };
+
+  // Check if a step has all required information filled out and is valid
+  const isStepComplete = (stepNumber: number, data: ProposalFormData): boolean => {
+    if (stepNumber === 6) return true; // Step 6 (Financials) has valid system defaults
+    const errs = getStepValidationErrors(stepNumber, data);
+    return Object.keys(errs).length === 0;
+  };
+
+  // Step validation with error state mutation (for user interactions)
+  const validateStep = (stepNumber: number): boolean => {
+    const newErrors = getStepValidationErrors(stepNumber, formData);
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleNext = () => {
-    if (!validateStep(currentStep)) {
-      toast.error('Please complete all required fields before proceeding.');
+  // Track max step reached to allow freely revisiting completed / unlocked steps
+  const [maxStepReached, setMaxStepReached] = useState(1);
+
+  useEffect(() => {
+    if (initialData) {
+      let highest = 1;
+      for (let s = 1; s <= 7; s++) {
+        if (isStepComplete(s, { ...formData, ...initialData })) {
+          highest = Math.min(s + 1, 7);
+        } else {
+          break;
+        }
+      }
+      setMaxStepReached((prev) => Math.max(prev, highest));
+    }
+  }, [initialData]);
+
+  // Unified smart step navigation handler
+  const handleStepClick = (targetStep: number) => {
+    if (targetStep === currentStep) return;
+
+    // 1. Moving backward to any previous step is ALWAYS allowed
+    if (targetStep < currentStep) {
+      setErrors({});
+      setCurrentStep(targetStep);
       return;
     }
 
-    setCurrentStep((prev) => Math.min(prev + 1, 7));
+    // 2. In returned proposal revision mode, allow navigating freely between steps
+    if (isReturnedProposal) {
+      setErrors({});
+      setCurrentStep(targetStep);
+      setMaxStepReached((prev) => Math.max(prev, targetStep));
+      return;
+    }
+
+    // 3. Moving forward: verify that each intermediate prerequisite step is complete
+    for (let s = 1; s < targetStep; s++) {
+      const stepErrors = getStepValidationErrors(s, formData);
+      if (Object.keys(stepErrors).length > 0) {
+        setErrors(stepErrors);
+        setCurrentStep(s);
+        const firstMsg = Object.values(stepErrors)[0];
+        toast.error(`Please complete Step ${s} (${STEPS[s - 1].label}) first: ${firstMsg}`);
+        return;
+      }
+    }
+
+    // All prerequisite steps up to targetStep are okay! Clear errors and jump directly
+    setErrors({});
+    setCurrentStep(targetStep);
+    setMaxStepReached((prev) => Math.max(prev, targetStep));
+  };
+
+  const handleNext = () => {
+    if (!validateStep(currentStep)) {
+      const errList = Object.values(getStepValidationErrors(currentStep, formData));
+      const firstMsg = errList[0] || 'Please complete all required fields before proceeding.';
+      toast.error(firstMsg);
+      return;
+    }
+
+    const nextStep = Math.min(currentStep + 1, 7);
+    setErrors({});
+    setCurrentStep(nextStep);
+    setMaxStepReached((prev) => Math.max(prev, nextStep));
   };
 
   const handlePrevious = () => {
+    setErrors({});
     setCurrentStep((prev) => Math.max(prev - 1, 1));
   };
 
@@ -650,9 +767,15 @@ export default function CreateProposalModal({
       return;
     }
 
-    if (!validateStep(7)) {
-      toast.error('Please resolve the required items before submission.');
-      return;
+    for (let s = 1; s <= 7; s++) {
+      const stepErrors = getStepValidationErrors(s, formData);
+      if (Object.keys(stepErrors).length > 0) {
+        setErrors(stepErrors);
+        setCurrentStep(s);
+        const firstMsg = Object.values(stepErrors)[0];
+        toast.error(`Please complete Step ${s} (${STEPS[s - 1].label}): ${firstMsg}`);
+        return;
+      }
     }
 
     // Strict revision enforcement: Verify all flagged steps have been modified
@@ -771,46 +894,67 @@ export default function CreateProposalModal({
             <div className="flex items-center justify-between min-w-[700px]">
               {STEPS.map((s, idx) => {
                 const isActive = s.id === currentStep;
-                const isCompleted = s.id < currentStep;
+                const isOk = isStepComplete(s.id, formData);
+                const isAccessible =
+                  s.id <= currentStep ||
+                  isOk ||
+                  isReturnedProposal ||
+                  s.id <= maxStepReached ||
+                  (s.id > 1 && isStepComplete(s.id - 1, formData));
 
                 return (
                   <div key={s.id} className="flex items-center flex-1 last:flex-none">
                     <button
                       type="button"
-                      onClick={() => {
-                        // In revision mode or for completed steps, allow jumping directly
-                        if (isReturnedProposal || isCompleted || s.id <= currentStep) {
-                          setCurrentStep(s.id);
-                        }
-                      }}
+                      onClick={() => handleStepClick(s.id)}
                       className={`flex items-center gap-2 text-left transition-all ${
                         isActive
                           ? 'opacity-100 font-bold'
-                          : isCompleted || isReturnedProposal
-                          ? 'opacity-80 hover:opacity-100 cursor-pointer'
+                          : isAccessible
+                          ? 'opacity-85 hover:opacity-100 cursor-pointer'
                           : 'opacity-40 cursor-not-allowed'
                       }`}
+                      title={
+                        isActive
+                          ? `Current Step: ${s.label}`
+                          : isOk
+                          ? `Completed: ${s.label} (Click to jump)`
+                          : isAccessible
+                          ? `Navigate to ${s.label}`
+                          : `Complete previous steps to unlock ${s.label}`
+                      }
                     >
                       <div
                         className={`w-7 h-7 rounded-xl text-xs font-bold flex items-center justify-center transition-all ${
                           isActive
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : isCompleted
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-slate-100 text-slate-500 border border-slate-200'
+                            ? 'bg-blue-600 text-white shadow-xs ring-2 ring-blue-400/30'
+                            : isOk
+                            ? 'bg-emerald-600 text-white shadow-2xs hover:bg-emerald-700'
+                            : isAccessible
+                            ? 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+                            : 'bg-slate-100 text-slate-400 border border-slate-200'
                         }`}
                       >
-                        {isCompleted ? <CheckCircle2 className="w-4 h-4" /> : s.id}
+                        {isOk && !isActive ? <CheckCircle2 className="w-4 h-4" /> : s.id}
                       </div>
                       <div>
                         <div className="flex items-center gap-1.5">
                           <span
                             className={`text-xs ${
-                              isActive ? 'text-blue-900 font-bold' : 'text-slate-700 font-medium'
+                              isActive
+                                ? 'text-blue-900 font-bold'
+                                : isOk
+                                ? 'text-emerald-800 font-semibold'
+                                : 'text-slate-700 font-medium'
                             }`}
                           >
                             {s.label}
                           </span>
+                          {isOk && !isActive && (
+                            <span className="text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 leading-none">
+                              OK
+                            </span>
+                          )}
                           {isReturnedProposal && isStepFlagged(s.id) && (
                             <span
                               className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${
@@ -831,8 +975,8 @@ export default function CreateProposalModal({
 
                     {idx < STEPS.length - 1 && (
                       <div
-                        className={`h-0.5 flex-1 mx-3 rounded-full ${
-                          s.id < currentStep ? 'bg-emerald-500' : 'bg-slate-200'
+                        className={`h-0.5 flex-1 mx-3 rounded-full transition-colors ${
+                          isOk ? 'bg-emerald-500' : 'bg-slate-200'
                         }`}
                       />
                     )}

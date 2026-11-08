@@ -13,7 +13,7 @@
  * 6. Remarks
  */
 
-import React from 'react';
+import React, { useMemo, useEffect } from 'react';
 import {
   DollarSign,
   Plus,
@@ -37,6 +37,7 @@ import {
 } from '../../utils/proposal-calculations';
 import FundingSourceSelector from './FundingSourceSelector';
 import HistoricalBudgetPicker from './HistoricalBudgetPicker';
+import { stripSasPhrases } from '../../../events/utils/organization-display.utils';
 import {
   mapHistoricalLineItems,
   type HistoricalActivityMatch,
@@ -101,12 +102,15 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     formData.isOfficerProposal ||
     formData.creatorRole === 'officer' ||
     formData.creatorRole === 'student_officer' ||
-    (formData.organizationId && formData.organizationId !== 'sas')
+    (formData.organizationId && formData.organizationId !== 'sas') ||
+    (formData.hostingOrgId && formData.hostingOrgId !== 'sas') ||
+    (formData.organizers && formData.organizers.some((o: string) => typeof o === 'string' && stripSasPhrases(o).length > 0)) ||
+    (formData.organizationName && stripSasPhrases(formData.organizationName).length > 0)
   );
 
   React.useEffect(() => {
-    if (!isOfficerProposal && formData.fundingSource !== 'school_budget') {
-      onChange({ fundingSource: 'school_budget' });
+    if (!formData.fundingSource) {
+      onChange({ fundingSource: isOfficerProposal ? 'organization_funds' : 'school_budget' });
     }
   }, [isOfficerProposal, formData.fundingSource]);
 
@@ -336,84 +340,70 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
         </div>
       </div>
 
-      {/* Funding Source Selector & Real-Time Treasury Status — Only for Student Clubs / Officers */}
-      {isOfficerProposal ? (
-        <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
-          <FundingSourceSelector
-            value={formData.fundingSource || 'organization_funds'}
-            onChange={(source) => {
-              const updates: Partial<ProposalFormData> = { fundingSource: source };
-              if (source === 'zero_budget') {
-                const zeroed = calculateFinancialTotals(
-                  [
-                    {
-                      id: 'rev-zero',
-                      description: 'Non-Monetary Activity (₱0)',
-                      lastYearActual: 0,
-                      thisYearProposed: 0,
-                      totalAmount: 0,
-                      adjustment: 0,
-                      remarks: 'Non-monetary event',
-                    },
-                  ],
-                  [
-                    {
-                      id: 'exp-zero',
-                      description: 'Zero Budget Repertoire',
-                      lastYearActual: 0,
-                      thisYearProposed: 0,
-                      totalAmount: 0,
-                      adjustment: 0,
-                      remarks: 'No financial disbursement required',
-                    },
-                  ]
-                );
-                updates.financialProjections = zeroed;
-              } else if (source === 'organization_funds') {
-                const orgLabel = formData.organizationName ? `${formData.organizationName} Treasury` : 'Organization Treasury';
-                if (
-                  currentProjections.revenues.length > 0 &&
-                  (!currentProjections.revenues[0].description ||
-                    currentProjections.revenues[0].description.includes('Subsidy') ||
-                    currentProjections.revenues[0].description.includes('School Budget') ||
-                    currentProjections.revenues[0].description.includes('Non-Monetary'))
-                ) {
-                  const list = [...currentProjections.revenues];
-                  list[0] = { ...list[0], description: `${orgLabel} Ledger Funds` };
-                  updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
-                }
-              } else if (source === 'school_budget') {
-                if (
-                  currentProjections.revenues.length > 0 &&
-                  (!currentProjections.revenues[0].description ||
-                    currentProjections.revenues[0].description.includes('Treasury') ||
-                    currentProjections.revenues[0].description.includes('Non-Monetary'))
-                ) {
-                  const list = [...currentProjections.revenues];
-                  list[0] = { ...list[0], description: 'School Budget Allocation' };
-                  updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
-                }
+      {/* Funding Source Selector & Real-Time Treasury Status */}
+      <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
+        <FundingSourceSelector
+          value={formData.fundingSource || (isOfficerProposal ? 'organization_funds' : 'school_budget')}
+          onChange={(source) => {
+            const updates: Partial<ProposalFormData> = { fundingSource: source };
+            if (source === 'zero_budget') {
+              const zeroed = calculateFinancialTotals(
+                [
+                  {
+                    id: 'rev-zero',
+                    description: 'Non-Monetary Activity (₱0)',
+                    lastYearActual: 0,
+                    thisYearProposed: 0,
+                    totalAmount: 0,
+                    adjustment: 0,
+                    remarks: 'Non-monetary event',
+                  },
+                ],
+                [
+                  {
+                    id: 'exp-zero',
+                    description: 'Zero Budget Repertoire',
+                    lastYearActual: 0,
+                    thisYearProposed: 0,
+                    totalAmount: 0,
+                    adjustment: 0,
+                    remarks: 'No financial disbursement required',
+                  },
+                ]
+              );
+              updates.financialProjections = zeroed;
+            } else if (source === 'organization_funds') {
+              const orgLabel = formData.organizationName ? `${formData.organizationName} Treasury` : 'Organization Treasury';
+              if (
+                currentProjections.revenues.length > 0 &&
+                (!currentProjections.revenues[0].description ||
+                  currentProjections.revenues[0].description.includes('Subsidy') ||
+                  currentProjections.revenues[0].description.includes('School Budget') ||
+                  currentProjections.revenues[0].description.includes('Non-Monetary'))
+              ) {
+                const list = [...currentProjections.revenues];
+                list[0] = { ...list[0], description: `${orgLabel} Ledger Funds` };
+                updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
               }
-              onChange(updates);
-            }}
-            organizationId={formData.organizationId || (formData as any).hostingOrgId}
-            organizationName={formData.organizationName}
-            proposedBudget={currentProjections.totalExpenses}
-          />
-        </div>
-      ) : (
-        <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-2xl flex items-center justify-between text-xs text-blue-950 shadow-2xs">
-          <div className="flex items-center gap-2.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 shrink-0" />
-            <span>
-              <strong>Budget Origin:</strong> School Budget Allocation (SAS Administrator Activity)
-            </span>
-          </div>
-          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md bg-blue-100 text-[#001A4D] border border-blue-200">
-            School Budget
-          </span>
-        </div>
-      )}
+            } else if (source === 'school_budget') {
+              if (
+                currentProjections.revenues.length > 0 &&
+                (!currentProjections.revenues[0].description ||
+                  currentProjections.revenues[0].description.includes('Treasury') ||
+                  currentProjections.revenues[0].description.includes('Non-Monetary'))
+              ) {
+                const list = [...currentProjections.revenues];
+                list[0] = { ...list[0], description: 'School Budget Allocation' };
+                updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
+              }
+            }
+            onChange(updates);
+          }}
+          organizationId={formData.organizationId || (formData as any).hostingOrgId}
+          organizationName={formData.organizationName}
+          proposedBudget={currentProjections.totalExpenses}
+        />
+      </div>
 
       {/* Historical Budget Reference & Auto-Populate */}
       <HistoricalBudgetPicker
