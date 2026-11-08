@@ -22,6 +22,7 @@ import {
   Calendar as CalendarIcon,
   Layers,
   Building,
+  Eye,
 } from 'lucide-react';
 import type { EventDocument, EventSession } from '../types/event.types';
 import { formatAppDate, format12HourTime } from '../../../utils/date';
@@ -41,6 +42,7 @@ interface ActivityCalendarProps {
   isOfficer?: boolean;
   activeOrgAcronym?: string;
   layoutMode?: 'split' | 'stacked' | 'auto';
+  onViewActivity?: (activity: EventDocument) => void;
 }
 
 /**
@@ -120,6 +122,7 @@ export default function ActivityCalendar({
   isOfficer = false,
   activeOrgAcronym,
   layoutMode = 'auto',
+  onViewActivity,
 }: ActivityCalendarProps) {
   const today = useMemo(() => new Date(), []);
   const todayStr = useMemo(() => {
@@ -128,6 +131,11 @@ export default function ActivityCalendar({
     const d = String(today.getDate()).padStart(2, '0');
     return `${y}-${m}-${d}`;
   }, [today]);
+
+  const basePath = useMemo(() => {
+    if (viewAllLink) return viewAllLink.split('?')[0];
+    return isOfficer ? '/officer/events' : '/home/event-approvals';
+  }, [viewAllLink, isOfficer]);
 
   const [currentMonthDate, setCurrentMonthDate] = useState<Date>(() => new Date());
   const [selectedDate, setSelectedDate] = useState<string>(() => todayStr);
@@ -507,7 +515,11 @@ export default function ActivityCalendar({
                       : 'Schedule TBD';
                     const venueStr = act.customVenueName || session?.venueName || 'Campus Venue';
                     const refNo = (act as any).referenceNo || (act as any).referenceNumber || act.referenceId || '';
-                    const participantCount = (act as any).estimatedAttendance || (act as any).estAttendanceCount || act.expectedParticipantCount;
+                    const rawParticipants = (act as any).estimatedAttendance || (act as any).estAttendanceCount || act.expectedParticipantCount;
+                    const cleanParticipantCount = rawParticipants
+                      ? String(rawParticipants).replace(/\s*participants?/gi, '').trim()
+                      : null;
+                    const activityDetailUrl = `${basePath}?id=${encodeURIComponent(act.id)}&tab=approved`;
 
                     return (
                       <div
@@ -547,9 +559,12 @@ export default function ActivityCalendar({
                         </div>
 
                         <div>
-                          <h5 className="text-sm font-bold text-[#001A4D] line-clamp-2">
+                          <Link
+                            to={activityDetailUrl}
+                            className="text-sm font-bold text-[#001A4D] hover:text-[#0E4EBD] transition-colors line-clamp-2 block"
+                          >
                             {act.title}
-                          </h5>
+                          </Link>
                           {session?.title && session.title !== 'General' && (
                             <p className="text-[11px] text-blue-700 font-semibold mt-0.5">
                               Session: {session.title}
@@ -568,12 +583,37 @@ export default function ActivityCalendar({
                           </div>
                         </div>
 
-                        {participantCount && (
-                          <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                            <Users className="w-3 h-3 text-gray-400 shrink-0" />
-                            <span>Estimated {participantCount} participants</span>
-                          </div>
-                        )}
+                        <div className="flex items-center justify-between pt-2 border-t border-gray-100 gap-2 flex-wrap sm:flex-nowrap">
+                          {cleanParticipantCount ? (
+                            <div className="flex items-center gap-1.5 text-[11px] text-gray-500">
+                              <Users className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                              <span>Estimated {cleanParticipantCount} participants</span>
+                            </div>
+                          ) : (
+                            <div />
+                          )}
+
+                          {onViewActivity ? (
+                            <button
+                              type="button"
+                              onClick={() => onViewActivity(act)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-[#0E4EBD] bg-blue-50/90 hover:bg-[#0E4EBD] hover:text-white border border-blue-200/80 hover:border-[#0E4EBD] transition-all shadow-2xs group cursor-pointer ml-auto"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-[#0E4EBD] group-hover:text-white group-hover:scale-110 transition-all" />
+                              <span>View Activity</span>
+                              <ArrowRight className="w-3 h-3 text-[#0E4EBD] group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+                            </button>
+                          ) : (
+                            <Link
+                              to={activityDetailUrl}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-[#0E4EBD] bg-blue-50/90 hover:bg-[#0E4EBD] hover:text-white border border-blue-200/80 hover:border-[#0E4EBD] transition-all shadow-2xs group cursor-pointer ml-auto"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-[#0E4EBD] group-hover:text-white group-hover:scale-110 transition-all" />
+                              <span>View Activity</span>
+                              <ArrowRight className="w-3 h-3 text-[#0E4EBD] group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+                            </Link>
+                          )}
+                        </div>
                       </div>
                     );
                   })}
@@ -607,24 +647,31 @@ export default function ActivityCalendar({
                       </div>
                       <div className="space-y-2">
                         {upcomingActivitiesThisMonth.map(({ activity, dateKey }) => (
-                          <button
+                          <div
                             key={activity.id}
-                            type="button"
-                            onClick={() => setSelectedDate(dateKey)}
-                            className="w-full text-left p-2.5 rounded-xl bg-white border border-gray-200/80 hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center justify-between gap-2 group cursor-pointer"
+                            className="p-2.5 rounded-xl bg-white border border-gray-200/80 hover:border-blue-300 hover:bg-blue-50/30 transition-all flex items-center justify-between gap-2 group"
                           >
-                            <div className="flex-1 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedDate(dateKey)}
+                              className="flex-1 min-w-0 text-left cursor-pointer"
+                            >
                               <p className="text-xs font-bold text-gray-800 truncate group-hover:text-[#0E4EBD]">
                                 {activity.title}
                               </p>
                               <p className="text-[10px] text-gray-400 mt-0.5">
                                 {formatAppDate(dateKey)} • {resolveHostAcronym(activity)}
                               </p>
-                            </div>
-                            <span className="text-[10px] font-bold text-blue-600 shrink-0">
-                              View →
-                            </span>
-                          </button>
+                            </button>
+                            <Link
+                              to={`${basePath}?id=${encodeURIComponent(activity.id)}&tab=approved`}
+                              className="text-[10px] font-bold text-[#0E4EBD] bg-blue-50 hover:bg-[#0E4EBD] hover:text-white px-2.5 py-1 rounded-md border border-blue-200/70 transition-all shrink-0 flex items-center gap-1 cursor-pointer"
+                              title="View Activity Details"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>View</span>
+                            </Link>
+                          </div>
                         ))}
                       </div>
                     </div>

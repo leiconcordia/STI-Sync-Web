@@ -181,13 +181,18 @@ export function EventApprovals() {
   const { data: semesters = [] } = useSemesters();
 
   useEffect(() => {
-    if (targetId && events.length > 0) {
-      const target = events.find((e) => e.id === targetId);
-      if (target) {
-        setSelectedEvent(target);
-      }
+    if (!targetId) return;
+    const target = events.find((e) => e.id === targetId) || drafts.find((d) => d.id === targetId);
+    if (target) {
+      setSelectedEvent(target);
+    } else if (!eventsLoading && !draftsLoading) {
+      getProposalById(targetId).then((fetched) => {
+        if (fetched) {
+          setSelectedEvent(fetched as any);
+        }
+      }).catch(() => {});
     }
-  }, [targetId, events]);
+  }, [targetId, events, drafts, eventsLoading, draftsLoading]);
 
   // Keep selectedEvent synchronized with live events stream
   useEffect(() => {
@@ -1461,7 +1466,16 @@ export function EventApprovals() {
       {selectedEvent && (
         <EventProposalReview
           event={selectedEvent}
-          onClose={() => setSelectedEvent(null)}
+          onClose={() => {
+            setSelectedEvent(null);
+            if (targetId) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('id');
+              next.delete('eventId');
+              const qs = next.toString();
+              navigate(qs ? `?${qs}` : `?tab=${activeTab}`, { replace: true });
+            }
+          }}
         />
       )}
 

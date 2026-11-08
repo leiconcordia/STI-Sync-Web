@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   Calendar,
   MapPin,
@@ -158,6 +158,10 @@ export default function EventManagement() {
   const [filterSemester, setFilterSemester] = useState('All');
   const [showFilters, setShowFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+
+  const [searchParams] = useSearchParams();
+  const targetId = searchParams.get('id') || searchParams.get('eventId');
+  const [directEvent, setDirectEvent] = useState<EventDocument | null>(null);
 
   const [isApModalOpen, setIsApModalOpen] = useState(false);
   const [apInitialData, setApInitialData] = useState<any>(null);
@@ -500,7 +504,30 @@ export default function EventManagement() {
     }
   };
 
-  const selectedEvent = events.find((e) => e.id === selectedEventId);
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['all', 'draft', 'pending', 'approved', 'completed', 'archived', 'rejected', 'returned', 'cancelled', 'trash'].includes(tabParam)) {
+      setActiveTab(tabParam as EventStatusTab);
+      setCurrentPage(1);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!targetId) return;
+    const target = events.find((e) => e.id === targetId);
+    if (target) {
+      setSelectedEventId(target.id);
+    } else if (!loading) {
+      getProposalById(targetId).then((fetched) => {
+        if (fetched) {
+          setDirectEvent(fetched as any);
+          setSelectedEventId(fetched.id);
+        }
+      }).catch(() => {});
+    }
+  }, [targetId, events, loading]);
+
+  const selectedEvent = events.find((e) => e.id === selectedEventId) || directEvent;
 
   return (
     <div className="space-y-5 w-full">
@@ -1253,7 +1280,17 @@ export default function EventManagement() {
       {selectedEvent && (
         <OfficerEventDetailView
           event={selectedEvent}
-          onClose={() => setSelectedEventId(null)}
+          onClose={() => {
+            setSelectedEventId(null);
+            setDirectEvent(null);
+            if (targetId) {
+              const next = new URLSearchParams(searchParams);
+              next.delete('id');
+              next.delete('eventId');
+              const qs = next.toString();
+              navigate(qs ? `?${qs}` : `?tab=${activeTab}`, { replace: true });
+            }
+          }}
           onEdit={async () => {
             try {
               const prop = await getProposalById(selectedEvent.id);
@@ -1262,6 +1299,7 @@ export default function EventManagement() {
               setApInitialData(selectedEvent);
             }
             setSelectedEventId(null);
+            setDirectEvent(null);
             setIsApModalOpen(true);
           }}
         />
