@@ -178,6 +178,79 @@ export default function ApprovalWorkflowSettings() {
   };
 
 
+  const handleMoveStageUp = (stageIndex: number) => {
+    const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
+    if (pos <= 0) return;
+    const reordered = [...stages];
+    const temp = reordered[pos - 1];
+    reordered[pos - 1] = reordered[pos];
+    reordered[pos] = temp;
+
+    // Flatten steps in newly ordered stages
+    let globalStep = 1;
+    const flattened: WorkflowStepTemplate[] = [];
+    reordered.forEach((stage, i) => {
+      const newStageIndex = i + 1;
+      const stageName = formatStageTitle(newStageIndex, stage.steps.length);
+      stage.steps.forEach((step) => {
+        flattened.push({
+          ...step,
+          step: globalStep++,
+          stageIndex: newStageIndex,
+          stageName,
+        });
+      });
+    });
+    handleUpdateSteps(flattened);
+    toast.info(`Moved ${formatStageTitle(stageIndex, stages[pos].steps.length)} up.`);
+  };
+
+  const handleMoveStageDown = (stageIndex: number) => {
+    const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
+    if (pos < 0 || pos >= stages.length - 1) return;
+    const reordered = [...stages];
+    const temp = reordered[pos + 1];
+    reordered[pos + 1] = reordered[pos];
+    reordered[pos] = temp;
+
+    // Flatten steps in newly ordered stages
+    let globalStep = 1;
+    const flattened: WorkflowStepTemplate[] = [];
+    reordered.forEach((stage, i) => {
+      const newStageIndex = i + 1;
+      const stageName = formatStageTitle(newStageIndex, stage.steps.length);
+      stage.steps.forEach((step) => {
+        flattened.push({
+          ...step,
+          step: globalStep++,
+          stageIndex: newStageIndex,
+          stageName,
+        });
+      });
+    });
+    handleUpdateSteps(flattened);
+    toast.info(`Moved ${formatStageTitle(stageIndex, stages[pos].steps.length)} down.`);
+  };
+
+  const handleMoveStep = (stepId: string, direction: 'up' | 'down') => {
+    const idx = currentSteps.findIndex((s) => s.id === stepId);
+    if (idx === -1) return;
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= currentSteps.length) return;
+
+    const currentStep = currentSteps[idx];
+    const targetStep = currentSteps[targetIdx];
+    const updatedCurrent = {
+      ...currentStep,
+      stageIndex: targetStep.stageIndex,
+    };
+
+    const newSteps = [...currentSteps];
+    newSteps[idx] = targetStep;
+    newSteps[targetIdx] = updatedCurrent;
+    handleUpdateSteps(normalizeApprovalStages(newSteps));
+  };
+
   const handleDeleteStage = (stageIndex: number) => {
     if (stages.length <= 1) {
       toast.error('Workflow must maintain at least one stage.');
@@ -489,11 +562,30 @@ export default function ApprovalWorkflowSettings() {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={stage.stageIndex === 1}
+                    onClick={() => handleMoveStageUp(stage.stageIndex)}
+                    className="p-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer transition-colors"
+                    title="Move stage up"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={stage.stageIndex === stages.length}
+                    onClick={() => handleMoveStageDown(stage.stageIndex)}
+                    className="p-1.5 rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer transition-colors"
+                    title="Move stage down"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => handleAddStepToStage(stage.stageIndex)}
-                    className="px-3 py-1 bg-white hover:bg-gray-100 text-[#001A4D] border border-gray-300 text-xs font-bold rounded-lg shadow-2xs flex items-center gap-1 transition-colors"
+                    className="px-3 py-1 bg-white hover:bg-gray-100 text-[#001A4D] border border-gray-300 text-xs font-bold rounded-lg shadow-2xs flex items-center gap-1 transition-colors ml-1"
                   >
                     <Plus className="w-3.5 h-3.5 text-[#0E4EBD]" />
                     <span>Add Signer</span>
@@ -501,8 +593,9 @@ export default function ApprovalWorkflowSettings() {
 
                   <button
                     type="button"
+                    disabled={stages.length <= 1}
                     onClick={() => handleDeleteStage(stage.stageIndex)}
-                    className="p-1.5 text-gray-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors"
+                    className="p-1.5 text-gray-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 disabled:opacity-30 disabled:pointer-events-none transition-colors"
                     title="Delete entire stage"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -650,6 +743,28 @@ export default function ApprovalWorkflowSettings() {
                                 <span>Permanent</span>
                               </span>
                             </label>
+
+                            {/* Move step up / down */}
+                            <div className="flex items-center">
+                              <button
+                                type="button"
+                                disabled={currentSteps.findIndex((s) => s.id === step.id) === 0}
+                                onClick={() => handleMoveStep(step.id, 'up')}
+                                className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-20 cursor-pointer transition-colors"
+                                title="Move signatory up"
+                              >
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={currentSteps.findIndex((s) => s.id === step.id) === currentSteps.length - 1}
+                                onClick={() => handleMoveStep(step.id, 'down')}
+                                className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-20 cursor-pointer transition-colors"
+                                title="Move signatory down"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
 
                             {/* Delete Step Button */}
                             <button

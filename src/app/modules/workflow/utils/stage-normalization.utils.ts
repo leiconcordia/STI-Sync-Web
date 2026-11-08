@@ -62,8 +62,8 @@ export function normalizeApprovalStages<T extends { stageIndex?: number; stageNa
     stageMap.get(rawIdx)!.push(step);
   });
 
-  // Sort stages by numeric index
-  seenIndices.sort((a, b) => a - b);
+  // Preserve stages order as they appear in the chain
+  // (Do NOT sort seenIndices numerically, which would revert intentional user stage reorderings)
 
   let globalStepCounter = 1;
   const normalized: T[] = [];

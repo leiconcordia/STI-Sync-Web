@@ -110,33 +110,42 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     }
   }, [isOfficerProposal, formData.fundingSource]);
 
-  const currentProjections: FinancialProjections = formData.financialProjections || {
-    revenues: [
-      {
-        id: 'rev-1',
-        description: '',
-        lastYearActual: 0,
-        thisYearProposed: 0,
-        totalAmount: 0,
-        adjustment: 0,
-        remarks: '',
-      },
-    ],
-    expenses: [
-      {
-        id: 'exp-1',
-        description: '',
-        lastYearActual: 0,
-        thisYearProposed: 0,
-        totalAmount: 0,
-        adjustment: 0,
-        remarks: '',
-      },
-    ],
-    totalRevenue: 0,
-    totalExpenses: 0,
-    balance: 0,
-  };
+  const rawProjections = formData.financialProjections;
+  const currentProjections: FinancialProjections = useMemo(() => {
+    const defaultRev: FinancialLineItem = {
+      id: 'rev-1',
+      description: '',
+      lastYearActual: 0,
+      thisYearProposed: 0,
+      totalAmount: 0,
+      adjustment: 0,
+      remarks: '',
+    };
+    const defaultExp: FinancialLineItem = {
+      id: 'exp-1',
+      description: '',
+      lastYearActual: 0,
+      thisYearProposed: 0,
+      totalAmount: 0,
+      adjustment: 0,
+      remarks: '',
+    };
+
+    const revenues = (rawProjections?.revenues && rawProjections.revenues.length > 0)
+      ? rawProjections.revenues
+      : [defaultRev];
+    const expenses = (rawProjections?.expenses && rawProjections.expenses.length > 0)
+      ? rawProjections.expenses
+      : [defaultExp];
+
+    return {
+      revenues,
+      expenses,
+      totalRevenue: Number(rawProjections?.totalRevenue || 0),
+      totalExpenses: Number(rawProjections?.totalExpenses || 0),
+      balance: Number(rawProjections?.balance || 0),
+    };
+  }, [rawProjections]);
 
   const handleUpdateLineItem = (
     type: 'revenues' | 'expenses',

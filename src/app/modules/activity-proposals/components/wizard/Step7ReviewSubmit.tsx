@@ -703,35 +703,78 @@ export default function Step7ReviewSubmit({
           </div>
 
           {/* 14. Financial projections */}
-          <div className="space-y-3 pb-6 border-b border-slate-100">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                14. Financial projections
-              </h3>
-              <div className="text-xs font-bold text-slate-700">
-                Projected Balance: <span className="text-emerald-700">{formatPHP(formData.financialProjections?.balance || 0)}</span>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-              <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
-                <span className="text-[10px] uppercase font-bold text-emerald-800 block">Total Proposed Revenues</span>
-                <span className="text-base font-bold text-emerald-900">
-                  {formatPHP(formData.financialProjections?.totalRevenue || 0)}
-                </span>
-                <span className="text-[11px] text-emerald-700 block mt-0.5">
-                  {formData.financialProjections?.revenues?.length || 0} line item(s)
-                </span>
-              </div>
-              <div className="p-3 bg-rose-50/60 border border-rose-200/80 rounded-xl">
-                <span className="text-[10px] uppercase font-bold text-rose-800 block">Total Proposed Expenses</span>
-                <span className="text-base font-bold text-rose-900">
-                  {formatPHP(formData.financialProjections?.totalExpenses || 0)}
-                </span>
-                <span className="text-[11px] text-rose-700 block mt-0.5">
-                  {formData.financialProjections?.expenses?.length || 0} line item(s)
-                </span>
-              </div>
-            </div>
+          {(() => {
+            const revItems = formData.financialProjections?.revenues || [];
+            const expItems = formData.financialProjections?.expenses || [];
+            const calculatedTotalRevenue = Number(formData.financialProjections?.totalRevenue) ||
+              revItems.reduce((s, r) => s + (Number(r.totalAmount) || (Number(r.thisYearProposed) || 0) + (Number(r.adjustment) || 0)), 0);
+            const calculatedTotalExpenses = Number(formData.financialProjections?.totalExpenses) ||
+              expItems.reduce((s, e) => s + (Number(e.totalAmount) || (Number(e.thisYearProposed) || 0) + (Number(e.adjustment) || 0)), 0);
+
+            const isInstitutionalAllocation =
+              (formData.fundingSource === 'school_budget' || formData.fundingSource === 'organization_funds') &&
+              calculatedTotalRevenue === 0 &&
+              calculatedTotalExpenses > 0;
+
+            const displayRevenue = isInstitutionalAllocation ? calculatedTotalExpenses : calculatedTotalRevenue;
+            const rawBalance = formData.financialProjections?.balance !== undefined && !isInstitutionalAllocation
+              ? Number(formData.financialProjections.balance)
+              : (displayRevenue - calculatedTotalExpenses);
+
+            return (
+              <div className="space-y-3 pb-6 border-b border-slate-100">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    14. Financial projections
+                  </h3>
+                  <div className="flex items-center gap-2.5 text-xs font-bold flex-wrap">
+                    <span className="text-slate-600">
+                      Total Proposed Budget: <strong className="text-rose-700 font-mono">{formatPHP(calculatedTotalExpenses)}</strong>
+                    </span>
+                    <span className="text-slate-300">|</span>
+                    <span className="text-slate-600">
+                      Projected Balance: <strong className={`font-mono ${rawBalance >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>{formatPHP(rawBalance)}</strong>
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                      rawBalance === 0
+                        ? 'bg-blue-100 text-blue-800'
+                        : rawBalance > 0
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-amber-100 text-amber-800'
+                    }`}>
+                      {rawBalance === 0 ? '✓ Balanced' : rawBalance > 0 ? '↑ Surplus' : '⚠ Deficit'}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                  <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase font-bold text-emerald-800 block">
+                        {isInstitutionalAllocation ? 'Funding Allocation (Revenues)' : 'Total Proposed Revenues'}
+                      </span>
+                      {isInstitutionalAllocation && (
+                        <span className="text-[9px] font-bold text-[#001A4D] bg-blue-100 px-1.5 py-0.5 rounded">
+                          {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-base font-bold text-emerald-900 font-mono">
+                      {formatPHP(displayRevenue)}
+                    </span>
+                    <span className="text-[11px] text-emerald-700 block mt-0.5">
+                      {isInstitutionalAllocation ? 'Institutional allocation covering proposed expenses' : `${revItems.length} line item(s)`}
+                    </span>
+                  </div>
+                  <div className="p-3 bg-rose-50/60 border border-rose-200/80 rounded-xl">
+                    <span className="text-[10px] uppercase font-bold text-rose-800 block">Total Proposed Expenses</span>
+                    <span className="text-base font-bold text-rose-900 font-mono">
+                      {formatPHP(calculatedTotalExpenses)}
+                    </span>
+                    <span className="text-[11px] text-rose-700 block mt-0.5">
+                      {expItems.length} line item(s)
+                    </span>
+                  </div>
+                </div>
 
             {/* Historical Budget Reference Status Badge */}
             {formData.historicalReference && (
@@ -762,6 +805,8 @@ export default function Step7ReviewSubmit({
               </div>
             )}
           </div>
+        );
+      })()}
 
           {/* 15. Signatories & Dynamic Multi-Stage Approval Flow */}
           <div className="space-y-4 pt-2">

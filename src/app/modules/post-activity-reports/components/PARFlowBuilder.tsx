@@ -169,88 +169,73 @@ export default function PARFlowBuilder({
     onChange(updatedChain);
   };
 
+  // Helper: cleanly reindexes stages and steps 1..N
+  const reindexStages = (
+    updatedStages: { stageIndex: number; stageName?: string; steps: PARApprovalStep[] }[]
+  ) => {
+    let globalStep = 1;
+    const flattened: PARApprovalStep[] = [];
+
+    updatedStages.forEach((stage, i) => {
+      const stageIdx = i + 1;
+      const count = stage.steps.length;
+      const stageName = formatStageTitle(stageIdx, count);
+
+      stage.steps.forEach((step) => {
+        flattened.push({
+          ...step,
+          step: globalStep++,
+          stageIndex: stageIdx,
+          stageName,
+          status: stageIdx === 1 ? 'current' : step.status,
+        });
+      });
+    });
+
+    setStageConfigs(updatedStages.map((_, i) => ({ stageIndex: i + 1 })));
+    onChange(flattened);
+  };
+
   // Move stage up
   const handleMoveStageUp = (stageIndex: number) => {
-    if (stageIndex <= 1) return;
-    const targetIndex = stageIndex - 1;
-
-    setStageConfigs((prev) =>
-      prev.map((sc) => {
-        if (sc.stageIndex === stageIndex) return { ...sc, stageIndex: targetIndex };
-        if (sc.stageIndex === targetIndex) return { ...sc, stageIndex };
-        return sc;
-      }).sort((a, b) => a.stageIndex - b.stageIndex)
-    );
-
-    const updatedChain = approvalChain.map((step) => {
-      const cur = step.stageIndex ?? 1;
-      if (cur === stageIndex) return { ...step, stageIndex: targetIndex, status: targetIndex === 1 ? 'current' : step.status };
-      if (cur === targetIndex) return { ...step, stageIndex, status: stageIndex === 1 ? 'current' : step.status };
-      return step;
-    });
-    reindexAndPropagate(updatedChain);
+    const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
+    if (pos <= 0) return;
+    const reordered = [...stages];
+    const temp = reordered[pos - 1];
+    reordered[pos - 1] = reordered[pos];
+    reordered[pos] = temp;
+    reindexStages(reordered);
   };
 
   // Move stage down
   const handleMoveStageDown = (stageIndex: number) => {
-    if (stageIndex >= stages.length) return;
-    const targetIndex = stageIndex + 1;
-
-    setStageConfigs((prev) =>
-      prev.map((sc) => {
-        if (sc.stageIndex === stageIndex) return { ...sc, stageIndex: targetIndex };
-        if (sc.stageIndex === targetIndex) return { ...sc, stageIndex };
-        return sc;
-      }).sort((a, b) => a.stageIndex - b.stageIndex)
-    );
-
-    const updatedChain = approvalChain.map((step) => {
-      const cur = step.stageIndex ?? 1;
-      if (cur === stageIndex) return { ...step, stageIndex: targetIndex, status: targetIndex === 1 ? 'current' : step.status };
-      if (cur === targetIndex) return { ...step, stageIndex, status: stageIndex === 1 ? 'current' : step.status };
-      return step;
-    });
-    reindexAndPropagate(updatedChain);
+    const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
+    if (pos < 0 || pos >= stages.length - 1) return;
+    const reordered = [...stages];
+    const temp = reordered[pos + 1];
+    reordered[pos + 1] = reordered[pos];
+    reordered[pos] = temp;
+    reindexStages(reordered);
   };
 
   // Delete a stage (permanent stages cannot be deleted)
   const handleDeleteStage = (stageIndex: number) => {
-    const hasPermanent = approvalChain.some((step) => {
-      if ((step.stageIndex ?? 1) !== stageIndex) return false;
+    if (stages.length <= 1) {
+      alert('Pipeline must have at least one stage.');
+      return;
+    }
+    const stageToDelete = stages.find((s) => s.stageIndex === stageIndex);
+    const hasPermanent = stageToDelete?.steps.some((step) => {
       const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('par_step_') || step.id?.startsWith('step-'));
       return !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
     });
     if (hasPermanent) {
-      alert(`Cannot delete Stage ${stageIndex} because it contains a permanent institutional signatory configured in settings.`);
+      alert('This stage contains permanent signatories that cannot be removed. You can rearrange this stage up or down, but cannot delete it.');
       return;
     }
 
-    const remainingSteps = approvalChain.filter((s) => (s.stageIndex ?? 1) !== stageIndex);
-    const remainingConfigs = stageConfigs.filter((sc) => sc.stageIndex !== stageIndex);
-
-    // Re-index remaining stages
-    const reindexedConfigs = remainingConfigs.map((sc, i) => ({
-      ...sc,
-      stageIndex: i + 1,
-    }));
-    setStageConfigs(reindexedConfigs);
-
-    const stageMap = new Map<number, number>();
-    remainingConfigs.forEach((sc, i) => {
-      stageMap.set(sc.stageIndex, i + 1);
-    });
-
-    const reindexedSteps = remainingSteps.map((step) => {
-      const oldStage = step.stageIndex ?? 1;
-      const newStage = stageMap.get(oldStage) ?? 1;
-      return {
-        ...step,
-        stageIndex: newStage,
-        status: newStage === 1 ? 'current' : step.status,
-      };
-    });
-
-    reindexAndPropagate(reindexedSteps);
+    const filtered = stages.filter((s) => s.stageIndex !== stageIndex);
+    reindexStages(filtered);
   };
 
   // Add new stage
@@ -355,7 +340,7 @@ export default function PARFlowBuilder({
     reindexAndPropagate(updated);
   };
 
-  // Move signatory up or down within their stage
+  // Move signatory up or down within or across stages
   const handleMoveSignatory = (stepIdOrIndex: string | number, direction: 'up' | 'down') => {
     const idx = approvalChain.findIndex((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
     if (idx === -1) return;
@@ -365,12 +350,14 @@ export default function PARFlowBuilder({
     if (targetIdx < 0 || targetIdx >= approvalChain.length) return;
 
     const targetStep = approvalChain[targetIdx];
-    // Keep within same stage
-    if ((currentStep.stageIndex ?? 1) !== (targetStep.stageIndex ?? 1)) return;
+    const updatedCurrent = {
+      ...currentStep,
+      stageIndex: targetStep.stageIndex,
+    };
 
     const newChain = [...approvalChain];
     newChain[idx] = targetStep;
-    newChain[targetIdx] = currentStep;
+    newChain[targetIdx] = updatedCurrent;
     reindexAndPropagate(newChain);
   };
 
@@ -482,26 +469,6 @@ export default function PARFlowBuilder({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={handleClearSignatories}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Clear all assigned signatories"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-              <span>Clear Names</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleRecommendSingleStage}
-              className="px-3.5 py-1.5 rounded-xl bg-blue-600/40 hover:bg-blue-600/60 text-blue-100 border border-blue-400/40 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Populates the recommended 1-stage route where all signatories sign simultaneously"
-            >
-              <Zap className="w-3.5 h-3.5 text-[#FFD41C]" />
-              <span>Recommend 1 Stage (Simultaneous)</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleAddStage}
               className="px-3.5 py-1.5 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
             >
@@ -551,22 +518,14 @@ export default function PARFlowBuilder({
             <div>
               <h4 className="font-bold text-slate-800 text-sm">No Clearance Stages Configured</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
-                Click <strong>Recommend 1 Stage (Simultaneous)</strong> to populate active institutional signatories for parallel signing, or click <strong>Add Stage</strong> to configure a custom route.
+                Click <strong>Add Stage</strong> to create an approval stage and assign signatories.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 pt-2">
               <button
                 type="button"
-                onClick={handleRecommendSingleStage}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              >
-                <Zap className="w-4 h-4 text-[#FFD41C]" />
-                <span>Recommend 1 Stage (Simultaneous)</span>
-              </button>
-              <button
-                type="button"
                 onClick={handleAddStage}
-                className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Stage</span>
@@ -792,23 +751,23 @@ export default function PARFlowBuilder({
                                 </select>
                               </div>
 
-                              {/* Reorder within stage */}
+                              {/* Reorder signatory */}
                               <div className="flex items-center">
                                 <button
                                   type="button"
-                                  disabled={stepIdx === 0}
+                                  disabled={approvalChain.findIndex((s) => (s.id ? s.id === step.id : s.step === step.step)) === 0}
                                   onClick={() => handleMoveSignatory(step.id || step.step, 'up')}
                                   className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-20 cursor-pointer"
-                                  title="Move up"
+                                  title="Move signatory up"
                                 >
                                   <ChevronUp className="w-3.5 h-3.5" />
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={stepIdx === stage.steps.length - 1}
+                                  disabled={approvalChain.findIndex((s) => (s.id ? s.id === step.id : s.step === step.step)) === approvalChain.length - 1}
                                   onClick={() => handleMoveSignatory(step.id || step.step, 'down')}
                                   className="p-1 rounded hover:bg-slate-200 text-slate-500 disabled:opacity-20 cursor-pointer"
-                                  title="Move down"
+                                  title="Move signatory down"
                                 >
                                   <ChevronDown className="w-3.5 h-3.5" />
                                 </button>

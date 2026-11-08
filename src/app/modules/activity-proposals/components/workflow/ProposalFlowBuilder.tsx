@@ -604,10 +604,6 @@ export default function ProposalFlowBuilder({
   // 3. Delete Stage
   const handleDeleteStage = (stageIdx: number) => {
     if (stages.length <= 1) return;
-    if (isOfficerProposal && stageIdx === 1) {
-      alert('Stage 1 (SAS Endorsement) is mandatory for Student Organization proposals and cannot be deleted.');
-      return;
-    }
     const targetStage = stages.find((s) => s.stageIndex === stageIdx);
     const hasPermanentSigner = targetStage?.steps.some((step) => {
       const isUserAddedStep = Boolean(
@@ -616,10 +612,10 @@ export default function ProposalFlowBuilder({
         step.id?.startsWith('custom_sig_') ||
         step.id?.startsWith('custom_')
       );
-      return !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, isOfficerProposal);
+      return !isUserAddedStep && (isStepConfiguredPermanent(step, pipelineKey, workflowSettings, isOfficerProposal) || step.role === 'sas_head');
     });
     if (hasPermanentSigner) {
-      alert('This stage contains permanent signatories configured in institutional settings and cannot be deleted.');
+      alert('This stage contains permanent signatories that cannot be removed. You can rearrange this stage up or down, but cannot delete it.');
       return;
     }
     const filtered = stages.filter((s) => s.stageIndex !== stageIdx);
@@ -628,7 +624,6 @@ export default function ProposalFlowBuilder({
 
   // 4. Move Stage Up
   const handleMoveStageUp = (stageIndex: number) => {
-    if (isOfficerProposal && (stageIndex === 1 || stageIndex === 2)) return;
     const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
     if (pos <= 0) return;
     const reordered = [...stages];
@@ -640,7 +635,6 @@ export default function ProposalFlowBuilder({
 
   // 5. Move Stage Down
   const handleMoveStageDown = (stageIndex: number) => {
-    if (isOfficerProposal && stageIndex === 1) return;
     const pos = stages.findIndex((s) => s.stageIndex === stageIndex);
     if (pos < 0 || pos >= stages.length - 1) return;
     const reordered = [...stages];
@@ -648,6 +642,27 @@ export default function ProposalFlowBuilder({
     reordered[pos + 1] = reordered[pos];
     reordered[pos] = temp;
     reindexChain(reordered);
+  };
+
+  // 5b. Move Signatory Up or Down within or across stages
+  const handleMoveSignatory = (stepIdOrIndex: string | number, direction: 'up' | 'down') => {
+    const idx = approvalChain.findIndex((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (idx === -1) return;
+
+    const currentStep = approvalChain[idx];
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= approvalChain.length) return;
+
+    const targetStep = approvalChain[targetIdx];
+    const updatedCurrent = {
+      ...currentStep,
+      stageIndex: targetStep.stageIndex,
+    };
+
+    const newChain = [...approvalChain];
+    newChain[idx] = targetStep;
+    newChain[targetIdx] = updatedCurrent;
+    onChange(normalizeApprovalStages(newChain));
   };
 
   // 6. Update Stage Title
@@ -920,26 +935,6 @@ export default function ProposalFlowBuilder({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={handleResetToEmpty}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Clear all assigned signatories and reset pipeline"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-              <span>Clear Pipeline</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleAutoSuggest}
-              className="px-3 py-1.5 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Automatically generates the 4-stage approval pipeline according to the proposal target audience and database signatories"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[#FFD41C]" />
-              <span>Auto-generate Flow from Audience</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleAddStage}
               className="px-3.5 py-1.5 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
             >
@@ -1085,42 +1080,33 @@ export default function ProposalFlowBuilder({
 
                   {/* Stage Order & Delete Controls */}
                   <div className="flex items-center gap-1 self-end sm:self-auto">
-                    {isOfficerProposal && stage.stageIndex === 1 ? (
-                      <span className="px-2.5 py-1 text-[11px] font-bold text-amber-800 bg-amber-50 rounded-lg border border-amber-200 flex items-center gap-1.5 shadow-2xs">
-                        <Lock className="w-3 h-3 text-amber-600" />
-                        <span>Stage 1 Locked</span>
-                      </span>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          disabled={isFirstStage || (isOfficerProposal && stage.stageIndex === 2)}
-                          onClick={() => handleMoveStageUp(stage.stageIndex)}
-                          className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-                          title="Move stage up"
-                        >
-                          <ChevronUp className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isLastStage}
-                          onClick={() => handleMoveStageDown(stage.stageIndex)}
-                          className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-                          title="Move stage down"
-                        >
-                          <ChevronDown className="w-3.5 h-3.5" />
-                        </button>
-                        {stages.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteStage(stage.stageIndex)}
-                            className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 ml-1 cursor-pointer"
-                            title="Delete stage"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </>
+                    <button
+                      type="button"
+                      disabled={isFirstStage}
+                      onClick={() => handleMoveStageUp(stage.stageIndex)}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer transition-colors"
+                      title="Move stage up"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isLastStage}
+                      onClick={() => handleMoveStageDown(stage.stageIndex)}
+                      className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 disabled:opacity-30 disabled:pointer-events-none cursor-pointer transition-colors"
+                      title="Move stage down"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                    {stages.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteStage(stage.stageIndex)}
+                        className="p-1.5 rounded-lg border border-rose-200 hover:bg-rose-50 text-rose-600 ml-1 cursor-pointer transition-colors"
+                        title="Delete stage"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     )}
                   </div>
                 </div>
@@ -1275,6 +1261,28 @@ export default function ProposalFlowBuilder({
                                   );
                                 })()}
                               </select>
+                            </div>
+
+                            {/* Signatory Order Controls */}
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                type="button"
+                                disabled={approvalChain.findIndex((s) => (s.id ? s.id === step.id : s.step === step.step)) === 0}
+                                onClick={() => handleMoveSignatory(step.id || step.step, 'up')}
+                                className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:pointer-events-none rounded hover:bg-slate-200/60 transition-colors"
+                                title="Move signatory up"
+                              >
+                                <ChevronUp className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={approvalChain.findIndex((s) => (s.id ? s.id === step.id : s.step === step.step)) === approvalChain.length - 1}
+                                onClick={() => handleMoveSignatory(step.id || step.step, 'down')}
+                                className="p-1 text-slate-400 hover:text-slate-700 disabled:opacity-20 disabled:pointer-events-none rounded hover:bg-slate-200/60 transition-colors"
+                                title="Move signatory down"
+                              >
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              </button>
                             </div>
 
                             {isLockedSigner ? (
