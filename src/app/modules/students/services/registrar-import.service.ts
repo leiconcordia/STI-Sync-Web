@@ -41,6 +41,7 @@ export interface ParsedRegistrarStudent {
   rawYearLevel: string;
   courseCode: string;
   courseName: string;
+  assignedSection?: string;
 }
 
 export interface ParsedRegistrarFile {
@@ -63,6 +64,7 @@ export interface MatchedPromotionItem {
   decision: PromotionDecision;
   isYearLevelChanging: boolean;
   isCourseChanging: boolean;
+  targetSection?: string;
 }
 
 export interface NameConflictItem {
@@ -641,7 +643,7 @@ export async function executeRegistrarBulkImport(
   // Build operations queue
   type Operation =
     | { type: 'CREATE'; student: ParsedRegistrarStudent }
-    | { type: 'PROMOTE'; incoming: ParsedRegistrarStudent; existing: StudentDocument }
+    | { type: 'PROMOTE'; incoming: ParsedRegistrarStudent; existing: StudentDocument; targetSection?: string }
     | { type: 'OVERWRITE'; incoming: ParsedRegistrarStudent; existing: StudentDocument }
     | { type: 'INACTIVATE'; student: StudentDocument; reason: string }
     | { type: 'GRADUATE'; student: StudentDocument };
@@ -656,7 +658,12 @@ export async function executeRegistrarBulkImport(
   // B. Matched Promotions
   for (const m of matchedPromotions) {
     if (m.decision === 'AUTO_PROMOTE') {
-      operations.push({ type: 'PROMOTE', incoming: m.incoming, existing: m.existing });
+      operations.push({
+        type: 'PROMOTE',
+        incoming: m.incoming,
+        existing: m.existing,
+        targetSection: m.targetSection || m.incoming.assignedSection,
+      });
     } else {
       skippedCount++;
       auditLog.push({
@@ -741,7 +748,7 @@ export async function executeRegistrarBulkImport(
           departmentId: courseInfo?.departmentId || resolvedDept.id,
           departmentName: studentDept?.name || resolvedDept.name || '',
           yearLevel: op.student.yearLevel,
-          section: 'UNASSIGNED',
+          section: op.student.assignedSection ? op.student.assignedSection.trim() : 'UNASSIGNED',
           schoolYear: analysis.fileSummary.detectedSchoolYear,
           semester: analysis.fileSummary.detectedSemester,
           term: analysis.fileSummary.detectedSemester,
@@ -778,6 +785,10 @@ export async function executeRegistrarBulkImport(
           ? analysis.existingDepartments.get(courseInfo.departmentId) || analysis.existingDepartments.get(courseInfo.departmentId.toUpperCase())
           : undefined;
 
+        const assignedSection = op.targetSection
+          ? op.targetSection.trim()
+          : (op.incoming.assignedSection ? op.incoming.assignedSection.trim() : (op.existing.section || 'UNASSIGNED'));
+
         const priorHistory = op.existing.enrollmentHistory || [];
         const newHistoryItem = {
           schoolYear: op.existing.schoolYear || 'PRIOR',
@@ -794,6 +805,7 @@ export async function executeRegistrarBulkImport(
           semester: analysis.fileSummary.detectedSemester,
           term: analysis.fileSummary.detectedSemester,
           yearLevel: op.incoming.yearLevel,
+          section: assignedSection,
           courseCode: op.incoming.courseCode,
           courseName: courseInfo?.name || op.incoming.courseName,
           courseId: courseInfo?.id || op.existing.courseId || '',
@@ -807,12 +819,13 @@ export async function executeRegistrarBulkImport(
         });
 
         promotedCount++;
+        const secLabel = assignedSection && assignedSection !== 'UNASSIGNED' ? ` | Section: ${assignedSection}` : '';
         auditLog.push({
           studentId: op.existing.studentId,
           studentName: `${op.existing.lastName}, ${op.existing.firstName}`,
           courseCode: op.incoming.courseCode,
           yearLevel: op.incoming.yearLevel,
-          action: `PROMOTED (from ${op.existing.yearLevel || 'Prior'} to ${op.incoming.yearLevel})`,
+          action: `PROMOTED (from ${op.existing.yearLevel || 'Prior'} to ${op.incoming.yearLevel}${secLabel})`,
         });
       } else if (op.type === 'OVERWRITE') {
         const ref = doc(db, STUDENTS_COLLECTION, op.existing.id);

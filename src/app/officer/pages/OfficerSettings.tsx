@@ -1,18 +1,37 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
-import { Upload, Eye, EyeOff, Monitor, Smartphone, LogOut, ShieldCheck, Loader2 } from 'lucide-react';
+import {
+  Upload,
+  Eye,
+  EyeOff,
+  Monitor,
+  Smartphone,
+  LogOut,
+  ShieldCheck,
+  Loader2,
+  AlertCircle,
+  Coins,
+  PenTool,
+  RotateCcw,
+  CheckCircle2,
+  Trash2,
+  FileSignature,
+  Shield,
+  AlertTriangle,
+} from 'lucide-react';
+import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
+import { db } from '../../../services/firebase';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { updateStudent } from '../../modules/students/services/student.service';
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { changeOfficerOrAdviserPassword } from '../../auth/services/password.service';
-import { AlertCircle, Coins } from 'lucide-react';
 import OrganizationProfile from './OrganizationProfile';
 import OfficerPayableCategorySettings from '../components/settings/OfficerPayableCategorySettings';
 import { toast } from 'sonner';
 
-type SettingsSection = 'account' | 'organization' | 'payable-categories' | 'security';
+type SettingsSection = 'account' | 'signature' | 'organization' | 'payable-categories' | 'security';
 
 function PasswordStrength({ password }: { password: string }) {
   const checks = [
@@ -52,6 +71,7 @@ function PasswordStrength({ password }: { password: string }) {
 
 const NAV_ITEMS: { key: SettingsSection; label: string }[] = [
   { key: 'account', label: 'Account Profile' },
+  { key: 'signature', label: 'Official E-Signature' },
   { key: 'organization', label: 'Organization Profile' },
   { key: 'payable-categories', label: 'Fee & Fine Categories' },
   { key: 'security', label: 'Security & Password' },
@@ -65,14 +85,14 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [searchParams, setSearchParams] = useSearchParams();
   const tabQuery = searchParams.get('tab') as SettingsSection | null;
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    tabQuery && ['account', 'organization', 'payable-categories', 'security'].includes(tabQuery)
+    tabQuery && ['account', 'signature', 'organization', 'payable-categories', 'security'].includes(tabQuery)
       ? tabQuery
       : defaultTab
   );
 
   // Sync tabQuery with state if searchParams change
   useEffect(() => {
-    if (tabQuery && ['account', 'organization', 'payable-categories', 'security'].includes(tabQuery)) {
+    if (tabQuery && ['account', 'signature', 'organization', 'payable-categories', 'security'].includes(tabQuery)) {
       setActiveSection(tabQuery);
     }
   }, [tabQuery]);
@@ -103,6 +123,48 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [isUploadingPhoto, setIsUploadingPhoto] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
+  // Signature Studio State (Adviser)
+  const [signatureUrl, setSignatureUrl] = useState<string>(profile?.signatureUrl || '');
+  const [isRedrawing, setIsRedrawing] = useState(false);
+  const [isSavingSignature, setIsSavingSignature] = useState(false);
+  const [isUploadingSigFile, setIsUploadingSigFile] = useState(false);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sigFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDrawingSig, setIsDrawingSig] = useState(false);
+  const [hasDrawnSig, setHasDrawnSig] = useState(false);
+  const [sigHistory, setSigHistory] = useState<ImageData[]>([]);
+
+  // Auto-fetch adviser's signature from Firestore if not in session yet
+  useEffect(() => {
+    if (profile?.signatureUrl) {
+      setSignatureUrl(profile.signatureUrl);
+    } else if (isAdviser && profile?.email) {
+      const fetchAdviserSig = async () => {
+        try {
+          const qAdv = query(
+            collection(db, 'organization_advisers'),
+            where('email', '==', profile.email)
+          );
+          const snap = await getDocs(qAdv);
+          const found = snap.docs.find((d) => d.data().signatureUrl);
+          if (found) {
+            const url = found.data().signatureUrl;
+            setSignatureUrl(url);
+            const raw = localStorage.getItem('sti_sync_officer_session');
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              parsed.signatureUrl = url;
+              localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+            }
+          }
+        } catch (e) {
+          console.warn('[OfficerSettings] Error loading adviser signature:', e);
+        }
+      };
+      fetchAdviserSig();
+    }
+  }, [profile?.signatureUrl, isAdviser, profile?.email]);
+
   // Security Form State
   const [showCurrent, setShowCurrent] = useState(false);
   const [showNew, setShowNew] = useState(false);
@@ -111,6 +173,218 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+
+  // Canvas Handlers
+  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  };
+
+  const saveSigState = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    setSigHistory((prev) => [...prev.slice(-10), imgData]);
+  };
+
+  const startSigDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    saveSigState();
+    const { x, y } = getCanvasCoords(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#000000';
+    setIsDrawingSig(true);
+    setHasDrawnSig(true);
+  };
+
+  const drawSigMove = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    if (!isDrawingSig) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const { x, y } = getCanvasCoords(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  };
+
+  const stopSigDrawing = () => {
+    if (!isDrawingSig) return;
+    setIsDrawingSig(false);
+  };
+
+  const clearSigCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasDrawnSig(false);
+  };
+
+  const handleSigUndo = () => {
+    if (sigHistory.length === 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const previous = sigHistory[sigHistory.length - 1];
+    ctx.putImageData(previous, 0, 0);
+    setSigHistory((prev) => prev.slice(0, -1));
+  };
+
+  const handleSaveSignature = async (customUrl?: string) => {
+    let finalUrl = customUrl;
+
+    if (!finalUrl) {
+      const canvas = canvasRef.current;
+      if (!canvas || !hasDrawnSig) {
+        toast.error('Please draw your official signature before saving.');
+        return;
+      }
+      setIsSavingSignature(true);
+      try {
+        const dataUrl = canvas.toDataURL('image/png');
+        const uploadRes = await uploadToCloudinary(dataUrl, { folder: 'advisers/signatures' });
+        finalUrl = uploadRes.secureUrl || dataUrl;
+      } catch (uploadErr: any) {
+        console.warn('Cloudinary upload fallback to dataURL:', uploadErr);
+        finalUrl = canvas.toDataURL('image/png');
+      }
+    }
+
+    if (!finalUrl) {
+      toast.error('Failed to generate signature image.');
+      setIsSavingSignature(false);
+      return;
+    }
+
+    setIsSavingSignature(true);
+    try {
+      if (profile?.email) {
+        const qAdv = query(
+          collection(db, 'organization_advisers'),
+          where('email', '==', profile.email)
+        );
+        const advSnap = await getDocs(qAdv);
+        for (const d of advSnap.docs) {
+          await updateDoc(doc(db, 'organization_advisers', d.id), {
+            signatureUrl: finalUrl,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
+      if (profile?.activeOrganizationId) {
+        const orgRef = doc(db, 'organizations', profile.activeOrganizationId);
+        await updateDoc(orgRef, {
+          'adviser.signatureUrl': finalUrl,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      const rawSession = localStorage.getItem('sti_sync_officer_session');
+      if (rawSession) {
+        try {
+          const parsed = JSON.parse(rawSession);
+          parsed.signatureUrl = finalUrl;
+          localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+        } catch {}
+      }
+
+      setSignatureUrl(finalUrl);
+      setIsRedrawing(false);
+      setHasDrawnSig(false);
+      toast.success('Official electronic signature registered successfully! You can now prepare and submit official AP, FL, and PAR documents.');
+    } catch (saveErr: any) {
+      console.error('[OfficerSettings] Error saving signature:', saveErr);
+      toast.error('Failed to save signature: ' + (saveErr?.message || 'Please try again.'));
+    } finally {
+      setIsSavingSignature(false);
+    }
+  };
+
+  const handleSignatureFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) {
+      toast.error('Signature image must be under 3MB.');
+      return;
+    }
+    setIsUploadingSigFile(true);
+    try {
+      const res = await uploadToCloudinary(file, { folder: 'advisers/signatures' });
+      if (res.secureUrl) {
+        await handleSaveSignature(res.secureUrl);
+      }
+    } catch (uploadErr: any) {
+      console.error('[OfficerSettings] Signature file upload error:', uploadErr);
+      toast.error('Failed to upload signature image.');
+    } finally {
+      setIsUploadingSigFile(false);
+      if (sigFileInputRef.current) sigFileInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveSignature = async () => {
+    if (!window.confirm('Are you sure you want to remove your registered signature? You will not be able to submit AP, FL, or PAR documents until a signature is registered.')) {
+      return;
+    }
+    setIsSavingSignature(true);
+    try {
+      if (profile?.email) {
+        const qAdv = query(
+          collection(db, 'organization_advisers'),
+          where('email', '==', profile.email)
+        );
+        const advSnap = await getDocs(qAdv);
+        for (const d of advSnap.docs) {
+          await updateDoc(doc(db, 'organization_advisers', d.id), {
+            signatureUrl: null,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+      if (profile?.activeOrganizationId) {
+        const orgRef = doc(db, 'organizations', profile.activeOrganizationId);
+        await updateDoc(orgRef, {
+          'adviser.signatureUrl': null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      const rawSession = localStorage.getItem('sti_sync_officer_session');
+      if (rawSession) {
+        const parsed = JSON.parse(rawSession);
+        delete parsed.signatureUrl;
+        localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+      }
+      setSignatureUrl('');
+      setIsRedrawing(true);
+      toast.success('Signature removed.');
+    } catch (err: any) {
+      toast.error('Failed to remove signature.');
+    } finally {
+      setIsSavingSignature(false);
+    }
+  };
 
   // Populate form with real data
   useEffect(() => {
@@ -258,17 +532,28 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
         <div className="col-span-3">
           <div className="bg-white border border-[#E0E0E0] rounded-xl p-3 shadow-sm">
             <nav className="space-y-0.5">
-              {NAV_ITEMS.map(({ key, label }) => (
+              {NAV_ITEMS.filter(({ key }) => key !== 'signature' || isAdviser).map(({ key, label }) => (
                 <button
                   key={key}
                   onClick={() => handleTabChange(key)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-[14px] font-medium transition-colors ${
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-between ${
                     activeSection === key
                       ? 'bg-[#F0F6FF] text-[#0E4EBD] font-bold'
                       : 'text-gray-600 hover:bg-gray-50 hover:text-[#001A4D]'
                   }`}
                 >
-                  {label}
+                  <span className="flex items-center gap-2">
+                    {key === 'signature' && <PenTool className="w-4 h-4 text-[#0E4EBD]" />}
+                    {label}
+                  </span>
+                  {key === 'signature' && (
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        signatureUrl ? 'bg-emerald-500' : 'bg-amber-500'
+                      }`}
+                      title={signatureUrl ? 'Signature registered' : 'No signature registered'}
+                    />
+                  )}
                 </button>
               ))}
             </nav>
@@ -392,6 +677,45 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </div>
                     </div>
 
+                    {/* Adviser Official E-Signature Banner */}
+                    {isAdviser && (
+                      <div className="p-4 bg-gradient-to-r from-blue-50/80 via-white to-amber-50/50 border border-blue-200/80 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-2xs">
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center shrink-0 shadow-xs">
+                            <PenTool className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-[#001A4D]">Official Electronic Signature</h4>
+                              {signatureUrl ? (
+                                <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                  Registered
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-md text-[10px] font-bold flex items-center gap-1">
+                                  <AlertTriangle className="w-3 h-3 text-amber-600" />
+                                  Not Registered
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-500 mt-0.5 max-w-md">
+                              Required to prepare and submit official Activity Proposals, Financial Liquidations, and Post-Activity Reports.
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleTabChange('signature')}
+                          className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold transition-all shrink-0 cursor-pointer shadow-xs flex items-center gap-1.5"
+                        >
+                          <FileSignature className="w-3.5 h-3.5" />
+                          <span>{signatureUrl ? 'Manage Signature' : 'Register Signature'}</span>
+                        </button>
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-3 pt-2">
                       <button
                         onClick={handleSaveAccount}
@@ -403,6 +727,191 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </button>
                     </div>
                   </>
+                )}
+              </div>
+            )}
+
+            {/* ── Official E-Signature Studio (Club Adviser) ── */}
+            {activeSection === 'signature' && isAdviser && (
+              <div className="space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0E4EBD] flex items-center justify-center shrink-0">
+                      <FileSignature className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h2 className="text-[#001A4D] text-[18px] font-bold">
+                        Official Electronic Signature Studio
+                      </h2>
+                      <p className="text-xs text-gray-500">
+                        Official specimen signature stamp for legally preparing and submitting AP, FL, and PAR documents.
+                      </p>
+                    </div>
+                  </div>
+                  {signatureUrl ? (
+                    <span className="px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-2xs self-start sm:self-auto">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                      Active & Registered
+                    </span>
+                  ) : (
+                    <span className="px-3 py-1 bg-amber-50 text-amber-700 border border-amber-200 text-xs font-bold rounded-lg flex items-center gap-1.5 shadow-2xs self-start sm:self-auto">
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                      Signature Required for Submission
+                    </span>
+                  )}
+                </div>
+
+                {/* Important Policy Notice */}
+                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-xl flex items-start gap-3">
+                  <Shield className="w-4 h-4 text-[#0E4EBD] shrink-0 mt-0.5" />
+                  <div className="text-xs text-slate-700 leading-relaxed">
+                    <strong>Institutional Maker Requirement:</strong> As the Organization Adviser, only you have authority to formally submit Activity Proposals, Financial Liquidations, and Post-Activity Reports. When you submit any of these documents, your registered signature will be automatically stamped as <strong>"Prepared by:"</strong> with legal attribution. Submissions are strictly blocked until an electronic signature is registered.
+                  </div>
+                </div>
+
+                {/* Active Signature View or Interactive Pad */}
+                {signatureUrl && !isRedrawing ? (
+                  <div className="bg-gradient-to-b from-white to-gray-50 border-2 border-emerald-500/40 rounded-2xl p-6 flex flex-col items-center justify-center relative shadow-xs space-y-4">
+                    <div className="absolute top-4 right-4 flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-bold">
+                      <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                      Verified Active Institutional Seal
+                    </div>
+
+                    <div className="h-32 w-full max-w-md flex items-center justify-center overflow-hidden my-2 bg-white rounded-xl border border-gray-200 p-3 shadow-inner">
+                      <img
+                        src={signatureUrl}
+                        alt="Registered Adviser Signature"
+                        className="max-h-full max-w-full object-contain filter contrast-125"
+                      />
+                    </div>
+
+                    <div className="w-full max-w-sm border-t border-gray-300 pt-3 text-center space-y-0.5">
+                      <p className="text-xs font-bold text-[#001A4D] uppercase tracking-wide underline underline-offset-4">
+                        {fullName || profile?.studentName || 'Organization Adviser'}
+                      </p>
+                      <p className="text-[11px] text-gray-600 font-semibold">{activeRoleName} • {activeOrgName}</p>
+                      <p className="text-[10px] text-gray-400 font-mono">
+                        Sealed Cryptographically • RA 8792 Certified Digital Ink
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-2 flex-wrap justify-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsRedrawing(true);
+                          clearSigCanvas();
+                        }}
+                        className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+                      >
+                        <PenTool className="w-3.5 h-3.5" />
+                        Redraw Signature
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => sigFileInputRef.current?.click()}
+                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Upload className="w-3.5 h-3.5" />
+                        Upload New Image
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRemoveSignature}
+                        className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white border-2 border-dashed border-gray-300 rounded-2xl p-6 space-y-4">
+                    <div className="flex items-center justify-between text-xs text-gray-500">
+                      <span className="font-semibold text-gray-700 flex items-center gap-1.5">
+                        <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                        Draw your official electronic signature below in pure black ink:
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {sigHistory.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleSigUndo}
+                            className="px-2.5 py-1 text-xs font-bold text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 rounded-md flex items-center gap-1 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Undo
+                          </button>
+                        )}
+                        {hasDrawnSig && (
+                          <button
+                            type="button"
+                            onClick={clearSigCanvas}
+                            className="px-2.5 py-1 text-xs font-bold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100 rounded-md cursor-pointer"
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Canvas Area */}
+                    <div className="border border-gray-200 rounded-xl overflow-hidden bg-slate-50/50 touch-none shadow-inner">
+                      <canvas
+                        ref={canvasRef}
+                        width={640}
+                        height={180}
+                        onMouseDown={startSigDrawing}
+                        onMouseMove={drawSigMove}
+                        onMouseUp={stopSigDrawing}
+                        onMouseLeave={stopSigDrawing}
+                        onTouchStart={startSigDrawing}
+                        onTouchMove={drawSigMove}
+                        onTouchEnd={stopSigDrawing}
+                        className="w-full h-44 cursor-crosshair block bg-white"
+                      />
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-gray-100">
+                      <div className="flex items-center gap-3">
+                        <input
+                          ref={sigFileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          onChange={handleSignatureFileUpload}
+                          className="hidden"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => sigFileInputRef.current?.click()}
+                          disabled={isUploadingSigFile}
+                          className="text-xs text-[#0E4EBD] hover:underline font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Upload className="w-3.5 h-3.5" />
+                          {isUploadingSigFile ? 'Uploading...' : 'Or upload signature image'}
+                        </button>
+                        {signatureUrl && (
+                          <button
+                            type="button"
+                            onClick={() => setIsRedrawing(false)}
+                            className="text-xs text-gray-500 hover:text-gray-800 underline cursor-pointer ml-2"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSignature()}
+                        disabled={isSavingSignature || !hasDrawnSig}
+                        className="px-6 py-2.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold transition-all disabled:opacity-40 cursor-pointer flex items-center gap-2 shadow-xs"
+                      >
+                        {isSavingSignature && <Loader2 className="w-4 h-4 animate-spin" />}
+                        <span>{isSavingSignature ? 'Saving Signature...' : 'Save E-Signature Stamp'}</span>
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             )}

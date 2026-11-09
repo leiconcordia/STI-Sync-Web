@@ -283,7 +283,12 @@ export async function exportPostActivityReportPDF(
   };
 
   // Pre-load signatures in parallel
-  const officerSigUrl = await loadImageAsDataUrl(rawReport.preparedBy?.signatureUrl);
+  const rawMakerSig =
+    rawReport.preparedBy?.signatureUrl ||
+    (rawReport as any).submittedBySignatureUrl ||
+    (rawReport as any).signatureUrl ||
+    undefined;
+  const officerSigUrl = await loadImageAsDataUrl(rawMakerSig);
 
   const approvalChain: PARApprovalStep[] = rawReport.approvalChain || [];
   const signatorySigUrls = await Promise.all(
@@ -970,8 +975,8 @@ export async function exportPostActivityReportPDF(
   });
 
   // ─── Prepared by & Noted by (Guaranteed to Stay Together Cleanly) ───
-  const officerName = rawReport.preparedBy?.name || rawReport.createdByName || 'Student Affairs Services';
-  const officerRole = rawReport.preparedBy?.roleTitle || (rawReport.isOfficerPar ? 'Student Organization Officer' : 'SAS Administrator');
+  const officerName = rawReport.preparedBy?.name || rawReport.createdByName || 'Organization Adviser';
+  const officerRole = rawReport.preparedBy?.roleTitle || (rawReport.isOfficerPar ? 'Organization Adviser' : 'SAS Administrator');
 
   const stepsToRender =
     approvalChain.length > 0

@@ -31,6 +31,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
@@ -79,6 +80,7 @@ interface PostActivityReportWizardModalProps {
     isAdviser?: boolean;
     organizationId?: string;
     organizationName?: string;
+    signatureUrl?: string | null;
   };
   isSasAdmin?: boolean;
 }
@@ -99,6 +101,27 @@ export default function PostActivityReportWizardModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingEventData, setIsLoadingEventData] = useState(false);
   const [resubmissionNote, setResubmissionNote] = useState('');
+  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(
+    (currentUser as any)?.signatureUrl || null
+  );
+  const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+
+  // Sync maker signature from session if not directly passed
+  useEffect(() => {
+    if (!makerSignatureUrl) {
+      try {
+        const raw = localStorage.getItem('sti_sync_officer_session');
+        if (raw) {
+          const sess = JSON.parse(raw);
+          if (sess?.signatureUrl) {
+            setMakerSignatureUrl(sess.signatureUrl);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [makerSignatureUrl]);
 
   const isReturnedReport = Boolean(
     initialReport?.status === 'returned' ||
@@ -661,7 +684,19 @@ export default function PostActivityReportWizardModal({
         toast.error('Please add at least 1 key learning outcome.');
         return;
       }
+
+      // Mandatory Maker Signature Check for formal submission
+      const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl;
+      if (!effectiveSignature) {
+        toast.error('Electronic Signature Required', {
+          description: 'As the document maker, you must register your official signature before submitting this Post-Activity Report.',
+        });
+        setIsSignatureModalOpen(true);
+        return;
+      }
     }
+
+    const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
 
     setIsSubmitting(true);
     try {
@@ -750,10 +785,11 @@ export default function PostActivityReportWizardModal({
         approvalChain,
         preparedBy: {
           name: currentUser.name,
-          roleTitle: isSasAdmin ? 'SAS Administrator' : 'Student Organization Officer',
-          signatureUrl: (currentUser as any)?.signatureUrl || '',
+          roleTitle: isSasAdmin ? 'SAS Administrator' : 'Organization Adviser',
+          signatureUrl: effectiveSignature || '',
           signedAt: new Date().toISOString(),
         },
+        ...(effectiveSignature ? { submittedBySignatureUrl: effectiveSignature } : {}),
         ...(submitForReview && isReturnedReport && resubmissionNote.trim()
           ? { resubmissionNote: resubmissionNote.trim() }
           : {}),
@@ -1850,6 +1886,29 @@ export default function PostActivityReportWizardModal({
           toast.success(`Copied ${label} from Proposal!`);
         }}
       />
+
+      {/* Inline Digital Signature Modal for Document Maker */}
+      {isSignatureModalOpen && (
+        <DigitalSignatureModal
+          isOpen={isSignatureModalOpen}
+          onClose={() => setIsSignatureModalOpen(false)}
+          signatoryUid={currentUser?.uid}
+          signatoryName={currentUser?.name}
+          signatoryEmail={currentUser?.email}
+          currentSignatureUrl={makerSignatureUrl}
+          onSignatureSaved={(newUrl) => {
+            setMakerSignatureUrl(newUrl);
+            const raw = localStorage.getItem('sti_sync_officer_session');
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                parsed.signatureUrl = newUrl;
+                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+              } catch {}
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

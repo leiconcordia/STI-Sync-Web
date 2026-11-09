@@ -134,7 +134,7 @@ export const router = createBrowserRouter([
       { path: "documents", Component: OfficerDocuments },
       { path: "members", Component: MemberDirectory },
       { path: "reports", Component: OfficerReportsPage },
-      { path: "organization", Component: () => <OfficerSettings defaultTab="organization" /> },
+      { path: "organization", element: <OfficerSettings defaultTab="organization" /> },
       { path: "announcements", Component: OfficerAnnouncements },
       { path: "settings", Component: OfficerSettings },
     ],

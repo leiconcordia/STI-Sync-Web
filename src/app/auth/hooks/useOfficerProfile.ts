@@ -18,6 +18,7 @@ export interface OfficerProfile {
   isAdviser?: boolean;
   isSignatory?: boolean;
   requiresPasswordChange?: boolean;
+  signatureUrl?: string | null;
 }
 
 const SESSION_KEY = 'sti_sync_officer_session';
@@ -48,7 +49,7 @@ export function useOfficerProfile() {
       return;
     }
 
-    const { studentId, studentName, email, activeOrganizationId, activeRoleId, isAdviser, isSignatory, requiresPasswordChange } = parsedSession;
+    const { studentId, studentName, email, activeOrganizationId, activeRoleId, isAdviser, isSignatory, requiresPasswordChange, signatureUrl } = parsedSession;
     setProfile({
       studentId: studentId || '',
       studentName: studentName || '',
@@ -58,6 +59,7 @@ export function useOfficerProfile() {
       isAdviser: isAdviser ?? false,
       isSignatory: isSignatory ?? false,
       requiresPasswordChange: requiresPasswordChange ?? false,
+      signatureUrl: signatureUrl || null,
     });
 
     // Guard against missing/undefined studentId (e.g. signatory session in officer path)

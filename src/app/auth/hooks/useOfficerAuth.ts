@@ -416,6 +416,7 @@ export function useOfficerAuth() {
           activeRoleId: isAdviserUser ? 'adviser' : matchedRecord.roleId,
           isAdviser: isAdviserUser,
           isSignatory: false,
+          signatureUrl: matchedRecord.signatureUrl || null,
           requiresPasswordChange: studentDocData?.requiresPasswordChange ?? (matchedRecord.requiresPasswordChange ?? false),
           availableWorkspaces: {
             hasSignatory: signatoryRecords.length > 0,

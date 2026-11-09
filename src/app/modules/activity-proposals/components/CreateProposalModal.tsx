@@ -26,8 +26,10 @@ import {
   RotateCcw,
   Shield,
   Lock,
+  PenTool,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
 import { format, addDays } from 'date-fns';
 
 import type {
@@ -65,6 +67,7 @@ interface CreateProposalModalProps {
     isAdviser?: boolean;
     organizationId?: string;
     organizationName?: string;
+    signatureUrl?: string | null;
   };
 }
 
@@ -284,6 +287,26 @@ export default function CreateProposalModal({
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedReferenceNo, setSubmittedReferenceNo] = useState<string | null>(null);
+
+  // Maker Signature State (Adviser / Submitter)
+  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string>(() => {
+    if (currentUser?.signatureUrl) return currentUser.signatureUrl;
+    try {
+      const raw = localStorage.getItem('sti_sync_officer_session');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.signatureUrl) return parsed.signatureUrl;
+      }
+    } catch {}
+    return '';
+  });
+  const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (currentUser?.signatureUrl && !makerSignatureUrl) {
+      setMakerSignatureUrl(currentUser.signatureUrl);
+    }
+  }, [currentUser?.signatureUrl]);
 
   // Sync initial data or set default reference number
   useEffect(() => {
@@ -845,11 +868,27 @@ export default function CreateProposalModal({
       }
     }
 
+    // Mandatory Maker Signature Check
+    const effectiveSignature = makerSignatureUrl || currentUser?.signatureUrl;
+    if (!effectiveSignature) {
+      toast.error('Electronic Signature Required', {
+        description: 'As the document maker, you must register your official signature before submitting this activity proposal.',
+      });
+      setIsSignatureModalOpen(true);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const result = await submitProposalForReview(
-        formData,
-        currentUser,
+        {
+          ...formData,
+          submittedBySignatureUrl: effectiveSignature,
+        },
+        {
+          ...currentUser,
+          signatureUrl: effectiveSignature,
+        },
         formData.id
       );
       setSubmittedReferenceNo(result.referenceNo);
@@ -1343,6 +1382,29 @@ export default function CreateProposalModal({
           </div>
         )}
       </div>
+
+      {/* Inline Digital Signature Modal for Document Maker */}
+      {isSignatureModalOpen && (
+        <DigitalSignatureModal
+          isOpen={isSignatureModalOpen}
+          onClose={() => setIsSignatureModalOpen(false)}
+          signatoryUid={currentUser?.uid}
+          signatoryName={currentUser?.name}
+          signatoryEmail={currentUser?.email}
+          currentSignatureUrl={makerSignatureUrl}
+          onSignatureSaved={(newUrl) => {
+            setMakerSignatureUrl(newUrl);
+            const raw = localStorage.getItem('sti_sync_officer_session');
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                parsed.signatureUrl = newUrl;
+                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+              } catch {}
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

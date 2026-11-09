@@ -854,17 +854,28 @@ export async function exportActivityProposalPDF(
       y += totalBlockH + 2.0;
     };
 
-    // A. Proposed by:
-    const parsedProponents = proponentsList.map((p) => {
-      const parts = p.split('–').map((s) => s.trim());
-      return {
-        name: parts[0] || p,
-        roleTitle: parts[1] || 'Activity Proponent',
-        signatureUrl: undefined,
+    // A. Prepared by: (Official Maker Signatory - Adviser or SAS Administrator)
+    const makerSigUrl =
+      proposal.preparedBy?.signatureUrl ||
+      proposal.submittedBySignatureUrl ||
+      (proposal as any).signatureUrl ||
+      undefined;
+
+    const parsedProponents = [
+      {
+        name:
+          proposal.preparedBy?.name ||
+          proposal.createdByName ||
+          proponentsList[0]?.split('–')?.[0]?.trim() ||
+          'Club Adviser',
+        roleTitle:
+          proposal.preparedBy?.roleTitle ||
+          (proposal.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+        signatureUrl: makerSigUrl,
         status: 'approved',
-      };
-    });
-    await renderSignatories('Proposed by:', parsedProponents);
+      },
+    ];
+    await renderSignatories('Prepared by:', parsedProponents);
 
     // Dynamic grouping of chain steps by their formal label
     if (chain.length > 0) {

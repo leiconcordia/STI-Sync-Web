@@ -73,7 +73,11 @@ export function LiquidationExportPreviewModal({
 
   // Metadata form state
   const [officerName, setOfficerName] = useState(
-    report.submittedByName || report.createdByName || ''
+    report.preparedBy?.name ||
+    (report as any).employeeName ||
+    report.submittedByName ||
+    report.createdByName ||
+    ''
   );
   const [chequeNumber, setChequeNumber] = useState(
     (report as any).chequeNumber || (report as any).checkNumber || (report.id ? report.id.slice(0, 8).toUpperCase() : '')
@@ -103,6 +107,7 @@ export function LiquidationExportPreviewModal({
 
     // 1. Initial direct population from saved liquidation report
     const initialOfficer =
+      report.preparedBy?.name ||
       (report as any).employeeName ||
       (report as any).officerName ||
       report.submittedByName ||
@@ -498,12 +503,18 @@ export function LiquidationExportPreviewModal({
       return rawDate ? formatAppDate(rawDate, '') : '';
     };
 
+    const makerRole =
+      report.preparedBy?.roleTitle ||
+      (report.submittedByRole === 'sas_admin' || (report as any).createdByRole === 'sas_admin'
+        ? 'SAS Administrator'
+        : 'Organization Adviser');
+
     return [
       {
         id: 'sig_sub',
         type: 'Submitted By:',
         name: officerName,
-        role: '(Name of Employee / Treasurer)',
+        role: `(${makerRole})`,
         date: dateSubmitted,
       },
       {

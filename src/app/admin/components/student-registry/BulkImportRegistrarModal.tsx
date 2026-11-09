@@ -33,8 +33,15 @@ import {
   AlertCircle,
   Eye,
   Building,
+  Layers,
+  PlusCircle,
+  UserMinus,
+  UserCheck,
 } from 'lucide-react';
-import { useDepartments } from '../../../modules/academic';
+import { toast } from 'sonner';
+import { useDepartments, useCourses, useSections } from '../../../modules/academic';
+import AddSectionModal from '../academic/AddSectionModal';
+import AddDepartmentModal from '../academic/AddDepartmentModal';
 import {
   parseRegistrarExcelFile,
   analyzeRegistrarImport,
@@ -80,20 +87,50 @@ export default function BulkImportRegistrarModal({
   const [activeTab, setActiveTab] = useState<TabType>('promote');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Department stream for program-to-department alignment
+  // Department & Academic streams
   const { data: departments = [] } = useDepartments();
   const activeDepartments = useMemo(
     () => departments.filter((d) => d.status !== 'archived'),
     [departments]
   );
+  const { data: courses = [] } = useCourses();
+  const { data: sections = [] } = useSections();
+  const activeCourses = useMemo(() => courses.filter((c) => !c.archived), [courses]);
+  const activeSections = useMemo(() => sections.filter((s) => !s.archived), [sections]);
+
   const [programDepartmentMap, setProgramDepartmentMap] = useState<Record<string, string>>({});
+
+  // Reusable Modal States
+  const [isAddSectionModalOpen, setIsAddSectionModalOpen] = useState(false);
+  const [addSectionContext, setAddSectionContext] = useState<{
+    courseId?: string;
+    yearLevel?: number;
+    departmentId?: string;
+    targetMode?: 'promote' | 'new';
+  }>({});
+  const [isAddDeptModalOpen, setIsAddDeptModalOpen] = useState(false);
+  const [addDeptTargetProgramCode, setAddDeptTargetProgramCode] = useState<string | null>(null);
+  const [addDeptAcademicLevel, setAddDeptAcademicLevel] = useState<'COLLEGE' | 'SHS'>('COLLEGE');
 
   // Editable Decisions State in Step 2
   const [promotions, setPromotions] = useState<MatchedPromotionItem[]>([]);
+  const [newStudentsList, setNewStudentsList] = useState<ParsedRegistrarStudent[]>([]);
   const [conflicts, setConflicts] = useState<NameConflictItem[]>([]);
   const [missing, setMissing] = useState<MissingStudentItem[]>([]);
   const [autoProvisionCourses, setAutoProvisionCourses] = useState(true);
   const [autoProvisionSemester, setAutoProvisionSemester] = useState(true);
+
+  // Auto-Promote Cohort Section State
+  const [currentSectionFilter, setCurrentSectionFilter] = useState<string>('ALL');
+  const [selectedPromotionStudentNos, setSelectedPromotionStudentNos] = useState<Set<string>>(new Set());
+  const [cohortTargetSection, setCohortTargetSection] = useState<string>('');
+  const [studentSearchToAdd, setStudentSearchToAdd] = useState<string>('');
+
+  // New Students Section Assignment State
+  const [newStudentCourseFilter, setNewStudentCourseFilter] = useState<string>('ALL');
+  const [newStudentYearFilter, setNewStudentYearFilter] = useState<string>('ALL');
+  const [selectedNewStudentNos, setSelectedNewStudentNos] = useState<Set<string>>(new Set());
+  const [newStudentTargetSection, setNewStudentTargetSection] = useState<string>('');
 
   // Step 3 State
   const [isCommitting, setIsCommitting] = useState(false);
@@ -140,8 +177,11 @@ export default function BulkImportRegistrarModal({
       const analysisResult = await analyzeRegistrarImport(parsed, existingStudents);
       setAnalysis(analysisResult);
       setPromotions(analysisResult.matchedPromotions);
+      setNewStudentsList(analysisResult.newStudents);
       setConflicts(analysisResult.nameConflicts);
       setMissing(analysisResult.missingStudents);
+      setSelectedPromotionStudentNos(new Set(analysisResult.matchedPromotions.map((p) => p.incoming.studentNo)));
+      setSelectedNewStudentNos(new Set(analysisResult.newStudents.map((s) => s.studentNo)));
 
       // Initialize program-department alignment map from analysis
       const initialMap: Record<string, string> = {};
@@ -184,6 +224,251 @@ export default function BulkImportRegistrarModal({
     setMissing((prev) => prev.map((item) => ({ ...item, decision })));
   };
 
+  // ─── Section Promotion & Assignment Helpers ─────────────────────────────────
+
+  const YEAR_NUM_MAP: Record<string, number> = {
+    '1st Year': 1,
+    '2nd Year': 2,
+    '3rd Year': 3,
+    '4th Year': 4,
+    'Grade 11': 11,
+    'Grade 12': 12,
+  };
+
+  // Distinct Current Sections in Matched Promotions
+  const distinctCurrentSections = useMemo(() => {
+    const secMap = new Map<string, number>();
+    promotions.forEach((p) => {
+      const sec = p.existing.section ? p.existing.section.trim() : 'UNASSIGNED';
+      secMap.set(sec, (secMap.get(sec) || 0) + 1);
+    });
+    return Array.from(secMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [promotions]);
+
+  // Handle Current Section Filter Change
+  const handleCurrentSectionFilterChange = (sec: string) => {
+    setCurrentSectionFilter(sec);
+    setCohortTargetSection('');
+    if (sec === 'ALL') {
+      setSelectedPromotionStudentNos(new Set(promotions.map((p) => p.incoming.studentNo)));
+    } else {
+      const matching = promotions
+        .filter((p) => (p.existing.section ? p.existing.section.trim() : 'UNASSIGNED') === sec)
+        .map((p) => p.incoming.studentNo);
+      setSelectedPromotionStudentNos(new Set(matching));
+    }
+  };
+
+  // Cohort Course & Department Scoping for Target Promoted Section
+  const cohortCourseInfo = useMemo(() => {
+    if (currentSectionFilter === 'ALL') return null;
+    const rep = promotions.find((p) => (p.existing.section ? p.existing.section.trim() : 'UNASSIGNED') === currentSectionFilter);
+    if (!rep) return null;
+    const courseCode = rep.incoming.courseCode || rep.existing.courseCode;
+    const matchedCourse = activeCourses.find((c) => c.code === courseCode);
+    const deptId = matchedCourse?.departmentId || programDepartmentMap[courseCode] || rep.existing.departmentId;
+    const targetYearNum = YEAR_NUM_MAP[rep.incoming.yearLevel] || 2;
+    return {
+      courseCode,
+      course: matchedCourse,
+      departmentId: deptId,
+      targetYearNum,
+      targetYearLevel: rep.incoming.yearLevel,
+    };
+  }, [currentSectionFilter, promotions, activeCourses, programDepartmentMap]);
+
+  // Target sections strictly scoped to that cohort's course, department, and target year level
+  const availableCohortTargetSections = useMemo(() => {
+    if (!cohortCourseInfo?.course) return activeSections;
+    return activeSections.filter((s) => {
+      const matchCourse = s.courseId === cohortCourseInfo.course?.id;
+      const matchDept = !cohortCourseInfo.departmentId || s.departmentId === cohortCourseInfo.departmentId;
+      const matchYear = Number(s.yearLevel) === cohortCourseInfo.targetYearNum;
+      return matchCourse && matchDept && matchYear;
+    });
+  }, [activeSections, cohortCourseInfo]);
+
+  // Filtered promotions according to section filter, search, and manual selections
+  const filteredPromotions = useMemo(() => {
+    return promotions.filter((p) => {
+      const sec = p.existing.section ? p.existing.section.trim() : 'UNASSIGNED';
+      if (currentSectionFilter !== 'ALL' && sec !== currentSectionFilter) {
+        if (!selectedPromotionStudentNos.has(p.incoming.studentNo)) {
+          return false;
+        }
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchNo = p.incoming.studentNo.toLowerCase().includes(q);
+        const matchName = `${p.incoming.lastName} ${p.incoming.firstName}`.toLowerCase().includes(q);
+        if (!matchNo && !matchName) return false;
+      }
+      return true;
+    });
+  }, [promotions, currentSectionFilter, selectedPromotionStudentNos, searchQuery]);
+
+  // Apply target section to selected cohort students
+  const handleApplyCohortTargetSection = () => {
+    if (!cohortTargetSection) {
+      toast.error('Please select a target section to promote into.');
+      return;
+    }
+    const targetSec = cohortTargetSection.trim();
+    let count = 0;
+    setPromotions((prev) =>
+      prev.map((p) => {
+        if (selectedPromotionStudentNos.has(p.incoming.studentNo)) {
+          count++;
+          return {
+            ...p,
+            targetSection: targetSec,
+            decision: 'AUTO_PROMOTE',
+          };
+        }
+        return p;
+      })
+    );
+    toast.success(`Promoted ${count} student(s) to section "${targetSec}"!`);
+  };
+
+  // Mark unselected in current cohort filter as SKIP (transferred out / dropped)
+  const handleMarkDeselectedAsSkipped = () => {
+    let count = 0;
+    setPromotions((prev) =>
+      prev.map((p) => {
+        const sec = p.existing.section ? p.existing.section.trim() : 'UNASSIGNED';
+        if (currentSectionFilter !== 'ALL' && sec === currentSectionFilter && !selectedPromotionStudentNos.has(p.incoming.studentNo)) {
+          count++;
+          return {
+            ...p,
+            decision: 'SKIP',
+          };
+        }
+        return p;
+      })
+    );
+    toast.info(`Marked ${count} unselected student(s) as Skipped (transferred / dropped).`);
+  };
+
+  // Toggle single promotion student selection
+  const togglePromotionStudentSelect = (studentNo: string) => {
+    setSelectedPromotionStudentNos((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentNo)) {
+        next.delete(studentNo);
+      } else {
+        next.add(studentNo);
+      }
+      return next;
+    });
+  };
+
+  // Toggle all visible promotion students
+  const toggleSelectAllFilteredPromotions = () => {
+    const visibleNos = filteredPromotions.map((p) => p.incoming.studentNo);
+    const allSelected = visibleNos.every((no) => selectedPromotionStudentNos.has(no));
+    setSelectedPromotionStudentNos((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleNos.forEach((no) => next.delete(no));
+      } else {
+        visibleNos.forEach((no) => next.add(no));
+      }
+      return next;
+    });
+  };
+
+  // New Students Filtering and Section Scoping
+  const distinctNewStudentCourses = useMemo(() => {
+    const set = new Set<string>();
+    newStudentsList.forEach((s) => set.add(s.courseCode));
+    return Array.from(set).sort();
+  }, [newStudentsList]);
+
+  const distinctNewStudentYears = useMemo(() => {
+    const set = new Set<string>();
+    newStudentsList.forEach((s) => set.add(s.yearLevel));
+    return Array.from(set).sort();
+  }, [newStudentsList]);
+
+  const filteredNewStudents = useMemo(() => {
+    return newStudentsList.filter((st) => {
+      if (newStudentCourseFilter !== 'ALL' && st.courseCode !== newStudentCourseFilter) {
+        return false;
+      }
+      if (newStudentYearFilter !== 'ALL' && st.yearLevel !== newStudentYearFilter) {
+        return false;
+      }
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchNo = st.studentNo.toLowerCase().includes(q);
+        const matchName = `${st.lastName} ${st.firstName}`.toLowerCase().includes(q);
+        if (!matchNo && !matchName) return false;
+      }
+      return true;
+    });
+  }, [newStudentsList, newStudentCourseFilter, newStudentYearFilter, searchQuery]);
+
+  const availableNewStudentSections = useMemo(() => {
+    if (newStudentCourseFilter === 'ALL') return activeSections;
+    const matchedCourse = activeCourses.find((c) => c.code === newStudentCourseFilter);
+    if (!matchedCourse) return activeSections;
+    const targetYearNum = YEAR_NUM_MAP[newStudentYearFilter] || 1;
+    return activeSections.filter((s) => {
+      const matchCourse = s.courseId === matchedCourse.id;
+      const matchYear = newStudentYearFilter === 'ALL' || Number(s.yearLevel) === targetYearNum;
+      return matchCourse && matchYear;
+    });
+  }, [activeSections, activeCourses, newStudentCourseFilter, newStudentYearFilter]);
+
+  const handleApplyNewStudentSection = () => {
+    if (!newStudentTargetSection) {
+      toast.error('Please select a section to assign.');
+      return;
+    }
+    const targetSec = newStudentTargetSection.trim();
+    let count = 0;
+    setNewStudentsList((prev) =>
+      prev.map((st) => {
+        if (selectedNewStudentNos.has(st.studentNo)) {
+          count++;
+          return {
+            ...st,
+            assignedSection: targetSec,
+          };
+        }
+        return st;
+      })
+    );
+    toast.success(`Assigned section "${targetSec}" to ${count} new student(s)!`);
+  };
+
+  const toggleNewStudentSelect = (studentNo: string) => {
+    setSelectedNewStudentNos((prev) => {
+      const next = new Set(prev);
+      if (next.has(studentNo)) {
+        next.delete(studentNo);
+      } else {
+        next.add(studentNo);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllFilteredNewStudents = () => {
+    const visibleNos = filteredNewStudents.map((s) => s.studentNo);
+    const allSelected = visibleNos.every((no) => selectedNewStudentNos.has(no));
+    setSelectedNewStudentNos((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleNos.forEach((no) => next.delete(no));
+      } else {
+        visibleNos.forEach((no) => next.add(no));
+      }
+      return next;
+    });
+  };
+
   // ─── Execution Handler ──────────────────────────────────────────────────────
 
   const handleExecuteImport = async () => {
@@ -196,7 +481,10 @@ export default function BulkImportRegistrarModal({
 
     try {
       const execResult = await executeRegistrarBulkImport({
-        analysis,
+        analysis: {
+          ...analysis,
+          newStudents: newStudentsList.length > 0 ? newStudentsList : analysis.newStudents,
+        },
         matchedPromotions: promotions,
         nameConflicts: conflicts,
         missingStudents: missing,
@@ -522,10 +810,154 @@ export default function BulkImportRegistrarModal({
                       </div>
                     </div>
 
+                    {/* Cohort Section Promotion Toolbar */}
+                    <div className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white rounded-xl p-4 shadow-sm space-y-3">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Layers className="w-4 h-4 text-yellow-300" />
+                          <span className="text-xs font-bold uppercase tracking-wider text-blue-200">
+                            Cohort Section Promotion & Transfer Exclusion
+                          </span>
+                        </div>
+                        {currentSectionFilter !== 'ALL' && (
+                          <div className="flex items-center gap-1.5 text-[11px] bg-white/10 px-2.5 py-1 rounded-full border border-white/10">
+                            <span className="text-blue-200">Selected for Promotion:</span>
+                            <span className="font-bold text-yellow-300">
+                              {selectedPromotionStudentNos.size} of {filteredPromotions.length} students
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                        {/* 1. Filter by Current Section */}
+                        <div className="sm:col-span-4">
+                          <label className="block text-[11px] font-semibold text-blue-200 mb-1">
+                            Filter by Current Section
+                          </label>
+                          <select
+                            value={currentSectionFilter}
+                            onChange={(e) => handleCurrentSectionFilterChange(e.target.value)}
+                            className="w-full px-3 py-2 bg-white text-gray-900 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                          >
+                            <option value="ALL">All Current Sections ({promotions.length})</option>
+                            {distinctCurrentSections.map(([sec, count]) => (
+                              <option key={sec} value={sec}>
+                                {sec} ({count} student{count !== 1 ? 's' : ''})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 2. Target Section Scoped Dropdown with + Add Section */}
+                        <div className="sm:col-span-5">
+                          <label className="block text-[11px] font-semibold text-blue-200 mb-1">
+                            Target Promoted Section{' '}
+                            {cohortCourseInfo?.courseCode ? (
+                              <span className="text-yellow-300 font-normal">
+                                ({cohortCourseInfo.courseCode} • {cohortCourseInfo.targetYearLevel})
+                              </span>
+                            ) : null}
+                          </label>
+                          <select
+                            value={cohortTargetSection}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === '__ADD_NEW_SECTION__') {
+                                setAddSectionContext({
+                                  courseId: cohortCourseInfo?.course?.id,
+                                  yearLevel: cohortCourseInfo?.targetYearNum,
+                                  departmentId: cohortCourseInfo?.departmentId,
+                                  targetMode: 'promote',
+                                });
+                                setIsAddSectionModalOpen(true);
+                                return;
+                              }
+                              setCohortTargetSection(val);
+                            }}
+                            className="w-full px-3 py-2 bg-white text-gray-900 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-yellow-400 outline-none cursor-pointer"
+                          >
+                            <option value="">-- Choose Target Section --</option>
+                            {availableCohortTargetSections.map((s) => (
+                              <option key={s.id} value={s.name}>
+                                {s.name} ({s.yearLevel ? `${s.yearLevel > 10 ? `Grade ${s.yearLevel}` : `${s.yearLevel} Year`}` : 'Section'})
+                              </option>
+                            ))}
+                            <option value="__ADD_NEW_SECTION__" className="text-blue-700 font-bold bg-blue-50">
+                              + Add Section...
+                            </option>
+                          </select>
+                        </div>
+
+                        {/* 3. Apply Action Button */}
+                        <div className="sm:col-span-3">
+                          <button
+                            type="button"
+                            onClick={handleApplyCohortTargetSection}
+                            disabled={!cohortTargetSection || selectedPromotionStudentNos.size === 0}
+                            className="w-full py-2 px-3 bg-yellow-400 hover:bg-yellow-300 text-blue-950 rounded-lg text-xs font-black shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                            <span>Apply to Selected ({selectedPromotionStudentNos.size})</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Dropout / Transfer & Quick Add Irregular Controls */}
+                      {currentSectionFilter !== 'ALL' && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="text-blue-200 text-[11px]">Transfer / Dropout Handling:</span>
+                            {filteredPromotions.length - selectedPromotionStudentNos.size > 0 ? (
+                              <button
+                                type="button"
+                                onClick={handleMarkDeselectedAsSkipped}
+                                className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-200 border border-red-400/40 rounded-md text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer"
+                              >
+                                <UserMinus className="w-3 h-3 text-red-300" />
+                                <span>Mark {filteredPromotions.length - selectedPromotionStudentNos.size} Deselected as Skipped</span>
+                              </button>
+                            ) : (
+                              <span className="text-[11px] text-blue-300 italic">
+                                Uncheck students in the table who transferred or dropped.
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Quick Add Student to Cohort */}
+                          <div className="flex items-center gap-1.5">
+                            <select
+                              value={studentSearchToAdd}
+                              onChange={(e) => handleAddStudentToCohort(e.target.value)}
+                              className="px-2 py-1 bg-white/10 text-white border border-white/20 rounded-md text-[11px] outline-none max-w-[200px]"
+                            >
+                              <option value="" className="text-gray-900">+ Add Student / Irregular...</option>
+                              {promotions
+                                .filter((p) => !selectedPromotionStudentNos.has(p.incoming.studentNo))
+                                .slice(0, 50)
+                                .map((p) => (
+                                  <option key={p.incoming.studentNo} value={p.incoming.studentNo} className="text-gray-900">
+                                    {p.incoming.studentNo} — {p.incoming.lastName}, {p.incoming.firstName}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="overflow-x-auto max-h-[360px] border border-gray-100 rounded-xl">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-gray-50 sticky top-0 border-b border-gray-200 text-gray-600">
                           <tr>
+                            <th className="p-3 w-10 text-center">
+                              <input
+                                type="checkbox"
+                                checked={filteredPromotions.length > 0 && filteredPromotions.every((p) => selectedPromotionStudentNos.has(p.incoming.studentNo))}
+                                onChange={toggleSelectAllFilteredPromotions}
+                                className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                              />
+                            </th>
                             <th className="p-3">Student ID</th>
                             <th className="p-3">Student Name</th>
                             <th className="p-3">Current Academic Standing</th>
@@ -534,43 +966,69 @@ export default function BulkImportRegistrarModal({
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                          {promotions.map((item, idx) => (
-                            <tr key={item.incoming.studentNo} className="hover:bg-blue-50/20">
-                              <td className="p-3 font-mono font-semibold text-gray-900">{item.incoming.studentNo}</td>
-                              <td className="p-3 font-bold text-[#001A4D]">
-                                {item.incoming.lastName}, {item.incoming.firstName}
-                              </td>
-                              <td className="p-3 text-gray-600">
-                                <span className="inline-block px-2 py-0.5 bg-gray-100 rounded text-[11px]">
-                                  {item.existing.yearLevel || 'Prior'} • {item.existing.courseCode}
-                                </span>
-                              </td>
-                              <td className="p-3">
-                                <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
-                                  {item.incoming.yearLevel} • {item.incoming.courseCode}
-                                </span>
-                              </td>
-                              <td className="p-3 text-right">
-                                <select
-                                  value={item.decision}
-                                  onChange={(e) => {
-                                    const val = e.target.value as any;
-                                    setPromotions((prev) =>
-                                      prev.map((p, i) => (i === idx ? { ...p, decision: val } : p))
-                                    );
-                                  }}
-                                  className={`text-xs font-bold rounded-lg px-2.5 py-1 border transition-colors cursor-pointer ${
-                                    item.decision === 'AUTO_PROMOTE'
-                                      ? 'bg-blue-50 text-blue-700 border-blue-300'
-                                      : 'bg-gray-100 text-gray-600 border-gray-300'
-                                  }`}
-                                >
-                                  <option value="AUTO_PROMOTE">Auto-Promote & Update</option>
-                                  <option value="SKIP">Skip (Keep Current)</option>
-                                </select>
-                              </td>
-                            </tr>
-                          ))}
+                          {filteredPromotions.map((item) => {
+                            const isChecked = selectedPromotionStudentNos.has(item.incoming.studentNo);
+                            const currentSec = item.existing.section ? item.existing.section.trim() : 'UNASSIGNED';
+                            return (
+                              <tr key={item.incoming.studentNo} className={`hover:bg-blue-50/20 ${isChecked ? 'bg-blue-50/10' : 'opacity-60 bg-gray-50/50'}`}>
+                                <td className="p-3 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => togglePromotionStudentSelect(item.incoming.studentNo)}
+                                    className="rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                                  />
+                                </td>
+                                <td className="p-3 font-mono font-semibold text-gray-900">{item.incoming.studentNo}</td>
+                                <td className="p-3 font-bold text-[#001A4D]">
+                                  {item.incoming.lastName}, {item.incoming.firstName}
+                                </td>
+                                <td className="p-3 text-gray-600">
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <span className="inline-block px-2 py-0.5 bg-gray-100 rounded text-[11px]">
+                                      {item.existing.yearLevel || 'Prior'} • {item.existing.courseCode}
+                                    </span>
+                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                      currentSec === 'UNASSIGNED' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-800'
+                                    }`}>
+                                      Sec: {currentSec}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-3">
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
+                                      {item.incoming.yearLevel} • {item.incoming.courseCode}
+                                    </span>
+                                    {item.targetSection ? (
+                                      <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-100 border border-emerald-200 px-1.5 py-0.5 rounded text-[10px]">
+                                        Promoting to: {item.targetSection}
+                                      </span>
+                                    ) : null}
+                                  </div>
+                                </td>
+                                <td className="p-3 text-right">
+                                  <select
+                                    value={item.decision}
+                                    onChange={(e) => {
+                                      const val = e.target.value as any;
+                                      setPromotions((prev) =>
+                                        prev.map((p) => (p.incoming.studentNo === item.incoming.studentNo ? { ...p, decision: val } : p))
+                                      );
+                                    }}
+                                    className={`text-xs font-bold rounded-lg px-2.5 py-1 border transition-colors cursor-pointer ${
+                                      item.decision === 'AUTO_PROMOTE'
+                                        ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                        : 'bg-gray-100 text-gray-600 border-gray-300'
+                                    }`}
+                                  >
+                                    <option value="AUTO_PROMOTE">Auto-Promote & Update</option>
+                                    <option value="SKIP">Skip (Keep Current)</option>
+                                  </select>
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -589,23 +1047,148 @@ export default function BulkImportRegistrarModal({
                       </p>
                     </div>
 
+                    {/* Batch Section Assignment Toolbar for New Students */}
+                    <div className="bg-gradient-to-r from-emerald-900 to-teal-900 text-white rounded-xl p-4 shadow-sm space-y-3">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Layers className="w-4 h-4 text-emerald-300" />
+                          <span className="text-xs font-bold uppercase tracking-wider text-emerald-100">
+                            Batch Section Assignment for New Enrollees
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[11px] bg-white/10 px-2.5 py-1 rounded-full border border-white/10">
+                          <span className="text-emerald-200">Selected for Section:</span>
+                          <span className="font-bold text-yellow-300">
+                            {selectedNewStudentNos.size} of {filteredNewStudents.length} students
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
+                        {/* 1. Filter by Course */}
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] font-semibold text-emerald-200 mb-1">
+                            Filter by Program
+                          </label>
+                          <select
+                            value={newStudentCourseFilter}
+                            onChange={(e) => setNewStudentCourseFilter(e.target.value)}
+                            className="w-full px-3 py-2 bg-white text-gray-900 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-emerald-400 outline-none cursor-pointer"
+                          >
+                            <option value="ALL">All Programs ({distinctNewStudentCourses.length})</option>
+                            {distinctNewStudentCourses.map((c) => (
+                              <option key={c} value={c}>
+                                {c}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 2. Filter by Year Level */}
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] font-semibold text-emerald-200 mb-1">
+                            Filter by Year Level
+                          </label>
+                          <select
+                            value={newStudentYearFilter}
+                            onChange={(e) => setNewStudentYearFilter(e.target.value)}
+                            className="w-full px-3 py-2 bg-white text-gray-900 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-emerald-400 outline-none cursor-pointer"
+                          >
+                            <option value="ALL">All Year Levels</option>
+                            {distinctNewStudentYears.map((yl) => (
+                              <option key={yl} value={yl}>
+                                {yl}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* 3. Assign Section Scoped Dropdown with + Add Section */}
+                        <div className="sm:col-span-3">
+                          <label className="block text-[11px] font-semibold text-emerald-200 mb-1">
+                            Assign Section
+                          </label>
+                          <select
+                            value={newStudentTargetSection}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              if (val === '__ADD_NEW_SECTION__') {
+                                const matchedCourse = activeCourses.find((c) => c.code === newStudentCourseFilter);
+                                setAddSectionContext({
+                                  courseId: matchedCourse?.id,
+                                  yearLevel: YEAR_NUM_MAP[newStudentYearFilter] || 1,
+                                  departmentId: matchedCourse?.departmentId,
+                                  targetMode: 'new',
+                                });
+                                setIsAddSectionModalOpen(true);
+                                return;
+                              }
+                              setNewStudentTargetSection(val);
+                            }}
+                            className="w-full px-3 py-2 bg-white text-gray-900 rounded-lg text-xs font-semibold focus:ring-2 focus:ring-emerald-400 outline-none cursor-pointer"
+                          >
+                            <option value="">-- Choose Section --</option>
+                            {availableNewStudentSections.map((s) => (
+                              <option key={s.id} value={s.name}>
+                                {s.name} ({s.yearLevel ? `${s.yearLevel > 10 ? `Grade ${s.yearLevel}` : `${s.yearLevel} Year`}` : 'Section'})
+                              </option>
+                            ))}
+                            <option value="__ADD_NEW_SECTION__" className="text-blue-700 font-bold bg-blue-50">
+                              + Add Section...
+                            </option>
+                          </select>
+                        </div>
+
+                        {/* 4. Apply Button */}
+                        <div className="sm:col-span-3">
+                          <button
+                            type="button"
+                            onClick={handleApplyNewStudentSection}
+                            disabled={!newStudentTargetSection || selectedNewStudentNos.size === 0}
+                            className="w-full py-2 px-3 bg-yellow-400 hover:bg-yellow-300 text-slate-950 rounded-lg text-xs font-black shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <UserCheck className="w-3.5 h-3.5" />
+                            <span>Assign to Selected ({selectedNewStudentNos.size})</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="overflow-x-auto max-h-[360px] border border-gray-100 rounded-xl">
                       <table className="w-full text-left text-xs">
                         <thead className="bg-gray-50 sticky top-0 border-b border-gray-200 text-gray-600">
                           <tr>
+                            <th className="p-3 w-10 text-center">
+                              <input
+                                type="checkbox"
+                                checked={filteredNewStudents.length > 0 && filteredNewStudents.every((s) => selectedNewStudentNos.has(s.studentNo))}
+                                onChange={toggleSelectAllFilteredNewStudents}
+                                className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                              />
+                            </th>
                             <th className="p-3">Student ID</th>
                             <th className="p-3">Full Name</th>
                             <th className="p-3">Sex</th>
                             <th className="p-3">Program / Strand</th>
                             <th className="p-3">Year Level</th>
+                            <th className="p-3">Assigned Section</th>
                             <th className="p-3">Initial Default Password</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
-                          {analysis.newStudents.map((st) => {
+                          {filteredNewStudents.map((st) => {
                             const pwd = generateDefaultStudentPassword(st.lastName, st.studentNo);
+                            const isChecked = selectedNewStudentNos.has(st.studentNo);
                             return (
-                              <tr key={st.studentNo} className="hover:bg-emerald-50/20">
+                              <tr key={st.studentNo} className={`hover:bg-emerald-50/20 ${isChecked ? 'bg-emerald-50/10' : 'opacity-70 bg-gray-50/50'}`}>
+                                <td className="p-3 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={() => toggleNewStudentSelect(st.studentNo)}
+                                    className="rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                                  />
+                                </td>
                                 <td className="p-3 font-mono font-semibold text-gray-900">{st.studentNo}</td>
                                 <td className="p-3 font-bold text-gray-800">
                                   {st.lastName}, {st.firstName} {st.middleName ? `${st.middleName[0]}.` : ''}
@@ -613,6 +1196,17 @@ export default function BulkImportRegistrarModal({
                                 <td className="p-3 text-gray-600">{st.sex}</td>
                                 <td className="p-3 font-semibold text-emerald-700">{st.courseCode}</td>
                                 <td className="p-3 text-gray-700">{st.yearLevel}</td>
+                                <td className="p-3">
+                                  {st.assignedSection ? (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                      Sec: {st.assignedSection}
+                                    </span>
+                                  ) : (
+                                    <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500">
+                                      Unassigned
+                                    </span>
+                                  )}
+                                </td>
                                 <td className="p-3 font-mono font-bold text-blue-600 bg-blue-50/50">
                                   {pwd}
                                 </td>
@@ -846,6 +1440,14 @@ export default function BulkImportRegistrarModal({
                                   value={currentDeptId}
                                   onChange={(e) => {
                                     const val = e.target.value;
+                                    if (val === '__ADD_NEW_DEPARTMENT__') {
+                                      setAddDeptTargetProgramCode(prog.code);
+                                      setAddDeptAcademicLevel(
+                                        prog.academicLevel || (prog.track === 'SHS' ? 'SHS' : 'COLLEGE')
+                                      );
+                                      setIsAddDeptModalOpen(true);
+                                      return;
+                                    }
                                     setProgramDepartmentMap((prev) => ({
                                       ...prev,
                                       [prog.code]: val,
@@ -863,6 +1465,12 @@ export default function BulkImportRegistrarModal({
                                       {dept.name} ({dept.code})
                                     </option>
                                   ))}
+                                  <option
+                                    value="__ADD_NEW_DEPARTMENT__"
+                                    className="text-blue-700 font-bold bg-blue-50"
+                                  >
+                                    + Add Department...
+                                  </option>
                                 </select>
                               </td>
                             </tr>
@@ -1010,6 +1618,37 @@ export default function BulkImportRegistrarModal({
 
         </div>
       </div>
+
+      {/* ── Reusable Add Section Modal ── */}
+      <AddSectionModal
+        isOpen={isAddSectionModalOpen}
+        onClose={() => setIsAddSectionModalOpen(false)}
+        initialCourseId={addSectionContext.courseId}
+        initialYearLevel={addSectionContext.yearLevel}
+        initialDepartmentId={addSectionContext.departmentId}
+        onSectionCreated={(createdSec) => {
+          if (addSectionContext.targetMode === 'promote') {
+            setCohortTargetSection(createdSec.name);
+          } else if (addSectionContext.targetMode === 'new') {
+            setNewStudentTargetSection(createdSec.name);
+          }
+        }}
+      />
+
+      {/* ── Reusable Add Department Modal ── */}
+      <AddDepartmentModal
+        isOpen={isAddDeptModalOpen}
+        onClose={() => setIsAddDeptModalOpen(false)}
+        initialAcademicLevel={addDeptAcademicLevel}
+        onDepartmentCreated={(createdDept) => {
+          if (addDeptTargetProgramCode) {
+            setProgramDepartmentMap((prev) => ({
+              ...prev,
+              [addDeptTargetProgramCode]: createdDept.code,
+            }));
+          }
+        }}
+      />
     </div>
   );
 }

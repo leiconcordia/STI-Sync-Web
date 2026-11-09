@@ -100,8 +100,18 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   organizationId: string;
   organizationName: string;
   createdById: string;
-  createdByRole: 'admin' | 'officer';
+  createdByRole: 'admin' | 'officer' | 'adviser' | 'sas_admin' | string;
   createdByName: string;
+  submittedByName?: string;
+  submittedByRole?: string;
+  submittedBySignatureUrl?: string;
+  preparedBy?: {
+    name?: string;
+    roleTitle?: string;
+    email?: string;
+    signatureUrl?: string;
+    signedAt?: string;
+  };
   // Official Form LF-01 Header & Cheque Information
   employeeName?: string;
   chequeNumber?: string;

@@ -12,6 +12,7 @@ import { useOrganizationStream } from '../hooks/useOrganizationStream';
 import { useSemesters, useActiveAcademicPeriods, useDepartments } from '../../academic';
 import { useStudents } from '../../students/hooks/useStudentStream';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
+import { formatStructuredFullName } from '../../../utils/name.utils';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface CreateClubModalProps {
@@ -32,6 +33,8 @@ interface Step1Errors {
 
 interface Step2Errors {
   name?: string;
+  firstName?: string;
+  lastName?: string;
   employeeId?: string;
   email?: string;
 }
@@ -54,10 +57,14 @@ function validateStep1(form: {
 
 function validateStep2(adviser: {
   name: string;
+  firstName?: string;
+  lastName?: string;
   employeeId?: string;
   email: string;
 }) {
   const errors: Step2Errors = {};
+  if (!adviser.firstName?.trim()) errors.firstName = 'First name is required.';
+  if (!adviser.lastName?.trim()) errors.lastName = 'Last name is required.';
   if (!adviser.name.trim()) errors.name = 'Adviser full name is required.';
   if (!adviser.email.trim()) {
     errors.email = 'Adviser email address is required.';
@@ -165,6 +172,9 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   // Step 2 Adviser State (Fixed title: "Club Adviser")
   const [adviserData, setAdviserData] = useState<OrgAdviserData>({
     name: '',
+    firstName: '',
+    lastName: '',
+    middleInitial: '',
     employeeId: '',
     email: '',
     departmentId: '',
@@ -529,24 +539,79 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       </div>
 
       <div className="space-y-4">
-        {/* Full Name */}
-        <div>
-          <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-            Adviser Full Name <span className="text-red-500">*</span>
-          </label>
-          <input
-            type="text"
-            value={adviserData.name}
-            onChange={(e) => {
-              setAdviserData({ ...adviserData, name: e.target.value });
-              setStep2Errors(prev => { const n = { ...prev }; delete n.name; return n; });
-            }}
-            placeholder="e.g. Prof. Juan Dela Cruz, MIT"
-            className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
-              step2Errors.name ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
-            }`}
-          />
-          <FieldError msg={step2Errors.name} />
+        {/* Structured Name Inputs: First Name, M.I., Last Name */}
+        <div className="space-y-1.5">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+            <div className="sm:col-span-5">
+              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+                First Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={adviserData.firstName || ''}
+                onChange={(e) => {
+                  const firstName = e.target.value;
+                  const name = formatStructuredFullName(firstName, adviserData.lastName, adviserData.middleInitial);
+                  setAdviserData({ ...adviserData, firstName, name });
+                  setStep2Errors(prev => { const n = { ...prev }; delete n.firstName; delete n.name; return n; });
+                }}
+                placeholder="e.g. Maria Santos"
+                className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                  step2Errors.firstName ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+                }`}
+              />
+              <FieldError msg={step2Errors.firstName} />
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5 text-center">
+                M.I. <span className="text-gray-400 font-normal text-xs">(Opt)</span>
+              </label>
+              <input
+                type="text"
+                maxLength={3}
+                value={adviserData.middleInitial || ''}
+                onChange={(e) => {
+                  const middleInitial = e.target.value.toUpperCase();
+                  const name = formatStructuredFullName(adviserData.firstName, adviserData.lastName, middleInitial);
+                  setAdviserData({ ...adviserData, middleInitial, name });
+                }}
+                placeholder="e.g. B."
+                className="w-full px-2 py-2.5 border border-[#E0E0E0] rounded-xl text-sm font-bold text-center uppercase focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent"
+              />
+            </div>
+
+            <div className="sm:col-span-5">
+              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+                Last Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={adviserData.lastName || ''}
+                onChange={(e) => {
+                  const lastName = e.target.value;
+                  const name = formatStructuredFullName(adviserData.firstName, lastName, adviserData.middleInitial);
+                  setAdviserData({ ...adviserData, lastName, name });
+                  setStep2Errors(prev => { const n = { ...prev }; delete n.lastName; delete n.name; return n; });
+                }}
+                placeholder="e.g. Dela Cruz"
+                className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                  step2Errors.lastName ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+                }`}
+              />
+              <FieldError msg={step2Errors.lastName} />
+            </div>
+          </div>
+
+          {/* Combined Name Preview */}
+          {adviserData.name ? (
+            <div className="px-3 py-1.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
+              <span className="font-semibold text-gray-500">Official Combined Name:</span>
+              <span className="font-bold text-[#0E4EBD]">{adviserData.name}</span>
+            </div>
+          ) : step2Errors.name ? (
+            <FieldError msg={step2Errors.name} />
+          ) : null}
         </div>
 
         {/* Email + Faculty / Employee ID */}

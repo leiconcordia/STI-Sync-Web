@@ -12,6 +12,9 @@ export interface OrganizationTypeDocument {
 
 export interface OrgAdviserData {
   name: string;
+  firstName?: string;
+  lastName?: string;
+  middleInitial?: string;
   employeeId?: string;
   email: string;
   departmentId: string;

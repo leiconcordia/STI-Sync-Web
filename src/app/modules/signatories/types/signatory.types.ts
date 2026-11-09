@@ -79,6 +79,9 @@ export interface InstitutionalSignatory {
   id: string;
   uid?: string;
   name: string;
+  firstName?: string;
+  lastName?: string;
+  middleInitial?: string;
   email: string;
   role: SignatoryRole;
   roleTitle: string;
@@ -109,6 +112,9 @@ export interface InstitutionalSignatory {
 
 export interface CreateSignatoryPayload {
   name: string;
+  firstName?: string;
+  lastName?: string;
+  middleInitial?: string;
   email: string;
   role: SignatoryRole;
   roleTitle: string;

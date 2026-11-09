@@ -888,15 +888,6 @@ export default function ProposalFlowBuilder({
 
   // 11. Set Action Type for a specific Step
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: SignatoryActionType) => {
-    const stepTarget = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
-    if (
-      isOfficerProposal &&
-      newAction === 'approve' &&
-      (stepTarget?.stageIndex === 1 || stepTarget?.role === 'sas_head' || stepTarget?.role === 'sas_coordinator')
-    ) {
-      alert('Stage 1 SAS review is strictly an Endorsement action. Final executive approval occurs in Stage 4.');
-      return;
-    }
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
@@ -909,14 +900,6 @@ export default function ProposalFlowBuilder({
 
   // 12. Toggle Action Type for a specific Step
   const handleToggleActionType = (stepIdOrIndex: string | number) => {
-    const stepTarget = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
-    if (
-      isOfficerProposal &&
-      (stepTarget?.stageIndex === 1 || stepTarget?.role === 'sas_head' || stepTarget?.role === 'sas_coordinator')
-    ) {
-      alert('Stage 1 SAS review is strictly an Endorsement action. Final executive approval occurs in Stage 4.');
-      return;
-    }
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
@@ -1169,7 +1152,9 @@ export default function ProposalFlowBuilder({
                         matchedSig?.role === 'school_administrator' ||
                         step.role === 'school_president' ||
                         step.role === 'school_administrator' ||
-                        isUserAddedStep
+                        step.actionType === 'approve' ||
+                        isUserAddedStep ||
+                        stage.stageIndex === 4
                       );
 
                       return (

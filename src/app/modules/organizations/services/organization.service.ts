@@ -21,6 +21,9 @@ export interface AdviserUpdateOptions {
   currentAdviser?: OrgAdviserData | null;
   newAdviser?: {
     name: string;
+    firstName?: string;
+    lastName?: string;
+    middleInitial?: string;
     email: string;
     employeeId?: string;
     departmentId?: string;
@@ -121,6 +124,9 @@ export const assignOrRevokeOrganizationAdviser = async (
         organizationId: orgId,
         organizationName: orgName,
         name: cleanName,
+        firstName: newAdviser.firstName ? newAdviser.firstName.trim() : '',
+        lastName: newAdviser.lastName ? newAdviser.lastName.trim() : '',
+        middleInitial: newAdviser.middleInitial ? newAdviser.middleInitial.trim() : '',
         email: cleanEmail,
         employeeId: cleanEmployeeId,
         departmentId: newAdviser.departmentId || '',
@@ -154,6 +160,9 @@ export const assignOrRevokeOrganizationAdviser = async (
 
     return {
       name: cleanName,
+      firstName: newAdviser.firstName ? newAdviser.firstName.trim() : '',
+      lastName: newAdviser.lastName ? newAdviser.lastName.trim() : '',
+      middleInitial: newAdviser.middleInitial ? newAdviser.middleInitial.trim() : '',
       email: cleanEmail,
       employeeId: cleanEmployeeId,
       departmentId: newAdviser.departmentId || '',
@@ -250,6 +259,9 @@ export const createOrganization = async (
           organizationId: orgId,
           organizationName: payload.name,
           name: payload.adviser.name.trim(),
+          firstName: payload.adviser.firstName ? payload.adviser.firstName.trim() : '',
+          lastName: payload.adviser.lastName ? payload.adviser.lastName.trim() : '',
+          middleInitial: payload.adviser.middleInitial ? payload.adviser.middleInitial.trim() : '',
           email: payload.adviser.email.trim().toLowerCase(),
           employeeId: (payload.adviser.employeeId || '').trim(),
           departmentId: payload.adviser.departmentId,

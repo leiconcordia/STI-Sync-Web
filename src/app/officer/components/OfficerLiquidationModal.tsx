@@ -64,6 +64,7 @@ import { LiquidationExportPreviewModal } from '../../modules/finance/components/
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
+import DigitalSignatureModal from '../../signatory/components/DigitalSignatureModal';
 import { toast } from 'sonner';
 
 interface OfficerLiquidationModalProps {
@@ -212,6 +213,29 @@ export default function OfficerLiquidationModal({
     ['sas', 'sao', 'sas_admin', 'sao_admin', 'student affairs office', 'student affairs services'].includes(
       (orgId || '').toString().trim().toLowerCase()
     );
+
+  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(
+    officerProfile?.signatureUrl || null
+  );
+  const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (!makerSignatureUrl && officerProfile?.signatureUrl) {
+      setMakerSignatureUrl(officerProfile.signatureUrl);
+    } else if (!makerSignatureUrl) {
+      try {
+        const raw = localStorage.getItem('sti_sync_officer_session');
+        if (raw) {
+          const sess = JSON.parse(raw);
+          if (sess?.signatureUrl) {
+            setMakerSignatureUrl(sess.signatureUrl);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, [makerSignatureUrl, officerProfile?.signatureUrl]);
 
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
@@ -1309,6 +1333,16 @@ export default function OfficerLiquidationModal({
         showValidationError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
         return;
       }
+
+      // Mandatory Maker Signature Check for formal submission
+      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl;
+      if (!effectiveSignature) {
+        toast.error('Electronic Signature Required', {
+          description: 'As the document maker, you must register your official signature before submitting this financial liquidation.',
+        });
+        setIsSignatureModalOpen(true);
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -1316,7 +1350,10 @@ export default function OfficerLiquidationModal({
 
     try {
       const nextStatus = shouldSubmit ? 'under_review' : 'draft';
-      const submitterRole = effectiveIsAdviser ? 'adviser' : userRole;
+      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || '';
+      const submitterRole = isSasCreator ? 'sas_admin' : effectiveIsAdviser ? 'adviser' : userRole;
+      const submitterTitle = isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Organization Adviser' : 'Student Officer';
+      const submitterName = userName || (isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Club Adviser' : 'Officer');
 
       // Ensure approval chain statuses are set appropriately on submit
       let finalizedChain = approvalChain;
@@ -1335,10 +1372,18 @@ export default function OfficerLiquidationModal({
         organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId || '',
         organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName || '',
         createdById: userUid || 'user',
-        createdByRole: userRole || 'officer',
-        createdByName: userName || 'Officer',
-        submittedByName: userName || 'Officer',
-        submittedByRole: submitterRole || 'officer',
+        createdByRole: submitterRole,
+        createdByName: submitterName,
+        submittedByName: submitterName,
+        submittedByRole: submitterRole,
+        submittedBySignatureUrl: effectiveSignature,
+        preparedBy: {
+          name: submitterName,
+          roleTitle: submitterTitle,
+          email: officerProfile?.email || '',
+          signatureUrl: effectiveSignature,
+          signedAt: new Date().toISOString(),
+        },
         allocatedBudget: Number(allocatedBudget || 0),
         totalActualSpending: Number(totalActualSpending || 0),
         surplusOrDeficit: Number(surplusOrDeficit || 0),
@@ -2712,6 +2757,29 @@ export default function OfficerLiquidationModal({
           amount={lightboxData.amount}
           fileName={lightboxData.fileName}
           fileType={lightboxData.fileType}
+        />
+      )}
+
+      {/* Inline Digital Signature Modal for Document Maker */}
+      {isSignatureModalOpen && (
+        <DigitalSignatureModal
+          isOpen={isSignatureModalOpen}
+          onClose={() => setIsSignatureModalOpen(false)}
+          signatoryUid={userUid}
+          signatoryName={userName}
+          signatoryEmail={officerProfile?.email || ''}
+          currentSignatureUrl={makerSignatureUrl}
+          onSignatureSaved={(newUrl) => {
+            setMakerSignatureUrl(newUrl);
+            const raw = localStorage.getItem('sti_sync_officer_session');
+            if (raw) {
+              try {
+                const parsed = JSON.parse(raw);
+                parsed.signatureUrl = newUrl;
+                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+              } catch {}
+            }
+          }}
         />
       )}
     </div>

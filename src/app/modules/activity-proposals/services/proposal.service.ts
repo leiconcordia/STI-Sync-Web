@@ -493,7 +493,15 @@ export async function submitProposalForReview(
     createdByUid: formData.createdByUid || user.uid,
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
-    creatorRole: formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin'),
+    creatorRole: isSasAdmin ? 'sas_admin' : 'adviser',
+    preparedBy: {
+      name: user.name,
+      roleTitle: isSasAdmin ? 'SAS Administrator' : 'Organization Adviser',
+      email: user.email,
+      signatureUrl: (user as any).signatureUrl || formData.submittedBySignatureUrl || (formData as any).signatureUrl || '',
+      signedAt: new Date().toISOString(),
+    },
+    submittedBySignatureUrl: (user as any).signatureUrl || formData.submittedBySignatureUrl || (formData as any).signatureUrl || '',
     updatedAt: serverTimestamp(),
   };
 

@@ -38,7 +38,7 @@ export function isDocumentSasCreated(doc: Partial<ApprovableDocument>): boolean 
     doc.creatorRole ||
     ''
   ).toLowerCase().trim();
-  if (role === 'officer' || role === 'student_officer') {
+  if (role === 'officer' || role === 'student_officer' || role === 'adviser') {
     return false;
   }
   if (['admin', 'sas_admin', 'sao_admin', 'sas'].includes(role)) {
@@ -73,7 +73,7 @@ export function isDocumentOwner(
     return true;
   }
 
-  if (!isSas && userRole === 'officer') {
+  if (!isSas && (userRole === 'officer' || userRole === 'adviser' || userRole.includes('officer'))) {
     const userOrg = user.organizationId;
     const docOrg = doc.organizationId || doc.hostingOrgId;
     if (userOrg && docOrg && userOrg === docOrg) {
@@ -110,7 +110,7 @@ export function resolveApprovalPermissions(
 
   const userRole = (user.role || '').toLowerCase().trim();
   const isSasAdmin = ['admin', 'sas_admin', 'sao_admin'].includes(userRole);
-  const isOrgOfficer = userRole === 'officer' || userRole === 'student_officer';
+  const isOrgOfficer = userRole === 'officer' || userRole === 'student_officer' || userRole === 'adviser';
   const isOwner = isDocumentOwner(doc, user);
 
   const rawStatus = (doc.status || doc.proposalStatus || doc.lifecycleStatus || '').toLowerCase().trim();

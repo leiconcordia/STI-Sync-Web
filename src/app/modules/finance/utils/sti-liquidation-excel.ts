@@ -162,7 +162,18 @@ function resolveOfficialSignatories(
     return options.signatories;
   }
 
-  const officerName = options.officerName || report.submittedByName || report.createdByName || '';
+  const officerName =
+    options.officerName ||
+    report.preparedBy?.name ||
+    (report as any).employeeName ||
+    report.submittedByName ||
+    report.createdByName ||
+    '';
+  const makerRole =
+    report.preparedBy?.roleTitle ||
+    (report.submittedByRole === 'sas_admin' || (report as any).createdByRole === 'sas_admin'
+      ? 'SAS Administrator'
+      : 'Organization Adviser');
   const dateSubmitted = options.dateSubmitted || formatAppDate(report.submittedAt || report.createdAt, '');
   const chain = report.approvalChain || [];
 
@@ -175,9 +186,9 @@ function resolveOfficialSignatories(
   const signatoriesList: StiSignatory[] = [
     {
       id: 'sig_submitted',
-      type: 'Submitted By:',
+      type: 'Prepared by:',
       name: officerName,
-      role: '(Name of Employee / Treasurer)',
+      role: `(${makerRole})`,
       date: dateSubmitted,
     },
   ];

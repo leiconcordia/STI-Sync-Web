@@ -591,7 +591,7 @@ export default function OfficerPostActivityReports() {
           uid: userUid,
           name: userName,
           email: userEmail,
-          role: 'officer',
+          role: profile?.role || (profile?.isAdviser ? 'adviser' : 'officer'),
           organizationId: orgId,
         }}
         currentUserId={userUid}

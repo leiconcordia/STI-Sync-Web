@@ -190,6 +190,9 @@ export async function createInstitutionalSignatory(
     const docData: any = {
       uid: authUid || docId,
       name: payload.name.trim(),
+      firstName: payload.firstName ? payload.firstName.trim() : '',
+      lastName: payload.lastName ? payload.lastName.trim() : '',
+      middleInitial: payload.middleInitial ? payload.middleInitial.trim() : '',
       email: cleanEmail,
       role: payload.role,
       roleTitle: payload.roleTitle.trim(),
@@ -299,7 +302,7 @@ export async function toggleSignatoryStatus(
  */
 export async function updateSignatoryDetails(
   signatoryId: string,
-  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows' | 'canApproveProposal' | 'canApproveLiquidation' | 'canApprovePar' | 'defaultSignatoryLabel'>>
+  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'firstName' | 'lastName' | 'middleInitial' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows' | 'canApproveProposal' | 'canApproveLiquidation' | 'canApprovePar' | 'defaultSignatoryLabel'>>
 ): Promise<void> {
   const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
   await updateDoc(docRef, {

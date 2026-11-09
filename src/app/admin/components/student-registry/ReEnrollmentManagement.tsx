@@ -33,6 +33,7 @@ import { auth } from '../../../../services/firebase';
 import { useCourses, useSections, useDepartments, useActiveAcademicPeriods } from '../../../modules/academic/hooks/useAcademicStream';
 import { exportStudentsToCSV } from '../../../modules/students/utils/export.utils';
 import { TablePagination } from '../../../components/common/TablePagination';
+import { AddSectionModal } from '../academic/AddSectionModal';
 
 interface ReEnrollmentManagementProps {
   students: StudentDocument[];
@@ -89,6 +90,7 @@ export default function ReEnrollmentManagement({
   // Bulk promotion target states
   const [targetYearLevel, setTargetYearLevel] = useState<string>('2nd Year');
   const [targetSectionName, setTargetSectionName] = useState<string>('');
+  const [isAddSectionModalOpen, setIsAddSectionModalOpen] = useState(false);
 
   const [processing, setProcessing] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
@@ -807,7 +809,13 @@ export default function ReEnrollmentManagement({
                   <span className="text-xs font-semibold text-gray-700">Target Section:</span>
                   <select
                     value={targetSectionName}
-                    onChange={(e) => setTargetSectionName(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__ADD_NEW_SECTION__') {
+                        setIsAddSectionModalOpen(true);
+                      } else {
+                        setTargetSectionName(e.target.value);
+                      }
+                    }}
                     disabled={hasPromotionConflict}
                     className="px-2.5 py-1.5 text-xs font-bold border border-blue-300 rounded-lg bg-white text-[#001A4D] focus:ring-2 focus:ring-[#0E4EBD] disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
                   >
@@ -817,6 +825,9 @@ export default function ReEnrollmentManagement({
                         {s.name}
                       </option>
                     ))}
+                    <option value="__ADD_NEW_SECTION__" className="text-blue-700 font-bold bg-blue-50">
+                      + Add Section...
+                    </option>
                   </select>
                 </div>
 
@@ -1074,6 +1085,19 @@ export default function ReEnrollmentManagement({
           }}
         />
       )}
+
+      {/* Dynamic Add Section Modal for Bulk Target Promotion */}
+      {isAddSectionModalOpen && (
+        <AddSectionModal
+          isOpen={isAddSectionModalOpen}
+          initialCourseId={activeCourses.find(c => c.code === (cohortCourseCode || (selectedCourseCode !== 'All Courses' ? selectedCourseCode : undefined)))?.id}
+          initialYearLevel={targetYearLevel}
+          onClose={() => setIsAddSectionModalOpen(false)}
+          onSectionCreated={(newSec) => {
+            setTargetSectionName(newSec.name);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1243,6 +1267,7 @@ function IndividualReEnrollModal({
   // Section state
   const [sectionName, setSectionName] = useState<string>(student.section || '');
   const [saving, setSaving] = useState(false);
+  const [isAddSectionModalOpen, setIsAddSectionModalOpen] = useState(false);
 
   // Dynamic sections matching chosen Course and Year Level from settings
   const availableSections = useMemo(() => {
@@ -1526,7 +1551,13 @@ function IndividualReEnrollModal({
                 {availableSections.length > 0 ? (
                   <select
                     value={sectionName}
-                    onChange={(e) => setSectionName(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__ADD_NEW_SECTION__') {
+                        setIsAddSectionModalOpen(true);
+                      } else {
+                        setSectionName(e.target.value);
+                      }
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none bg-white"
                   >
                     <option value="">Select Section</option>
@@ -1535,15 +1566,27 @@ function IndividualReEnrollModal({
                         {s.name}
                       </option>
                     ))}
+                    <option value="__ADD_NEW_SECTION__" className="text-blue-700 font-bold bg-blue-50">
+                      + Add Section...
+                    </option>
                   </select>
                 ) : (
-                  <input
-                    type="text"
-                    value={sectionName}
-                    onChange={(e) => setSectionName(e.target.value)}
-                    placeholder={targetTrack === 'COLLEGE' ? 'e.g. BSIT 1101 (Manual input)' : 'e.g. STEM 1201 (Manual input)'}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={sectionName}
+                      onChange={(e) => setSectionName(e.target.value)}
+                      placeholder={targetTrack === 'COLLEGE' ? 'e.g. BSIT 1101 (Manual input)' : 'e.g. STEM 1201 (Manual input)'}
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setIsAddSectionModalOpen(true)}
+                      className="px-3 py-2 bg-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-lg hover:bg-[#001A4D]/90 whitespace-nowrap cursor-pointer"
+                    >
+                      + Add Section
+                    </button>
+                  </div>
                 )}
                 {availableSections.length === 0 && (
                   <p className="text-[11px] text-amber-600 mt-1">
@@ -1584,6 +1627,23 @@ function IndividualReEnrollModal({
           )}
         </div>
       </div>
+
+      {/* Dynamic Add Section Modal for Individual Re-enrollment */}
+      {isAddSectionModalOpen && (
+        <AddSectionModal
+          isOpen={isAddSectionModalOpen}
+          initialCourseId={selectedCourseId}
+          initialYearLevel={
+            targetTrack === 'COLLEGE'
+              ? `${yearLevelNumber}${yearLevelNumber === 1 ? 'st' : yearLevelNumber === 2 ? 'nd' : yearLevelNumber === 3 ? 'rd' : 'th'} Year`
+              : `Grade ${yearLevelNumber}`
+          }
+          onClose={() => setIsAddSectionModalOpen(false)}
+          onSectionCreated={(newSec) => {
+            setSectionName(newSec.name);
+          }}
+        />
+      )}
     </div>
   );
 }

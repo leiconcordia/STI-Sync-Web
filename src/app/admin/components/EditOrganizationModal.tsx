@@ -27,6 +27,7 @@ import {
   updateOrganization,
   type AdviserUpdateOptions,
 } from '../../modules/organizations/services/organization.service';
+import { formatStructuredFullName, parseFullNameToParts } from '../../utils/name.utils';
 import { toast } from 'sonner';
 
 interface EditOrganizationModalProps {
@@ -78,6 +79,9 @@ export function EditOrganizationModal({
   const [adviserMode, setAdviserMode] = useState<'keep' | 'replace' | 'unassign'>('keep');
   const [newAdviserData, setNewAdviserData] = useState({
     name: '',
+    firstName: '',
+    lastName: '',
+    middleInitial: '',
     email: '',
     employeeId: '',
     temporaryPassword: 'Adv-2026!#',
@@ -85,6 +89,8 @@ export function EditOrganizationModal({
   });
   const [adviserErrors, setAdviserErrors] = useState<{
     name?: string;
+    firstName?: string;
+    lastName?: string;
     email?: string;
     employeeId?: string;
   }>({});
@@ -107,6 +113,9 @@ export function EditOrganizationModal({
       setAdviserMode('keep');
       setNewAdviserData({
         name: '',
+        firstName: '',
+        lastName: '',
+        middleInitial: '',
         email: '',
         employeeId: '',
         temporaryPassword: 'Adv-2026!#',
@@ -128,11 +137,16 @@ export function EditOrganizationModal({
 
   // ─── Validation for New Adviser ───
   const validateNewAdviser = async (): Promise<boolean> => {
-    const errors: { name?: string; email?: string; employeeId?: string } = {};
-    const name = newAdviserData.name.trim();
+    const errors: { name?: string; firstName?: string; lastName?: string; email?: string; employeeId?: string } = {};
+    const firstName = (newAdviserData.firstName || '').trim();
+    const lastName = (newAdviserData.lastName || '').trim();
+    const middleInitial = (newAdviserData.middleInitial || '').trim();
+    const name = formatStructuredFullName(firstName, lastName, middleInitial) || newAdviserData.name.trim();
     const email = newAdviserData.email.trim().toLowerCase();
     const employeeId = newAdviserData.employeeId.trim();
 
+    if (!firstName) errors.firstName = 'Adviser first name is required.';
+    if (!lastName) errors.lastName = 'Adviser last name is required.';
     if (!name) errors.name = 'Adviser full name is required.';
     if (!email) {
       errors.email = 'Adviser institutional email is required.';
@@ -234,11 +248,19 @@ export function EditOrganizationModal({
     };
 
     if (adviserMode === 'replace') {
+      const firstName = (newAdviserData.firstName || '').trim();
+      const lastName = (newAdviserData.lastName || '').trim();
+      const middleInitial = (newAdviserData.middleInitial || '').trim();
+      const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || newAdviserData.name.trim();
+
       adviserUpdate = {
         action: 'assign',
         currentAdviser: organization.adviser || null,
         newAdviser: {
-          name: newAdviserData.name.trim(),
+          name: combinedName,
+          firstName,
+          lastName,
+          middleInitial,
           email: newAdviserData.email.trim().toLowerCase(),
           employeeId: newAdviserData.employeeId.trim(),
           departmentId: isCross ? 'cross-departmental' : formData.department,
@@ -613,20 +635,82 @@ export function EditOrganizationModal({
 
                 {/* Form fields for new adviser */}
                 <div className="space-y-3">
-                  <div>
-                    <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                      Adviser Full Name *
-                    </label>
-                    <input
-                      type="text"
-                      value={newAdviserData.name}
-                      onChange={(e) =>
-                        setNewAdviserData({ ...newAdviserData, name: e.target.value })
-                      }
-                      placeholder="e.g. Prof. Maria Santos, MSIT"
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
-                    />
-                    {adviserErrors.name && (
+                  {/* Structured Name Inputs: First Name, M.I., Last Name */}
+                  <div className="space-y-1.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                      <div className="sm:col-span-5">
+                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                          First Name <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={newAdviserData.firstName || ''}
+                          onChange={(e) => {
+                            const firstName = e.target.value;
+                            const name = formatStructuredFullName(firstName, newAdviserData.lastName, newAdviserData.middleInitial);
+                            setNewAdviserData({ ...newAdviserData, firstName, name });
+                            if (adviserErrors.firstName) setAdviserErrors({ ...adviserErrors, firstName: undefined });
+                          }}
+                          placeholder="e.g. Maria"
+                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${
+                            adviserErrors.firstName ? 'border-red-400 bg-red-50' : 'border-gray-300'
+                          }`}
+                        />
+                        {adviserErrors.firstName && (
+                          <p className="text-[11px] text-red-600 mt-1">{adviserErrors.firstName}</p>
+                        )}
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1 text-center">
+                          M.I. <span className="text-gray-400 font-normal lowercase">(opt)</span>
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={3}
+                          value={newAdviserData.middleInitial || ''}
+                          onChange={(e) => {
+                            const middleInitial = e.target.value.toUpperCase();
+                            const name = formatStructuredFullName(newAdviserData.firstName, newAdviserData.lastName, middleInitial);
+                            setNewAdviserData({ ...newAdviserData, middleInitial, name });
+                          }}
+                          placeholder="B."
+                          className="w-full px-2 py-2 border border-gray-300 rounded-lg text-xs font-bold text-center uppercase focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-5">
+                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                          Last Name <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={newAdviserData.lastName || ''}
+                          onChange={(e) => {
+                            const lastName = e.target.value;
+                            const name = formatStructuredFullName(newAdviserData.firstName, lastName, newAdviserData.middleInitial);
+                            setNewAdviserData({ ...newAdviserData, lastName, name });
+                            if (adviserErrors.lastName) setAdviserErrors({ ...adviserErrors, lastName: undefined });
+                          }}
+                          placeholder="e.g. Santos"
+                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${
+                            adviserErrors.lastName ? 'border-red-400 bg-red-50' : 'border-gray-300'
+                          }`}
+                        />
+                        {adviserErrors.lastName && (
+                          <p className="text-[11px] text-red-600 mt-1">{adviserErrors.lastName}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Combined Name Preview */}
+                    {newAdviserData.name && (
+                      <div className="px-3 py-1.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
+                        <span className="font-semibold text-gray-500">Official Combined Name:</span>
+                        <span className="font-bold text-[#0E4EBD]">{newAdviserData.name}</span>
+                      </div>
+                    )}
+                    {adviserErrors.name && !adviserErrors.firstName && !adviserErrors.lastName && (
                       <p className="text-[11px] text-red-600 mt-1">{adviserErrors.name}</p>
                     )}
                   </div>

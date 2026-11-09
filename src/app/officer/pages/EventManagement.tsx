@@ -1227,6 +1227,7 @@ export default function EventManagement() {
             isAdviser: Boolean(profile?.isAdviser),
             organizationId: activeOrgId,
             organizationName: activeOrgName,
+            signatureUrl: profile?.signatureUrl || null,
           }}
         />
       )}

@@ -22,6 +22,9 @@ import { SIGNATORIES_COLLECTION } from './signatory.service';
 
 export interface SasSignatoryConfig {
   name: string;
+  firstName?: string;
+  lastName?: string;
+  middleInitial?: string;
   roleTitle: string; // Position Title, e.g. "Student Affairs & Services Head" or "SAS Coordinator"
   email: string;
   department: string;
@@ -36,6 +39,9 @@ export interface SasSignatoryConfig {
 
 export const DEFAULT_SAS_SIGNATORY_CONFIG: SasSignatoryConfig = {
   name: 'Riselle Mae B. Lucanas',
+  firstName: 'Riselle Mae',
+  lastName: 'Lucanas',
+  middleInitial: 'B.',
   roleTitle: 'Student Affairs & Services Head',
   email: 'sao@ormoc.sti.edu.ph',
   department: 'Student Affairs & Services',

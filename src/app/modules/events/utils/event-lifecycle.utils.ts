@@ -736,6 +736,12 @@ export function canWithdrawProposal(
 
   const officerProp = isOfficerProposal(event);
 
+  // Direct creator/maker can always withdraw their own pending proposal
+  const creatorUid = (event as any).createdByUid || (event as any).createdById;
+  if (userId && creatorUid && userId === creatorUid) {
+    return { canWithdraw: true };
+  }
+
   const normRole = (userRole || '').toLowerCase().trim();
   const isAdmin =
     normRole === 'admin' ||
@@ -745,11 +751,11 @@ export function canWithdrawProposal(
     normRole === 'sas' ||
     normRole === 'sao_head' ||
     normRole === 'super_admin' ||
-    normRole === 'adviser' ||
-    normRole.includes('admin');
-  const isOfficer =
+    (normRole.includes('admin') && normRole !== 'school_administrator');
+  const isOfficerOrAdviser =
     normRole === 'officer' ||
     normRole === 'student_officer' ||
+    normRole === 'adviser' ||
     normRole.includes('officer');
 
   // Creator-only withdrawal rule:
@@ -764,19 +770,19 @@ export function canWithdrawProposal(
     return { canWithdraw: true };
   }
 
-  // Officers can ONLY withdraw their own organization proposals, NEVER institutional SAS proposals.
-  if (isOfficer) {
+  // Officers and club advisers can ONLY withdraw their own organization proposals, NEVER institutional SAS proposals.
+  if (isOfficerOrAdviser) {
     if (!officerProp) {
       return {
         canWithdraw: false,
-        reason: 'Institutional SAS events cannot be withdrawn by student officers.',
+        reason: 'Institutional SAS events cannot be withdrawn by student officers or advisers.',
       };
     }
 
     if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
       return {
         canWithdraw: false,
-        reason: "Officers can only withdraw their own organization's proposals.",
+        reason: "Officers and advisers can only withdraw their own organization's proposals.",
       };
     }
 
@@ -821,6 +827,12 @@ export function canEditProposal(
     };
   }
 
+  // Direct creator/maker can always edit their own draft or returned proposal
+  const creatorUid = (event as any).createdByUid || (event as any).createdById;
+  if (userId && creatorUid && userId === creatorUid) {
+    return { canEdit: true, isOwner: true };
+  }
+
   const officerProp = isOfficerProposal(event);
 
   const normRole = (userRole || '').toLowerCase().trim();
@@ -832,11 +844,11 @@ export function canEditProposal(
     normRole === 'sas' ||
     normRole === 'sao_head' ||
     normRole === 'super_admin' ||
-    normRole === 'adviser' ||
-    normRole.includes('admin');
-  const isOfficer =
+    (normRole.includes('admin') && normRole !== 'school_administrator');
+  const isOfficerOrAdviser =
     normRole === 'officer' ||
     normRole === 'student_officer' ||
+    normRole === 'adviser' ||
     normRole.includes('officer');
 
   if (isAdmin) {
@@ -850,12 +862,12 @@ export function canEditProposal(
     return { canEdit: true, isOwner: true };
   }
 
-  if (isOfficer) {
+  if (isOfficerOrAdviser) {
     if (!officerProp) {
       return {
         canEdit: false,
         isOwner: false,
-        reason: 'Student officers cannot edit institutional SAS proposals.',
+        reason: 'Student officers and advisers cannot edit institutional SAS proposals.',
       };
     }
 
@@ -889,8 +901,7 @@ export function canRestoreEvent(
     normRole === 'sas' ||
     normRole === 'sao_head' ||
     normRole === 'super_admin' ||
-    normRole === 'adviser' ||
-    normRole.includes('admin');
+    (normRole.includes('admin') && normRole !== 'school_administrator');
 
   if (!event || !isAdmin) return false;
   if (event.isArchived) return false;

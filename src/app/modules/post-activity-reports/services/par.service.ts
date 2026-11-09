@@ -545,7 +545,7 @@ export async function saveOrSubmitPAR(
     createdByUid: formData.createdByUid || user.uid,
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
-    creatorRole: isUserSas ? 'sas_admin' : 'officer',
+    creatorRole: isUserSas ? 'sas_admin' : (user.role === 'adviser' ? 'adviser' : 'officer'),
     isOfficerPar: isOfficer,
     isSasInternal: isSasEvent,
     visibility: isSasEvent ? 'sas_only' : 'owner_and_sas',
