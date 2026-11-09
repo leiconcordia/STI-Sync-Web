@@ -4,7 +4,7 @@ import { FinancialLiquidationDocument, PayableDocument } from '../../finance/typ
 import { OrganizationDocument } from '../../organizations/types/organization.types';
 import { CertificateDocument } from '../../certificates/types/certificate.types';
 import { AuditLogDocument } from '../../audit/types/audit.types';
-import { GeneratedReportData, ReportFilterOptions, ReportScope } from '../types/report.types';
+import { GeneratedReportData, ReportFilterOptions, ReportScope, APAnalyticsSummary, FLAnalyticsSummary, PARAnalyticsSummary, ClubRosterSummary, UniversalFilterState } from '../types/report.types';
 
 // Helper to filter data by academic track
 export function isStudentInTrack(student: StudentDocument, scope: ReportScope): boolean {
@@ -885,3 +885,293 @@ export function generateOfficerDuesTrackingReport(
     },
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3. SUB-DIRECTORY EXECUTIVE REPORTS GENERATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sub-Directory A: Activity Proposals (AP) Audit Summary Report
+ */
+export function generateAPSummaryReport(
+  apSummary: APAnalyticsSummary,
+  filter: UniversalFilterState,
+  userName = 'Student Affairs & Services (SAS)'
+): GeneratedReportData {
+  const rows = apSummary.rows.map((r) => ({
+    referenceNo: r.referenceNo,
+    title: r.title,
+    organizer: r.organizer,
+    targetDateVenue: r.targetDateVenue,
+    proposedBudget: `₱${r.proposedBudget.toLocaleString()}`,
+    approvedBudget: r.approvedBudget > 0 ? `₱${r.approvedBudget.toLocaleString()}` : '—',
+    stage: r.stage,
+    status: r.signatoryStatus.toUpperCase(),
+  }));
+
+  return {
+    id: 'AP_SUMMARY_REPORT',
+    title: 'Activity Proposals (Form AP-01) Audit Summary Report',
+    category: 'INSTITUTIONAL',
+    metadata: {
+      title: 'Activity Proposals (Form AP-01) Audit Summary Report',
+      subtitle: 'Comprehensive audit log of campus activity proposals, institutional endorsements, and approved allocations.',
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: userName,
+    },
+    kpis: [
+      { label: 'Total Submitted', value: apSummary.kpis.totalProposalsSubmitted },
+      { label: 'Approval Rate', value: `${apSummary.kpis.approvalRate}%` },
+      { label: 'Avg Lead Time', value: `${apSummary.kpis.averageLeadTimeDays} Days` },
+      { label: 'Total Proposed Budget', value: `₱${apSummary.kpis.totalProposedBudget.toLocaleString()}` },
+      { label: 'Total Approved Budget', value: `₱${apSummary.kpis.totalApprovedBudget.toLocaleString()}` },
+    ],
+    columns: [
+      { key: 'referenceNo', header: 'AP Ref #' },
+      { key: 'title', header: 'Activity Title' },
+      { key: 'organizer', header: 'Organizer / Club' },
+      { key: 'targetDateVenue', header: 'Target Date & Venue' },
+      { key: 'proposedBudget', header: 'Proposed Budget' },
+      { key: 'approvedBudget', header: 'Approved Budget' },
+      { key: 'stage', header: 'Approval Stage' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: userName, title: 'SAS Coordinator' },
+      attestedBy: { name: 'Dr. Academic Dean', title: 'Dean of Academics' },
+      approvedBy: { name: 'Campus Administrator', title: 'School Administrator' },
+    },
+  };
+}
+
+/**
+ * Sub-Directory B: Financial Liquidations (FL) Audit Ledger Report
+ */
+export function generateFLLedgerReport(
+  flSummary: FLAnalyticsSummary,
+  filter: UniversalFilterState,
+  userName = 'Student Affairs & Services (SAS)'
+): GeneratedReportData {
+  const rows = flSummary.rows.map((r) => ({
+    liquidationId: r.liquidationId,
+    eventTitle: r.eventTitle,
+    organization: r.organization,
+    disbursedAmount: `₱${r.disbursedAmount.toLocaleString()}`,
+    totalActualExpense: `₱${r.totalActualExpense.toLocaleString()}`,
+    surplusDeficit: r.surplusDeficit >= 0 ? `+₱${r.surplusDeficit.toLocaleString()}` : `-₱${Math.abs(r.surplusDeficit).toLocaleString()}`,
+    orCount: `${r.orCount} ORs (${r.attachmentsCount} files)`,
+    auditStatus: r.auditStatus.toUpperCase(),
+  }));
+
+  return {
+    id: 'FL_LEDGER_REPORT',
+    title: 'Financial Liquidations (Form LF-01) Audit Ledger',
+    category: 'INSTITUTIONAL',
+    metadata: {
+      title: 'Financial Liquidations (Form LF-01) Audit Ledger',
+      subtitle: 'Official institutional reconciliation ledger of cash advances, receipts, and surplus funds.',
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: userName,
+    },
+    kpis: [
+      { label: 'Disbursed Advances', value: `₱${flSummary.kpis.totalDisbursedAdvances.toLocaleString()}` },
+      { label: 'Liquidated Expenses', value: `₱${flSummary.kpis.totalLiquidatedExpenses.toLocaleString()}` },
+      { label: 'Surplus Returned', value: `₱${flSummary.kpis.surplusReturned.toLocaleString()}` },
+      { label: 'Budget Variance', value: `${flSummary.kpis.budgetVarianceRate}%` },
+      { label: 'Aging Overdue (>7d)', value: flSummary.kpis.unliquidatedAgingCount },
+    ],
+    columns: [
+      { key: 'liquidationId', header: 'Liquidation ID' },
+      { key: 'eventTitle', header: 'Activity Title' },
+      { key: 'organization', header: 'Club / Organization' },
+      { key: 'disbursedAmount', header: 'Disbursed Advance' },
+      { key: 'totalActualExpense', header: 'Actual Expenses' },
+      { key: 'surplusDeficit', header: 'Surplus / (Deficit)' },
+      { key: 'orCount', header: 'Receipts / ORs' },
+      { key: 'auditStatus', header: 'Audit Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: userName, title: 'SAS Auditor' },
+      attestedBy: { name: 'Campus Accountant', title: 'School Accountant' },
+      approvedBy: { name: 'Campus Administrator', title: 'School Administrator' },
+    },
+  };
+}
+
+/**
+ * Sub-Directory C: Post-Activity Reports (PAR) Portfolio Report
+ */
+export function generatePARPortfolioReport(
+  parSummary: PARAnalyticsSummary,
+  filter: UniversalFilterState,
+  userName = 'Student Affairs & Services (SAS)'
+): GeneratedReportData {
+  const rows = parSummary.rows.map((r) => ({
+    parCode: r.parCode,
+    activityName: r.activityName,
+    dateHeld: r.dateHeld,
+    organizer: r.organizer,
+    targetVsActual: `${r.actualTurnout} / ${r.targetTurnout}`,
+    turnoutPercent: `${r.turnoutPercent}%`,
+    evidenceStatus: `${r.documentationStatus.photosCount} photos${r.documentationStatus.hasEvaluation ? ', eval' : ''}`,
+    status: r.status.toUpperCase(),
+  }));
+
+  return {
+    id: 'PAR_PORTFOLIO_REPORT',
+    title: 'Post-Activity Accomplishment Portfolio & Turnout Report',
+    category: 'INSTITUTIONAL',
+    metadata: {
+      title: 'Post-Activity Accomplishment Portfolio & Turnout Report',
+      subtitle: 'Official documentation audit of campus event execution, student turnout verification, and accomplishment ratings.',
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: userName,
+    },
+    kpis: [
+      { label: 'Activities Conducted', value: parSummary.kpis.totalActivitiesConducted },
+      { label: 'Turnout Accuracy', value: `${parSummary.kpis.turnoutAccuracyRate}%` },
+      { label: 'Total Student Turnout', value: parSummary.kpis.totalUniqueStudentAttendees.toLocaleString() },
+      { label: 'PAR Compliance', value: `${parSummary.kpis.parCompletionCompliance}%` },
+      { label: 'Overall Rating', value: `${parSummary.kpis.overallEventRating} / 5.0` },
+    ],
+    columns: [
+      { key: 'parCode', header: 'PAR Code' },
+      { key: 'activityName', header: 'Activity Title' },
+      { key: 'dateHeld', header: 'Date Held' },
+      { key: 'organizer', header: 'Organizer' },
+      { key: 'targetVsActual', header: 'Actual / Target' },
+      { key: 'turnoutPercent', header: 'Turnout Rate' },
+      { key: 'evidenceStatus', header: 'Evidence / Docs' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: userName, title: 'SAS Coordinator' },
+      attestedBy: { name: 'Dr. Academic Dean', title: 'Dean of Student Affairs' },
+      approvedBy: { name: 'Campus Administrator', title: 'School Administrator' },
+    },
+  };
+}
+
+/**
+ * Sub-Directory D: Master Officer Roster Report
+ */
+export function generateOfficerMasterRosterReport(
+  rosterSummary: ClubRosterSummary,
+  filter: UniversalFilterState,
+  userName = 'Student Affairs & Services (SAS)'
+): GeneratedReportData {
+  const rows = rosterSummary.officerRows.map((r) => ({
+    studentName: r.studentName,
+    studentId: r.studentId,
+    organization: `${r.organizationAcronym} — ${r.organizationName}`,
+    positionTitle: r.positionTitle,
+    courseAndYear: r.courseAndYear,
+    email: r.email,
+    status: r.status.toUpperCase(),
+  }));
+
+  return {
+    id: 'OFFICER_MASTER_ROSTER_REPORT',
+    title: 'Recognized Campus Organizations Master Officer Roster',
+    category: 'INSTITUTIONAL',
+    metadata: {
+      title: 'Recognized Campus Organizations Master Officer Roster',
+      subtitle: 'Certified master directory of recognized student leadership across all accredited campus clubs.',
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: userName,
+    },
+    kpis: [
+      { label: 'Accredited Clubs', value: rosterSummary.kpis.totalAccreditedOrganizations },
+      { label: 'Total Student Officers', value: rosterSummary.kpis.totalStudentOfficers },
+      { label: 'Faculty Advisers', value: rosterSummary.kpis.facultyAdvisersAssigned },
+      { label: 'Fully Compliant', value: rosterSummary.kpis.complianceScorecard.fullyCompliant },
+      { label: 'Conditional Standing', value: rosterSummary.kpis.complianceScorecard.conditional },
+    ],
+    columns: [
+      { key: 'studentName', header: 'Officer Name' },
+      { key: 'studentId', header: 'Student ID' },
+      { key: 'organization', header: 'Organization' },
+      { key: 'positionTitle', header: 'Position / Title' },
+      { key: 'courseAndYear', header: 'Course & Year' },
+      { key: 'email', header: 'Institutional Email' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: userName, title: 'SAS Student Organization Coordinator' },
+      attestedBy: { name: 'Head of Student Affairs', title: 'Student Affairs Head' },
+      approvedBy: { name: 'Campus Administrator', title: 'School Administrator' },
+    },
+  };
+}
+
+/**
+ * Sub-Directory D: Organization Directory Report
+ */
+export function generateOrgDirectoryReport(
+  rosterSummary: ClubRosterSummary,
+  filter: UniversalFilterState,
+  userName = 'Student Affairs & Services (SAS)'
+): GeneratedReportData {
+  const rows = rosterSummary.orgRows.map((r) => ({
+    acronym: r.acronym,
+    name: r.name,
+    category: r.category,
+    adviserName: r.adviserName,
+    presidentName: r.presidentName,
+    activeMembers: r.activeMembers,
+    accreditationStatus: r.accreditationStatus,
+  }));
+
+  return {
+    id: 'ORGANIZATION_ACCREDITATION_ROSTER',
+    title: 'Recognized Campus Student Organizations Directory',
+    category: 'INSTITUTIONAL',
+    metadata: {
+      title: 'Recognized Campus Student Organizations Directory',
+      subtitle: 'Official accreditation directory of active campus organizations, faculty advisers, and student presidents.',
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: userName,
+    },
+    kpis: [
+      { label: 'Accredited Clubs', value: rosterSummary.kpis.totalAccreditedOrganizations },
+      { label: 'Total Student Officers', value: rosterSummary.kpis.totalStudentOfficers },
+      { label: 'Faculty Advisers Assigned', value: rosterSummary.kpis.facultyAdvisersAssigned },
+      { label: 'Full Standing', value: rosterSummary.kpis.complianceScorecard.fullyCompliant },
+    ],
+    columns: [
+      { key: 'acronym', header: 'Acronym' },
+      { key: 'name', header: 'Organization Name' },
+      { key: 'category', header: 'Department / Scope' },
+      { key: 'adviserName', header: 'Faculty Adviser' },
+      { key: 'presidentName', header: 'President' },
+      { key: 'activeMembers', header: 'Members' },
+      { key: 'accreditationStatus', header: 'Accreditation Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: userName, title: 'SAS Club Coordinator' },
+      attestedBy: { name: 'Head of Student Affairs', title: 'Student Affairs Head' },
+      approvedBy: { name: 'Campus Administrator', title: 'School Administrator' },
+    },
+  };
+}
+

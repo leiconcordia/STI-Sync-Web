@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FileCheck2,
   Calendar,
@@ -14,7 +14,6 @@ import {
   AlertCircle,
   Download,
   Eye,
-  ShieldCheck,
   FileText,
   ArrowRight,
   TrendingUp,
@@ -33,6 +32,7 @@ import { deletePAR } from '../../modules/post-activity-reports/services/par.serv
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
+import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { toast } from 'sonner';
 
 type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'sas_internal' | 'trash';
@@ -61,7 +61,51 @@ export default function AdminPostActivityReports() {
   const [activeTab, setActiveTab] = useState<TabValue>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOrgFilter, setSelectedOrgFilter] = useState('all');
+  const [filterSchoolYear, setFilterSchoolYear] = useState('all');
+  const [filterSemester, setFilterSemester] = useState('all');
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Streams
+  const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    pars.forEach((p) => { if (p.schoolYear) set.add(p.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, pars, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    pars.forEach((p) => { if (p.semester) set.add(p.semester); });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, pars]);
 
   // Modals
   const [showWizardModal, setShowWizardModal] = useState(false);
@@ -102,6 +146,20 @@ export default function AdminPostActivityReports() {
 
       if (selectedOrgFilter !== 'all' && p.organizationName !== selectedOrgFilter) return false;
 
+      // School Year filter
+      if (filterSchoolYear !== 'all') {
+        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
+        const pSy = p.schoolYear || sem?.academicYear;
+        if (pSy && pSy !== filterSchoolYear) return false;
+      }
+
+      // Semester filter
+      if (filterSemester !== 'all') {
+        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
+        const pTerm = p.semester || sem?.semester || (sem as any)?.term;
+        if (pTerm && pTerm !== filterSemester) return false;
+      }
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesRef = p.referenceNo?.toLowerCase().includes(q);
@@ -112,7 +170,7 @@ export default function AdminPostActivityReports() {
 
       return true;
     });
-  }, [pars, activeTab, selectedOrgFilter, searchQuery]);
+  }, [pars, activeTab, selectedOrgFilter, filterSchoolYear, filterSemester, searchQuery, semesters]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredPars.length / ITEMS_PER_PAGE));
@@ -293,60 +351,7 @@ export default function AdminPostActivityReports() {
         </div>
       </div>
 
-      {/* ── Concluded SAS Activities Awaiting PAR (Admin Institutional Notice) ── */}
-      {eligibleEvents.length > 0 && (
-        <div className="bg-blue-50/70 border border-blue-200 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-5 h-5 text-blue-700" />
-              <div>
-                <h3 className="text-sm font-black text-blue-950 uppercase tracking-wide">
-                  Concluded SAS Activities Awaiting Post-Activity Report ({eligibleEvents.length})
-                </h3>
-                <p className="text-xs text-blue-800">
-                  As the SAS Administrator, only you can author Form PAR for these institutional events.
-                </p>
-              </div>
-            </div>
-          </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-            {eligibleEvents.map((ev) => (
-              <div
-                key={ev.id}
-                className="bg-white rounded-xl p-4 border border-blue-200 shadow-2xs flex flex-col justify-between"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
-                      SAS Activity
-                    </span>
-                    <span className="text-xs text-slate-400 font-medium">
-                      {(ev as any).date || 'Concluded'}
-                    </span>
-                  </div>
-                  <h4 className="text-sm font-bold text-slate-900 line-clamp-1">{ev.title}</h4>
-                  <p className="text-xs text-slate-500 mt-1 line-clamp-2">
-                    {ev.description || 'Institutional campus activity.'}
-                  </p>
-                </div>
-
-                <div className="pt-4 flex items-center justify-between border-t border-slate-100 mt-3">
-                  <span className="text-[11px] text-slate-500 font-medium">
-                    Venue: {(ev as any).venue || 'Campus Wide'}
-                  </span>
-                  <button
-                    onClick={() => handleCreateSasPAR(ev.id)}
-                    className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
-                  >
-                    Author PAR <ArrowRight className="w-3.5 h-3.5 text-[#FFD41C]" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ── Main Container: Tabs + Search + Table + Pagination ── */}
       <div className="bg-white border border-[#E5E7EB] rounded-2xl shadow-xs overflow-hidden">
@@ -388,8 +393,43 @@ export default function AdminPostActivityReports() {
             })}
           </div>
 
-          {/* Right Controls: Org Filter + Search */}
-          <div className="flex items-center gap-2">
+          {/* Right Controls: School Year + Semester + Org Filter + Search */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* School Year Filter */}
+            <select
+              value={filterSchoolYear}
+              onChange={(e) => {
+                setFilterSchoolYear(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All School Years</option>
+              {availableSchoolYears.map((sy) => (
+                <option key={sy} value={sy}>
+                  A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                </option>
+              ))}
+            </select>
+
+            {/* Semester Filter */}
+            <select
+              value={filterSemester}
+              onChange={(e) => {
+                setFilterSemester(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All Semesters</option>
+              {availableSemesters.map((term) => (
+                <option key={term} value={term}>
+                  {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                </option>
+              ))}
+            </select>
+
+            {/* Org Filter */}
             <select
               value={selectedOrgFilter}
               onChange={(e) => {
@@ -406,7 +446,23 @@ export default function AdminPostActivityReports() {
               ))}
             </select>
 
-            <div className="relative flex-1 sm:w-60">
+            {(filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all') || selectedOrgFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
+                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setSelectedOrgFilter('all');
+                  setCurrentPage(1);
+                }}
+                className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"
+                title="Reset filters to current active academic semester"
+              >
+                Reset to Current
+              </button>
+            )}
+
+            <div className="relative flex-1 sm:w-52">
               <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
               <input
                 type="text"

@@ -16,7 +16,7 @@ import { getProposalById } from "../../modules/activity-proposals/services/propo
 import { useAllEvents, useDraftEvents } from "../../modules/events/hooks/useEventStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
 import { useEventCategoriesStream, useVenuesStream } from "../../modules/events/hooks/useEventConfigStream";
-import { useSemesters } from "../../modules/academic/hooks/useAcademicStream";
+import { useSemesters, useActiveAcademicPeriods } from "../../modules/academic/hooks/useAcademicStream";
 import {
   CancelEventModal,
   canCancelEvent,
@@ -170,7 +170,9 @@ export function EventApprovals() {
   const [showFilters, setShowFilters] = useState(false);
 
   // ── Filters ──────────────────────────────────────────────────────────────
+  const [filterSchoolYear, setFilterSchoolYear] = useState<string>("all");
   const [filterSemester, setFilterSemester] = useState<string>("all");
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [filterOrg, setFilterOrg] = useState<string>("all");
   const [filterDateRange, setFilterDateRange] = useState<DateRangeOption>("all");
   const [filterCategory, setFilterCategory] = useState<string>("all");
@@ -184,6 +186,47 @@ export function EventApprovals() {
   const { categories } = useEventCategoriesStream();
   const { venues } = useVenuesStream();
   const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, events, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    events.forEach((e) => {
+      if (e.semester) set.add(e.semester);
+      if ((e as any).term) set.add((e as any).term);
+    });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, events]);
 
   useEffect(() => {
     if (!targetId) return;
@@ -239,7 +282,7 @@ export function EventApprovals() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterOrg, filterDateRange, filterCategory, filterSemester, customFrom, customTo]);
+  }, [searchQuery, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo]);
 
   const orgMap = useMemo(() => {
     const map = new Map<string, { name: string; acronym?: string; logoUrl?: string | null }>();
@@ -360,18 +403,23 @@ export function EventApprovals() {
         }
         if (activeTab === "rejected" && event.proposalStatus !== "rejected") return false;
 
+        // School Year filter
+        if (filterSchoolYear !== "all") {
+          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
+          const evSy = event.schoolYear || sem?.academicYear;
+          if (evSy && evSy !== filterSchoolYear) return false;
+        }
+
         // Semester filter
         if (filterSemester !== "all") {
-          const sem = semesters.find((s) => s.id === filterSemester);
-          const matchesSem =
-            event.semesterId === filterSemester ||
-            (sem && event.schoolYear === sem.academicYear && (event.semester === sem.semester || (event as any).term === sem.semester)) ||
-            (() => {
-              if (!sem || !sem.startDate || !sem.endDate) return false;
-              const d = getFirstSessionDate(event);
-              return d ? (d >= sem.startDate && d <= sem.endDate) : false;
-            })();
-          if (!matchesSem) return false;
+          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
+          const evTerm = event.semester || (event as any).term || sem?.semester || (sem as any)?.term;
+          if (evTerm) {
+            if (evTerm !== filterSemester) return false;
+          } else if (sem && sem.startDate && sem.endDate) {
+            const d = getFirstSessionDate(event);
+            if (!d || d < sem.startDate || d > sem.endDate) return false;
+          }
         }
 
         // Organization filter
@@ -397,7 +445,7 @@ export function EventApprovals() {
         return true;
       })
       .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
-  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSemester, customFrom, customTo, semesters]);
+  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters]);
 
   // Filtered drafts list (Sorted LATEST FIRST)
   const filteredDrafts = useMemo(() => {
@@ -410,18 +458,23 @@ export function EventApprovals() {
         if (draft.referenceId && nonDraftRefs.has(draft.referenceId)) return false;
         if (draft.title && nonDraftRefs.has(draft.title.trim().toLowerCase())) return false;
 
+        // School Year filter
+        if (filterSchoolYear !== "all") {
+          const sem = draft.semesterId ? semesters.find((s) => s.id === draft.semesterId) : null;
+          const draftSy = draft.schoolYear || sem?.academicYear;
+          if (draftSy && draftSy !== filterSchoolYear) return false;
+        }
+
         // Semester filter
         if (filterSemester !== "all") {
-          const sem = semesters.find((s) => s.id === filterSemester);
-          const matchesSem =
-            draft.semesterId === filterSemester ||
-            (sem && draft.schoolYear === sem.academicYear && (draft.semester === sem.semester || (draft as any).term === sem.semester)) ||
-            (() => {
-              if (!sem || !sem.startDate || !sem.endDate) return false;
-              const d = getFirstSessionDate(draft);
-              return d ? (d >= sem.startDate && d <= sem.endDate) : false;
-            })();
-          if (!matchesSem) return false;
+          const sem = draft.semesterId ? semesters.find((s) => s.id === draft.semesterId) : null;
+          const draftTerm = draft.semester || (draft as any).term || sem?.semester || (sem as any)?.term;
+          if (draftTerm) {
+            if (draftTerm !== filterSemester) return false;
+          } else if (sem && sem.startDate && sem.endDate) {
+            const d = getFirstSessionDate(draft);
+            if (!d || d < sem.startDate || d > sem.endDate) return false;
+          }
         }
 
         if (filterOrg !== "all" && draft.hostingOrgId !== filterOrg) return false;
@@ -431,7 +484,7 @@ export function EventApprovals() {
         return true;
       })
       .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
-  }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSemester, searchQuery, semesters]);
+  }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSchoolYear, filterSemester, searchQuery, semesters]);
 
   // Counts (excluding archived & soft-deleted from active tallies)
   const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
@@ -580,7 +633,8 @@ export function EventApprovals() {
   };
 
   const resetFilters = () => {
-    setFilterSemester("all");
+    setFilterSchoolYear(activeCollegePeriod?.academicYear || "all");
+    setFilterSemester(activeCollegePeriod?.semester || "all");
     setFilterOrg("all");
     setFilterDateRange("all");
     setFilterCategory("all");
@@ -590,7 +644,8 @@ export function EventApprovals() {
   };
 
   const hasActiveFilters =
-    filterSemester !== "all" ||
+    filterSchoolYear !== (activeCollegePeriod?.academicYear || "all") ||
+    filterSemester !== (activeCollegePeriod?.semester || "all") ||
     filterOrg !== "all" ||
     filterDateRange !== "all" ||
     filterCategory !== "all" ||
@@ -956,6 +1011,23 @@ export function EventApprovals() {
         {/* Expandable Filter Drawer */}
         {showFilters && (
           <div className="p-4 bg-gray-50/60 border-b border-gray-200 flex flex-wrap items-center gap-3 text-xs">
+            {/* School Year Filter */}
+            <div>
+              <span className="text-gray-500 font-semibold mr-1.5">School Year:</span>
+              <select
+                value={filterSchoolYear}
+                onChange={(e) => setFilterSchoolYear(e.target.value)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="all">All School Years</option>
+                {availableSchoolYears.map((sy) => (
+                  <option key={sy} value={sy}>
+                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? "• Current SY" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Semester / Trimester Filter */}
             <div>
               <span className="text-gray-500 font-semibold mr-1.5">Semester:</span>
@@ -964,11 +1036,10 @@ export function EventApprovals() {
                 onChange={(e) => setFilterSemester(e.target.value)}
                 className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
               >
-                <option value="all">All Semesters / Trimesters</option>
-                {semesters.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.academicLevel === "SHS" ? "SHS" : "College"} · {s.semester} (A.Y. {s.academicYear})
-                    {s.status === "ACTIVE" ? " • Current Active" : s.status === "COMPLETED" ? " • Completed" : ""}
+                <option value="all">All Semesters</option>
+                {availableSemesters.map((term) => (
+                  <option key={term} value={term}>
+                    {term} {activeCollegePeriod?.semester === term ? "• Active Term" : ""}
                   </option>
                 ))}
               </select>

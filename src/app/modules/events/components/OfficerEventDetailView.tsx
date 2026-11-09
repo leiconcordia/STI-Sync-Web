@@ -41,6 +41,7 @@ import {
   isSasCreatedEvent,
   resolveCleanOrgName,
   resolveCleanOrgAcronym,
+  stripSasPhrases,
 } from '../utils/organization-display.utils';
 
 interface OfficerEventDetailViewProps {
@@ -662,6 +663,10 @@ export default function OfficerEventDetailView({
 
   const organizersList: string[] = useMemo(() => {
     if (fullProposal.organizers && Array.isArray(fullProposal.organizers) && fullProposal.organizers.length > 0) {
+      const studentOnly = fullProposal.organizers.filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+      if (studentOnly.length > 0) {
+        return studentOnly;
+      }
       return fullProposal.organizers;
     }
     return [orgName];

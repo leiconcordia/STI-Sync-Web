@@ -44,6 +44,42 @@ export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
 export { sanitizeFirestorePayload };
 
 /**
+ * Formats a clean display name for notifications and tables.
+ * Strips SAS prefixes when a student organization is presenting or co-organizing.
+ */
+export function formatCleanOrgDisplayName(
+  organizers: any,
+  hostingOrgId?: string,
+  organizationName?: string,
+  isOfficer?: boolean
+): string {
+  const orgList: string[] = Array.isArray(organizers)
+    ? organizers.map((o) => String(o || '').trim()).filter(Boolean)
+    : typeof organizers === 'string' && organizers.trim()
+    ? organizers.split(',').map((s) => s.trim()).filter(Boolean)
+    : [];
+
+  const studentOrgs = orgList.filter((o) => stripSasPhrases(o).length > 0);
+
+  if (studentOrgs.length > 0) {
+    return studentOrgs.join(', ');
+  }
+
+  if (organizationName && stripSasPhrases(organizationName).length > 0) {
+    return stripSasPhrases(organizationName);
+  }
+
+  if (isOfficer) {
+    if (hostingOrgId && hostingOrgId !== 'sas' && stripSasPhrases(hostingOrgId).length > 0) {
+      return stripSasPhrases(hostingOrgId);
+    }
+    return 'Student Organization';
+  }
+
+  return 'Student Affairs & Services (SAS)';
+}
+
+/**
  * Sync an Activity Proposal directly to the `events` collection.
  * This guarantees that every submitted or drafted Activity Proposal appears immediately
  * in both the Admin Activity Approvals table and the Officer Activity Management table.
@@ -184,9 +220,11 @@ export async function syncProposalToEventsCollection(
         hostingOrgId: resolvedOrgId,
         organizationId: (proposal as any).organizationId || existingData.organizationId || resolvedOrgId,
         organizationName:
-          (proposal as any).organizationName ||
-          existingData.organizationName ||
-          (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
+          (proposal as any).organizationName && stripSasPhrases((proposal as any).organizationName).length > 0
+            ? stripSasPhrases((proposal as any).organizationName)
+            : existingData.organizationName && stripSasPhrases(existingData.organizationName).length > 0
+            ? stripSasPhrases(existingData.organizationName)
+            : (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
         semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
         schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
         targetAcademicLevel,
@@ -247,7 +285,19 @@ export async function syncProposalToEventsCollection(
         isActivityProposal: true,
         proposalId: proposal.id,
         proponents: (proposal as any).proponents || existingData.proponents || [],
-        organizers: (proposal as any).organizers || existingData.organizers || [],
+        organizers: (() => {
+          const raw = (proposal as any).organizers || existingData.organizers || [];
+          if (Array.isArray(raw)) {
+            const studentOrgs = raw.filter((o: any) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+            if (isOfficerProposalVal || studentOrgs.length > 0) {
+              return studentOrgs.length > 0
+                ? studentOrgs
+                : [(proposal as any).organizationName || existingData.organizationName || 'Student Organization'].filter((n) => n && stripSasPhrases(n).length > 0);
+            }
+            return raw;
+          }
+          return [];
+        })(),
         successIndicators: (proposal as any).successIndicators || existingData.successIndicators || [],
         mechanics: (proposal as any).mechanics || existingData.mechanics || [],
         materials: (proposal as any).materials || existingData.materials || [],
@@ -352,8 +402,17 @@ export async function saveProposalDraft(
     formData.referenceNo ||
     (await generateProposalReferenceNumber(isOfficer ? 'ORG' : 'SAS'));
 
+  const rawDraftOrganizers = formData.organizers || [];
+  const cleanedDraftOrganizers = Array.isArray(rawDraftOrganizers)
+    ? rawDraftOrganizers.map((o) => String(o || '').trim()).filter((o) => (isOfficer ? stripSasPhrases(o).length > 0 : o.length > 0))
+    : [];
+  const finalDraftOrganizers = cleanedDraftOrganizers.length > 0
+    ? cleanedDraftOrganizers
+    : (isOfficer ? [formData.organizationName || 'Student Organization'] : []);
+
   const payload: any = {
     ...formData,
+    organizers: finalDraftOrganizers,
     id: docId,
     referenceNo,
     status: (formData.status as ProposalStatus) || 'draft',
@@ -467,8 +526,17 @@ export async function submitProposalForReview(
     });
   }
 
+  const rawSubmissionOrganizers = formData.organizers || [];
+  const cleanedSubmissionOrganizers = Array.isArray(rawSubmissionOrganizers)
+    ? rawSubmissionOrganizers.map((o) => String(o || '').trim()).filter((o) => (isOfficer ? stripSasPhrases(o).length > 0 : o.length > 0))
+    : [];
+  const finalSubmissionOrganizers = cleanedSubmissionOrganizers.length > 0
+    ? cleanedSubmissionOrganizers
+    : (isOfficer ? [formData.organizationName || 'Student Organization'] : []);
+
   const payload: any = {
     ...formData,
+    organizers: finalSubmissionOrganizers,
     id: docId,
     referenceNo,
     status: 'under_review' as ProposalStatus,
@@ -604,7 +672,12 @@ export async function submitProposalForReview(
 
   // Real-time submission notification dispatched to SAS Admin
   try {
-    const orgName = formData.organizers || formData.hostingOrgId || 'Student Organization';
+    const orgDisplayName = formatCleanOrgDisplayName(
+      finalSubmissionOrganizers,
+      formData.hostingOrgId,
+      formData.organizationName,
+      isOfficer
+    );
     await createNotification({
       recipientRole: 'admin',
       type: 'document_submission',
@@ -612,13 +685,13 @@ export async function submitProposalForReview(
       title: isResubmission
         ? `Proposal Revised (v${currentVersion}.0): ${payload.title || 'Activity Proposal'}`
         : `New Proposal Submitted: ${payload.title || 'Activity Proposal'}`,
-      message: `${orgName} submitted ${referenceNo} for institutional review.`,
+      message: `${orgDisplayName} submitted ${referenceNo} for institutional review.`,
       resourceId: docId,
       resourceType: 'event',
       actionRoute: `/home/event-approvals?tab=pending&id=${docId}`,
       isUrgent: Boolean(payload.isUrgent),
       targetOrgId: formData.hostingOrgId || undefined,
-      targetOrgName: orgName,
+      targetOrgName: orgDisplayName,
       senderId: user.uid,
       senderName: user.name,
       senderRoleTitle: user.role || 'Officer',
@@ -996,11 +1069,18 @@ export async function endorseProposal(
   try {
     const orgId = data.hostingOrgId;
     const eventTitle = data.title || (data as any).eventName || 'Activity Proposal';
+    const isOfficerEvent = Boolean((data as any).isOfficerProposal || (orgId && orgId !== 'sas'));
+    const cleanOrgName = formatCleanOrgDisplayName(
+      (data as any).organizers,
+      orgId,
+      (data as any).organizationName,
+      isOfficerEvent
+    );
     if (orgId) {
       await createNotification({
         recipientRole: 'officer',
         targetOrgId: orgId,
-        targetOrgName: (data as any).organizers || orgId,
+        targetOrgName: cleanOrgName,
         type: isFullyApproved ? 'document_approved' : 'document_submission',
         category: 'activity_proposal',
         title: isFullyApproved
@@ -1194,11 +1274,18 @@ export async function returnProposalForRevision(
   try {
     const orgId = data.hostingOrgId;
     const eventTitle = data.title || (data as any).eventName || 'Activity Proposal';
+    const isOfficerEvent = Boolean((data as any).isOfficerProposal || (orgId && orgId !== 'sas'));
+    const cleanOrgName = formatCleanOrgDisplayName(
+      (data as any).organizers,
+      orgId,
+      (data as any).organizationName,
+      isOfficerEvent
+    );
     if (orgId) {
       await createNotification({
         recipientRole: 'officer',
         targetOrgId: orgId,
-        targetOrgName: (data as any).organizers || orgId,
+        targetOrgName: cleanOrgName,
         type: 'document_returned',
         category: 'activity_proposal',
         title: `Proposal Returned for Revision: ${eventTitle}`,

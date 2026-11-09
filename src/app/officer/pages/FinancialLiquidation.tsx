@@ -35,6 +35,8 @@ import { formatAppDateTime } from '../../utils/date';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
+import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useOrgEvents } from '../../modules/events/hooks/useEventStream';
 
 type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -69,6 +71,9 @@ function formatSubmittedDate(dateVal?: any): string {
 export default function FinancialLiquidation() {
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterSchoolYear, setFilterSchoolYear] = useState('all');
+  const [filterSemester, setFilterSemester] = useState('all');
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
   const [showModal, setShowModal] = useState(false);
@@ -107,6 +112,51 @@ export default function FinancialLiquidation() {
   const userName = profile?.studentName || session?.studentName || 'Officer';
 
   const { liquidations, loading } = useOrgLiquidations(orgId);
+  const { events = [] } = useOrgEvents(orgId);
+  const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    liquidations.forEach((l) => { if (l.schoolYear) set.add(l.schoolYear); });
+    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, liquidations, events, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    liquidations.forEach((l) => { if (l.semester) set.add(l.semester); });
+    events.forEach((e) => {
+      if (e.semester) set.add(e.semester);
+      if ((e as any).term) set.add((e as any).term);
+    });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, liquidations, events]);
 
   // Filtered & Sorted Liquidations (LATEST FIRST by default)
   const filteredReports = useMemo(() => {
@@ -116,6 +166,22 @@ export default function FinancialLiquidation() {
           if (report.status !== 'pending' && report.status !== 'under_review') return false;
         } else if (activeTab !== 'all' && report.status !== activeTab) {
           return false;
+        }
+
+        // School Year Filter
+        if (filterSchoolYear !== 'all') {
+          const parentEvent = report.eventId ? events.find((e) => e.id === report.eventId) : null;
+          const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
+          const sy = report.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
+          if (sy && sy !== filterSchoolYear) return false;
+        }
+
+        // Semester Filter
+        if (filterSemester !== 'all') {
+          const parentEvent = report.eventId ? events.find((e) => e.id === report.eventId) : null;
+          const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
+          const term = report.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
+          if (term && term !== filterSemester) return false;
         }
 
         const q = searchQuery.toLowerCase().trim();
@@ -129,7 +195,7 @@ export default function FinancialLiquidation() {
         return true;
       })
       .sort((a, b) => getLiquidationTimestamp(b) - getLiquidationTimestamp(a));
-  }, [liquidations, activeTab, searchQuery]);
+  }, [liquidations, activeTab, searchQuery, filterSchoolYear, filterSemester, events, semesters]);
 
   // Counts
   const counts = {
@@ -167,7 +233,7 @@ export default function FinancialLiquidation() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery]);
+  }, [searchQuery, filterSchoolYear, filterSemester]);
 
   const handleOpenCreate = () => {
     setEditingReport(null);
@@ -378,9 +444,58 @@ export default function FinancialLiquidation() {
             })}
           </div>
 
-          {/* Right Controls */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1 sm:w-60">
+          {/* Right Controls: School Year + Semester + Search + Export */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* School Year Filter */}
+            <select
+              value={filterSchoolYear}
+              onChange={(e) => {
+                setFilterSchoolYear(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All School Years</option>
+              {availableSchoolYears.map((sy) => (
+                <option key={sy} value={sy}>
+                  A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                </option>
+              ))}
+            </select>
+
+            {/* Semester Filter */}
+            <select
+              value={filterSemester}
+              onChange={(e) => {
+                setFilterSemester(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All Semesters</option>
+              {availableSemesters.map((term) => (
+                <option key={term} value={term}>
+                  {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                </option>
+              ))}
+            </select>
+
+            {(filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
+                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setCurrentPage(1);
+                }}
+                className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"
+                title="Reset filters to current active academic semester"
+              >
+                Reset to Current
+              </button>
+            )}
+
+            <div className="relative flex-1 sm:w-52">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
               <input
                 type="text"

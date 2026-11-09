@@ -28,6 +28,40 @@ import type {
   NotificationCategory,
 } from '../types/notification.types';
 import { useNotificationStream } from '../hooks/useNotificationStream';
+import { stripSasPhrases } from '../../events/utils/organization-display.utils';
+
+function cleanNotificationMessage(message?: string): string {
+  if (!message) return '';
+  // If the message is strictly 'Student Affairs & Services (SAS) submitted...', don't strip
+  if (/^Student Affairs\s*(?:&|and)?\s*Services(?:\s*\(SAS\))?\s+(?:submitted|endorsed|returned|approved|rejected)\b/i.test(message)) {
+    return message;
+  }
+  if (/^Student Affairs Office(?:\s*\(SAO\))?\s+(?:submitted|endorsed|returned|approved|rejected)\b/i.test(message)) {
+    return message;
+  }
+  if (/^(?:SAS|SAO)\s+(?:submitted|endorsed|returned|approved|rejected)\b/i.test(message)) {
+    return message;
+  }
+  return message
+    .replace(/^Student Affairs\s*(?:&|and)?\s*Services(?:\s*\(SAS\))?[,\s]*/i, '')
+    .replace(/^Student Affairs Office(?:\s*\(SAO\))?[,\s]*/i, '')
+    .replace(/^(?:SAS|SAO)[,\s]*/i, '');
+}
+
+function cleanNotificationTargetOrg(targetOrgName?: any): string {
+  if (!targetOrgName) return '';
+  if (Array.isArray(targetOrgName)) {
+    const filtered = targetOrgName
+      .filter((n: any) => typeof n === 'string' && stripSasPhrases(n).length > 0)
+      .map((n: string) => n.trim());
+    return filtered.length > 0 ? filtered.join(', ') : (targetOrgName[0] || '');
+  }
+  if (typeof targetOrgName === 'string') {
+    const stripped = stripSasPhrases(targetOrgName);
+    return stripped || targetOrgName;
+  }
+  return String(targetOrgName);
+}
 
 interface NotificationDropdownProps {
   role: NotificationRole;
@@ -278,13 +312,13 @@ export function NotificationDropdown({
                     </div>
 
                     <p className="text-[11px] text-slate-600 line-clamp-2 mt-0.5 leading-relaxed">
-                      {item.message}
+                      {cleanNotificationMessage(item.message)}
                     </p>
 
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      {item.targetOrgName && (
+                      {cleanNotificationTargetOrg(item.targetOrgName) && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">
-                          {item.targetOrgName}
+                          {cleanNotificationTargetOrg(item.targetOrgName)}
                         </span>
                       )}
                       {item.isUrgent && (

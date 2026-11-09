@@ -96,6 +96,9 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   referenceNumber?: string;
   eventId: string;
   eventTitle: string;
+  schoolYear?: string;
+  semester?: string;
+  semesterId?: string;
   fundingSource?: 'organization_funds' | 'school_budget' | 'zero_budget';
   organizationId: string;
   organizationName: string;

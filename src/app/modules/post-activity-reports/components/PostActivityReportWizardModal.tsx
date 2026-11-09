@@ -63,6 +63,7 @@ import {
   suggestKeyLearnings,
   generatePARRecommendations,
   polishGrammar,
+  generateText,
 } from '../../ai';
 
 interface PostActivityReportWizardModalProps {
@@ -86,6 +87,127 @@ interface PostActivityReportWizardModalProps {
 }
 
 type WizardTab = 'overview' | 'objectives' | 'recommendations' | 'photos_signatories';
+
+interface DynamicRemarkCategoryProps {
+  number: string;
+  title: string;
+  obsList: string[];
+  recList: string[];
+  onUpdateObs: (idx: number, val: string) => void;
+  onAddObs: () => void;
+  onRemoveObs: (idx: number) => void;
+  onUpdateRec: (idx: number, val: string) => void;
+  onAddRec: () => void;
+  onRemoveRec: (idx: number) => void;
+  errorObs?: boolean;
+  errorRec?: boolean;
+}
+
+function DynamicRemarkCategory({
+  number,
+  title,
+  obsList,
+  recList,
+  onUpdateObs,
+  onAddObs,
+  onRemoveObs,
+  onUpdateRec,
+  onAddRec,
+  onRemoveRec,
+  errorObs,
+  errorRec,
+}: DynamicRemarkCategoryProps) {
+  return (
+    <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-100 pb-2">
+        <h5 className="text-xs font-black uppercase text-[#001A4D]">
+          {number}. {title} *
+        </h5>
+        <span className="text-[11px] font-medium text-slate-500">
+          {obsList.filter(Boolean).length} observation(s) • {recList.filter(Boolean).length} recommendation(s)
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Observations Column */}
+        <div className={`p-3 rounded-xl border bg-slate-50/70 space-y-2.5 ${errorObs ? 'border-red-400 ring-1 ring-red-400' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">Observations:</span>
+            <button
+              type="button"
+              onClick={onAddObs}
+              className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-md transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Observation
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {obsList.map((obs, idx) => (
+              <div key={idx} className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-slate-400 shrink-0">•</span>
+                <input
+                  type="text"
+                  value={obs}
+                  onChange={(e) => onUpdateObs(idx, e.target.value)}
+                  placeholder={`Observation #${idx + 1}...`}
+                  className="flex-1 text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemoveObs(idx)}
+                  disabled={obsList.length <= 1}
+                  className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  title="Remove observation"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Recommendations Column */}
+        <div className={`p-3 rounded-xl border bg-slate-50/70 space-y-2.5 ${errorRec ? 'border-red-400 ring-1 ring-red-400' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">Recommendations:</span>
+            <button
+              type="button"
+              onClick={onAddRec}
+              className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-md transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Recommendation
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            {recList.map((rec, idx) => (
+              <div key={idx} className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-slate-400 shrink-0">•</span>
+                <input
+                  type="text"
+                  value={rec}
+                  onChange={(e) => onUpdateRec(idx, e.target.value)}
+                  placeholder={`Recommendation #${idx + 1}...`}
+                  className="flex-1 text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => onRemoveRec(idx)}
+                  disabled={recList.length <= 1}
+                  className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                  title="Remove recommendation"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function PostActivityReportWizardModal({
   isOpen,
@@ -226,22 +348,81 @@ export default function PostActivityReportWizardModal({
   const [scheduleCompliance, setScheduleCompliance] = useState('');
   const [issuesEncountered, setIssuesEncountered] = useState('');
 
-  // Section 4: 4 STI Recommendations
-  const [progFlowObs, setProgFlowObs] = useState('');
-  const [progFlowRec, setProgFlowRec] = useState('');
-  const [engagementObs, setEngagementObs] = useState('');
-  const [engagementRec, setEngagementRec] = useState('');
-  const [techSetupObs, setTechSetupObs] = useState('');
-  const [techSetupRec, setTechSetupRec] = useState('');
-  const [prepObs, setPrepObs] = useState('');
-  const [prepRec, setPrepRec] = useState('');
+  // Step 3: Remarks (Dynamic Observation and Recommendation Lists)
+  const [progFlowObsList, setProgFlowObsList] = useState<string[]>(['']);
+  const [progFlowRecList, setProgFlowRecList] = useState<string[]>(['']);
+  const [engagementObsList, setEngagementObsList] = useState<string[]>(['']);
+  const [engagementRecList, setEngagementRecList] = useState<string[]>(['']);
+  const [techSetupObsList, setTechSetupObsList] = useState<string[]>(['']);
+  const [techSetupRecList, setTechSetupRecList] = useState<string[]>(['']);
+  const [prepObsList, setPrepObsList] = useState<string[]>(['']);
+  const [prepRecList, setPrepRecList] = useState<string[]>(['']);
+
+  const handleUpdateRemarkItem = (
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+    index: number,
+    value: string
+  ) => {
+    setter((prev) => {
+      const next = [...prev];
+      next[index] = value;
+      return next;
+    });
+  };
+
+  const handleAddRemarkItem = (setter: React.Dispatch<React.SetStateAction<string[]>>) => {
+    setter((prev) => [...prev, '']);
+  };
+
+  const handleRemoveRemarkItem = (
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+    index: number
+  ) => {
+    setter((prev) => {
+      if (prev.length <= 1) return [''];
+      return prev.filter((_, i) => i !== index);
+    });
+  };
+
+  const parseRemarkList = (raw: any): string[] => {
+    if (Array.isArray(raw) && raw.length > 0) return raw.map((s) => String(s).replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
+    if (typeof raw === 'string' && raw.trim()) {
+      const lines = raw.split('\n').map((s) => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
+      if (lines.length > 0) return lines;
+    }
+    return [''];
+  };
 
   // Section 5: Photos & Pipeline
   const [photos, setPhotos] = useState<PARPhotoAttachment[]>([]);
-  const [newPhotoUrl, setNewPhotoUrl] = useState('');
-  const [newPhotoCaption, setNewPhotoCaption] = useState('');
   const [approvalChain, setApprovalChain] = useState<PARApprovalStep[]>([]);
   const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
+
+  // Attendance & Validation Engine States
+  const [hasScannedAttendance, setHasScannedAttendance] = useState(false);
+  const [validationErrors, setValidationErrors] = useState<Record<string, boolean>>({});
+
+  const handleRegisteredCountChange = (val: number) => {
+    const reg = Math.max(0, val);
+    setRegisteredCount(reg);
+    const rate = reg > 0 ? Math.min(100, Math.round((attendedCount / reg) * 100)) : (attendedCount > 0 ? 100 : 0);
+    setTurnoutRate(rate);
+    setHowManyAttended(`${attendedCount} / ${reg} Attendees (${rate}% Turnout)`);
+    if (validationErrors.registeredCount && reg > 0) {
+      setValidationErrors((prev) => ({ ...prev, registeredCount: false }));
+    }
+  };
+
+  const handleAttendedCountChange = (val: number) => {
+    const att = Math.max(0, val);
+    setAttendedCount(att);
+    const rate = registeredCount > 0 ? Math.min(100, Math.round((att / registeredCount) * 100)) : (att > 0 ? 100 : 0);
+    setTurnoutRate(rate);
+    setHowManyAttended(`${att} / ${registeredCount || att} Attendees (${rate}% Turnout)`);
+    if (validationErrors.attendedCount && att > 0) {
+      setValidationErrors((prev) => ({ ...prev, attendedCount: false }));
+    }
+  };
 
   // AI Assistant State
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -272,6 +453,36 @@ export default function PostActivityReportWizardModal({
         setAiModalDesc('Polished narrative of actual procedures conducted during the event:');
         setAiOriginalText(raw);
         setAiSuggestionText(polished);
+        setAiModalMode('text');
+        setAiModalOpen(true);
+      }
+    };
+    setActiveAIAction(() => action);
+    await action();
+  };
+
+  const handleEnhanceCurriculumEnrichment = async () => {
+    const eventTitle = selectedEvent?.title || 'Campus Event';
+    const action = async () => {
+      setIsAILoading(true);
+      const prompt = `
+Event Title: "${eventTitle}"
+Conducted Mechanics: "${actualMechanics || ''}"
+Key Learnings: "${keyLearnings.join('; ') || ''}"
+Current Draft: "${classroomEnrichment || ''}"
+
+Explain how the outcomes of this event enrich students' academic learning in the classroom and reinforce STI graduate attributes.
+Write 1 clear, formal academic paragraph of 40-70 words.
+Output ONLY the paragraph text.
+`;
+      const enriched = await generateText(prompt);
+      setIsAILoading(false);
+      if (enriched) {
+        setAiTargetField('enrichment');
+        setAiModalTitle('Classroom Curriculum Enrichment');
+        setAiModalDesc('Institutional statement linking practical event experiences to curriculum competencies:');
+        setAiOriginalText(classroomEnrichment);
+        setAiSuggestionText(enriched);
         setAiModalMode('text');
         setAiModalOpen(true);
       }
@@ -325,26 +536,26 @@ export default function PostActivityReportWizardModal({
       return;
     }
     setIsGeneratingRecs(true);
-    const recs = await generatePARRecommendations(selectedEvent.title, issuesEncountered, actualMechanics);
+    const recs = await generatePARRecommendations(selectedEvent.title, issuesEncountered, achievementNarrative);
     setIsGeneratingRecs(false);
     if (recs) {
       if (recs.programFlow) {
-        setProgFlowObs(recs.programFlow.observations || '');
-        setProgFlowRec(recs.programFlow.recommendations || '');
+        setProgFlowObsList(parseRemarkList(recs.programFlow.observations));
+        setProgFlowRecList(parseRemarkList(recs.programFlow.recommendations));
       }
       if (recs.participantEngagement) {
-        setEngagementObs(recs.participantEngagement.observations || '');
-        setEngagementRec(recs.participantEngagement.recommendations || '');
+        setEngagementObsList(parseRemarkList(recs.participantEngagement.observations));
+        setEngagementRecList(parseRemarkList(recs.participantEngagement.recommendations));
       }
       if (recs.technicalSetup) {
-        setTechSetupObs(recs.technicalSetup.observations || '');
-        setTechSetupRec(recs.technicalSetup.recommendations || '');
+        setTechSetupObsList(parseRemarkList(recs.technicalSetup.observations));
+        setTechSetupRecList(parseRemarkList(recs.technicalSetup.recommendations));
       }
       if (recs.participantPreparedness) {
-        setPrepObs(recs.participantPreparedness.observations || '');
-        setPrepRec(recs.participantPreparedness.recommendations || '');
+        setPrepObsList(parseRemarkList(recs.participantPreparedness.observations));
+        setPrepRecList(parseRemarkList(recs.participantPreparedness.recommendations));
       }
-      toast.success('Successfully drafted 4 STI recommendation categories!');
+      toast.success('Successfully drafted Remarks observations & recommendations!');
     }
   };
 
@@ -385,6 +596,7 @@ export default function PostActivityReportWizardModal({
       setAttendedCount(initialReport.attendanceSummary?.attendedCount || 0);
       setTargetAudience(initialReport.attendanceSummary?.targetAudience || '');
       setWhoAttended(initialReport.attendanceSummary?.whoAttended || '');
+      setHasScannedAttendance((initialReport.attendanceSummary?.attendedCount || 0) > 0);
       setHowManyAttended(
         initialReport.attendanceSummary?.howManyAttended ||
           (initialReport.attendanceSummary?.attendedCount
@@ -416,14 +628,14 @@ export default function PostActivityReportWizardModal({
       setScheduleCompliance(initialReport.results?.scheduleCompliance || '');
       setIssuesEncountered(initialReport.results?.issuesEncountered || '');
 
-      setProgFlowObs(initialReport.recommendations?.programFlow?.observations || '');
-      setProgFlowRec(initialReport.recommendations?.programFlow?.recommendations || '');
-      setEngagementObs(initialReport.recommendations?.participantEngagement?.observations || '');
-      setEngagementRec(initialReport.recommendations?.participantEngagement?.recommendations || '');
-      setTechSetupObs(initialReport.recommendations?.technicalSetup?.observations || '');
-      setTechSetupRec(initialReport.recommendations?.technicalSetup?.recommendations || '');
-      setPrepObs(initialReport.recommendations?.participantPreparedness?.observations || '');
-      setPrepRec(initialReport.recommendations?.participantPreparedness?.recommendations || '');
+      setProgFlowObsList(parseRemarkList((initialReport.recommendations?.programFlow as any)?.observationsList || initialReport.recommendations?.programFlow?.observations));
+      setProgFlowRecList(parseRemarkList((initialReport.recommendations?.programFlow as any)?.recommendationsList || initialReport.recommendations?.programFlow?.recommendations));
+      setEngagementObsList(parseRemarkList((initialReport.recommendations?.participantEngagement as any)?.observationsList || initialReport.recommendations?.participantEngagement?.observations));
+      setEngagementRecList(parseRemarkList((initialReport.recommendations?.participantEngagement as any)?.recommendationsList || initialReport.recommendations?.participantEngagement?.recommendations));
+      setTechSetupObsList(parseRemarkList((initialReport.recommendations?.technicalSetup as any)?.observationsList || initialReport.recommendations?.technicalSetup?.observations));
+      setTechSetupRecList(parseRemarkList((initialReport.recommendations?.technicalSetup as any)?.recommendationsList || initialReport.recommendations?.technicalSetup?.recommendations));
+      setPrepObsList(parseRemarkList((initialReport.recommendations?.participantPreparedness as any)?.observationsList || initialReport.recommendations?.participantPreparedness?.observations));
+      setPrepRecList(parseRemarkList((initialReport.recommendations?.participantPreparedness as any)?.recommendationsList || initialReport.recommendations?.participantPreparedness?.recommendations));
 
       setPhotos(initialReport.photos || []);
       setApprovalChain(initialReport.approvalChain || []);
@@ -557,16 +769,22 @@ export default function PostActivityReportWizardModal({
           setRegisteredCount(attResult.registeredCount);
           setTurnoutRate(attResult.turnoutRate);
           setHowManyAttended(attResult.howManyAttended);
-          setWhoAttended(attResult.whoAttended);
-          setTargetAudience(attResult.targetAudience);
+          setWhoAttended(attResult.whoAttended || '');
+          setTargetAudience(attResult.targetAudience || '');
+          setHasScannedAttendance(attResult.attendedCount > 0);
         } catch (attErr) {
           console.warn('[PostActivityReportWizardModal] Attendance bridge fallback:', attErr);
           setAttendedCount(0);
           setRegisteredCount(0);
           setTurnoutRate(0);
-          setHowManyAttended('Attendance verified from event logs');
-          setWhoAttended('Enrolled Students');
-          setTargetAudience('Enrolled Students');
+          setHowManyAttended('');
+          setWhoAttended('');
+          setTargetAudience('');
+          setHasScannedAttendance(false);
+        }
+
+        if (mechs.length > 0) {
+          setActualMechanics((prev) => prev || mechs.join('\n'));
         }
 
         // Auto-populate Financial Projection directly from Form AP-01 (Approved Proposal)
@@ -637,24 +855,187 @@ export default function PostActivityReportWizardModal({
     setKeyLearnings(keyLearnings.filter((_, i) => i !== idx));
   };
 
-  const handleAddPhoto = () => {
-    if (!newPhotoUrl.trim()) {
-      toast.error('Please provide a valid image URL.');
-      return;
-    }
-    const newP: PARPhotoAttachment = {
-      id: `photo-${Date.now()}`,
-      url: newPhotoUrl.trim(),
-      caption: newPhotoCaption.trim() || 'Event Photo Documentation',
-      uploadedAt: new Date().toISOString(),
-    };
-    setPhotos([...photos, newP]);
-    setNewPhotoUrl('');
-    setNewPhotoCaption('');
+  const handleMultipleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    let loadedCount = 0;
+    const filesToProcess = Array.from(files);
+    const newAttachments: PARPhotoAttachment[] = [];
+
+    filesToProcess.forEach((file, index) => {
+      if (!file.type.startsWith('image/')) {
+        toast.error(`"${file.name}" is not an image file.`);
+        loadedCount++;
+        return;
+      }
+      if (file.size > 8 * 1024 * 1024) {
+        toast.error(`"${file.name}" exceeds the 8MB size limit.`);
+        loadedCount++;
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const base64Url = event.target?.result as string;
+        if (base64Url) {
+          newAttachments.push({
+            id: `photo-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 7)}`,
+            url: base64Url,
+            caption: file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' '),
+            uploadedAt: new Date().toISOString(),
+          });
+        }
+        loadedCount++;
+        if (loadedCount === filesToProcess.length) {
+          if (newAttachments.length > 0) {
+            setPhotos((prev) => [...prev, ...newAttachments]);
+            toast.success(`Attached ${newAttachments.length} event photo(s)!`);
+            if (validationErrors.photos) {
+              setValidationErrors((prev) => ({ ...prev, photos: false }));
+            }
+          }
+        }
+      };
+      reader.onerror = () => {
+        loadedCount++;
+        toast.error(`Failed to read "${file.name}".`);
+      };
+      reader.readAsDataURL(file);
+    });
+
+    e.target.value = '';
   };
 
   const handleRemovePhoto = (id: string) => {
     setPhotos(photos.filter((p) => p.id !== id));
+  };
+
+  const validateFormForSubmission = (): boolean => {
+    const errors: Record<string, boolean> = {};
+
+    // Tab 1: Overview & Clearance
+    if (!selectedEventId) {
+      errors.selectedEventId = true;
+      setValidationErrors(errors);
+      setActiveTab('overview');
+      toast.error('Please select a concluded event.');
+      return false;
+    }
+    if (!registeredCount || registeredCount <= 0 || isNaN(registeredCount)) {
+      errors.registeredCount = true;
+      setValidationErrors(errors);
+      setActiveTab('overview');
+      toast.error('Please provide a valid Registered / Target participant headcount (greater than 0).');
+      return false;
+    }
+    if (!attendedCount || attendedCount <= 0 || isNaN(attendedCount)) {
+      errors.attendedCount = true;
+      setValidationErrors(errors);
+      setActiveTab('overview');
+      toast.error('Please provide a valid Actual Attended participant headcount (greater than 0).');
+      return false;
+    }
+    if (!whoAttended.trim()) {
+      errors.whoAttended = true;
+      setValidationErrors(errors);
+      setActiveTab('overview');
+      toast.error('Please specify the Actual Participant Profile (Who Attended).');
+      return false;
+    }
+
+    // Tab 2: Results of the Activity
+    if (!achievementNarrative.trim()) {
+      errors.achievementNarrative = true;
+      setValidationErrors(errors);
+      setActiveTab('objectives');
+      toast.error('Please provide 1. Achievement of Objectives narrative.');
+      return false;
+    }
+    if (keyLearnings.filter(Boolean).length === 0) {
+      errors.keyLearnings = true;
+      setValidationErrors(errors);
+      setActiveTab('objectives');
+      toast.error('Please provide at least 1 key learning for 2. Key Learnings / Insights Gained.');
+      return false;
+    }
+
+    // Tab 3: Remarks
+    const hasProgFlowObs = progFlowObsList.some((s) => s.trim().length > 0);
+    const hasProgFlowRec = progFlowRecList.some((s) => s.trim().length > 0);
+    if (!hasProgFlowObs || !hasProgFlowRec) {
+      errors.progFlow = true;
+      setValidationErrors(errors);
+      setActiveTab('recommendations');
+      toast.error('Please provide both Observations and Recommendations for 1. Program Flow and Time Management.');
+      return false;
+    }
+
+    const hasEngagementObs = engagementObsList.some((s) => s.trim().length > 0);
+    const hasEngagementRec = engagementRecList.some((s) => s.trim().length > 0);
+    if (!hasEngagementObs || !hasEngagementRec) {
+      errors.engagement = true;
+      setValidationErrors(errors);
+      setActiveTab('recommendations');
+      toast.error('Please provide both Observations and Recommendations for 2. Participant Engagement and Interaction.');
+      return false;
+    }
+
+    const hasTechSetupObs = techSetupObsList.some((s) => s.trim().length > 0);
+    const hasTechSetupRec = techSetupRecList.some((s) => s.trim().length > 0);
+    if (!hasTechSetupObs || !hasTechSetupRec) {
+      errors.techSetup = true;
+      setValidationErrors(errors);
+      setActiveTab('recommendations');
+      toast.error('Please provide both Observations and Recommendations for 3. Technical Setup and Venue Preparation.');
+      return false;
+    }
+
+    const hasPrepObs = prepObsList.some((s) => s.trim().length > 0);
+    const hasPrepRec = prepRecList.some((s) => s.trim().length > 0);
+    if (!hasPrepObs || !hasPrepRec) {
+      errors.prep = true;
+      setValidationErrors(errors);
+      setActiveTab('recommendations');
+      toast.error('Please provide both Observations and Recommendations for 4. Participant Preparedness and Expectations.');
+      return false;
+    }
+
+    // Tab 4: Photos & Pipeline
+    if (photos.length === 0) {
+      errors.photos = true;
+      setValidationErrors(errors);
+      setActiveTab('photos_signatories');
+      toast.error('Photo Documentation: Please attach at least 1 event documentation photo.');
+      return false;
+    }
+    if (!approvalChain || approvalChain.length === 0) {
+      setValidationErrors(errors);
+      setActiveTab('photos_signatories');
+      toast.error('Please ensure the institutional signatory pipeline is configured.');
+      return false;
+    }
+    if (isReturnedReport && !resubmissionNote.trim()) {
+      errors.resubmissionNote = true;
+      setValidationErrors(errors);
+      setActiveTab('photos_signatories');
+      toast.error('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
+      return false;
+    }
+
+    const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl;
+    if (!effectiveSignature) {
+      setValidationErrors(errors);
+      setActiveTab('photos_signatories');
+      toast.error('Electronic Signature Required', {
+        description: 'As the document maker, you must register your official signature before submitting this Post-Activity Report.',
+      });
+      setIsSignatureModalOpen(true);
+      return false;
+    }
+
+    setValidationErrors({});
+    return true;
   };
 
   const handleSubmitOrDraft = async (submitForReview: boolean) => {
@@ -663,37 +1044,13 @@ export default function PostActivityReportWizardModal({
       return;
     }
 
-    if (submitForReview && !isAdviserOrAdmin) {
-      toast.error('Only the Organization Adviser or SAS Administrator can formally submit a Post-Activity Report. Officers can Save as Draft.');
-      return;
-    }
-
     if (submitForReview) {
-      if (isReturnedReport && !resubmissionNote.trim()) {
-        setActiveTab('photos_signatories');
-        toast.error('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
+      if (!isAdviserOrAdmin) {
+        toast.error('Only the Organization Adviser or SAS Administrator can formally submit a Post-Activity Report. Officers can Save as Draft.');
         return;
       }
-      if (!achievementNarrative.trim()) {
-        setActiveTab('objectives');
-        toast.error('Please provide an achievement narrative for the event objectives.');
-        return;
-      }
-      if (keyLearnings.length === 0) {
-        setActiveTab('objectives');
-        toast.error('Please add at least 1 key learning outcome.');
-        return;
-      }
-
-      // Mandatory Maker Signature Check for formal submission
-      const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl;
-      if (!effectiveSignature) {
-        toast.error('Electronic Signature Required', {
-          description: 'As the document maker, you must register your official signature before submitting this Post-Activity Report.',
-        });
-        setIsSignatureModalOpen(true);
-        return;
-      }
+      const isValid = validateFormForSubmission();
+      if (!isValid) return;
     }
 
     const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
@@ -707,13 +1064,14 @@ export default function PostActivityReportWizardModal({
         referenceNo: initialReport?.referenceNo,
         eventId: selectedEventId,
         eventTitle: selectedEvent?.title || initialReport?.eventTitle || '',
+        eventReferenceId: linkedProposal?.referenceNo || selectedEvent?.referenceId || (selectedEvent as any)?.proposalReferenceId || '',
         eventVenue: (selectedEvent as any)?.venueName || (selectedEvent as any)?.venue || initialReport?.eventVenue || 'STI Campus',
         eventDateFormatted: (selectedEvent as any)?.date
           ? `${(selectedEvent as any).date}${(selectedEvent as any).startTime ? `, ${(selectedEvent as any).startTime} – ${(selectedEvent as any).endTime || ''}` : ''}`
           : initialReport?.eventDateFormatted || 'Concluded Event',
         eventDescription: selectedEvent?.description || initialReport?.eventDescription || '',
         organizerName: selectedEvent?.organizerName || currentUser.name,
-        actualMechanics,
+        actualMechanics: proposedMechanics.join('\n') || '',
         liquidationId: (selectedEvent as any)?.liquidationReportId || (selectedEvent as any)?.liquidationId || initialReport?.liquidationId || '',
         liquidationRefNumber: liquidationRef || (selectedEvent as any)?.liquidationRefNumber || initialReport?.liquidationRefNumber || '',
 
@@ -750,10 +1108,10 @@ export default function PostActivityReportWizardModal({
 
         results: {
           objectiveStatus,
-          objectiveAssessments,
+          objectiveAssessments: [],
           compositeSuccessScore: compositeScore,
           achievementNarrative,
-          keyLearnings,
+          keyLearnings: keyLearnings.filter(Boolean),
           classroomEnrichment,
           venueAssessment: venueAssessment || '',
           foodAssessment: foodAssessment || '',
@@ -764,21 +1122,29 @@ export default function PostActivityReportWizardModal({
 
         recommendations: {
           programFlow: {
-            observations: progFlowObs || '',
-            recommendations: progFlowRec || '',
-          },
+            observations: progFlowObsList.filter(Boolean).join('\n'),
+            recommendations: progFlowRecList.filter(Boolean).join('\n'),
+            observationsList: progFlowObsList.filter(Boolean),
+            recommendationsList: progFlowRecList.filter(Boolean),
+          } as any,
           participantEngagement: {
-            observations: engagementObs || '',
-            recommendations: engagementRec || '',
-          },
+            observations: engagementObsList.filter(Boolean).join('\n'),
+            recommendations: engagementRecList.filter(Boolean).join('\n'),
+            observationsList: engagementObsList.filter(Boolean),
+            recommendationsList: engagementRecList.filter(Boolean),
+          } as any,
           technicalSetup: {
-            observations: techSetupObs || '',
-            recommendations: techSetupRec || '',
-          },
+            observations: techSetupObsList.filter(Boolean).join('\n'),
+            recommendations: techSetupRecList.filter(Boolean).join('\n'),
+            observationsList: techSetupObsList.filter(Boolean),
+            recommendationsList: techSetupRecList.filter(Boolean),
+          } as any,
           participantPreparedness: {
-            observations: prepObs || '',
-            recommendations: prepRec || '',
-          },
+            observations: prepObsList.filter(Boolean).join('\n'),
+            recommendations: prepRecList.filter(Boolean).join('\n'),
+            observationsList: prepObsList.filter(Boolean),
+            recommendationsList: prepRecList.filter(Boolean),
+          } as any,
         },
 
         photos,
@@ -882,8 +1248,8 @@ export default function PostActivityReportWizardModal({
         <div className="flex border-b border-slate-200 bg-slate-50/70 px-6 gap-2 pt-2">
           {[
             { id: 'overview', label: '1. Event & Clearance Summary', icon: FileText, isFlagged: isOverviewFlagged },
-            { id: 'objectives', label: '2. Objectives & Learnings', icon: Sparkles, isFlagged: isObjectivesFlagged },
-            { id: 'recommendations', label: '3. STI Recommendations', icon: ShieldCheck, isFlagged: isRecommendationsFlagged },
+            { id: 'objectives', label: '2. Results of the Activity', icon: Sparkles, isFlagged: isObjectivesFlagged },
+            { id: 'recommendations', label: '3. Remarks', icon: ShieldCheck, isFlagged: isRecommendationsFlagged },
             { id: 'photos_signatories', label: '4. Photos & Pipeline', icon: ImageIcon, isFlagged: isPhotosSignatoriesFlagged },
           ].map((t) => {
             const Icon = t.icon;
@@ -995,7 +1361,13 @@ export default function PostActivityReportWizardModal({
                       </span>
                     </div>
                     <h3 className="text-lg font-black text-white">{selectedEvent.title}</h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 text-xs text-slate-300">
+                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-4 text-xs text-slate-300">
+                      <div>
+                        <span className="text-slate-400 block font-medium">Linked AP-01 Ref:</span>
+                        <strong className="text-[#FFD41C] font-mono">
+                          {linkedProposal?.referenceNo || selectedEvent.referenceId || 'AP-01 Reference'}
+                        </strong>
+                      </div>
                       <div>
                         <span className="text-slate-400 block font-medium">Hosting Body:</span>
                         <strong className="text-white">
@@ -1020,64 +1392,126 @@ export default function PostActivityReportWizardModal({
                   {/* 2-Column Summary Metrics */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {/* Attendance Turnout */}
-                    <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <Users className="w-4 h-4 text-blue-600" />
-                          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                            Attendance Verification
-                          </h4>
+                    <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between">
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <Users className="w-4 h-4 text-blue-600" />
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                              Attendance Verification
+                            </h4>
+                          </div>
+                          {hasScannedAttendance ? (
+                            <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              Scanner Verified
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full flex items-center gap-1 border border-amber-200">
+                              <AlertCircle className="w-3 h-3 text-amber-600" />
+                              Manual Entry
+                            </span>
+                          )}
                         </div>
-                        <span className="text-[11px] font-bold text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full">
-                          Auto-Calculated
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3 text-center mb-3">
-                        <div className="bg-white p-3 rounded-lg border border-slate-200">
-                          <span className="text-xs text-slate-500 block">Registered</span>
-                          <span className="text-lg font-black text-slate-800">{registeredCount}</span>
+
+                        {/* Headcount Inputs / Status */}
+                        <div className="grid grid-cols-2 gap-3 mb-3">
+                          <div className={`bg-white p-3 rounded-lg border ${validationErrors.registeredCount ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`}>
+                            <label className="text-[11px] font-bold text-slate-600 block mb-1">
+                              Registered / Target *
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={registeredCount || ''}
+                              onChange={(e) => handleRegisteredCountChange(parseInt(e.target.value, 10) || 0)}
+                              placeholder="0"
+                              className="w-full text-base font-black text-slate-800 bg-transparent border-b border-slate-200 focus:border-blue-500 focus:outline-none"
+                            />
+                            {validationErrors.registeredCount && (
+                              <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
+                                Target count required
+                              </span>
+                            )}
+                          </div>
+                          <div className={`bg-white p-3 rounded-lg border ${validationErrors.attendedCount ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`}>
+                            <label className="text-[11px] font-bold text-blue-700 block mb-1">
+                              Actual Attended *
+                            </label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={attendedCount || ''}
+                              onChange={(e) => handleAttendedCountChange(parseInt(e.target.value, 10) || 0)}
+                              placeholder="0"
+                              className="w-full text-base font-black text-blue-700 bg-transparent border-b border-blue-200 focus:border-blue-500 focus:outline-none"
+                            />
+                            {validationErrors.attendedCount && (
+                              <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
+                                Attended count required
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="bg-white p-3 rounded-lg border border-slate-200">
-                          <span className="text-xs text-slate-500 block">Scanned / Attended</span>
-                          <span className="text-lg font-black text-blue-700">{attendedCount}</span>
+
+                        {/* Turnout Indicator */}
+                        <div className="bg-white p-2 rounded-lg border border-slate-200 mb-3 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-slate-600">Calculated Turnout:</span>
+                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${
+                            turnoutRate >= 80
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : turnoutRate >= 50
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {turnoutRate}% Turnout ({attendedCount} / {registeredCount || 0})
+                          </span>
                         </div>
-                      </div>
-                      <div className="space-y-2 text-xs">
-                        <div>
-                          <label className="text-slate-500 font-semibold block mb-1">
-                            Target Audience
-                          </label>
-                          <input
-                            type="text"
-                            value={targetAudience}
-                            onChange={(e) => setTargetAudience(e.target.value)}
-                            className="w-full bg-white border border-slate-300 rounded p-1.5 text-xs text-slate-800"
-                            placeholder="e.g. BSIT & BSCS students"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-slate-500 font-semibold block mb-1">
-                            How Many Attended?
-                          </label>
-                          <input
-                            type="text"
-                            value={howManyAttended}
-                            onChange={(e) => setHowManyAttended(e.target.value)}
-                            className="w-full bg-white border border-slate-300 rounded p-1.5 text-xs text-slate-800"
-                            placeholder="e.g. 110 IT students"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-slate-500 font-semibold block mb-1">
-                            Actual Participant Profile (Who Attended?)
-                          </label>
-                          <input
-                            type="text"
-                            value={whoAttended}
-                            onChange={(e) => setWhoAttended(e.target.value)}
-                            className="w-full bg-white border border-slate-300 rounded p-1.5 text-xs text-slate-800"
-                            placeholder="e.g. BSIT all year level"
-                          />
+
+                        {/* Audience Profile Fields (De-duplicated) */}
+                        <div className="space-y-2 text-xs">
+                          <div>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-slate-600 font-bold flex items-center gap-1.5 text-xs">
+                                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                                <span>Target Audience (from Form AP-01)</span>
+                              </label>
+                              <span className="text-[10px] text-slate-500 font-medium bg-slate-200/70 px-1.5 py-0.5 rounded">
+                                Pre-populated (Readonly)
+                              </span>
+                            </div>
+                            <input
+                              type="text"
+                              value={targetAudience || 'General Student Body'}
+                              readOnly
+                              disabled
+                              className="w-full bg-slate-100 border border-slate-200 rounded-lg p-2 text-xs text-slate-700 font-medium cursor-not-allowed select-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-slate-600 font-bold block mb-1">
+                              Actual Participant Profile (Who Attended?) *
+                            </label>
+                            <input
+                              type="text"
+                              value={whoAttended}
+                              onChange={(e) => {
+                                setWhoAttended(e.target.value);
+                                if (validationErrors.whoAttended && e.target.value.trim()) {
+                                  setValidationErrors((prev) => ({ ...prev, whoAttended: false }));
+                                }
+                              }}
+                              className={`w-full bg-white border rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none ${
+                                validationErrors.whoAttended ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-300'
+                              }`}
+                              placeholder="e.g. 1st & 2nd Year BSIT Students, Club Officers"
+                            />
+                            {validationErrors.whoAttended && (
+                              <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
+                                Participant profile description required
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1124,29 +1558,6 @@ export default function PostActivityReportWizardModal({
                       </p>
                     </div>
                   </div>
-
-                  {/* Actual Mechanics Note */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                        Actual Mechanics & Logistics Conducted (Optional Notes)
-                      </label>
-                      <AIAssistButton
-                        label="Polish Mechanics"
-                        onClick={handleEnhanceActualMechanics}
-                        isLoading={isAILoading && aiTargetField === 'mechanics'}
-                        disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'mechanics'))}
-                        tooltip="Polish actual mechanics notes into formal narrative"
-                      />
-                    </div>
-                    <textarea
-                      rows={2}
-                      value={actualMechanics}
-                      onChange={(e) => setActualMechanics(e.target.value)}
-                      placeholder="Indicate here if any mechanics differed slightly from the initial proposal, or leave blank if executed verbatim."
-                      className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                    />
-                  </div>
                 </div>
               ) : (
                 <div className="py-12 text-center text-slate-400">
@@ -1157,7 +1568,7 @@ export default function PostActivityReportWizardModal({
             </div>
           )}
 
-          {/* TAB 2: OBJECTIVES & LEARNINGS */}
+          {/* TAB 2: RESULTS OF THE ACTIVITY */}
           {activeTab === 'objectives' && (
             <div className="space-y-6">
               {isObjectivesFlagged && (
@@ -1165,189 +1576,29 @@ export default function PostActivityReportWizardModal({
                   <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                   <div className="flex-1 text-xs">
                     <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
-                      Reviewer Revision Feedback — Objectives & Learnings
+                      Reviewer Revision Feedback — Results of the Activity
                     </span>
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {initialReport?.stepRevisionRemarks?.['objectives'] ||
                         initialReport?.returnRemarks ||
-                        'Please review and update the objectives achievement narrative, learnings, or event assessments.'}
+                        'Please review and update the results of the activity.'}
                     </p>
                   </div>
                 </div>
               )}
-              {/* Objectives Achievement Status & Success Rating */}
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                      Overall Objectives Status & Activity Success Index *
-                    </label>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Combines attendance turnout ({turnoutRate || 0}%) and objective target completion.
-                    </p>
-                  </div>
 
-                  {/* Composite Success Score Pill */}
-                  <div
-                    className={`px-3.5 py-1.5 rounded-xl border flex items-center gap-2.5 shadow-2xs self-start sm:self-auto ${
-                      compositeScore >= 90
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                        : compositeScore >= 75
-                        ? 'bg-blue-50 text-[#001A4D] border-blue-300'
-                        : compositeScore >= 60
-                        ? 'bg-amber-50 text-amber-800 border-amber-300'
-                        : 'bg-rose-50 text-rose-800 border-rose-300'
-                    }`}
-                  >
-                    <Award className="w-4 h-4 text-[#FFD41C]" />
-                    <div className="text-right">
-                      <div className="text-[9px] font-bold uppercase tracking-wider opacity-75">Success Score</div>
-                      <div className="text-xs font-black font-mono">
-                        {compositeScore}% {compositeScore >= 90 ? 'Outstanding' : compositeScore >= 75 ? 'Satisfactory' : 'Needs Review'}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3">
-                  {[
-                    { id: 'fully_achieved', label: 'Fully Achieved', desc: 'All targets and KPIs successfully met', color: 'emerald' },
-                    { id: 'partially_achieved', label: 'Partially Achieved', desc: 'Core goals met with slight adjustments', color: 'amber' },
-                    { id: 'unmet', label: 'Unmet', desc: 'Significant deviations or unfulfilled objectives', color: 'rose' },
-                  ].map((s) => {
-                    const isSelected = objectiveStatus === s.id;
-                    return (
-                      <button
-                        type="button"
-                        key={s.id}
-                        onClick={() => setObjectiveStatus(s.id as PARObjectiveStatus)}
-                        className={`p-3 rounded-xl border text-left transition-all ${
-                          isSelected
-                            ? 'border-blue-600 bg-blue-50/70 shadow-sm ring-1 ring-blue-500'
-                            : 'border-slate-200 bg-white hover:bg-slate-50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-1">
-                          <span className={`text-xs font-bold ${isSelected ? 'text-blue-900' : 'text-slate-800'}`}>
-                            {s.label}
-                          </span>
-                          {isSelected && <CheckCircle2 className="w-4 h-4 text-blue-600" />}
-                        </div>
-                        <span className="text-[11px] text-slate-500 block leading-tight">{s.desc}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Itemized Objectives & Success Indicators (KPI) Comparison Grid */}
-              <div className="space-y-3 pt-2 border-t border-slate-200/80">
+              {/* 1. Achievement of Objectives */}
+              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
                       <Target className="w-4 h-4 text-[#0E4EBD]" />
-                      <span>Itemized KPI & Objectives Assessment ({objectiveAssessments.length})</span>
+                      <span>1. Achievement of Objectives <span className="text-red-500">*</span></span>
                     </h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Evaluate each specific goal from Form AP-01 against the actual post-event outcome.
+                      Review the planned objectives from Form AP-01 and provide an institutional narrative of how they were met.
                     </p>
                   </div>
-                </div>
-
-                {objectiveAssessments.length === 0 ? (
-                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500 italic">
-                    No individual objectives were detected in the proposal. You can summarize achievements in the narrative box below.
-                  </div>
-                ) : (
-                  <div className="space-y-2.5">
-                    {objectiveAssessments.map((item, idx) => (
-                      <div
-                        key={item.id || idx}
-                        className="p-3.5 bg-white border border-slate-200 rounded-xl space-y-2.5 shadow-2xs hover:border-blue-200 transition-colors"
-                      >
-                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#0E4EBD] block mb-0.5">
-                              Objective {idx + 1}
-                            </span>
-                            <p className="text-xs font-bold text-gray-800 leading-snug">
-                              {item.objectiveText}
-                            </p>
-                            {item.successIndicatorText && (
-                              <p className="text-[11px] text-gray-500 mt-1">
-                                <strong className="text-gray-600">KPI Target: </strong>
-                                {item.successIndicatorText}
-                              </p>
-                            )}
-                          </div>
-
-                          {/* 3 Status Pills */}
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {(['fully_achieved', 'partially_achieved', 'unmet'] as const).map((st) => {
-                              const isSelected = item.status === st;
-                              const label =
-                                st === 'fully_achieved'
-                                  ? 'Fully Achieved'
-                                  : st === 'partially_achieved'
-                                  ? 'Partial'
-                                  : 'Unmet';
-                              const activeCls =
-                                st === 'fully_achieved'
-                                  ? isSelected
-                                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
-                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
-                                  : st === 'partially_achieved'
-                                  ? isSelected
-                                    ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
-                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
-                                  : isSelected
-                                  ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
-                                  : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100';
-
-                              return (
-                                <button
-                                  type="button"
-                                  key={st}
-                                  onClick={() => {
-                                    const updated = [...objectiveAssessments];
-                                    updated[idx].status = st;
-                                    setObjectiveAssessments(updated);
-                                  }}
-                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${activeCls}`}
-                                >
-                                  {label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-
-                        {/* Actual Outcome / Result Input */}
-                        <div className="pt-2 border-t border-slate-100">
-                          <input
-                            type="text"
-                            value={item.actualResult || ''}
-                            onChange={(e) => {
-                              const updated = [...objectiveAssessments];
-                              updated[idx].actualResult = e.target.value;
-                              setObjectiveAssessments(updated);
-                            }}
-                            placeholder="Enter actual outcome or metric (e.g. 112 students completed hands-on lab with 93.3% attendance)..."
-                            className="w-full text-xs bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Achievement Narrative */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
-                    Narrative of Accomplishments & Results *
-                  </label>
                   <AIAssistButton
                     label="Enhance Narrative"
                     onClick={handleEnhanceNarrative}
@@ -1356,21 +1607,77 @@ export default function PostActivityReportWizardModal({
                     tooltip="Draft or elevate accomplishment narrative using attendance and event data"
                   />
                 </div>
-                <textarea
-                  rows={3}
-                  value={achievementNarrative}
-                  onChange={(e) => setAchievementNarrative(e.target.value)}
-                  placeholder="Detail how the activity met its designated educational and co-curricular objectives..."
-                  className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
+
+                {/* Objectives from linked AP */}
+                <div className="p-3.5 bg-blue-50/50 border border-blue-200/70 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-[#001A4D] flex items-center gap-1">
+                      <Award className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      Planned Objectives (from Linked Form AP-01)
+                    </span>
+                    <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
+                      {(proposalObjectives.length > 0 ? proposalObjectives : objectiveAssessments).length} Objective(s)
+                    </span>
+                  </div>
+
+                  {(proposalObjectives.length > 0 ? proposalObjectives : objectiveAssessments.map((o) => o.objectiveText)).length === 0 ? (
+                    <p className="text-xs text-slate-500 italic">No specific objectives were found in the linked proposal.</p>
+                  ) : (
+                    <ul className="space-y-1.5 text-xs text-slate-700">
+                      {(proposalObjectives.length > 0 ? proposalObjectives : objectiveAssessments.map((o) => o.objectiveText)).map((obj, i) => (
+                        <li key={i} className="flex items-start gap-2 bg-white/80 p-2 rounded-lg border border-blue-100/60">
+                          <span className="text-[#0E4EBD] font-bold shrink-0 mt-0.5">•</span>
+                          <div className="flex-1">
+                            <span className="font-semibold text-slate-800">{obj}</span>
+                            {proposalSuccessIndicators[i] && (
+                              <p className="text-[11px] text-slate-500 mt-0.5">
+                                <span className="font-medium text-slate-600">Target KPI: </span>{proposalSuccessIndicators[i]}
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Narrative Textarea */}
+                <div>
+                  <textarea
+                    rows={4}
+                    value={achievementNarrative}
+                    onChange={(e) => {
+                      setAchievementNarrative(e.target.value);
+                      if (validationErrors.achievementNarrative && e.target.value.trim().length >= 10) {
+                        setValidationErrors((prev) => ({ ...prev, achievementNarrative: false }));
+                      }
+                    }}
+                    placeholder="Detail how the activity met its designated educational and co-curricular objectives..."
+                    className={`w-full text-xs bg-white border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none ${
+                      validationErrors.achievementNarrative ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-300'
+                    }`}
+                  />
+                  {validationErrors.achievementNarrative && (
+                    <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
+                      Achievement of objectives narrative is required.
+                    </span>
+                  )}
+                </div>
               </div>
 
-              {/* Key Learnings List */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-3">
+              {/* 2. Key Learnings / Insights Gained */}
+              <div className={`border rounded-xl p-4 bg-white shadow-2xs space-y-3 ${
+                validationErrors.keyLearnings ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'
+              }`}>
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                    Key Learnings & Student Insights (3–5 Points) *
-                  </label>
+                  <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                      2. Key Learnings / Insights Gained <span className="text-red-500">*</span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Key learning takeaways and student insights from the activity.
+                    </p>
+                  </div>
                   <div className="flex items-center gap-2">
                     <AIAssistButton
                       label="Suggest Learnings"
@@ -1379,11 +1686,16 @@ export default function PostActivityReportWizardModal({
                       disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'learnings'))}
                       tooltip="Generate key learnings from executed activity"
                     />
-                    <span className="text-[11px] text-slate-400 font-medium">
+                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
                       {keyLearnings.length} added
                     </span>
                   </div>
                 </div>
+                {validationErrors.keyLearnings && (
+                  <span className="text-[11px] text-red-600 font-medium block">
+                    At least 1 key learning insight must be added.
+                  </span>
+                )}
                 <div className="flex gap-2">
                   <input
                     type="text"
@@ -1393,6 +1705,9 @@ export default function PostActivityReportWizardModal({
                       if (e.key === 'Enter') {
                         e.preventDefault();
                         handleAddLearning();
+                        if (validationErrors.keyLearnings && (keyLearnings.length + 1 >= 1)) {
+                          setValidationErrors((prev) => ({ ...prev, keyLearnings: false }));
+                        }
                       }
                     }}
                     placeholder="Enter an insight or learning takeaway..."
@@ -1400,106 +1715,145 @@ export default function PostActivityReportWizardModal({
                   />
                   <button
                     type="button"
-                    onClick={handleAddLearning}
-                    className="bg-[#0E4EBD] hover:bg-[#001A4D] text-white px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors"
+                    onClick={() => {
+                      handleAddLearning();
+                      if (validationErrors.keyLearnings && (keyLearnings.length + 1 >= 1)) {
+                        setValidationErrors((prev) => ({ ...prev, keyLearnings: false }));
+                      }
+                    }}
+                    className="bg-[#0E4EBD] hover:bg-[#001A4D] text-white px-3 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
                     <Plus className="w-4 h-4" /> Add
                   </button>
                 </div>
-                <div className="space-y-1.5">
-                  {keyLearnings.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className="flex items-center justify-between bg-white border border-slate-200 px-3 py-2 rounded-lg text-xs text-slate-800 shadow-2xs"
-                    >
-                      <span className="flex-1 pr-2">
-                        <strong className="text-blue-700 font-bold mr-1.5">•</strong>
-                        {item}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveLearning(idx)}
-                        className="text-slate-400 hover:text-red-600 transition-colors"
+                {keyLearnings.length > 0 && (
+                  <div className="space-y-1.5">
+                    {keyLearnings.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between bg-slate-50 border border-slate-200 px-3 py-2 rounded-lg text-xs text-slate-800 shadow-2xs"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                        <span className="flex-1 pr-2">
+                          <strong className="text-blue-700 font-bold mr-1.5">•</strong>
+                          {item}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveLearning(idx)}
+                          className="text-slate-400 hover:text-red-600 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Classroom & Curriculum Enrichment */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                  Classroom & Academic Curriculum Enrichment
-                </label>
+              {/* 3. Enrichment of Learning Beyond the Classroom */}
+              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                      3. Enrichment of Learning Beyond the Classroom
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      (Explain how the activity complemented or enhanced classroom learning)
+                    </p>
+                  </div>
+                  <AIAssistButton
+                    label="Draft Enrichment"
+                    onClick={handleEnhanceCurriculumEnrichment}
+                    isLoading={isAILoading && aiTargetField === 'enrichment'}
+                    disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'enrichment'))}
+                    tooltip="Draft institutional alignment with classroom curriculum and STI graduate attributes"
+                  />
+                </div>
                 <textarea
                   rows={2}
                   value={classroomEnrichment}
                   onChange={(e) => setClassroomEnrichment(e.target.value)}
-                  placeholder="Explain how the outcomes of this event enrich students' academic learning in the classroom..."
+                  placeholder="Explain how the activity complemented or enhanced classroom learning..."
                   className="w-full text-xs bg-white border border-slate-300 rounded-lg p-2.5 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                 />
               </div>
 
-              {/* Operational & Assessment Details */}
+              {/* 4. Reason for Venue Selection & 5. Food / Logistics Assessment */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Reason for Venue Selection
+                <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    4. Reason for Venue Selection
                   </label>
-                  <input
-                    type="text"
+                  <p className="text-[11px] text-slate-500">
+                    (State justification if questioned or compared to another venue)
+                  </p>
+                  <textarea
+                    rows={2}
                     value={venueAssessment}
                     onChange={(e) => setVenueAssessment(e.target.value)}
-                    placeholder="e.g. It provided convenient and immediate access for participants."
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
+                    placeholder="State justification if questioned or compared to another venue..."
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Issues / Bottlenecks Encountered
+
+                <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    5. Food / Logistics Assessment
                   </label>
-                  <input
-                    type="text"
-                    value={issuesEncountered}
-                    onChange={(e) => setIssuesEncountered(e.target.value)}
-                    placeholder="If none, state 'No major issues encountered.'"
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
+                  <p className="text-[11px] text-slate-500">
+                    (State food quantity/quality and logistics handling)
+                  </p>
+                  <textarea
+                    rows={2}
+                    value={foodAssessment}
+                    onChange={(e) => {
+                      setFoodAssessment(e.target.value);
+                      setLogisticsAssessment(e.target.value);
+                    }}
+                    placeholder="State food quantity/quality and logistics handling..."
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
               </div>
 
+              {/* 6. Schedule Compliance & 7. Issues / Problems Encountered */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Food & Logistics Assessment
+                <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    6. Schedule Compliance
                   </label>
-                  <textarea
-                    rows={2}
-                    value={foodAssessment}
-                    onChange={(e) => setFoodAssessment(e.target.value)}
-                    placeholder="State food quantity/quality and logistics handling..."
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1">
-                    Schedule Compliance
-                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    (State if program followed as planned; mention delays or adjustments if any)
+                  </p>
                   <textarea
                     rows={2}
                     value={scheduleCompliance}
                     onChange={(e) => setScheduleCompliance(e.target.value)}
-                    placeholder="State if program followed as planned; mention delays or adjustments if any."
-                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
+                    placeholder="State if program followed as planned; mention delays or adjustments if any..."
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                    7. Issues / Problems Encountered and Actions Taken
+                  </label>
+                  <p className="text-[11px] text-slate-500">
+                    (If none, state “No major issues encountered.”)
+                  </p>
+                  <textarea
+                    rows={2}
+                    value={issuesEncountered}
+                    onChange={(e) => setIssuesEncountered(e.target.value)}
+                    placeholder="If none, state “No major issues encountered.”"
+                    className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none"
                   />
                 </div>
               </div>
             </div>
           )}
 
-          {/* TAB 3: 4 STI CATEGORIZED RECOMMENDATIONS */}
+          {/* TAB 3: REMARKS */}
           {activeTab === 'recommendations' && (
             <div className="space-y-6">
               {isRecommendationsFlagged && (
@@ -1507,7 +1861,7 @@ export default function PostActivityReportWizardModal({
                   <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                   <div className="flex-1 text-xs">
                     <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
-                      Reviewer Revision Feedback — STI Recommendations
+                      Reviewer Revision Feedback — Remarks
                     </span>
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {initialReport?.stepRevisionRemarks?.['recommendations'] ||
@@ -1521,14 +1875,14 @@ export default function PostActivityReportWizardModal({
                 <div>
                   <h4 className="text-xs font-black uppercase tracking-wider text-[#001A4D] flex items-center gap-1.5">
                     <ShieldCheck className="w-4 h-4 text-[#0E4EBD]" />
-                    STI Institutional Post-Mortem Areas (Verbatim Standard)
+                    3. Remarks (For Future Activity Improvements)
                   </h4>
                   <p className="text-xs text-slate-600 mt-1">
-                    Complete the four standard STI recommendation categories to provide institutional insights for future campus events.
+                    Add itemized observations and actionable recommendations across the four standard STI institutional areas. You can add as many items as needed for each.
                   </p>
                 </div>
                 <AIAssistButton
-                  label="Auto-Draft 4 Recommendations"
+                  label="Auto-Draft Remarks"
                   onClick={handleAutoDraft4Recommendations}
                   isLoading={isGeneratingRecs}
                   disabled={isAILoading || isGeneratingRecs}
@@ -1537,121 +1891,69 @@ export default function PostActivityReportWizardModal({
                 />
               </div>
 
-              {/* 1. Program Flow */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-                <h5 className="text-xs font-bold uppercase text-[#001A4D]">
-                  1. Program Flow & Time Management
-                </h5>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Observations:</span>
-                    <textarea
-                      rows={2}
-                      value={progFlowObs}
-                      onChange={(e) => setProgFlowObs(e.target.value)}
-                      placeholder="Observation on pacing, opening remarks, and agenda compliance..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Recommendations:</span>
-                    <textarea
-                      rows={2}
-                      value={progFlowRec}
-                      onChange={(e) => setProgFlowRec(e.target.value)}
-                      placeholder="Proposed adjustments for subsequent events..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
+              {/* 1. Program Flow and Time Management */}
+              <DynamicRemarkCategory
+                number="1"
+                title="Program Flow and Time Management"
+                obsList={progFlowObsList}
+                recList={progFlowRecList}
+                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setProgFlowObsList, idx, val)}
+                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setProgFlowRecList, idx, val)}
+                onAddObs={() => handleAddRemarkItem(setProgFlowObsList)}
+                onAddRec={() => handleAddRemarkItem(setProgFlowRecList)}
+                onRemoveObs={(idx) => handleRemoveRemarkItem(setProgFlowObsList, idx)}
+                onRemoveRec={(idx) => handleRemoveRemarkItem(setProgFlowRecList, idx)}
+                errorObs={validationErrors.progFlow}
+                errorRec={validationErrors.progFlow}
+              />
 
-              {/* 2. Participant Engagement */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-                <h5 className="text-xs font-bold uppercase text-[#001A4D]">
-                  2. Participant Engagement & Interaction
-                </h5>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Observations:</span>
-                    <textarea
-                      rows={2}
-                      value={engagementObs}
-                      onChange={(e) => setEngagementObs(e.target.value)}
-                      placeholder="Observations on audience participation, QA, and attentiveness..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Recommendations:</span>
-                    <textarea
-                      rows={2}
-                      value={engagementRec}
-                      onChange={(e) => setEngagementRec(e.target.value)}
-                      placeholder="Methods to increase interaction..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
+              {/* 2. Participant Engagement and Interaction */}
+              <DynamicRemarkCategory
+                number="2"
+                title="Participant Engagement and Interaction"
+                obsList={engagementObsList}
+                recList={engagementRecList}
+                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setEngagementObsList, idx, val)}
+                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setEngagementRecList, idx, val)}
+                onAddObs={() => handleAddRemarkItem(setEngagementObsList)}
+                onAddRec={() => handleAddRemarkItem(setEngagementRecList)}
+                onRemoveObs={(idx) => handleRemoveRemarkItem(setEngagementObsList, idx)}
+                onRemoveRec={(idx) => handleRemoveRemarkItem(setEngagementRecList, idx)}
+                errorObs={validationErrors.engagement}
+                errorRec={validationErrors.engagement}
+              />
 
-              {/* 3. Technical Setup */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-                <h5 className="text-xs font-bold uppercase text-[#001A4D]">
-                  3. Technical Setup & Equipment (Audio-Visual, WiFi, Power)
-                </h5>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Observations:</span>
-                    <textarea
-                      rows={2}
-                      value={techSetupObs}
-                      onChange={(e) => setTechSetupObs(e.target.value)}
-                      placeholder="Performance of projectors, sound system, and network..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Recommendations:</span>
-                    <textarea
-                      rows={2}
-                      value={techSetupRec}
-                      onChange={(e) => setTechSetupRec(e.target.value)}
-                      placeholder="Technical prep or equipment requisition adjustments..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
+              {/* 3. Technical Setup and Venue Preparation */}
+              <DynamicRemarkCategory
+                number="3"
+                title="Technical Setup and Venue Preparation"
+                obsList={techSetupObsList}
+                recList={techSetupRecList}
+                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setTechSetupObsList, idx, val)}
+                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setTechSetupRecList, idx, val)}
+                onAddObs={() => handleAddRemarkItem(setTechSetupObsList)}
+                onAddRec={() => handleAddRemarkItem(setTechSetupRecList)}
+                onRemoveObs={(idx) => handleRemoveRemarkItem(setTechSetupObsList, idx)}
+                onRemoveRec={(idx) => handleRemoveRemarkItem(setTechSetupRecList, idx)}
+                errorObs={validationErrors.techSetup}
+                errorRec={validationErrors.techSetup}
+              />
 
-              {/* 4. Participant Preparedness */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-                <h5 className="text-xs font-bold uppercase text-[#001A4D]">
-                  4. Participant Preparedness & Prior Orientation
-                </h5>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Observations:</span>
-                    <textarea
-                      rows={2}
-                      value={prepObs}
-                      onChange={(e) => setPrepObs(e.target.value)}
-                      placeholder="Student readiness, materials brought, dress code compliance..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <span className="text-slate-500 font-medium block mb-1">Recommendations:</span>
-                    <textarea
-                      rows={2}
-                      value={prepRec}
-                      onChange={(e) => setPrepRec(e.target.value)}
-                      placeholder="Pre-event announcements or briefing enhancements..."
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs"
-                    />
-                  </div>
-                </div>
-              </div>
+              {/* 4. Participant Preparedness and Expectations */}
+              <DynamicRemarkCategory
+                number="4"
+                title="Participant Preparedness and Expectations"
+                obsList={prepObsList}
+                recList={prepRecList}
+                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setPrepObsList, idx, val)}
+                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setPrepRecList, idx, val)}
+                onAddObs={() => handleAddRemarkItem(setPrepObsList)}
+                onAddRec={() => handleAddRemarkItem(setPrepRecList)}
+                onRemoveObs={(idx) => handleRemoveRemarkItem(setPrepObsList, idx)}
+                onRemoveRec={(idx) => handleRemoveRemarkItem(setPrepRecList, idx)}
+                errorObs={validationErrors.prep}
+                errorRec={validationErrors.prep}
+              />
             </div>
           )}
 
@@ -1674,59 +1976,64 @@ export default function PostActivityReportWizardModal({
                 </div>
               )}
               {/* Photo Documentation Section */}
-              <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-4">
-                <div className="flex items-center justify-between">
+              <div className={`border rounded-xl p-4 bg-slate-50/50 space-y-4 ${
+                validationErrors.photos ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'
+              }`}>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                      Photo Documentation Gallery
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                      <ImageIcon className="w-4 h-4 text-blue-600" />
+                      <span>Photo Documentation Gallery</span>
                     </h4>
                     <p className="text-[11px] text-slate-500">
-                      Add 2 to 6 high-resolution event documentation image links.
+                      Upload high-resolution event documentation photos from your computer.
                     </p>
                   </div>
-                  <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
-                    {photos.length} photos
-                  </span>
+                  {photos.length > 0 && (
+                    <span className="text-xs font-bold px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 self-start sm:self-auto">
+                      📷 {photos.length} Photo{photos.length > 1 ? 's' : ''} Attached
+                    </span>
+                  )}
                 </div>
 
-                {/* Add Photo Input */}
-                <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                  <div className="sm:col-span-7">
-                    <input
-                      type="url"
-                      value={newPhotoUrl}
-                      onChange={(e) => setNewPhotoUrl(e.target.value)}
-                      placeholder="Image URL (https://...)"
-                      className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
-                    />
+                {validationErrors.photos && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 font-medium flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />
+                    <span>Please attach at least one photo for event documentation.</span>
                   </div>
-                  <div className="sm:col-span-3">
-                    <input
-                      type="text"
-                      value={newPhotoCaption}
-                      onChange={(e) => setNewPhotoCaption(e.target.value)}
-                      placeholder="Caption (e.g. Keynote)"
-                      className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
-                    />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <button
-                      type="button"
-                      onClick={handleAddPhoto}
-                      className="w-full bg-[#0E4EBD] hover:bg-[#001A4D] text-white p-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                )}
+
+                {/* Multi-Photo File Selector */}
+                <div className="bg-white p-3.5 rounded-xl border border-slate-200">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                    <label
+                      htmlFor="par-multi-photo-file-input"
+                      className="px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-2xs bg-[#001A4D] hover:bg-[#002D72] text-white"
                     >
-                      <Plus className="w-4 h-4" /> Add
-                    </button>
+                      <Upload className="w-4 h-4 text-[#FFD41C]" />
+                      <span>Select Multiple Photos from Device</span>
+                      <input
+                        id="par-multi-photo-file-input"
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleMultipleFilesUpload}
+                      />
+                    </label>
+                    <span className="text-xs text-slate-400 font-medium text-center sm:text-left">
+                      Hold Ctrl or Shift to choose multiple image files at once (.jpg, .png, .webp)
+                    </span>
                   </div>
                 </div>
 
                 {/* Photo Previews */}
-                {photos.length > 0 && (
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-                    {photos.map((p) => (
+                {photos.length > 0 ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-2">
+                    {photos.map((p, idx) => (
                       <div
                         key={p.id}
-                        className="group relative rounded-lg overflow-hidden border border-slate-200 bg-white shadow-2xs aspect-video"
+                        className="group relative rounded-xl overflow-hidden border border-slate-200 bg-white shadow-2xs aspect-square flex flex-col justify-between"
                       >
                         <img
                           src={p.url}
@@ -1737,18 +2044,31 @@ export default function PostActivityReportWizardModal({
                               'https://placehold.co/400x300?text=Event+Photo';
                           }}
                         />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-2 flex flex-col justify-between text-white text-[10px]">
-                          <span className="truncate">{p.caption}</span>
+                        <div className="absolute top-1 right-1">
                           <button
                             type="button"
                             onClick={() => handleRemovePhoto(p.id)}
-                            className="self-end bg-red-600 hover:bg-red-700 p-1 rounded text-white cursor-pointer"
+                            title="Remove photo"
+                            className="bg-red-600/90 hover:bg-red-700 text-white p-1 rounded-full shadow-md transition-colors cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/85 via-black/50 to-transparent p-1.5 text-white">
+                          <span className="text-[10px] font-bold truncate block leading-tight">
+                            #{idx + 1} {p.caption || 'Photo'}
+                          </span>
+                        </div>
                       </div>
                     ))}
+                  </div>
+                ) : (
+                  <div className="p-6 text-center border-2 border-dashed border-slate-200 rounded-xl bg-white text-slate-400">
+                    <ImageIcon className="w-8 h-8 mx-auto mb-1.5 text-slate-300" />
+                    <p className="text-xs font-semibold text-slate-600">No photos attached yet.</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Select event photos from your device to complete documentation.
+                    </p>
                   </div>
                 )}
               </div>

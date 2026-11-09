@@ -4,7 +4,7 @@
  * Section 1, 2, 3: Activity Title, Description/Rationale, Organizers, and 15-Day Policy Notice.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   FileText,
   Building,
@@ -84,78 +84,101 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     onChange({ title: newTitle });
   };
 
-  const orgSuggestions = useMemo(() => {
-    const list: string[] = ['Student Affairs & Services (SAS)'];
-    organizations.forEach((org: any) => {
-      if (!org || org.archived) return;
-      const orgLabel = org.acronym ? `${org.name} (${org.acronym})` : org.name;
-      if (orgLabel && !list.includes(orgLabel)) {
-        list.push(orgLabel);
-      }
-    });
-    return list;
-  }, [organizations]);
+  const isOfficerProp =
+    formData.isOfficerProposal === true ||
+    (Boolean(formData.hostingOrgId) && formData.hostingOrgId !== 'sas') ||
+    (Boolean(formData.organizationId) && formData.organizationId !== 'sas') ||
+    (Boolean(formData.organizationName) && stripSasPhrases(formData.organizationName).length > 0);
 
-  const organizers = formData.organizers || ['Student Affairs & Services (SAS)'];
+  // For organization proposals: resolve the clean organization name to auto-populate
+  const resolvedOfficerOrgName = useMemo(() => {
+    if (!isOfficerProp) return '';
+    // 1. Match by hostingOrgId or organizationId
+    const targetId = formData.hostingOrgId || formData.organizationId;
+    if (targetId && targetId !== 'sas' && targetId !== 'student_org') {
+      const match = organizations.find((o: any) => o.id === targetId || o.name === targetId);
+      if (match) {
+        return match.acronym && !match.name.includes(match.acronym)
+          ? `${match.name} (${match.acronym})`
+          : match.name;
+      }
+    }
+    // 2. Match by organizationName
+    if (formData.organizationName && stripSasPhrases(formData.organizationName).length > 0) {
+      const match = organizations.find(
+        (o: any) =>
+          o.name.toLowerCase() === formData.organizationName!.toLowerCase() ||
+          (o.acronym && o.acronym.toLowerCase() === formData.organizationName!.toLowerCase())
+      );
+      if (match) {
+        return match.acronym && !match.name.includes(match.acronym)
+          ? `${match.name} (${match.acronym})`
+          : match.name;
+      }
+      return stripSasPhrases(formData.organizationName);
+    }
+    // 3. Fallback to existing non-SAS organizer
+    const firstNonSas = (formData.organizers || []).find((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+    if (firstNonSas) {
+      return stripSasPhrases(firstNonSas);
+    }
+    return '';
+  }, [isOfficerProp, formData.hostingOrgId, formData.organizationId, formData.organizationName, formData.organizers, organizations]);
+
+  // Auto-populate organization name in the organizers field when creating as an organization
+  useEffect(() => {
+    if (isOfficerProp && resolvedOfficerOrgName) {
+      const currentList = formData.organizers || [];
+      const hasResolvedOrg = currentList.includes(resolvedOfficerOrgName);
+      const studentOnly = currentList.filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+      if (!hasResolvedOrg || studentOnly.length === 0) {
+        const coOrganizers = studentOnly.filter((o) => o !== resolvedOfficerOrgName);
+        onChange({
+          organizationName: resolvedOfficerOrgName,
+          organizers: [resolvedOfficerOrgName, ...coOrganizers],
+        });
+      }
+    }
+  }, [isOfficerProp, resolvedOfficerOrgName, formData.organizers, onChange]);
+
+  const organizers = useMemo(() => {
+    const list = formData.organizers || [];
+    if (isOfficerProp) {
+      const studentList = list.filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+      if (studentList.length > 0) return studentList;
+      if (resolvedOfficerOrgName) {
+        return [resolvedOfficerOrgName];
+      }
+      return [];
+    }
+    return list;
+  }, [formData.organizers, isOfficerProp, resolvedOfficerOrgName]);
+
   const proponents = formData.proponents && formData.proponents.length > 0
     ? formData.proponents
-    : [formData.createdByName || 'Student Affairs & Services'];
-
-  const handleSelectHostOrg = (selectedVal: string) => {
-    if (!selectedVal || selectedVal === 'sas') {
-      onChange({
-        organizationId: 'sas',
-        hostingOrgId: 'sas',
-        organizationName: 'Student Affairs & Services (SAS)',
-        organizers: ['Student Affairs & Services (SAS)'],
-        isOfficerProposal: false,
-      });
-      return;
-    }
-    const match = organizations.find((o: any) => o.id === selectedVal || o.name === selectedVal);
-    if (match) {
-      onChange({
-        organizationId: match.id,
-        hostingOrgId: match.id,
-        organizationName: match.name,
-        organizers: [match.name],
-        isOfficerProposal: true,
-      });
-    }
-  };
+    : [formData.createdByName || (isOfficerProp ? 'Student Officer' : 'Student Affairs & Services')];
 
   const addOrganizer = (org: string) => {
     const trimmed = org.trim();
-    if (!trimmed || organizers.includes(trimmed)) return;
+    if (!trimmed) return;
 
-    // If list currently only has the default SAS placeholder and we are adding a student club, replace it
-    const isAddingStudentOrg = stripSasPhrases(trimmed).length > 0;
-    const hasOnlySas = organizers.length === 1 && stripSasPhrases(organizers[0]).length === 0;
-    const nextList = hasOnlySas && isAddingStudentOrg ? [trimmed] : [...organizers, trimmed];
+    if (organizers.includes(trimmed)) return;
+    const nextList = [...organizers, trimmed];
 
-    const match = organizations.find(
-      (o: any) =>
-        o.name.toLowerCase() === trimmed.toLowerCase() ||
-        (o.acronym && o.acronym.toLowerCase() === trimmed.toLowerCase())
-    );
-
-    const updates: Partial<ProposalFormData> = {
+    onChange({
       organizers: nextList,
-      ...(isAddingStudentOrg ? { isOfficerProposal: true } : {}),
-    };
-    if (match) {
-      updates.organizationId = match.id;
-      updates.hostingOrgId = match.id;
-      updates.organizationName = match.name;
-      updates.isOfficerProposal = true;
-    }
-    onChange(updates);
+    });
     setOrganizerInput('');
   };
 
   const removeOrganizer = (indexToRemove: number) => {
+    if (isOfficerProp && indexToRemove === 0) {
+      toast.info('Primary host organization cannot be removed.');
+      return;
+    }
+    const nextList = organizers.filter((_, idx) => idx !== indexToRemove);
     onChange({
-      organizers: organizers.filter((_, idx) => idx !== indexToRemove),
+      organizers: nextList,
     });
   };
 
@@ -855,51 +878,49 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             3. Organizer/s <span className="text-red-500">*</span>
           </label>
           <span className="text-[11px] text-gray-400">
-            Select primary host or add co-organizers
+            {isOfficerProp
+              ? 'Auto-populated primary host organization and co-organizers'
+              : 'Manual input for organizing bodies (No suggestions)'}
           </span>
         </div>
 
-        {/* Quick Organization Selector */}
-        <div className="mb-2.5">
-          <select
-            value={formData.hostingOrgId || formData.organizationId || (stripSasPhrases(organizers[0] || '').length > 0 ? '' : 'sas')}
-            onChange={(e) => handleSelectHostOrg(e.target.value)}
-            className="w-full px-3.5 py-2 bg-white border border-gray-300 rounded-xl text-xs font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] shadow-2xs"
-          >
-            {formData.isOfficerProposal !== true && (
-              <option value="sas">🏛️ Student Affairs & Services (SAS) — Institutional Activity</option>
-            )}
-            <optgroup label="Recognized Student Organizations">
-              {organizations.filter((o: any) => !o.archived).map((o: any) => (
-                <option key={o.id} value={o.id}>
-                  👥 {o.name} {o.acronym ? `(${o.acronym})` : ''}
-                </option>
-              ))}
-            </optgroup>
-          </select>
-        </div>
-        
         {/* Active Organizers Badges */}
-        <div className="flex flex-wrap gap-2 mb-2.5">
-          {organizers.map((org, index) => (
-            <span
-              key={index}
-              className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-200 text-[#001A4D] rounded-lg text-xs font-semibold shadow-2xs"
-            >
-              <Users className="w-3.5 h-3.5 text-[#0E4EBD]" />
-              {org}
-              <button
-                type="button"
-                onClick={() => removeOrganizer(index)}
-                className="hover:text-red-600 transition-colors ml-0.5"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </span>
-          ))}
-        </div>
+        {organizers.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2.5">
+            {organizers.map((org, index) => {
+              const isPrimary = isOfficerProp && index === 0;
+              return (
+                <span
+                  key={index}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold shadow-2xs ${
+                    isPrimary
+                      ? 'bg-[#001A4D] text-white border border-[#001A4D]'
+                      : 'bg-blue-50 border border-blue-200 text-[#001A4D]'
+                  }`}
+                >
+                  <Users className={`w-3.5 h-3.5 ${isPrimary ? 'text-white' : 'text-[#0E4EBD]'}`} />
+                  <span>{org}</span>
+                  {isPrimary ? (
+                    <span className="text-[10px] bg-blue-500/40 text-blue-100 px-1.5 py-0.5 rounded font-bold ml-0.5">
+                      Primary Host
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => removeOrganizer(index)}
+                      className="hover:text-red-600 transition-colors ml-0.5"
+                      title="Remove organizer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
 
-        {/* Input */}
+        {/* Manual Input (No Suggestions) */}
         <div className="flex gap-2">
           <input
             type="text"
@@ -911,7 +932,11 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
                 addOrganizer(organizerInput);
               }
             }}
-            placeholder="Type organizer or committee name and press Enter..."
+            placeholder={
+              isOfficerProp
+                ? 'Type co-organizer or committee name and press Enter...'
+                : 'Type organizer or committee name and press Enter (e.g. Student Affairs & Services)...'
+            }
             className="flex-1 px-3.5 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
           />
           <button
@@ -923,6 +948,9 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             Add
           </button>
         </div>
+        {errors.organizers && (
+          <p className="text-xs text-red-600 mt-1 font-medium">{errors.organizers}</p>
+        )}
       </div>
 
       {/* AI Suggestion Preview Modal */}

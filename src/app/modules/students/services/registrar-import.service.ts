@@ -13,6 +13,8 @@ import {
   query,
   where,
   writeBatch,
+  setDoc,
+  updateDoc,
   Timestamp,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
@@ -52,6 +54,9 @@ export interface ParsedRegistrarFile {
   totalStudents: number;
   programsDetected: Array<{ code: string; name: string }>;
   students: ParsedRegistrarStudent[];
+  isFormatValid: boolean;
+  formatError?: string;
+  trackMismatchWarning?: string;
 }
 
 export type PromotionDecision = 'AUTO_PROMOTE' | 'SKIP';
@@ -100,6 +105,11 @@ export interface ImportReconciliationAnalysis {
   existingDepartments: Map<string, DepartmentDocument>;
   detectedPrograms: DetectedProgramAlignment[];
   isSemesterProvisionNeeded: boolean;
+  isNewSemesterDetected: boolean;
+  isOutdatedDocument: boolean;
+  outdatedWarning?: string;
+  currentActiveSemester?: SemesterDocument | null;
+  existingSemesterDoc?: SemesterDocument | null;
 }
 
 export interface ImportExecutionResult {
@@ -188,6 +198,46 @@ export function parseSchoolYearAndTerm(rawTermStr: string, academicLevel: Academ
   return { schoolYear, semester };
 }
 
+/**
+ * Compares two academic periods (e.g. "2025-2026 2nd Semester" vs "2026-2027 1st Semester").
+ * Returns:
+ *   negative number if A < B (A is older/past compared to B)
+ *   0 if A === B (same school year and term)
+ *   positive number if A > B (A is newer/future compared to B)
+ */
+export function compareAcademicPeriods(
+  ayA: string,
+  termA: string,
+  ayB: string,
+  termB: string
+): number {
+  // Extract start year from "2026-2027" -> 2026
+  const startYearA = parseInt((ayA || '').split('-')[0] || '0', 10);
+  const startYearB = parseInt((ayB || '').split('-')[0] || '0', 10);
+
+  if (startYearA !== startYearB) {
+    return startYearA - startYearB;
+  }
+
+  // Same school year -> compare semester sequence
+  const termOrder: Record<string, number> = {
+    '1st Semester': 1,
+    '1st Trimester': 1,
+    '2nd Semester': 2,
+    '2nd Trimester': 2,
+    '3rd Trimester': 3,
+    'Summer': 4,
+  };
+
+  const cleanTermA = (termA || '').trim();
+  const cleanTermB = (termB || '').trim();
+
+  const orderA = termOrder[cleanTermA] || (cleanTermA.includes('1') ? 1 : cleanTermA.includes('2') ? 2 : cleanTermA.includes('3') ? 3 : 1);
+  const orderB = termOrder[cleanTermB] || (cleanTermB.includes('1') ? 1 : cleanTermB.includes('2') ? 2 : cleanTermB.includes('3') ? 3 : 1);
+
+  return orderA - orderB;
+}
+
 // ─── Parser ───────────────────────────────────────────────────────────────────
 
 /**
@@ -268,6 +318,33 @@ export async function parseRegistrarExcelFile(file: File): Promise<ParsedRegistr
 
   const { schoolYear, semester } = parseSchoolYearAndTerm(rawTermLabel, detectedAcademicLevel);
 
+  // Document Format & Structure Validation
+  const isFormatValid = Boolean(rawTermLabel && parsedStudents.length > 0);
+  let formatError: string | undefined;
+  if (!isFormatValid) {
+    if (!rawTermLabel && parsedStudents.length === 0) {
+      formatError = 'Invalid Document: The uploaded file does not match the official STI Registrar Enrollment List format (missing "School Year & Term" header and valid student records).';
+    } else if (!rawTermLabel) {
+      formatError = 'Invalid Document: Missing "School Year & Term" header in the uploaded Excel file.';
+    } else if (parsedStudents.length === 0) {
+      formatError = 'Invalid Document: No valid student records found in the uploaded Excel file. Ensure student rows contain Student No, Last Name, and First Name.';
+    }
+  }
+
+  // Cross-check track mismatch between detected academic level and detected programs
+  let trackMismatchWarning: string | undefined;
+  const programs = Array.from(programMap.values());
+  const shsStrands = ['STEM', 'ABM', 'HUMSS', 'GAS', 'TVL', 'ICT', 'ARTS'];
+  const hasShsCourses = programs.some(p => shsStrands.some(s => p.code.toUpperCase().includes(s)));
+  const collegePrefixes = ['BS', 'ACT', 'BSE', 'BA'];
+  const hasCollegeCourses = programs.some(p => collegePrefixes.some(cp => p.code.toUpperCase().startsWith(cp)));
+
+  if (detectedAcademicLevel === 'COLLEGE' && hasShsCourses && !hasCollegeCourses) {
+    trackMismatchWarning = 'Document Track Notice: This document contains Senior High School strands (e.g. STEM/ABM), but was classified as College based on file title. Please verify.';
+  } else if (detectedAcademicLevel === 'SHS' && hasCollegeCourses && !hasShsCourses) {
+    trackMismatchWarning = 'Document Track Notice: This document contains College degree programs (e.g. BSIT/BSCS), but was classified as Senior High School based on file title. Please verify.';
+  }
+
   return {
     academicLevel: detectedAcademicLevel,
     detectedSchoolYear: schoolYear,
@@ -276,6 +353,9 @@ export async function parseRegistrarExcelFile(file: File): Promise<ParsedRegistr
     totalStudents: parsedStudents.length,
     programsDetected: Array.from(programMap.values()),
     students: parsedStudents,
+    isFormatValid,
+    formatError,
+    trackMismatchWarning,
   };
 }
 
@@ -405,14 +485,50 @@ export async function analyzeRegistrarImport(
   }
 
   // Check Semesters collection
-  const semestersSnap = await getDocs(
+  const allSemestersSnap = await getDocs(
     query(
       collection(db, SEMESTERS_COLLECTION),
-      where('academicYear', '==', fileSummary.detectedSchoolYear),
       where('academicLevel', '==', fileSummary.academicLevel)
     )
   );
-  const isSemesterProvisionNeeded = semestersSnap.empty;
+  const allSemesters = allSemestersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as SemesterDocument));
+
+  // Find currently active semester for this academicLevel
+  const currentActiveSemester = allSemesters.find((s) => s.status === 'ACTIVE' && !s.archived) || null;
+
+  // Find exact matching semester document for detectedSchoolYear and detectedSemester
+  const existingSemesterDoc = allSemesters.find(
+    (s) =>
+      s.academicYear === fileSummary.detectedSchoolYear &&
+      (s.semester === fileSummary.detectedSemester || s.term === fileSummary.detectedSemester)
+  ) || null;
+
+  const isSemesterProvisionNeeded = !existingSemesterDoc;
+
+  // Compare file academic period with current active semester
+  let isOutdatedDocument = false;
+  let outdatedWarning: string | undefined;
+  let isNewSemesterDetected = false;
+
+  if (currentActiveSemester) {
+    const periodComparison = compareAcademicPeriods(
+      fileSummary.detectedSchoolYear,
+      fileSummary.detectedSemester,
+      currentActiveSemester.academicYear,
+      currentActiveSemester.semester || currentActiveSemester.term || ''
+    );
+
+    if (periodComparison < 0) {
+      isOutdatedDocument = true;
+      outdatedWarning = `Outdated Document Detected: The uploaded file is for A.Y. ${fileSummary.detectedSchoolYear} ${fileSummary.detectedSemester}, which is older than the current active period (A.Y. ${currentActiveSemester.academicYear} ${currentActiveSemester.semester}). Uploading this file will import historical student records without activating this past academic period.`;
+    } else if (periodComparison > 0) {
+      isNewSemesterDetected = true;
+    } else {
+      isNewSemesterDetected = false;
+    }
+  } else {
+    isNewSemesterDetected = true;
+  }
 
   // Check Departments collection
   const deptsSnap = await getDocs(
@@ -486,6 +602,11 @@ export async function analyzeRegistrarImport(
     existingDepartments,
     detectedPrograms,
     isSemesterProvisionNeeded,
+    isNewSemesterDetected,
+    isOutdatedDocument,
+    outdatedWarning,
+    currentActiveSemester,
+    existingSemesterDoc,
   };
 }
 
@@ -614,12 +735,15 @@ export async function executeRegistrarBulkImport(
     await courseBatch.commit();
   }
 
-  // Step 2: Auto-provision semester if requested
-  if (autoProvisionSemester && analysis.isSemesterProvisionNeeded) {
-    onProgress?.(0, 100, 'Provisioning active semester period...');
-    const semRef = doc(collection(db, SEMESTERS_COLLECTION));
-    await writeBatch(db)
-      .set(semRef, {
+  // Step 2: Auto-provision or activate semester if requested AND document is NOT outdated
+  if (autoProvisionSemester && !analysis.isOutdatedDocument) {
+    onProgress?.(0, 100, 'Provisioning and activating active semester period...');
+    let activeSemId = '';
+
+    if (analysis.isSemesterProvisionNeeded) {
+      const semRef = doc(collection(db, SEMESTERS_COLLECTION));
+      activeSemId = semRef.id;
+      await setDoc(semRef, {
         id: semRef.id,
         academicYear: analysis.fileSummary.detectedSchoolYear,
         academicLevel: analysis.fileSummary.academicLevel,
@@ -636,8 +760,35 @@ export async function executeRegistrarBulkImport(
         archived: false,
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
-      })
-      .commit();
+      });
+    } else if (analysis.existingSemesterDoc && analysis.existingSemesterDoc.status !== 'ACTIVE') {
+      activeSemId = analysis.existingSemesterDoc.id;
+      await updateDoc(doc(db, SEMESTERS_COLLECTION, analysis.existingSemesterDoc.id), {
+        status: 'ACTIVE',
+        updatedAt: Timestamp.now(),
+      });
+    } else if (analysis.existingSemesterDoc) {
+      activeSemId = analysis.existingSemesterDoc.id;
+    }
+
+    // Gracefully complete prior active semesters for this academicLevel
+    if (activeSemId) {
+      const priorActiveSnaps = await getDocs(
+        query(
+          collection(db, SEMESTERS_COLLECTION),
+          where('academicLevel', '==', analysis.fileSummary.academicLevel),
+          where('status', '==', 'ACTIVE')
+        )
+      );
+      for (const d of priorActiveSnaps.docs) {
+        if (d.id !== activeSemId) {
+          await updateDoc(doc(db, SEMESTERS_COLLECTION, d.id), {
+            status: 'COMPLETED',
+            updatedAt: Timestamp.now(),
+          });
+        }
+      }
+    }
   }
 
   // Build operations queue

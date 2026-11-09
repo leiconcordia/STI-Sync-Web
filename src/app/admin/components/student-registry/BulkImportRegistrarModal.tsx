@@ -36,7 +36,6 @@ import {
   Layers,
   PlusCircle,
   UserMinus,
-  UserCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDepartments, useCourses, useSections } from '../../../modules/academic';
@@ -165,8 +164,15 @@ export default function BulkImportRegistrarModal({
 
     try {
       const parsed = await parseRegistrarExcelFile(selectedFile);
+      if (!parsed.isFormatValid) {
+        throw new Error(parsed.formatError || 'Invalid Document: The uploaded file does not match the official STI Registrar Enrollment List format.');
+      }
       if (parsed.students.length === 0) {
         throw new Error('No valid student records found in this spreadsheet. Please ensure it follows the registrar format.');
+      }
+
+      if (parsed.trackMismatchWarning) {
+        toast.warning(parsed.trackMismatchWarning, { duration: 6000 });
       }
 
       setParsedFile(parsed);
@@ -182,6 +188,13 @@ export default function BulkImportRegistrarModal({
       setMissing(analysisResult.missingStudents);
       setSelectedPromotionStudentNos(new Set(analysisResult.matchedPromotions.map((p) => p.incoming.studentNo)));
       setSelectedNewStudentNos(new Set(analysisResult.newStudents.map((s) => s.studentNo)));
+
+      if (analysisResult.isOutdatedDocument) {
+        setAutoProvisionSemester(false);
+        toast.warning(analysisResult.outdatedWarning || 'Uploaded file is from a past academic period.', { duration: 7000 });
+      } else {
+        setAutoProvisionSemester(true);
+      }
 
       // Initialize program-department alignment map from analysis
       const initialMap: Record<string, string> = {};
@@ -678,6 +691,42 @@ export default function BulkImportRegistrarModal({
                     </div>
                   </div>
 
+                  {/* Track Mismatch Alert */}
+                  {parsedFile.trackMismatchWarning && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                      <span>{parsedFile.trackMismatchWarning}</span>
+                    </div>
+                  )}
+
+                  {/* Outdated Period Alert */}
+                  {analysis?.isOutdatedDocument && (
+                    <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-bold text-amber-800">Historical / Outdated Academic Period Detected</div>
+                        <div>{analysis.outdatedWarning}</div>
+                        <div className="text-[11px] text-amber-700 font-semibold">
+                          * Current active semester ({analysis.currentActiveSemester?.label || 'N/A'}) will remain protected and unchanged.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* New Semester Detected Alert */}
+                  {analysis?.isNewSemesterDetected && !analysis?.isOutdatedDocument && (
+                    <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-xl text-xs text-emerald-900 flex items-start gap-3">
+                      <Sparkles className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-bold text-emerald-800">New Academic Semester Detected</div>
+                        <div>
+                          The uploaded file is for <strong>A.Y. {parsedFile.detectedSchoolYear} {parsedFile.detectedSemester} ({parsedFile.academicLevel})</strong>.
+                          Committing this import will establish and activate this new term as the active semester.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <button
                     onClick={() => setCurrentStep(2)}
                     disabled={isAnalyzing}
@@ -705,6 +754,30 @@ export default function BulkImportRegistrarModal({
              ───────────────────────────────────────────────────────────── */}
           {currentStep === 2 && analysis && (
             <div className="space-y-5 animate-fade-in">
+
+              {/* Top Period Banner in Step 2 */}
+              {analysis.isOutdatedDocument ? (
+                <div className="p-4 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 flex items-start gap-3 shadow-xs">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-bold text-amber-900 text-sm">Historical Period Import Mode</div>
+                    <div className="leading-relaxed">{analysis.outdatedWarning}</div>
+                    <div className="text-[11px] text-amber-800 font-semibold">
+                      * The active semester ({analysis.currentActiveSemester?.label || 'N/A'}) will NOT be overwritten.
+                    </div>
+                  </div>
+                </div>
+              ) : analysis.isNewSemesterDetected ? (
+                <div className="p-4 bg-emerald-50 border border-emerald-300 rounded-2xl text-xs text-emerald-950 flex items-start gap-3 shadow-xs">
+                  <Sparkles className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-bold text-emerald-900 text-sm">⚡ New Academic Semester Auto-Activation</div>
+                    <div className="leading-relaxed">
+                      This import will establish <strong>A.Y. {analysis.fileSummary.detectedSchoolYear} {analysis.fileSummary.detectedSemester} ({analysis.fileSummary.academicLevel})</strong> as the new active academic period. The previous active semester ({analysis.currentActiveSemester?.label || 'N/A'}) will be marked as Completed.
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               
               {/* Summary Metrics Bar */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1499,16 +1572,21 @@ export default function BulkImportRegistrarModal({
                     {analysis.missingCourses.length > 0 ? ` (${analysis.missingCourses.length} will be created)` : ' (All exist)'}
                   </span>
                 </label>
-                <label className="flex items-center gap-2.5 text-xs text-gray-700 cursor-pointer">
+                <label className={`flex items-center gap-2.5 text-xs text-gray-700 ${analysis.isOutdatedDocument ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
                     checked={autoProvisionSemester}
+                    disabled={analysis.isOutdatedDocument}
                     onChange={(e) => setAutoProvisionSemester(e.target.checked)}
-                    className="w-4 h-4 rounded text-[#001A4D] focus:ring-0 cursor-pointer"
+                    className="w-4 h-4 rounded text-[#001A4D] focus:ring-0 cursor-pointer disabled:cursor-not-allowed"
                   />
                   <span>
-                    Auto-provision active term into <code className="bg-gray-100 px-1 py-0.5 rounded font-mono text-gray-800">semesters</code> collection
-                    {analysis.isSemesterProvisionNeeded ? ' (New term will be activated)' : ' (Already active)'}
+                    Auto-provision & activate semester in <code className="bg-gray-100 px-1 py-0.5 rounded font-mono text-gray-800">semesters</code> collection
+                    {analysis.isOutdatedDocument
+                      ? ' (Disabled for historical document)'
+                      : analysis.isNewSemesterDetected
+                      ? ' (⚡ Will activate as new active semester)'
+                      : ' (Already currently active)'}
                   </span>
                 </label>
               </div>

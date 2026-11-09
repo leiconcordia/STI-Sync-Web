@@ -44,6 +44,7 @@ import {
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { canEditProposal } from '../../events/utils/event-lifecycle.utils';
 import { stripSasPhrases } from '../../events/utils/organization-display.utils';
+import { useOrganizationStream } from '../../organizations/hooks/useOrganizationStream';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 
 import Step1GeneralInfo from './wizard/Step1GeneralInfo';
@@ -196,6 +197,8 @@ export default function CreateProposalModal({
     role: 'sas_admin',
   },
 }: CreateProposalModalProps) {
+  const { data: allOrgs = [] } = useOrganizationStream();
+
   const isOfficerProp =
     currentUser.role === 'officer' ||
     currentUser.role === 'student_officer' ||
@@ -211,17 +214,33 @@ export default function CreateProposalModal({
   );
   const isOfficerOnly = isOfficerProp && !isAdviserOrAdmin;
 
-  const defaultOrgName = currentUser.organizationName || (isOfficerProp ? 'Student Organization' : 'Student Affairs & Services (SAS)');
+  const matchedOrg = useMemo(() => {
+    if (!currentUser.organizationId) return null;
+    return allOrgs.find((o) => o.id === currentUser.organizationId);
+  }, [allOrgs, currentUser.organizationId]);
+
+  const resolvedOrgName = useMemo(() => {
+    if (matchedOrg) {
+      return matchedOrg.acronym && !matchedOrg.name.includes(matchedOrg.acronym)
+        ? `${matchedOrg.name} (${matchedOrg.acronym})`
+        : matchedOrg.name;
+    }
+    if (currentUser.organizationName && stripSasPhrases(currentUser.organizationName).length > 0) {
+      return stripSasPhrases(currentUser.organizationName);
+    }
+    return isOfficerProp ? 'Student Organization' : '';
+  }, [matchedOrg, currentUser.organizationName, isOfficerProp]);
+
   const defaultOrgId = currentUser.organizationId || (isOfficerProp ? 'student_org' : 'sas');
 
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<ProposalFormData>(() => ({
     title: '',
     description: '',
-    organizers: [defaultOrgName],
+    organizers: isOfficerProp && resolvedOrgName ? [resolvedOrgName] : [],
     organizationId: defaultOrgId,
     hostingOrgId: defaultOrgId,
-    organizationName: defaultOrgName,
+    organizationName: isOfficerProp ? resolvedOrgName : '',
     isOfficerProposal: isOfficerProp,
     creatorRole: currentUser.role || (isOfficerProp ? 'officer' : 'sas_admin'),
     createdByName: currentUser.name || '',
@@ -368,19 +387,24 @@ export default function CreateProposalModal({
           isOfficerProposal: isOfficerInitial,
           organizationId: initialData.organizationId || (isOfficerInitial ? (initialData as any).hostingOrgId : currentUser.organizationId),
           hostingOrgId: (initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId,
-          organizationName: initialData.organizationName || currentUser.organizationName,
-          organizers:
-            initialData.organizers && initialData.organizers.length > 0
-              ? initialData.organizers
-              : [currentUser.organizationName || (isOfficerInitial ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
-          proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || 'Student Affairs & Services'],
+          organizationName: initialData.organizationName || (isOfficerInitial ? resolvedOrgName : ''),
+          organizers: (() => {
+            const raw = initialData.organizers && initialData.organizers.length > 0 ? initialData.organizers : [];
+            if (isOfficerInitial) {
+              const studentOnly = raw.filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+              if (studentOnly.length > 0) return studentOnly;
+              return [resolvedOrgName];
+            }
+            return raw;
+          })(),
+          proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || (isOfficerInitial ? 'Student Officer' : 'Student Affairs & Services')],
           approvalChain:
             initialData.approvalChain && initialData.approvalChain.length > 0
               ? initialData.approvalChain
               : defaultChain,
         }));
       } else {
-        const refPrefix = isOfficer ? (currentUser.organizationName?.slice(0, 4) || 'ORG') : 'SAS';
+        const refPrefix = isOfficer ? (resolvedOrgName.slice(0, 4) || 'ORG') : 'SAS';
         generateProposalReferenceNumber(refPrefix).then((ref) => {
           setFormData((prev) => ({
             ...prev,
@@ -389,16 +413,36 @@ export default function CreateProposalModal({
             createdByEmail: currentUser.email,
             creatorRole: currentUser.role,
             isOfficerProposal: isOfficer,
-            organizationId: currentUser.organizationId,
-            hostingOrgId: currentUser.organizationId,
-            organizationName: currentUser.organizationName,
-            organizers: [currentUser.organizationName || (isOfficer ? 'Student Organization' : 'Student Affairs & Services (SAS)')],
-            proponents: [currentUser.name || 'Student Affairs & Services'],
+            organizationId: currentUser.organizationId || (isOfficer ? 'student_org' : 'sas'),
+            hostingOrgId: currentUser.organizationId || (isOfficer ? 'student_org' : 'sas'),
+            organizationName: isOfficer ? resolvedOrgName : '',
+            organizers: isOfficer && resolvedOrgName ? [resolvedOrgName] : [],
+            proponents: [currentUser.name || (isOfficer ? 'Student Officer' : 'Student Affairs & Services')],
             approvalChain: defaultChain,
           }));
         });
       }
-  }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName]);
+  }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName, resolvedOrgName]);
+
+  // Auto-populate organization name in organizers if creating as an organization
+  useEffect(() => {
+    if (isOfficerProp && resolvedOrgName && resolvedOrgName !== 'Student Organization') {
+      setFormData((prev) => {
+        const currentList = prev.organizers || [];
+        const hasOrg = currentList.includes(resolvedOrgName);
+        const studentOnly = currentList.filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0);
+        if (!hasOrg || studentOnly.length === 0 || studentOnly.includes('Student Organization')) {
+          const coOrganizers = studentOnly.filter((o) => o !== resolvedOrgName && o !== 'Student Organization');
+          return {
+            ...prev,
+            organizationName: resolvedOrgName,
+            organizers: [resolvedOrgName, ...coOrganizers],
+          };
+        }
+        return prev;
+      });
+    }
+  }, [isOfficerProp, resolvedOrgName]);
 
   if (!isOpen) return null;
 
@@ -805,9 +849,18 @@ export default function CreateProposalModal({
         (formData as any)?.returnedSnapshot ||
         (isReturnedProposal ? initialData : null);
 
+      const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
+      const sanitizedDraftOrganizers = isOfficerForm
+        ? (formData.organizers || []).filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0)
+        : (formData.organizers || []);
+      const finalDraftOrganizers = sanitizedDraftOrganizers.length > 0
+        ? sanitizedDraftOrganizers
+        : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
+
       const result = await saveProposalDraft(
         {
           ...formData,
+          organizers: finalDraftOrganizers,
           status: 'draft',
           ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
         },
@@ -880,9 +933,18 @@ export default function CreateProposalModal({
 
     setIsSubmitting(true);
     try {
+      const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
+      const sanitizedSubmitOrganizers = isOfficerForm
+        ? (formData.organizers || []).filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0)
+        : (formData.organizers || []);
+      const finalSubmitOrganizers = sanitizedSubmitOrganizers.length > 0
+        ? sanitizedSubmitOrganizers
+        : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
+
       const result = await submitProposalForReview(
         {
           ...formData,
+          organizers: finalSubmitOrganizers,
           submittedBySignatureUrl: effectiveSignature,
         },
         {

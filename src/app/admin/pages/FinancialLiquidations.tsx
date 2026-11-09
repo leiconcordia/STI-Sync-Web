@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
+import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import {
   approveLiquidationReport,
   returnLiquidationReport,
@@ -107,6 +109,56 @@ export function FinancialLiquidations() {
   const [currentPage, setCurrentPage] = useState(1);
   const [showFilters, setShowFilters] = useState(false);
   const [filterOrg, setFilterOrg] = useState('all');
+  const [filterSchoolYear, setFilterSchoolYear] = useState('all');
+  const [filterSemester, setFilterSemester] = useState('all');
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
+
+  // Streams
+  const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { events = [] } = useAllEvents();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    liquidations.forEach((l) => { if (l.schoolYear) set.add(l.schoolYear); });
+    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, liquidations, events, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    liquidations.forEach((l) => { if (l.semester) set.add(l.semester); });
+    events.forEach((e) => {
+      if (e.semester) set.add(e.semester);
+      if ((e as any).term) set.add((e as any).term);
+    });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, liquidations, events]);
 
   const { profile: adviserProfile } = useAdviserProfile();
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
@@ -186,6 +238,22 @@ export function FinancialLiquidations() {
         }
         if (filterOrg !== 'all' && liq.organizationName !== filterOrg) return false;
 
+        // School Year Filter
+        if (filterSchoolYear !== 'all') {
+          const parentEvent = liq.eventId ? events.find((e) => e.id === liq.eventId) : null;
+          const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
+          const sy = liq.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
+          if (sy && sy !== filterSchoolYear) return false;
+        }
+
+        // Semester Filter
+        if (filterSemester !== 'all') {
+          const parentEvent = liq.eventId ? events.find((e) => e.id === liq.eventId) : null;
+          const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
+          const term = liq.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
+          if (term && term !== filterSemester) return false;
+        }
+
         const q = searchQuery.toLowerCase().trim();
         if (q) {
           const eventMatch = (liq.eventTitle || '').toLowerCase().includes(q);
@@ -198,7 +266,7 @@ export function FinancialLiquidations() {
         return true;
       })
       .sort((a, b) => getLiquidationTimestamp(b) - getLiquidationTimestamp(a));
-  }, [liquidations, activeTab, filterOrg, searchQuery]);
+  }, [liquidations, activeTab, filterOrg, filterSchoolYear, filterSemester, searchQuery, events, semesters]);
 
   // KPI calculations
   const pendingItems = useMemo(
@@ -237,7 +305,7 @@ export function FinancialLiquidations() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterOrg]);
+  }, [searchQuery, filterOrg, filterSchoolYear, filterSemester]);
 
   const handleApprove = async () => {
     if (!selectedReport) return;
@@ -486,7 +554,7 @@ export function FinancialLiquidations() {
             {/* Filter Toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')
                   ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
                   : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
                 }`}
@@ -510,6 +578,40 @@ export function FinancialLiquidations() {
         {/* Filter Drawer */}
         {showFilters && (
           <div className="p-4 bg-gray-50/60 border-b border-gray-200 flex flex-wrap items-center gap-3 text-xs">
+            {/* School Year Filter */}
+            <div>
+              <span className="text-gray-500 font-semibold mr-1.5">School Year:</span>
+              <select
+                value={filterSchoolYear}
+                onChange={(e) => setFilterSchoolYear(e.target.value)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="all">All School Years</option>
+                {availableSchoolYears.map((sy) => (
+                  <option key={sy} value={sy}>
+                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Semester Filter */}
+            <div>
+              <span className="text-gray-500 font-semibold mr-1.5">Semester:</span>
+              <select
+                value={filterSemester}
+                onChange={(e) => setFilterSemester(e.target.value)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="all">All Semesters</option>
+                {availableSemesters.map((term) => (
+                  <option key={term} value={term}>
+                    {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div>
               <span className="text-gray-500 font-semibold mr-1.5">Organization:</span>
               <select
@@ -526,13 +628,17 @@ export function FinancialLiquidations() {
               </select>
             </div>
 
-            {filterOrg !== 'all' && (
+            {(filterOrg !== 'all' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')) && (
               <button
-                onClick={() => setFilterOrg('all')}
+                onClick={() => {
+                  setFilterOrg('all');
+                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
+                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                }}
                 className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <RotateCcw className="w-3 h-3" />
-                Reset Org Filter
+                Reset to Current Semester
               </button>
             )}
           </div>

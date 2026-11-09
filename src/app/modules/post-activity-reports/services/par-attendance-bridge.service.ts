@@ -44,12 +44,33 @@ export async function computeEventAttendanceSummary(
   eventData?: any,
   proposalData?: any
 ): Promise<EventAttendanceBridgeResult> {
-  const defaultTargetAudience =
-    proposalData?.targetAudienceText ||
-    proposalData?.targetMarket ||
-    eventData?.targetAudienceText ||
-    eventData?.targetMarket ||
-    'Enrolled STI Students';
+  // Derive default target audience without static placeholders like "Enrolled STI Students"
+  let defaultTargetAudience = '';
+  if (proposalData?.targetAudience) {
+    const aud = proposalData.targetAudience;
+    if (typeof aud === 'string') {
+      defaultTargetAudience = aud;
+    } else if (typeof aud === 'object') {
+      if (Array.isArray(aud.courseCodes) && aud.courseCodes.length > 0) {
+        defaultTargetAudience = aud.courseCodes.join(', ');
+      } else if (Array.isArray(aud.courses) && aud.courses.length > 0) {
+        defaultTargetAudience = aud.courses.join(', ');
+      } else if (Array.isArray(aud.departments) && aud.departments.length > 0) {
+        defaultTargetAudience = aud.departments.join(', ');
+      } else if (Array.isArray(aud.academicLevels) && aud.academicLevels.length > 0) {
+        defaultTargetAudience = aud.academicLevels.join(', ');
+      }
+    }
+  }
+
+  if (!defaultTargetAudience) {
+    defaultTargetAudience =
+      proposalData?.targetAudienceText ||
+      proposalData?.targetMarket ||
+      eventData?.targetAudienceText ||
+      eventData?.targetMarket ||
+      '';
+  }
 
   // 1. Determine planned / expected target headcount
   const expectedFromProposal = parseParticipantCount(proposalData?.estimatedAttendance);

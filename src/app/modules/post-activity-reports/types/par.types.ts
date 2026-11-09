@@ -198,8 +198,8 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
 export type PARFormData = Partial<PostActivityReportDocument>;
 
 export const PAR_SECTIONS_FOR_REVISION = [
-  { id: 'overview', key: 'overview', stepNumber: 1, label: '1. Event & Clearance Summary', description: 'Linked event details, actual mechanics, target audience & attendance summary' },
-  { id: 'objectives', key: 'objectives', stepNumber: 2, label: '2. Objectives & Learnings', description: 'Objectives achievement status, narrative, key learnings, and event assessments' },
-  { id: 'recommendations', key: 'recommendations', stepNumber: 3, label: '3. STI Recommendations', description: 'Program flow, participant engagement, technical setup, and preparedness' },
+  { id: 'overview', key: 'overview', stepNumber: 1, label: '1. Event & Clearance Summary', description: 'Linked event details, target audience & attendance summary' },
+  { id: 'objectives', key: 'objectives', stepNumber: 2, label: '2. Results of the Activity', description: 'Achievement of objectives, key learnings, curriculum enrichment, venue, logistics, schedule, and issues' },
+  { id: 'recommendations', key: 'recommendations', stepNumber: 3, label: '3. Remarks', description: 'Program flow, participant engagement, technical setup, and participant preparedness remarks' },
   { id: 'photos_signatories', key: 'photos_signatories', stepNumber: 4, label: '4. Photos & Pipeline', description: 'Activity documentation photos and institutional signatory endorsement route' },
 ];

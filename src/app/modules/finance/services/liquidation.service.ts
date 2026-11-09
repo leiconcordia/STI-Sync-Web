@@ -361,6 +361,7 @@ export const createLiquidationReport = async (
 ): Promise<string> => {
   // ── STRICT 1:1:1 LIFECYCLE INVARIANT ──
   // An activity proposal can have at most ONE Financial Liquidation.
+  let eventMetadata: { schoolYear?: string; semester?: string; semesterId?: string } = {};
   if (data.eventId) {
     // 1. Check existing liquidations in Firestore for this eventId
     const existingLiqSnap = await getDocs(
@@ -387,6 +388,11 @@ export const createLiquidationReport = async (
     const eventSnap = await getDoc(eventRef);
     if (eventSnap.exists()) {
       const evData = eventSnap.data() as any;
+      eventMetadata = {
+        schoolYear: evData.schoolYear,
+        semester: evData.semester || evData.term,
+        semesterId: evData.semesterId,
+      };
 
       // Authoring isolation:
       // SAS Admin can only liquidate SAS activities; Student Org officers can only liquidate their own org's activities.
@@ -468,6 +474,9 @@ export const createLiquidationReport = async (
 
   const payload: Partial<LiquidationDocument> = {
     ...data,
+    schoolYear: data.schoolYear || eventMetadata.schoolYear || '',
+    semester: data.semester || eventMetadata.semester || '',
+    semesterId: data.semesterId || eventMetadata.semesterId || '',
     totalActualSpending,
     surplusOrDeficit,
     status: initialStatus,

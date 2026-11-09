@@ -881,30 +881,47 @@ export async function exportPostActivityReportPDF(
   );
 
   // ─── Remarks (4 Categorized Areas with Smooth Page Breaks) ───
+  const formatRemarksField = (val: any, listVal?: any): string => {
+    if (Array.isArray(listVal) && listVal.length > 0) {
+      return listVal.filter(Boolean).map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
+    }
+    if (Array.isArray(val) && val.length > 0) {
+      return val.filter(Boolean).map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
+    }
+    if (typeof val === 'string' && val.trim()) {
+      const lines = val.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (lines.length > 1) {
+        return lines.map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
+      }
+      return val;
+    }
+    return '';
+  };
+
   const remarkAreas = [
     {
       num: '1',
       title: 'Program Flow and Time Management',
-      obs: recommendations.programFlow.observations,
-      rec: recommendations.programFlow.recommendations,
+      obs: formatRemarksField(recommendations.programFlow?.observations, (recommendations.programFlow as any)?.observationsList),
+      rec: formatRemarksField(recommendations.programFlow?.recommendations, (recommendations.programFlow as any)?.recommendationsList),
     },
     {
       num: '2',
       title: 'Participant Engagement and Interaction',
-      obs: recommendations.participantEngagement.observations,
-      rec: recommendations.participantEngagement.recommendations,
+      obs: formatRemarksField(recommendations.participantEngagement?.observations, (recommendations.participantEngagement as any)?.observationsList),
+      rec: formatRemarksField(recommendations.participantEngagement?.recommendations, (recommendations.participantEngagement as any)?.recommendationsList),
     },
     {
       num: '3',
       title: 'Technical Setup and Venue Preparation',
-      obs: recommendations.technicalSetup.observations,
-      rec: recommendations.technicalSetup.recommendations,
+      obs: formatRemarksField(recommendations.technicalSetup?.observations, (recommendations.technicalSetup as any)?.observationsList),
+      rec: formatRemarksField(recommendations.technicalSetup?.recommendations, (recommendations.technicalSetup as any)?.recommendationsList),
     },
     {
       num: '4',
       title: 'Participant Preparedness and Expectations',
-      obs: recommendations.participantPreparedness.observations,
-      rec: recommendations.participantPreparedness.recommendations,
+      obs: formatRemarksField(recommendations.participantPreparedness?.observations, (recommendations.participantPreparedness as any)?.observationsList),
+      rec: formatRemarksField(recommendations.participantPreparedness?.recommendations, (recommendations.participantPreparedness as any)?.recommendationsList),
     },
   ];
 

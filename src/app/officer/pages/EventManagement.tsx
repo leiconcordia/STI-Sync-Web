@@ -17,7 +17,8 @@ import {
   CheckCircle2,
   FileText,
   Sparkles,
-  Lock
+  Lock,
+  X
 } from 'lucide-react';
 import CreateProposalModal from '../../modules/activity-proposals/components/CreateProposalModal';
 import { getProposalById } from '../../modules/activity-proposals/services/proposal.service';
@@ -28,7 +29,7 @@ import {
   useEventCategoriesStream,
   useVenuesStream,
 } from '../../modules/events/hooks/useEventConfigStream';
-import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
+import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
 import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, getSignatoryProgress } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
@@ -95,8 +96,8 @@ export function getEventBudget(event: EventDocument): number {
   }
   if (Array.isArray(event.budgetItems) && event.budgetItems.length > 0) {
     return event.budgetItems.reduce((acc, item: any) => {
-      const lineCost = Number(item.approvedAmount) > 0 
-        ? Number(item.approvedAmount) 
+      const lineCost = Number(item.approvedAmount) > 0
+        ? Number(item.approvedAmount)
         : (Number(item.quantity) || 0) * (Number(item.unitCost) || Number(item.cost) || 0);
       return acc + (Number(lineCost) || Number(item.totalCost) || 0);
     }, 0);
@@ -154,9 +155,11 @@ export default function EventManagement() {
   const navigate = useNavigate();
   const [activeStatus, setActiveStatus] = useState<EventStatusTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterSchoolYear, setFilterSchoolYear] = useState('All');
+  const [filterSemester, setFilterSemester] = useState('All');
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterVenue, setFilterVenue] = useState('All');
-  const [filterSemester, setFilterSemester] = useState('All');
   const [showFilters, setShowFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -180,10 +183,25 @@ export default function EventManagement() {
   const { categories = [] } = useEventCategoriesStream();
   const { venues = [] } = useVenuesStream();
   const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
 
   const activeOrgId = profile?.activeOrganizationId || '';
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
-  const activeOrgName = activeOrg ? activeOrg.name : 'My Organization';
+  const activeOrgName = activeOrg
+    ? (activeOrg.acronym && !activeOrg.name.includes(activeOrg.acronym)
+        ? `${activeOrg.name} (${activeOrg.acronym})`
+        : activeOrg.name)
+    : 'My Organization';
   const activeOrgAcronym = activeOrg ? activeOrg.acronym || activeOrg.name.slice(0, 4).toUpperCase() : 'ORG';
   const activeOrgLogo = activeOrg?.logoUrl || (activeOrg as any)?.logo || null;
 
@@ -259,6 +277,36 @@ export default function EventManagement() {
     cancelled: events.filter((e) => (e.proposalStatus === 'cancelled' || e.status === 'cancelled') && !e.isArchived && !e.isDeleted).length,
   };
 
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, events, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    events.forEach((e) => {
+      if (e.semester) set.add(e.semester);
+      if ((e as any).term) set.add((e as any).term);
+    });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, events]);
+
   // Filtered & Sorted (LATEST FIRST by default)
   const filteredEvents = useMemo(() => {
     return events
@@ -294,24 +342,31 @@ export default function EventManagement() {
 
         const matchesCategory = filterCategory === 'All' || event.eventCategoryId === filterCategory;
         const matchesVenue = filterVenue === 'All' || event.venueId === filterVenue;
-        const matchesSemester =
-          filterSemester === 'All' ||
-          event.semesterId === filterSemester ||
-          (() => {
-            const sem = semesters.find((s) => s.id === filterSemester);
-            if (!sem) return false;
-            if (event.schoolYear && event.schoolYear === sem.academicYear) {
-              if (event.semester && event.semester === sem.semester) return true;
-              if ((event as any).term && (event as any).term === sem.semester) return true;
-            }
-            const d = event.sessions?.[0]?.date;
-            return d && sem.startDate && sem.endDate ? (d >= sem.startDate && d <= sem.endDate) : false;
-          })();
+        // School Year Filter
+        let matchesSchoolYear = true;
+        if (filterSchoolYear !== 'All') {
+          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
+          const evSy = event.schoolYear || sem?.academicYear;
+          if (evSy && evSy !== filterSchoolYear) matchesSchoolYear = false;
+        }
 
-        return statusMatch && matchesSearch && matchesCategory && matchesVenue && matchesSemester;
+        // Semester Filter
+        let matchesSemester = true;
+        if (filterSemester !== 'All') {
+          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
+          const evTerm = event.semester || (event as any).term || sem?.semester || (sem as any)?.term;
+          if (evTerm) {
+            matchesSemester = evTerm === filterSemester;
+          } else if (sem && sem.startDate && sem.endDate) {
+            const d = event.sessions?.[0]?.date;
+            matchesSemester = d ? (d >= sem.startDate && d <= sem.endDate) : false;
+          }
+        }
+
+        return statusMatch && matchesSearch && matchesCategory && matchesVenue && matchesSchoolYear && matchesSemester;
       })
       .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
-  }, [events, activeStatus, searchQuery, filterCategory, filterVenue, filterSemester, semesters]);
+  }, [events, activeStatus, searchQuery, filterCategory, filterVenue, filterSchoolYear, filterSemester, semesters]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / ITEMS_PER_PAGE));
@@ -327,7 +382,7 @@ export default function EventManagement() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterCategory, filterVenue, filterSemester]);
+  }, [searchQuery, filterCategory, filterVenue, filterSchoolYear, filterSemester]);
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Are you sure you want to discard this draft? You can safely restore it anytime from the Trash tab.')) return;
@@ -480,7 +535,7 @@ export default function EventManagement() {
         );
       case 'cancelled':
         return (
-          <span 
+          <span
             className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 cursor-help"
             title={event?.cancellationReason ? `Cancelled: ${event.cancellationReason}` : 'Event Cancelled'}
           >
@@ -524,7 +579,7 @@ export default function EventManagement() {
           setDirectEvent(fetched as any);
           setSelectedEventId(fetched.id);
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }, [targetId, events, loading]);
 
@@ -562,11 +617,10 @@ export default function EventManagement() {
         {/* Pending Card */}
         <div
           onClick={() => handleTabChange('pending')}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
-            activeStatus === 'pending'
+          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'pending'
               ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-white border-amber-600 ring-2 ring-amber-400/30 shadow-md'
               : 'bg-white border-gray-200 hover:border-amber-300 hover:shadow-sm'
-          }`}
+            }`}
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${activeStatus === 'pending' ? 'text-amber-100' : 'text-gray-500'}`}>
@@ -589,11 +643,10 @@ export default function EventManagement() {
         {/* Approved Card */}
         <div
           onClick={() => handleTabChange('approved')}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
-            activeStatus === 'approved'
+          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'approved'
               ? 'bg-gradient-to-br from-emerald-600 to-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-400/30 shadow-md'
               : 'bg-white border-gray-200 hover:border-emerald-300 hover:shadow-sm'
-          }`}
+            }`}
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${activeStatus === 'approved' ? 'text-emerald-100' : 'text-gray-500'}`}>
@@ -616,11 +669,10 @@ export default function EventManagement() {
         {/* Completed Card */}
         <div
           onClick={() => handleTabChange('completed')}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
-            activeStatus === 'completed'
+          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'completed'
               ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white border-blue-700 ring-2 ring-blue-400/30 shadow-md'
               : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm'
-          }`}
+            }`}
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${activeStatus === 'completed' ? 'text-blue-100' : 'text-gray-500'}`}>
@@ -643,11 +695,10 @@ export default function EventManagement() {
         {/* Rejected Card */}
         <div
           onClick={() => handleTabChange('rejected')}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
-            activeStatus === 'rejected'
+          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'rejected'
               ? 'bg-gradient-to-br from-rose-600 to-red-700 text-white border-rose-700 ring-2 ring-rose-400/30 shadow-md'
               : 'bg-white border-gray-200 hover:border-rose-300 hover:shadow-sm'
-          }`}
+            }`}
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${activeStatus === 'rejected' ? 'text-rose-100' : 'text-gray-500'}`}>
@@ -691,18 +742,16 @@ export default function EventManagement() {
                 <button
                   key={tab.key}
                   onClick={() => handleTabChange(tab.key as EventStatusTab)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-                    isActive
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
                       ? 'bg-[#001A4D] text-white shadow-xs'
                       : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
-                  }`}
+                    }`}
                 >
                   <span>{tab.label}</span>
                   {tab.count !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                      }`}
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                        }`}
                     >
                       {tab.count}
                     </span>
@@ -729,11 +778,10 @@ export default function EventManagement() {
             {/* Filter Toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${
-                showFilters || filterCategory !== 'All' || filterVenue !== 'All' || filterSemester !== 'All'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterCategory !== 'All' || filterVenue !== 'All' || filterSemester !== 'All'
                   ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
                   : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <Filter className="w-3.5 h-3.5" />
               <span>Filter</span>
@@ -754,6 +802,23 @@ export default function EventManagement() {
         {/* Filter Drawer */}
         {showFilters && (
           <div className="p-4 bg-gray-50/60 border-b border-gray-200 flex flex-wrap items-center gap-3 text-xs">
+            {/* School Year Filter */}
+            <div>
+              <span className="text-gray-500 font-semibold mr-1.5">School Year:</span>
+              <select
+                value={filterSchoolYear}
+                onChange={(e) => setFilterSchoolYear(e.target.value)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="All">All School Years</option>
+                {availableSchoolYears.map((sy) => (
+                  <option key={sy} value={sy}>
+                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Semester Filter */}
             <div>
               <span className="text-gray-500 font-semibold mr-1.5">Semester:</span>
@@ -762,11 +827,10 @@ export default function EventManagement() {
                 onChange={(e) => setFilterSemester(e.target.value)}
                 className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
               >
-                <option value="All">All Semesters / Trimesters</option>
-                {semesters.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.academicLevel === 'SHS' ? 'SHS' : 'College'} · {s.semester} (A.Y. {s.academicYear})
-                    {s.status === 'ACTIVE' ? ' • Current Active' : s.status === 'COMPLETED' ? ' • Completed' : ''}
+                <option value="All">All Semesters</option>
+                {availableSemesters.map((term) => (
+                  <option key={term} value={term}>
+                    {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
                   </option>
                 ))}
               </select>
@@ -804,17 +868,18 @@ export default function EventManagement() {
               </select>
             </div>
 
-            {(filterCategory !== 'All' || filterVenue !== 'All' || filterSemester !== 'All') && (
+            {(filterCategory !== 'All' || filterVenue !== 'All' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'All') || filterSemester !== (activeCollegePeriod?.semester || 'All')) && (
               <button
                 onClick={() => {
-                  setFilterSemester('All');
+                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'All');
+                  setFilterSemester(activeCollegePeriod?.semester || 'All');
                   setFilterCategory('All');
                   setFilterVenue('All');
                 }}
                 className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 cursor-pointer"
               >
-                <RotateCcw className="w-3 h-3" />
-                Reset Filters
+                <X className="w-3.5 h-3.5" />
+                Reset to Current Semester
               </button>
             )}
           </div>
@@ -838,374 +903,373 @@ export default function EventManagement() {
             {/* ── Table Container (No inner vertical scroll) ── */}
             <div className="overflow-x-auto relative">
               {loading ? (
-            <div className="h-full flex items-center justify-center text-sm text-gray-500">
-              Loading activities...
-            </div>
-          ) : filteredEvents.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-2">
-              <Calendar className="w-12 h-12 text-gray-300 mx-auto" />
-              <div className="font-bold text-gray-700 text-sm">No activities found</div>
-              <p className="text-xs text-gray-400 max-w-sm">
-                No activities match the selected status or search filter. Click "New Activity Proposal" to get started.
-              </p>
-            </div>
-          ) : (
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
-                <tr>
-                  <th className="py-3 px-4">Activity & Reference</th>
-                  <th className="py-3 px-4">Host Org</th>
-                  <th className="py-3 px-4">Target Audience & Pax</th>
-                  <th className="py-3 px-4">Schedule & Venue</th>
-                  <th className="py-3 px-4">Budget</th>
-                  <th className="py-3 px-4">Signatory Stage</th>
-                  <th className="py-3 px-4 text-center">Signatory Status</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
-                {paginatedItems.map((event) => {
-                  const venueName = venueMap.get(event.venueId || '') || (event as any).customVenueName || event.eventFormat || 'On-Campus';
-                  const totalBudget = getEventBudget(event);
-                  const eventDateRange = formatEventDateRange(event.sessions);
+                <div className="h-full flex items-center justify-center text-sm text-gray-500">
+                  Loading activities...
+                </div>
+              ) : filteredEvents.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-2">
+                  <Calendar className="w-12 h-12 text-gray-300 mx-auto" />
+                  <div className="font-bold text-gray-700 text-sm">No activities found</div>
+                  <p className="text-xs text-gray-400 max-w-sm">
+                    No activities match the selected status or search filter. Click "New Activity Proposal" to get started.
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
+                    <tr>
+                      <th className="py-3 px-4">Activity & Reference</th>
+                      <th className="py-3 px-4">Host Org</th>
+                      <th className="py-3 px-4">Target Audience & Pax</th>
+                      <th className="py-3 px-4">Schedule & Venue</th>
+                      <th className="py-3 px-4">Budget</th>
+                      <th className="py-3 px-4">Signatory Stage</th>
+                      <th className="py-3 px-4 text-center">Signatory Status</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
+                    {paginatedItems.map((event) => {
+                      const venueName = venueMap.get(event.venueId || '') || (event as any).customVenueName || event.eventFormat || 'On-Campus';
+                      const totalBudget = getEventBudget(event);
+                      const eventDateRange = formatEventDateRange(event.sessions);
 
-                  const isRejected = event.proposalStatus === 'rejected';
-                  const isReturned = event.proposalStatus === 'returned' || event.status === 'returned' || Boolean((event as any).isReturned) || Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
-                  const isDraft = (event.proposalStatus === 'draft' || event.status === 'draft') && !isReturned;
-                  const isApproved = isEventApproved(event);
-                  const isAP = Boolean((event as any).isActivityProposal || (event as any).referenceId?.startsWith('AP-'));
+                      const isRejected = event.proposalStatus === 'rejected';
+                      const isReturned = event.proposalStatus === 'returned' || event.status === 'returned' || Boolean((event as any).isReturned) || Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
+                      const isDraft = (event.proposalStatus === 'draft' || event.status === 'draft') && !isReturned;
+                      const isApproved = isEventApproved(event);
+                      const isAP = Boolean((event as any).isActivityProposal || (event as any).referenceId?.startsWith('AP-'));
 
-                  const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
-                  const audienceLevel = (event as any).targetAcademicLevel || 'Campus-wide';
-                  const targetCourses = (event as any).targetCourses || [];
-                  const audienceSub = targetCourses.length > 0
-                    ? targetCourses.slice(0, 2).join(', ') + (targetCourses.length > 2 ? ` +${targetCourses.length - 2}` : '')
-                    : 'All Programs';
+                      const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
+                      const audienceLevel = (event as any).targetAcademicLevel || 'Campus-wide';
+                      const targetCourses = (event as any).targetCourses || [];
+                      const audienceSub = targetCourses.length > 0
+                        ? targetCourses.slice(0, 2).join(', ') + (targetCourses.length > 2 ? ` +${targetCourses.length - 2}` : '')
+                        : 'All Programs';
 
-                  const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
-                  const sigProgress = getSignatoryProgress(event);
-                  const currentStageIdx = (event as any).currentStageIndex || 1;
+                      const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
+                      const sigProgress = getSignatoryProgress(event);
+                      const currentStageIdx = (event as any).currentStageIndex || 1;
 
-                  return (
-                    <tr key={event.id} className="hover:bg-slate-50/80 transition-colors">
-                      {/* Activity & Reference */}
-                      <td className="py-3.5 px-4 max-w-[240px]">
-                        <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
-                          {isAP && (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wider flex-shrink-0">
-                              Proposal
-                            </span>
-                          )}
-                          <span className="truncate">{event.title}</span>
-                        </div>
-                        {event.tagline && (
-                          <div className="text-[11px] text-[#0E4EBD] italic truncate mt-0.5 font-medium">
-                            "{event.tagline}"
-                          </div>
-                        )}
-                        {(isRejected || isReturned) && (event.rejectionReason || (event as any).adviserRemarks) ? (
-                          <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium truncate mt-1">
-                            Note: {event.rejectionReason || (event as any).adviserRemarks}
-                          </div>
-                        ) : event.referenceId ? (
-                          <div className="text-[11px] text-gray-400 font-mono mt-0.5">
-                            Ref: {event.referenceId}
-                          </div>
-                        ) : null}
-                      </td>
-
-                      {/* Host Org */}
-                      <td className="py-3.5 px-4">
-                        <div className="flex items-center gap-2">
-                          {activeOrgLogo ? (
-                            <img
-                              src={activeOrgLogo}
-                              alt={activeOrgName}
-                              className="w-6 h-6 rounded-full object-contain border border-gray-200 bg-white p-0.5 flex-shrink-0"
-                            />
-                          ) : (
-                            <div className="w-6 h-6 rounded-full bg-[#001A4D] text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0">
-                              {activeOrgName.slice(0, 2).toUpperCase()}
+                      return (
+                        <tr key={event.id} className="hover:bg-slate-50/80 transition-colors">
+                          {/* Activity & Reference */}
+                          <td className="py-3.5 px-4 max-w-[240px]">
+                            <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
+                              {isAP && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wider flex-shrink-0">
+                                  Proposal
+                                </span>
+                              )}
+                              <span className="truncate">{event.title}</span>
                             </div>
-                          )}
-                          <span className="font-bold text-gray-800 text-xs truncate max-w-[120px]">
-                            {activeOrgName}
-                          </span>
-                        </div>
-                      </td>
+                            {event.tagline && (
+                              <div className="text-[11px] text-[#0E4EBD] italic truncate mt-0.5 font-medium">
+                                "{event.tagline}"
+                              </div>
+                            )}
+                            {(isRejected || isReturned) && (event.rejectionReason || (event as any).adviserRemarks) ? (
+                              <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 font-medium truncate mt-1">
+                                Note: {event.rejectionReason || (event as any).adviserRemarks}
+                              </div>
+                            ) : event.referenceId ? (
+                              <div className="text-[11px] text-gray-400 font-mono mt-0.5">
+                                Ref: {event.referenceId}
+                              </div>
+                            ) : null}
+                          </td>
 
-                      {/* Target Audience & Pax */}
-                      <td className="py-3.5 px-4">
-                        <div className="font-semibold text-gray-800 text-xs truncate max-w-[160px]">
-                          {audienceLevel} • {audienceSub}
-                        </div>
-                        <div className="text-[11px] text-gray-500 font-medium">
-                          Est. {targetPax} pax
-                        </div>
-                      </td>
-
-                      {/* Schedule & Venue */}
-                      <td className="py-3.5 px-4 text-gray-600 whitespace-nowrap">
-                        <div className="flex items-center gap-1.5 font-medium">
-                          <Calendar className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{eventDateRange}</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[11px] text-gray-500 max-w-[150px] truncate mt-0.5">
-                          <MapPin className="w-3 h-3 text-gray-400 flex-shrink-0" />
-                          <span className="truncate">{venueName}</span>
-                        </div>
-                      </td>
-
-                      {/* Budget */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        {isApproved ? (
-                          <>
-                            <div className="font-extrabold text-emerald-700 text-sm">
-                              {formatCurrency(totalBudget)}
-                            </div>
-                            <span className="text-[10px] uppercase font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
-                              Approved
-                            </span>
-                          </>
-                        ) : (
-                          <>
-                            <div className="font-bold text-gray-700 text-sm">
-                              {formatCurrency(totalBudget)}
-                            </div>
-                            <span className="text-[10px] uppercase font-semibold text-gray-400">
-                              Proposed
-                            </span>
-                          </>
-                        )}
-                      </td>
-
-                      {/* Signatory Stage */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        {isRejected ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                            Rejected
-                          </span>
-                        ) : isReturned ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                            Revision
-                          </span>
-                        ) : isApproved ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                            Approved
-                          </span>
-                        ) : isDraft ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-                            Draft
-                          </span>
-                        ) : isEventCompleted(event) ? (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-                            Completed
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                            {currentStep ? (currentStep.roleTitle || currentStep.role || 'In Review') : `Stage ${currentStageIdx} • Review`}
-                          </span>
-                        )}
-                      </td>
-
-                                            {/* Signatory Status (e.g. 3/5) */}
-                      <td className="py-3.5 px-4 text-center whitespace-nowrap">
-                        {sigProgress.totalCount > 0 ? (
-                          <div className="inline-flex flex-col items-center justify-center">
-                            <span
-                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${
-                                sigProgress.isComplete
-                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                  : isRejected
-                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                  : isReturned
-                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                  : 'bg-blue-50 text-[#001A4D] border-blue-200'
-                              }`}
-                              title={`${sigProgress.signedCount} of ${sigProgress.totalCount} signatories have signed`}
-                            >
-                              {sigProgress.isComplete ? (
-                                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                          {/* Host Org */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2">
+                              {activeOrgLogo ? (
+                                <img
+                                  src={activeOrgLogo}
+                                  alt={activeOrgName}
+                                  className="w-6 h-6 rounded-full object-contain border border-gray-200 bg-white p-0.5 flex-shrink-0"
+                                />
                               ) : (
-                                <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse flex-shrink-0" />
+                                <div className="w-6 h-6 rounded-full bg-[#001A4D] text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0">
+                                  {activeOrgName.slice(0, 2).toUpperCase()}
+                                </div>
                               )}
-                              <span className="font-mono font-black">{sigProgress.ratioText}</span>
-                            </span>
-                            <span className="text-[10px] text-gray-500 font-medium mt-0.5">
-                              {sigProgress.isComplete
-                                ? 'Fully Signed'
-                                : `${sigProgress.signedCount} of ${sigProgress.totalCount} signed`}
-                            </span>
-                          </div>
-                        ) : isApproved ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                            <span>Signed</span>
-                          </span>
-                        ) : (
-                          <span className="text-gray-400 text-xs font-mono font-medium">—</span>
-                        )}
-                      </td>
+                              <span className="font-bold text-gray-800 text-xs truncate max-w-[120px]">
+                                {activeOrgName}
+                              </span>
+                            </div>
+                          </td>
 
-                      {/* Actions */}
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {/* Always View */}
-                          <button
-                            onClick={() => setSelectedEventId(event.id)}
-                            className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="View Activity Proposal"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                            <span>View</span>
-                          </button>
+                          {/* Target Audience & Pax */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-semibold text-gray-800 text-xs truncate max-w-[160px]">
+                              {audienceLevel} • {audienceSub}
+                            </div>
+                            <div className="text-[11px] text-gray-500 font-medium">
+                              Est. {targetPax} pax
+                            </div>
+                          </td>
 
-                          {/* Lifecycle Actions */}
-                          {event.isArchived ? (
-                            <>
-                              <button
-                                onClick={() => handleRestoreEvent(event)}
-                                className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="Restore Event to Active Records"
-                              >
-                                <RotateCcw className="w-3.5 h-3.5" />
-                                <span>Restore</span>
-                              </button>
-                              <button
-                                onClick={() => setDeletingArchivedEvent(event)}
-                                className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="Delete Archived Event (Move to Trash)"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Delete</span>
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              {/* Freshly created / Pending Review: View + Withdraw */}
-                              {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'officer', profile?.uid, activeOrgId).canWithdraw && (
-                                <button
-                                  onClick={() => handleWithdraw(event)}
-                                  disabled={withdrawingId === event.id}
-                                  className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
-                                  title="Withdraw Proposal to Draft"
+                          {/* Schedule & Venue */}
+                          <td className="py-3.5 px-4 text-gray-600 whitespace-nowrap">
+                            <div className="flex items-center gap-1.5 font-medium">
+                              <Calendar className="w-3.5 h-3.5 text-gray-400" />
+                              <span>{eventDateRange}</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[11px] text-gray-500 max-w-[150px] truncate mt-0.5">
+                              <MapPin className="w-3 h-3 text-gray-400 flex-shrink-0" />
+                              <span className="truncate">{venueName}</span>
+                            </div>
+                          </td>
+
+                          {/* Budget */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            {isApproved ? (
+                              <>
+                                <div className="font-extrabold text-emerald-700 text-sm">
+                                  {formatCurrency(totalBudget)}
+                                </div>
+                                <span className="text-[10px] uppercase font-bold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                                  Approved
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <div className="font-bold text-gray-700 text-sm">
+                                  {formatCurrency(totalBudget)}
+                                </div>
+                                <span className="text-[10px] uppercase font-semibold text-gray-400">
+                                  Proposed
+                                </span>
+                              </>
+                            )}
+                          </td>
+
+                          {/* Signatory Stage */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            {isRejected ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                Rejected
+                              </span>
+                            ) : isReturned ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                Revision
+                              </span>
+                            ) : isApproved ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                Approved
+                              </span>
+                            ) : isDraft ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                                Draft
+                              </span>
+                            ) : isEventCompleted(event) ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                                Completed
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                                {currentStep ? (currentStep.roleTitle || currentStep.role || 'In Review') : `Stage ${currentStageIdx} • Review`}
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Signatory Status (e.g. 3/5) */}
+                          <td className="py-3.5 px-4 text-center whitespace-nowrap">
+                            {sigProgress.totalCount > 0 ? (
+                              <div className="inline-flex flex-col items-center justify-center">
+                                <span
+                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${sigProgress.isComplete
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : isRejected
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                        : isReturned
+                                          ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                          : 'bg-blue-50 text-[#001A4D] border-blue-200'
+                                    }`}
+                                  title={`${sigProgress.signedCount} of ${sigProgress.totalCount} signatories have signed`}
                                 >
-                                  <RotateCcw className="w-3.5 h-3.5" />
-                                  <span>{withdrawingId === event.id ? '...' : 'Withdraw'}</span>
-                                </button>
-                              )}
+                                  {sigProgress.isComplete ? (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                                  ) : (
+                                    <span className="w-1.5 h-1.5 rounded-full bg-blue-600 animate-pulse flex-shrink-0" />
+                                  )}
+                                  <span className="font-mono font-black">{sigProgress.ratioText}</span>
+                                </span>
+                                <span className="text-[10px] text-gray-500 font-medium mt-0.5">
+                                  {sigProgress.isComplete
+                                    ? 'Fully Signed'
+                                    : `${sigProgress.signedCount} of ${sigProgress.totalCount} signed`}
+                                </span>
+                              </div>
+                            ) : isApproved ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                <span>Signed</span>
+                              </span>
+                            ) : (
+                              <span className="text-gray-400 text-xs font-mono font-medium">—</span>
+                            )}
+                          </td>
 
-                              {/* Returned for Revision: View + Edit */}
-                              {isReturned && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
-                                <button
-                                  onClick={async () => {
-                                    try {
-                                      const prop = await getProposalById(event.id);
-                                      setApInitialData(prop || event);
-                                    } catch {
-                                      setApInitialData(event);
-                                    }
-                                    setIsApModalOpen(true);
-                                  }}
-                                  className="px-2.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
-                                  title="Revise and Resubmit Activity Proposal"
-                                >
-                                  <Edit className="w-3.5 h-3.5" />
-                                  <span>Edit</span>
-                                </button>
-                              )}
+                          {/* Actions */}
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {/* Always View */}
+                              <button
+                                onClick={() => setSelectedEventId(event.id)}
+                                className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title="View Activity Proposal"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>View</span>
+                              </button>
 
-                              {/* Draft: Edit + Delete */}
-                              {isDraft && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
+                              {/* Lifecycle Actions */}
+                              {event.isArchived ? (
                                 <>
                                   <button
-                                    onClick={async () => {
-                                      try {
-                                        const prop = await getProposalById(event.id);
-                                        setApInitialData(prop || event);
-                                      } catch {
-                                        setApInitialData(event);
-                                      }
-                                      setIsApModalOpen(true);
-                                    }}
-                                    className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title="Edit Draft Proposal"
+                                    onClick={() => handleRestoreEvent(event)}
+                                    className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title="Restore Event to Active Records"
                                   >
-                                    <Edit className="w-3.5 h-3.5" />
-                                    <span>Edit</span>
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                    <span>Restore</span>
                                   </button>
                                   <button
-                                    onClick={() => handleDelete(event.id)}
-                                    disabled={deletingId === event.id}
-                                    className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-                                    title="Delete Proposal"
+                                    onClick={() => setDeletingArchivedEvent(event)}
+                                    className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                    title="Delete Archived Event (Move to Trash)"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Delete</span>
                                   </button>
                                 </>
-                              )}
+                              ) : (
+                                <>
+                                  {/* Freshly created / Pending Review: View + Withdraw */}
+                                  {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'officer', profile?.uid, activeOrgId).canWithdraw && (
+                                    <button
+                                      onClick={() => handleWithdraw(event)}
+                                      disabled={withdrawingId === event.id}
+                                      className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                      title="Withdraw Proposal to Draft"
+                                    >
+                                      <RotateCcw className="w-3.5 h-3.5" />
+                                      <span>{withdrawingId === event.id ? '...' : 'Withdraw'}</span>
+                                    </button>
+                                  )}
 
-                              {/* Rejected: View + Delete */}
-                              {isRejected && (
-                                <button
-                                  onClick={() => handleDelete(event.id)}
-                                  disabled={deletingId === event.id}
-                                  className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
-                                  title="Delete Proposal"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
+                                  {/* Returned for Revision: View + Edit */}
+                                  {isReturned && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
+                                    <button
+                                      onClick={async () => {
+                                        try {
+                                          const prop = await getProposalById(event.id);
+                                          setApInitialData(prop || event);
+                                        } catch {
+                                          setApInitialData(event);
+                                        }
+                                        setIsApModalOpen(true);
+                                      }}
+                                      className="px-2.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                      title="Revise and Resubmit Activity Proposal"
+                                    >
+                                      <Edit className="w-3.5 h-3.5" />
+                                      <span>Edit</span>
+                                    </button>
+                                  )}
 
-                              {/* Approved Lifecycle: Conclude & Archive */}
-                              {isApproved && event.status !== 'completed' && !isSasCreatedEvent(event) && (
-                                <button
-                                  onClick={() => setConcludingEvent(event)}
-                                  className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                  title="Conclude Event & Lock Attendance"
-                                >
-                                  <CheckCircle2 className="w-3.5 h-3.5" />
-                                  <span>Conclude</span>
-                                </button>
-                              )}
+                                  {/* Draft: Edit + Delete */}
+                                  {isDraft && canEditProposal(event, 'officer', profile?.uid, activeOrgId).canEdit && (
+                                    <>
+                                      <button
+                                        onClick={async () => {
+                                          try {
+                                            const prop = await getProposalById(event.id);
+                                            setApInitialData(prop || event);
+                                          } catch {
+                                            setApInitialData(event);
+                                          }
+                                          setIsApModalOpen(true);
+                                        }}
+                                        className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                        title="Edit Draft Proposal"
+                                      >
+                                        <Edit className="w-3.5 h-3.5" />
+                                        <span>Edit</span>
+                                      </button>
+                                      <button
+                                        onClick={() => handleDelete(event.id)}
+                                        disabled={deletingId === event.id}
+                                        className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                        title="Delete Proposal"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  )}
 
-                              {isEventCompleted(event) && !isSasCreatedEvent(event) && (
-                                <button
-                                  onClick={() => setArchivingEvent(event)}
-                                  className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                  title="Archive Completed Event"
-                                >
-                                  <FolderArchive className="w-3.5 h-3.5" />
-                                  <span>Archive</span>
-                                </button>
-                              )}
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+                                  {/* Rejected: View + Delete */}
+                                  {isRejected && (
+                                    <button
+                                      onClick={() => handleDelete(event.id)}
+                                      disabled={deletingId === event.id}
+                                      className="p-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                                      title="Delete Proposal"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
 
-        {/* ── Bottom Pagination Bar ── */}
-        <TablePagination
-          currentPage={currentPage}
-          totalPages={totalPages}
-          totalItems={filteredEvents.length}
-          itemsPerPage={ITEMS_PER_PAGE}
-          onPageChange={setCurrentPage}
-          itemName="activities"
-        />
+                                  {/* Approved Lifecycle: Conclude & Archive */}
+                                  {isApproved && event.status !== 'completed' && !isSasCreatedEvent(event) && (
+                                    <button
+                                      onClick={() => setConcludingEvent(event)}
+                                      className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                      title="Conclude Event & Lock Attendance"
+                                    >
+                                      <CheckCircle2 className="w-3.5 h-3.5" />
+                                      <span>Conclude</span>
+                                    </button>
+                                  )}
+
+                                  {isEventCompleted(event) && !isSasCreatedEvent(event) && (
+                                    <button
+                                      onClick={() => setArchivingEvent(event)}
+                                      className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                      title="Archive Completed Event"
+                                    >
+                                      <FolderArchive className="w-3.5 h-3.5" />
+                                      <span>Archive</span>
+                                    </button>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* ── Bottom Pagination Bar ── */}
+            <TablePagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={filteredEvents.length}
+              itemsPerPage={ITEMS_PER_PAGE}
+              onPageChange={setCurrentPage}
+              itemName="activities"
+            />
           </>
         )}
       </div>

@@ -11,7 +11,6 @@ import {
   Award,
   Bell,
   Settings,
-  GraduationCap,
   Files,
   FileCheck2,
 } from "lucide-react";
@@ -22,7 +21,6 @@ const navGroups = [
     items: [
       { icon: LayoutDashboard, label: "Dashboard", path: "/home" },
       { icon: Users, label: "Student Registry", path: "/home/students" },
-      { icon: GraduationCap, label: "Academic Semester", path: "/home/academic-semester" },
     ]
   },
   {

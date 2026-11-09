@@ -35,6 +35,7 @@ import { deletePAR } from '../../modules/post-activity-reports/services/par.serv
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
+import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { toast } from 'sonner';
 
 type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
@@ -66,7 +67,51 @@ export default function OfficerPostActivityReports() {
   // Filter & Search State
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterSchoolYear, setFilterSchoolYear] = useState('all');
+  const [filterSemester, setFilterSemester] = useState('all');
+  const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+
+  // Academic Period Streams
+  const { data: semesters = [] } = useSemesters();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+
+  // Initialize filter to Current Active Semester
+  useEffect(() => {
+    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
+      const active = activeCollegePeriod || activeShsPeriod;
+      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
+      if (active?.semester) setFilterSemester(active.semester);
+      setHasInitializedPeriod(true);
+    }
+  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+
+  // Derived available school years and semesters
+  const availableSchoolYears = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
+    pars.forEach((p) => { if (p.schoolYear) set.add(p.schoolYear); });
+    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
+    return Array.from(set).sort().reverse();
+  }, [semesters, pars, activeCollegePeriod]);
+
+  const availableSemesters = useMemo(() => {
+    const set = new Set<string>();
+    semesters.forEach((s) => {
+      const termName = s.semester || (s as any).term;
+      if (termName) set.add(termName);
+    });
+    pars.forEach((p) => { if (p.semester) set.add(p.semester); });
+    if (set.size === 0) {
+      set.add('1st Semester');
+      set.add('2nd Semester');
+      set.add('1st Trimester');
+      set.add('2nd Trimester');
+      set.add('3rd Trimester');
+      set.add('Summer');
+    }
+    return Array.from(set);
+  }, [semesters, pars]);
 
   // Modals State
   const [showWizardModal, setShowWizardModal] = useState(false);
@@ -96,6 +141,20 @@ export default function OfficerPostActivityReports() {
       if (activeTab === 'returned' && p.status !== 'returned') return false;
       if (activeTab === 'draft' && p.status !== 'draft') return false;
 
+      // School Year filter
+      if (filterSchoolYear !== 'all') {
+        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
+        const pSy = p.schoolYear || sem?.academicYear;
+        if (pSy && pSy !== filterSchoolYear) return false;
+      }
+
+      // Semester filter
+      if (filterSemester !== 'all') {
+        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
+        const pTerm = p.semester || sem?.semester || (sem as any)?.term;
+        if (pTerm && pTerm !== filterSemester) return false;
+      }
+
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchesRef = p.referenceNo?.toLowerCase().includes(q);
@@ -105,7 +164,7 @@ export default function OfficerPostActivityReports() {
       }
       return true;
     });
-  }, [pars, activeTab, searchQuery]);
+  }, [pars, activeTab, searchQuery, filterSchoolYear, filterSemester, semesters]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredPars.length / ITEMS_PER_PAGE));
@@ -398,16 +457,67 @@ export default function OfficerPostActivityReports() {
             })}
           </div>
 
-          {/* Search Input */}
-          <div className="relative flex-1 sm:w-60">
-            <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search reference # or title..."
-              className="w-full pl-9 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D] focus:bg-white transition-all"
-            />
+          {/* Controls: School Year + Semester + Search Input */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* School Year Filter */}
+            <select
+              value={filterSchoolYear}
+              onChange={(e) => {
+                setFilterSchoolYear(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All School Years</option>
+              {availableSchoolYears.map((sy) => (
+                <option key={sy} value={sy}>
+                  A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                </option>
+              ))}
+            </select>
+
+            {/* Semester Filter */}
+            <select
+              value={filterSemester}
+              onChange={(e) => {
+                setFilterSemester(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="bg-white border border-gray-300 rounded-xl text-xs font-semibold px-2.5 py-1.5 text-gray-700 focus:outline-none focus:ring-2 focus:ring-[#001A4D]"
+            >
+              <option value="all">All Semesters</option>
+              {availableSemesters.map((term) => (
+                <option key={term} value={term}>
+                  {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                </option>
+              ))}
+            </select>
+
+            {(filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
+                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setCurrentPage(1);
+                }}
+                className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"
+                title="Reset filters to current active academic semester"
+              >
+                Reset to Current
+              </button>
+            )}
+
+            <div className="relative flex-1 sm:w-52">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search reference # or title..."
+                className="w-full pl-9 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D] focus:bg-white transition-all"
+              />
+            </div>
           </div>
         </div>
 
