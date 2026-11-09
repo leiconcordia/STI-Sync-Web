@@ -142,7 +142,8 @@ export function useAllPARsForSignatories() {
  * Strictly enforces authoring rights:
  * - If userRole === 'admin': Only returns SAS-created events.
  * - If userRole === 'officer': Only returns events created by that officer's organization.
- * - Gatekeeping: Event must be completed/concluded AND liquidation must be approved (or none_required).
+ * - Gatekeeping: Event must be completed/concluded.
+ *   (Financial Liquidation Form LF-01 is decoupled; PAR and FL can be authored simultaneously).
  */
 export function useEligibleEventsForPAR(
   userRole: 'admin' | 'officer',
@@ -217,14 +218,8 @@ export function useEligibleEventsForPAR(
 
       if (!isConcluded) return false;
 
-      // 2. Gatekeeping: Financial Liquidation must be approved (or none_required)
-      const liqStatus = (e as any).liquidationStatus;
-      const isLiquidationSatisfied =
-        liqStatus === 'approved' ||
-        liqStatus === 'none_required' ||
-        (e as any).isLiquidated === true;
-
-      if (!isLiquidationSatisfied) return false;
+      // 2. Gatekeeping: Financial Liquidation is decoupled (can proceed simultaneously)
+      // Concluded status is the sole requirement to begin Post-Activity Report authoring.
 
       // 3. Strict 1:1 Invariant: Check if a PAR already exists for this event
       const activePar = takenEventIds.get(e.id);

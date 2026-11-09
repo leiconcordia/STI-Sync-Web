@@ -7,7 +7,7 @@
  * history of all past submission cycles and their corresponding revision remarks.
  */
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   RotateCcw,
   AlertCircle,
@@ -36,14 +36,13 @@ function formatRevisionFlagLabel(flagKey: string, currentDocument?: Record<strin
   if (flagKey.startsWith('step_')) {
     const num = flagKey.replace('step_', '');
     const names: Record<string, string> = {
-      '1': 'Step 1: General Information',
-      '2': 'Step 2: Objectives & Expected Outcomes',
-      '3': 'Step 3: Participant Profile & Attendance',
-      '4': 'Step 4: Activity Schedule & Itinerary',
-      '5': 'Step 5: Resource & Logistical Needs',
-      '6': 'Step 6: Financial Projections & Budget',
-      '7': 'Step 7: Signatory Flow & Audit Route',
-      '8': 'Step 8: Final Review & Submission',
+      '1': 'Step 1: General Info & Rationale',
+      '2': 'Step 2: Objectives & Mechanics',
+      '3': 'Step 3: Logistics & Target Audience',
+      '4': 'Step 4: Activity Schedule & Sessions',
+      '5': 'Step 5: Committee Task Matrix',
+      '6': 'Step 6: Financial Projections',
+      '7': 'Step 7: Signatories & Review',
     };
     return names[num] || `Step ${num}`;
   }
@@ -96,6 +95,7 @@ interface RevisionFeedbackBannerProps {
   versionHistory?: any[];
   canEdit?: boolean;
   onEditClick?: () => void;
+  showActionButtons?: boolean;
   documentTitle?: string;
   versionLabel?: string;
   currentDocument?: Record<string, any>;
@@ -113,6 +113,7 @@ export default function RevisionFeedbackBanner({
   versionHistory = [],
   canEdit = false,
   onEditClick,
+  showActionButtons = true,
   documentTitle,
   versionLabel,
   currentDocument,
@@ -198,6 +199,40 @@ export default function RevisionFeedbackBanner({
       : formatAppDateTime(new Date())
     : 'Recently';
 
+  // De-duplicate and canonicalize step revision remarks across multi-keyed aliases
+  const deduplicatedStepRemarks = useMemo(() => {
+    if (!stepRevisionRemarks || typeof stepRevisionRemarks !== 'object') return [];
+
+    const map = new Map<string, { label: string; comment: string; order: number }>();
+
+    Object.entries(stepRevisionRemarks).forEach(([stepKey, comment]) => {
+      if (!comment || typeof comment !== 'string' || !comment.trim()) return;
+
+      // Extract step number (matches: '2', 'step-2', 'step_2', 'step 2', or 'Step 2: ...')
+      const numMatch = stepKey.match(/(?:step[-_\s]*)?(\d+)/i);
+      const isNumberedStep = Boolean(numMatch && !stepKey.startsWith('item_'));
+      const stepNum = numMatch ? numMatch[1] : '';
+      const canonicalKey = isNumberedStep ? `step_${stepNum}` : stepKey;
+      const label = formatRevisionFlagLabel(canonicalKey, currentDocument);
+
+      // Only store once per canonical key (preferring longer/more descriptive text)
+      if (!map.has(canonicalKey)) {
+        map.set(canonicalKey, {
+          label,
+          comment: comment.trim(),
+          order: isNumberedStep ? parseInt(stepNum, 10) : 99,
+        });
+      } else {
+        const existing = map.get(canonicalKey)!;
+        if (comment.trim().length > existing.comment.length) {
+          existing.comment = comment.trim();
+        }
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => a.order - b.order);
+  }, [stepRevisionRemarks, currentDocument]);
+
   return (
     <div className="bg-gradient-to-r from-amber-50 via-amber-50/80 to-orange-50 border-2 border-amber-300 rounded-2xl p-5 text-amber-900 shadow-xs space-y-4">
       {/* Header & Reviewer Attribution */}
@@ -230,28 +265,30 @@ export default function RevisionFeedbackBanner({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0 flex-wrap">
-          <button
-            type="button"
-            onClick={() => setShowDiffModal(true)}
-            className="px-3.5 py-2 bg-white hover:bg-amber-100/80 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
-            title="Compare what was changed between revisions"
-          >
-            <GitCompare className="w-3.5 h-3.5 text-amber-700" />
-            <span>Compare Changes</span>
-          </button>
-
-          {canEdit && onEditClick && (
+        {showActionButtons && (
+          <div className="flex items-center gap-2 self-start sm:self-auto flex-shrink-0 flex-wrap">
             <button
               type="button"
-              onClick={onEditClick}
-              className="px-4 py-2 bg-gradient-to-r from-[#001A4D] to-[#002B7F] hover:from-[#002B7F] hover:to-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all flex items-center gap-2 cursor-pointer"
+              onClick={() => setShowDiffModal(true)}
+              className="px-3.5 py-2 bg-white hover:bg-amber-100/80 text-amber-900 border border-amber-300 text-xs font-bold rounded-xl shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+              title="Compare what was changed between revisions"
             >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>Edit & Resubmit</span>
+              <GitCompare className="w-3.5 h-3.5 text-amber-700" />
+              <span>Compare Changes</span>
             </button>
-          )}
-        </div>
+
+            {canEdit && onEditClick && (
+              <button
+                type="button"
+                onClick={onEditClick}
+                className="px-4 py-2 bg-gradient-to-r from-[#001A4D] to-[#002B7F] hover:from-[#002B7F] hover:to-[#001A4D] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs hover:shadow-md transition-all flex items-center gap-2 cursor-pointer"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>Edit & Resubmit</span>
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Feedback Remarks Card */}
@@ -287,19 +324,19 @@ export default function RevisionFeedbackBanner({
         </div>
       )}
 
-      {/* Step-Specific Remarks (if any) */}
-      {stepRevisionRemarks && Object.keys(stepRevisionRemarks).length > 0 && (
+      {/* Step-Specific Remarks (Deduplicated across aliases) */}
+      {deduplicatedStepRemarks.length > 0 && (
         <div className="bg-white/70 rounded-xl p-3 border border-amber-200/70 space-y-1.5">
           <p className="text-[11px] font-bold text-amber-800 uppercase tracking-wider">
             Detailed Step & Item Feedback:
           </p>
           <div className="space-y-1.5">
-            {Object.entries(stepRevisionRemarks).map(([stepKey, comment]) => (
-              <div key={stepKey} className="text-xs text-slate-700 pl-2.5 border-l-2 border-amber-500 py-0.5">
+            {deduplicatedStepRemarks.map((item, idx) => (
+              <div key={idx} className="text-xs text-slate-700 pl-2.5 border-l-2 border-amber-500 py-0.5">
                 <span className="font-bold text-amber-950 block">
-                  {formatRevisionFlagLabel(stepKey, currentDocument)}:
+                  {item.label}:
                 </span>
-                <span className="text-slate-700 whitespace-pre-line leading-relaxed">{comment}</span>
+                <span className="text-slate-700 whitespace-pre-line leading-relaxed">{item.comment}</span>
               </div>
             ))}
           </div>

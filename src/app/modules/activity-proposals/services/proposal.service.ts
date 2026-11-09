@@ -207,7 +207,38 @@ export async function syncProposalToEventsCollection(
         customVenueName: proposal.venueName || existingData.customVenueName || 'STI Campus',
         sessions,
         eventFormat: 'On-Campus',
-        expectedParticipantCount: (proposal.targetAudience as any)?.estimatedAttendance || 100,
+        expectedParticipantCount:
+          (typeof proposal.estAttendanceCount === 'number' && proposal.estAttendanceCount > 0
+            ? proposal.estAttendanceCount
+            : null) ??
+          (typeof proposal.targetAudience?.expectedAttendees === 'number' && proposal.targetAudience.expectedAttendees > 0
+            ? proposal.targetAudience.expectedAttendees
+            : null) ??
+          (proposal.estimatedAttendance
+            ? parseInt(String(proposal.estimatedAttendance).match(/\d+/)?.[0] || '0', 10) || null
+            : null) ??
+          (typeof (proposal as any).expectedParticipantCount === 'number' && (proposal as any).expectedParticipantCount > 0
+            ? (proposal as any).expectedParticipantCount
+            : null) ??
+          (typeof existingData.estAttendanceCount === 'number' && existingData.estAttendanceCount > 0
+            ? existingData.estAttendanceCount
+            : null) ??
+          (typeof existingData.expectedParticipantCount === 'number' && existingData.expectedParticipantCount > 0
+            ? existingData.expectedParticipantCount
+            : null) ??
+          0,
+        estAttendanceCount:
+          proposal.estAttendanceCount ??
+          existingData.estAttendanceCount ??
+          ((proposal.targetAudience as any)?.expectedAttendees || 0),
+        estAttendanceQualifier:
+          proposal.estAttendanceQualifier ||
+          existingData.estAttendanceQualifier ||
+          'participants',
+        estimatedAttendance:
+          proposal.estimatedAttendance ||
+          existingData.estimatedAttendance ||
+          (proposal.estAttendanceCount ? `${proposal.estAttendanceCount} ${proposal.estAttendanceQualifier || 'participants'}` : ''),
         budgetItems,
         totalApprovedBudget: totalBudget,
         status,
@@ -1075,6 +1106,20 @@ export async function returnProposalForRevision(
   const effectiveDeadline =
     returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
+  // Canonicalize step revision remarks to prevent duplicate aliases ('2', 'step-2', etc.)
+  const canonicalStepRemarks: Record<string, string> = {};
+  if (stepRevisionRemarks && typeof stepRevisionRemarks === 'object') {
+    Object.entries(stepRevisionRemarks).forEach(([key, text]) => {
+      if (!text || typeof text !== 'string' || !text.trim()) return;
+      const numMatch = key.match(/(?:step[-_\s]*)?(\d+)/i);
+      const isNumberedStep = Boolean(numMatch && !key.startsWith('item_'));
+      const canonicalKey = isNumberedStep ? `step_${numMatch![1]}` : key;
+      if (!canonicalStepRemarks[canonicalKey] || text.trim().length > canonicalStepRemarks[canonicalKey].length) {
+        canonicalStepRemarks[canonicalKey] = text.trim();
+      }
+    });
+  }
+
   const returnHistoryEntry = sanitizeFirestorePayload({
     id: `hist_return_${Date.now()}`,
     action: 'returned_for_revision',
@@ -1083,7 +1128,7 @@ export async function returnProposalForRevision(
     roleTitle: signerRoleTitle,
     performedAt: returnedAtStr,
     remarks: remarks?.trim() || 'Returned for revision.',
-    stepRevisionRemarks: stepRevisionRemarks || {},
+    stepRevisionRemarks: canonicalStepRemarks,
     returnFlags: returnFlags || [],
   });
 
@@ -1098,7 +1143,7 @@ export async function returnProposalForRevision(
     returnDeadline: effectiveDeadline,
     adviserRemarks: remarks || null,
     returnRemarks: remarks || null,
-    stepRevisionRemarks: stepRevisionRemarks || null,
+    stepRevisionRemarks: canonicalStepRemarks,
     returnFlags: returnFlags || [],
     returnedByName: signerName,
     returnedByRoleTitle: signerRoleTitle,
@@ -1127,7 +1172,7 @@ export async function returnProposalForRevision(
       lifecycleStatus: 'returned',
       adviserRemarks: remarks,
       returnRemarks: remarks,
-      stepRevisionRemarks: stepRevisionRemarks || null,
+      stepRevisionRemarks: canonicalStepRemarks,
       returnFlags: returnFlags || [],
       returnedByName: signerName,
       returnedByRoleTitle: signerRoleTitle,

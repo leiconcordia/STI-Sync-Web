@@ -1221,9 +1221,10 @@ export default function EventManagement() {
           initialData={apInitialData ?? undefined}
           currentUser={{
             uid: profile?.uid || 'officer-user',
-            name: profile?.studentName || 'Student Officer',
+            name: profile?.studentName || (profile?.isAdviser ? 'Club Adviser' : 'Student Officer'),
             email: profile?.email || '',
-            role: 'officer',
+            role: profile?.isAdviser ? 'adviser' : 'officer',
+            isAdviser: Boolean(profile?.isAdviser),
             organizationId: activeOrgId,
             organizationName: activeOrgName,
           }}

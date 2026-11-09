@@ -385,6 +385,33 @@ function diffFinancialItems(
 /**
  * Compare Target Audience & Market Details
  */
+function parseHeadcount(doc: any): number | null {
+  if (!doc) return null;
+  if (typeof doc.estAttendanceCount === 'number' && doc.estAttendanceCount > 0) {
+    return doc.estAttendanceCount;
+  }
+  if (typeof doc.targetAudience?.expectedAttendees === 'number' && doc.targetAudience.expectedAttendees > 0) {
+    return doc.targetAudience.expectedAttendees;
+  }
+  if (typeof doc.expectedAttendees === 'number' && doc.expectedAttendees > 0) {
+    return doc.expectedAttendees;
+  }
+  if (typeof doc.estimatedAttendance === 'string' && doc.estimatedAttendance.trim()) {
+    const match = doc.estimatedAttendance.match(/\d+/);
+    if (match) {
+      const parsed = parseInt(match[0], 10);
+      if (parsed > 0) return parsed;
+    }
+  }
+  if (typeof doc.expectedParticipantCount === 'number' && doc.expectedParticipantCount > 0) {
+    return doc.expectedParticipantCount;
+  }
+  if (typeof doc.maxAttendees === 'number' && doc.maxAttendees > 0) {
+    return doc.maxAttendees;
+  }
+  return null;
+}
+
 function diffTargetAudience(oldAud: any = {}, newAud: any = {}): FieldDiffEntry[] {
   const diffs: FieldDiffEntry[] = [];
 
@@ -574,20 +601,10 @@ export function diffActivityProposal(
   );
 
   // Headcount Comparison
-  const oldHeadcount =
-    oldDoc.estAttendanceCount ??
-    oldDoc.targetAudience?.expectedAttendees ??
-    oldDoc.expectedAttendees ??
-    oldDoc.expectedParticipantCount ??
-    oldDoc.maxAttendees;
-  const newHeadcount =
-    newDoc.estAttendanceCount ??
-    newDoc.targetAudience?.expectedAttendees ??
-    newDoc.expectedAttendees ??
-    newDoc.expectedParticipantCount ??
-    newDoc.maxAttendees;
+  const oldHeadcount = parseHeadcount(oldDoc);
+  const newHeadcount = parseHeadcount(newDoc);
 
-  if (oldHeadcount !== undefined && newHeadcount !== undefined && Number(oldHeadcount) !== Number(newHeadcount)) {
+  if (oldHeadcount !== null && newHeadcount !== null && oldHeadcount !== newHeadcount) {
     diffs.push({
       fieldPath: 'estimatedAttendance',
       label: 'Estimated Attendance / Headcount',

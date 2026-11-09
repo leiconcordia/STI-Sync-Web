@@ -97,13 +97,14 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   attendanceSummary: {
     registeredCount: number;
     attendedCount: number;
+    turnoutRate?: number; // e.g. 93 (percent)
     targetAudience: string;
     whoAttended: string; // e.g., "BSIT all year levels"
-    howManyAttended?: string; // e.g., "110 IT students"
+    howManyAttended?: string; // e.g., "112 / 120 Expected Attendees (93% Turnout)"
     attendanceListUrl?: string;
   };
 
-  // ─── Section 3: Financial Clearance Summary (Auto-Populated from Form LF-01) ───
+  // ─── Section 3: Financial Report Projection (Auto-Populated from Approved Form AP-01) ───
   financialSummary: {
     totalRevenue: number;
     totalDisbursed: number;
@@ -115,9 +116,18 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
     }>;
   };
 
-  // ─── Section 4: Results & Post-Event Evaluation (Officer Inputs) ───
+  // ─── Section 4: Results & Post-Event Evaluation (Officer Inputs & KPI Bridge) ───
   results: {
     objectiveStatus: PARObjectiveStatus;
+    objectiveAssessments?: Array<{
+      id: string;
+      objectiveText: string;
+      successIndicatorText?: string;
+      status: 'fully_achieved' | 'partially_achieved' | 'unmet';
+      actualResult: string;
+      varianceRemarks?: string;
+    }>;
+    compositeSuccessScore?: number; // 0–100 composite activity success index
     achievementNarrative: string;
     keyLearnings: string[]; // 3–5 bullet points
     classroomEnrichment: string;

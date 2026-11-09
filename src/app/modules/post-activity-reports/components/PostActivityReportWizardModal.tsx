@@ -24,6 +24,11 @@ import {
   FileText,
   HelpCircle,
   RotateCcw,
+  BookOpen,
+  Target,
+  Award,
+  Check,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
@@ -34,6 +39,8 @@ import {
   saveOrSubmitPAR,
   generateDefaultPARSignatoryChain,
 } from '../services/par.service';
+import { computeEventAttendanceSummary } from '../services/par-attendance-bridge.service';
+import PARProposalGuidanceDrawer from './PARProposalGuidanceDrawer';
 import type {
   PostActivityReportDocument,
   PARFormData,
@@ -69,6 +76,7 @@ interface PostActivityReportWizardModalProps {
     name: string;
     email: string;
     role?: string;
+    isAdviser?: boolean;
     organizationId?: string;
     organizationName?: string;
   };
@@ -95,6 +103,14 @@ export default function PostActivityReportWizardModal({
   const isReturnedReport = Boolean(
     initialReport?.status === 'returned' ||
     (initialReport as any)?.isReturned
+  );
+
+  const isAdviserOrAdmin = Boolean(
+    isSasAdmin ||
+    currentUser.role === 'admin' ||
+    currentUser.role === 'sas_admin' ||
+    currentUser.role === 'adviser' ||
+    (currentUser as any).isAdviser
   );
 
   const isOverviewFlagged = Boolean(
@@ -124,9 +140,22 @@ export default function PostActivityReportWizardModal({
   const [actualMechanics, setActualMechanics] = useState('');
   const [registeredCount, setRegisteredCount] = useState(0);
   const [attendedCount, setAttendedCount] = useState(0);
+  const [turnoutRate, setTurnoutRate] = useState<number>(0);
   const [targetAudience, setTargetAudience] = useState('');
   const [whoAttended, setWhoAttended] = useState('');
   const [howManyAttended, setHowManyAttended] = useState('');
+  const [linkedProposal, setLinkedProposal] = useState<any>(null);
+  const [isGuidanceDrawerOpen, setIsGuidanceDrawerOpen] = useState(false);
+  const [objectiveAssessments, setObjectiveAssessments] = useState<
+    Array<{
+      id: string;
+      objectiveText: string;
+      successIndicatorText?: string;
+      status: 'fully_achieved' | 'partially_achieved' | 'unmet';
+      actualResult: string;
+      varianceRemarks?: string;
+    }>
+  >([]);
 
   // Proposal Copied Fields
   const [proposalOrganizers, setProposalOrganizers] = useState<string[]>([]);
@@ -147,6 +176,23 @@ export default function PostActivityReportWizardModal({
 
   // Section 3: Objectives & Results
   const [objectiveStatus, setObjectiveStatus] = useState<PARObjectiveStatus>('fully_achieved');
+  const compositeScore = useMemo(() => {
+    if (objectiveAssessments.length === 0) {
+      if (objectiveStatus === 'fully_achieved') return Math.max(90, turnoutRate || 90);
+      if (objectiveStatus === 'partially_achieved') return 75;
+      return 50;
+    }
+    const total = objectiveAssessments.length;
+    let points = 0;
+    objectiveAssessments.forEach((o) => {
+      if (o.status === 'fully_achieved') points += 1.0;
+      else if (o.status === 'partially_achieved') points += 0.5;
+    });
+    const objPct = (points / total) * 100;
+    const attRate = turnoutRate || 100;
+    // 40% attendance turnout, 60% objective fulfillment
+    return Math.min(100, Math.round(0.4 * attRate + 0.6 * objPct));
+  }, [objectiveAssessments, objectiveStatus, turnoutRate]);
   const [achievementNarrative, setAchievementNarrative] = useState('');
   const [keyLearnings, setKeyLearnings] = useState<string[]>([]);
   const [newLearningInput, setNewLearningInput] = useState('');
@@ -358,6 +404,13 @@ export default function PostActivityReportWizardModal({
 
       setPhotos(initialReport.photos || []);
       setApprovalChain(initialReport.approvalChain || []);
+
+      if (initialReport.attendanceSummary?.turnoutRate !== undefined) {
+        setTurnoutRate(initialReport.attendanceSummary.turnoutRate);
+      }
+      if (initialReport.results?.objectiveAssessments && initialReport.results.objectiveAssessments.length > 0) {
+        setObjectiveAssessments(initialReport.results.objectiveAssessments);
+      }
     }
   }, [initialReport]);
 
@@ -377,110 +430,160 @@ export default function PostActivityReportWizardModal({
         const evData = { id: evSnap.id, ...evSnap.data() } as EventDocument;
         setSelectedEvent(evData);
 
+        // Fetch linked Activity Proposal (Form AP-01) for 100% full auto-population
+        let proposalDoc: any = null;
+        const proposalId = (evData as any).proposalId || (evData as any).activityProposalId;
+        if (proposalId) {
+          try {
+            const pSnap = await getDoc(doc(db, 'activity_proposals', proposalId));
+            if (pSnap.exists()) {
+              proposalDoc = { id: pSnap.id, ...pSnap.data() };
+            }
+          } catch (pErr) {
+            console.warn('[PostActivityReportWizardModal] Proposal fetch by ID notice:', pErr);
+          }
+        }
+        if (!proposalDoc && evData.referenceId) {
+          try {
+            const pQuery = await getDocs(
+              query(collection(db, 'activity_proposals'), where('referenceNo', '==', evData.referenceId))
+            );
+            if (!pQuery.empty) {
+              proposalDoc = { id: pQuery.docs[0].id, ...pQuery.docs[0].data() };
+            }
+          } catch {}
+        }
+        setLinkedProposal(proposalDoc);
+
         // Auto-extract proposal fields
         const orgs =
-          Array.isArray((evData as any).organizers) && (evData as any).organizers.length > 0
+          Array.isArray(proposalDoc?.organizers) && proposalDoc.organizers.length > 0
+            ? proposalDoc.organizers
+            : Array.isArray((evData as any).organizers) && (evData as any).organizers.length > 0
             ? (evData as any).organizers
             : [(evData as any).organizerName || evData.hostingOrgName || 'Student Affairs Services'];
         setProposalOrganizers(orgs);
 
-        const mechs = Array.isArray((evData as any).mechanics) ? (evData as any).mechanics : [];
+        const mechs =
+          Array.isArray(proposalDoc?.mechanics) && proposalDoc.mechanics.length > 0
+            ? proposalDoc.mechanics
+            : Array.isArray((evData as any).mechanics)
+            ? (evData as any).mechanics
+            : [];
         setProposedMechanics(mechs);
 
-        const mats = Array.isArray((evData as any).materials) ? (evData as any).materials : [];
+        const mats =
+          Array.isArray(proposalDoc?.materials) && proposalDoc.materials.length > 0
+            ? proposalDoc.materials
+            : Array.isArray((evData as any).materials)
+            ? (evData as any).materials
+            : [];
         setProposalMaterials(mats);
 
-        const mkt = Array.isArray((evData as any).marketingPlan) ? (evData as any).marketingPlan : [];
+        const mkt =
+          Array.isArray(proposalDoc?.marketingPlan) && proposalDoc.marketingPlan.length > 0
+            ? proposalDoc.marketingPlan
+            : Array.isArray((evData as any).marketingPlan)
+            ? (evData as any).marketingPlan
+            : [];
         setProposalMarketingPlan(mkt);
 
-        const docs = Array.isArray((evData as any).documentationPlan) ? (evData as any).documentationPlan : [];
+        const docs =
+          Array.isArray(proposalDoc?.documentationPlan) && proposalDoc.documentationPlan.length > 0
+            ? proposalDoc.documentationPlan
+            : Array.isArray((evData as any).documentationPlan)
+            ? (evData as any).documentationPlan
+            : [];
         setProposalDocumentationPlan(docs);
 
-        const objs = Array.isArray((evData as any).objectives) ? (evData as any).objectives : [];
+        const objs =
+          Array.isArray(proposalDoc?.objectives) && proposalDoc.objectives.length > 0
+            ? proposalDoc.objectives
+            : Array.isArray((evData as any).objectives)
+            ? (evData as any).objectives
+            : [];
         setProposalObjectives(objs);
 
-        const ind = Array.isArray((evData as any).successIndicators) ? (evData as any).successIndicators : [];
+        const ind =
+          Array.isArray(proposalDoc?.successIndicators) && proposalDoc.successIndicators.length > 0
+            ? proposalDoc.successIndicators
+            : Array.isArray((evData as any).successIndicators)
+            ? (evData as any).successIndicators
+            : [];
         setProposalSuccessIndicators(ind);
 
-        // Auto-populate target audience
-        const audText =
-          (evData as any).targetAudienceText ||
-          (evData as any).targetMarket ||
-          'Enrolled College & SHS Students';
-        setTargetAudience(audText);
-        setWhoAttended(audText);
+        // Initialize structured Objective & KPI Assessment items
+        if (objs.length > 0) {
+          setObjectiveAssessments((prev) => {
+            if (prev.length > 0) return prev;
+            return objs.map((objText: string, idx: number) => ({
+              id: `obj-kpi-${idx}`,
+              objectiveText: objText,
+              successIndicatorText: ind[idx] || '',
+              status: 'fully_achieved' as const,
+              actualResult: '',
+              varianceRemarks: '',
+            }));
+          });
+        }
 
-        // Auto-fetch attendance scanner counts
+        // Bridge real-time attendance logs (eliminates static 50 fallback)
         try {
-          const attSnap = await getDocs(
-            query(collection(db, 'attendance'), where('eventId', '==', selectedEventId))
-          );
-          const attCount = attSnap.docs.filter((d) => {
-            const row = d.data();
-            return row.status === 'Checked In' || row.status === 'Present' || !!row.scannedAt;
-          }).length;
-          const regCount = (evData as any).expectedAttendees || (evData as any).registeredCount || attCount || 50;
-          setAttendedCount(attCount || regCount);
-          setRegisteredCount(regCount);
-          setHowManyAttended(`${attCount || regCount} Attendees`);
-        } catch {
-          setAttendedCount(50);
-          setRegisteredCount(50);
-          setHowManyAttended('50 Attendees');
+          const attResult = await computeEventAttendanceSummary(selectedEventId, evData, proposalDoc);
+          setAttendedCount(attResult.attendedCount);
+          setRegisteredCount(attResult.registeredCount);
+          setTurnoutRate(attResult.turnoutRate);
+          setHowManyAttended(attResult.howManyAttended);
+          setWhoAttended(attResult.whoAttended);
+          setTargetAudience(attResult.targetAudience);
+        } catch (attErr) {
+          console.warn('[PostActivityReportWizardModal] Attendance bridge fallback:', attErr);
+          setAttendedCount(0);
+          setRegisteredCount(0);
+          setTurnoutRate(0);
+          setHowManyAttended('Attendance verified from event logs');
+          setWhoAttended('Enrolled Students');
+          setTargetAudience('Enrolled Students');
         }
 
-        // Auto-fetch financial liquidation summary (Form LF-01)
-        let liqId = (evData as any).liquidationReportId || (evData as any).liquidationId;
-        if (!liqId) {
-          try {
-            const liqQuery = await getDocs(
-              query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', selectedEventId))
-            );
-            const foundLiq = liqQuery.docs.find((d) => {
-              const data = d.data();
-              const st = (data.status || '').toLowerCase();
-              return st !== 'voided' && st !== 'cancelled' && data.isDeleted !== true;
-            });
-            if (foundLiq) {
-              liqId = foundLiq.id;
-            }
-          } catch (qErr) {
-            console.warn('[PostActivityReportWizardModal] Error querying liquidation by eventId:', qErr);
-          }
-        }
+        // Auto-populate Financial Projection directly from Form AP-01 (Approved Proposal)
+        const pItems =
+          Array.isArray(proposalDoc?.lineItems) && proposalDoc.lineItems.length > 0
+            ? proposalDoc.lineItems
+            : Array.isArray((evData as any).lineItems)
+            ? (evData as any).lineItems
+            : [];
 
-        if (liqId) {
-          try {
-            const liqSnap = await getDoc(
-              doc(db, LIQUIDATIONS_COLLECTION, liqId)
-            );
-            if (liqSnap.exists() && (liqSnap.data() as any).isDeleted !== true) {
-              const liqData = liqSnap.data() as any;
-              setLiquidationRef(liqData.referenceNo || (evData as any).liquidationRefNumber || '');
-              
-              const rev = Number(liqData.actualRevenueTotal ?? liqData.allocatedBudget ?? liqData.totalBudget ?? 0);
-              const items = Array.isArray(liqData.lineItems) ? liqData.lineItems : [];
-              const computedExpenses = items.reduce((acc: number, it: any) => {
-                const cost = Number(it.totalCost ?? it.total ?? it.actualCost ?? (Number(it.quantity || 1) * Number(it.unitCost || it.unitPrice || 0)) ?? 0);
-                return acc + cost;
-              }, 0);
-              const disb = Number(liqData.totalDisbursed ?? liqData.totalExpenses ?? computedExpenses);
+        const rev = Number(
+          proposalDoc?.allocatedBudget ??
+            proposalDoc?.totalProposedBudget ??
+            proposalDoc?.totalBudget ??
+            evData.budget ??
+            0
+        );
+        const exp = Number(
+          proposalDoc?.totalExpenseAmount ??
+            proposalDoc?.totalBudget ??
+            evData.budget ??
+            0
+        );
 
-              setTotalRevenue(rev);
-              setTotalDisbursed(disb);
-
-              setFinancialLineItems(
-                items.map((li: any) => ({
-                  description: li.particulars || li.description || li.item || 'Expense Item',
-                  unitAmount: Number(li.unitCost || li.unitPrice || li.actualCost || 0),
-                  totalAmount: Number(li.totalCost || li.total || li.actualCost || li.totalAmount || (Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0)) || 0),
-                }))
-              );
-            }
-          } catch {}
-        } else {
-          setLiquidationRef((evData as any).liquidationRefNumber || 'N/A (Self-Funded)');
-        }
+        setTotalRevenue(rev);
+        setTotalDisbursed(exp);
+        setFinancialLineItems(
+          pItems.map((li: any) => ({
+            description: li.particulars || li.description || li.item || 'Projected Item',
+            unitAmount: Number(li.unitCost || li.unitPrice || li.unitAmount || 0),
+            totalAmount: Number(
+              li.totalCost ||
+                li.total ||
+                li.totalAmount ||
+                Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0) ||
+                0
+            ),
+          }))
+        );
+        setLiquidationRef(proposalDoc?.referenceNo || evData.referenceId || 'AP-PROJECTION');
 
         // Auto-populate dynamic signatory pipeline if not initialized
         if (approvalChain.length === 0) {
@@ -534,6 +637,11 @@ export default function PostActivityReportWizardModal({
   const handleSubmitOrDraft = async (submitForReview: boolean) => {
     if (!selectedEventId) {
       toast.error('Please select an event to submit a Post-Activity Report.');
+      return;
+    }
+
+    if (submitForReview && !isAdviserOrAdmin) {
+      toast.error('Only the Organization Adviser or SAS Administrator can formally submit a Post-Activity Report. Officers can Save as Draft.');
       return;
     }
 
@@ -592,9 +700,10 @@ export default function PostActivityReportWizardModal({
         attendanceSummary: {
           registeredCount,
           attendedCount,
+          turnoutRate,
           targetAudience,
           whoAttended,
-          howManyAttended: howManyAttended || (attendedCount ? `${attendedCount} Attendees` : '50 Attendees'),
+          howManyAttended: howManyAttended || (attendedCount ? `${attendedCount} Attendees` : 'Attendance verified from logs'),
         },
 
         financialSummary: {
@@ -606,6 +715,8 @@ export default function PostActivityReportWizardModal({
 
         results: {
           objectiveStatus,
+          objectiveAssessments,
+          compositeSuccessScore: compositeScore,
           achievementNarrative,
           keyLearnings,
           classroomEnrichment,
@@ -706,12 +817,29 @@ export default function PostActivityReportWizardModal({
               </h2>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {(selectedEvent || linkedProposal) && (
+              <button
+                type="button"
+                onClick={() => setIsGuidanceDrawerOpen((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95 ${
+                  isGuidanceDrawerOpen
+                    ? 'bg-white text-[#001A4D] border-white shadow-md ring-2 ring-white/30'
+                    : 'bg-white/15 hover:bg-white/25 text-white border-white/25'
+                }`}
+                title="Toggle side-by-side Activity Proposal Guidance Drawer"
+              >
+                <BookOpen className={`w-3.5 h-3.5 ${isGuidanceDrawerOpen ? 'text-[#0E4EBD]' : 'text-[#FFD41C]'}`} />
+                <span>View AP-01 Reference</span>
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl text-white/70 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Tab Navigation Navigation */}
@@ -764,6 +892,7 @@ export default function PostActivityReportWizardModal({
               documentType="PAR"
               currentDocument={initialReport}
               versionLabel={`v${initialReport.revisionCount || 1}.0`}
+              showActionButtons={false}
             />
           )}
 
@@ -917,29 +1046,29 @@ export default function PostActivityReportWizardModal({
                       </div>
                     </div>
 
-                    {/* Financial Summary */}
+                    {/* Financial Projection from AP-01 */}
                     <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                           <DollarSign className="w-4 h-4 text-emerald-600" />
                           <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                            Financial Liquidation Clearance
+                            Financial Report (Approved Form AP-01 Budget Projection)
                           </h4>
                         </div>
-                        <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                          Cleared
+                        <span className="text-[11px] font-bold text-blue-700 bg-blue-100 px-2.5 py-0.5 rounded-full border border-blue-200">
+                          From AP-01
                         </span>
                       </div>
                       <div className="grid grid-cols-3 gap-2 text-center mb-3">
                         <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                          <span className="text-[10px] text-slate-500 block">Total Budget</span>
-                          <span className="text-sm font-bold text-slate-800">
+                          <span className="text-[10px] text-slate-500 block">Approved Allocation</span>
+                          <span className="text-sm font-bold text-[#001A4D] font-mono">
                             {formatCurrency(totalRevenue)}
                           </span>
                         </div>
                         <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                          <span className="text-[10px] text-slate-500 block">Disbursed</span>
-                          <span className="text-sm font-bold text-slate-800">
+                          <span className="text-[10px] text-slate-500 block">Projected Expenses</span>
+                          <span className="text-sm font-bold text-slate-800 font-mono">
                             {formatCurrency(totalDisbursed)}
                           </span>
                         </div>
@@ -948,14 +1077,14 @@ export default function PostActivityReportWizardModal({
                             isSurplus ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
                           }`}
                         >
-                          <span className="text-[10px] block font-medium">Balance</span>
-                          <span className="text-sm font-bold">
+                          <span className="text-[10px] block font-medium">Projected Balance</span>
+                          <span className="text-sm font-bold font-mono">
                             {formatVariance(netBalance)}
                           </span>
                         </div>
                       </div>
                       <p className="text-[11px] text-slate-500">
-                        Financial figures are verified against approved institutional liquidation records{liquidationRef ? ` (${liquidationRef})` : ''}.
+                        Financial figures are populated directly from the approved Activity Proposal{liquidationRef ? ` (${liquidationRef})` : ''}.
                       </p>
                     </div>
                   </div>
@@ -1010,11 +1139,40 @@ export default function PostActivityReportWizardModal({
                   </div>
                 </div>
               )}
-              {/* Objectives Achievement Status */}
-              <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-2">
-                  Achievement of Objectives *
-                </label>
+              {/* Objectives Achievement Status & Success Rating */}
+              <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700">
+                      Overall Objectives Status & Activity Success Index *
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Combines attendance turnout ({turnoutRate || 0}%) and objective target completion.
+                    </p>
+                  </div>
+
+                  {/* Composite Success Score Pill */}
+                  <div
+                    className={`px-3.5 py-1.5 rounded-xl border flex items-center gap-2.5 shadow-2xs self-start sm:self-auto ${
+                      compositeScore >= 90
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : compositeScore >= 75
+                        ? 'bg-blue-50 text-[#001A4D] border-blue-300'
+                        : compositeScore >= 60
+                        ? 'bg-amber-50 text-amber-800 border-amber-300'
+                        : 'bg-rose-50 text-rose-800 border-rose-300'
+                    }`}
+                  >
+                    <Award className="w-4 h-4 text-[#FFD41C]" />
+                    <div className="text-right">
+                      <div className="text-[9px] font-bold uppercase tracking-wider opacity-75">Success Score</div>
+                      <div className="text-xs font-black font-mono">
+                        {compositeScore}% {compositeScore >= 90 ? 'Outstanding' : compositeScore >= 75 ? 'Satisfactory' : 'Needs Review'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-3 gap-3">
                   {[
                     { id: 'fully_achieved', label: 'Fully Achieved', desc: 'All targets and KPIs successfully met', color: 'emerald' },
@@ -1044,6 +1202,108 @@ export default function PostActivityReportWizardModal({
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Itemized Objectives & Success Indicators (KPI) Comparison Grid */}
+              <div className="space-y-3 pt-2 border-t border-slate-200/80">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                      <Target className="w-4 h-4 text-[#0E4EBD]" />
+                      <span>Itemized KPI & Objectives Assessment ({objectiveAssessments.length})</span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Evaluate each specific goal from Form AP-01 against the actual post-event outcome.
+                    </p>
+                  </div>
+                </div>
+
+                {objectiveAssessments.length === 0 ? (
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-500 italic">
+                    No individual objectives were detected in the proposal. You can summarize achievements in the narrative box below.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {objectiveAssessments.map((item, idx) => (
+                      <div
+                        key={item.id || idx}
+                        className="p-3.5 bg-white border border-slate-200 rounded-xl space-y-2.5 shadow-2xs hover:border-blue-200 transition-colors"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-[#0E4EBD] block mb-0.5">
+                              Objective {idx + 1}
+                            </span>
+                            <p className="text-xs font-bold text-gray-800 leading-snug">
+                              {item.objectiveText}
+                            </p>
+                            {item.successIndicatorText && (
+                              <p className="text-[11px] text-gray-500 mt-1">
+                                <strong className="text-gray-600">KPI Target: </strong>
+                                {item.successIndicatorText}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* 3 Status Pills */}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {(['fully_achieved', 'partially_achieved', 'unmet'] as const).map((st) => {
+                              const isSelected = item.status === st;
+                              const label =
+                                st === 'fully_achieved'
+                                  ? 'Fully Achieved'
+                                  : st === 'partially_achieved'
+                                  ? 'Partial'
+                                  : 'Unmet';
+                              const activeCls =
+                                st === 'fully_achieved'
+                                  ? isSelected
+                                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                  : st === 'partially_achieved'
+                                  ? isSelected
+                                    ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'
+                                  : isSelected
+                                  ? 'bg-rose-600 text-white border-rose-600 shadow-2xs'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100';
+
+                              return (
+                                <button
+                                  type="button"
+                                  key={st}
+                                  onClick={() => {
+                                    const updated = [...objectiveAssessments];
+                                    updated[idx].status = st;
+                                    setObjectiveAssessments(updated);
+                                  }}
+                                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-all cursor-pointer ${activeCls}`}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Actual Outcome / Result Input */}
+                        <div className="pt-2 border-t border-slate-100">
+                          <input
+                            type="text"
+                            value={item.actualResult || ''}
+                            onChange={(e) => {
+                              const updated = [...objectiveAssessments];
+                              updated[idx].actualResult = e.target.value;
+                              setObjectiveAssessments(updated);
+                            }}
+                            placeholder="Enter actual outcome or metric (e.g. 112 students completed hands-on lab with 93.3% attendance)..."
+                            className="w-full text-xs bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:bg-white focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Achievement Narrative */}
@@ -1522,6 +1782,12 @@ export default function PostActivityReportWizardModal({
           </div>
 
           <div className="flex items-center gap-3">
+            {!isAdviserOrAdmin && (
+              <div className="flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span><strong>Drafting Mode:</strong> Officers can save drafts. Only your Club Adviser can submit for endorsement.</span>
+              </div>
+            )}
             <button
               type="button"
               disabled={isSubmitting}
@@ -1531,24 +1797,26 @@ export default function PostActivityReportWizardModal({
               <Save className="w-4 h-4" />
               Save Draft
             </button>
-            <button
-              type="button"
-              disabled={isSubmitting}
-              onClick={() => handleSubmitOrDraft(true)}
-              className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Submitting...
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4 text-[#FFD41C]" />
-                  {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
-                </>
-              )}
-            </button>
+            {isAdviserOrAdmin && (
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => handleSubmitOrDraft(true)}
+                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1568,6 +1836,18 @@ export default function PostActivityReportWizardModal({
         onApplyList={handleApplyAIList}
         onRegenerate={() => {
           if (activeAIAction) activeAIAction();
+        }}
+      />
+
+      {/* Side-by-Side Activity Proposal Guidance Drawer */}
+      <PARProposalGuidanceDrawer
+        isOpen={isGuidanceDrawerOpen}
+        onClose={() => setIsGuidanceDrawerOpen(false)}
+        proposalData={linkedProposal}
+        eventData={selectedEvent}
+        onCopyText={(text, label) => {
+          navigator.clipboard.writeText(text);
+          toast.success(`Copied ${label} from Proposal!`);
         }}
       />
     </div>

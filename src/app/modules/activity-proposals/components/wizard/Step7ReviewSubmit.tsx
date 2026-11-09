@@ -30,6 +30,7 @@ import {
   School,
   GraduationCap,
   Briefcase,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ProposalFormData, ProposalApprovalStep } from '../../types/proposal.types';
@@ -46,6 +47,7 @@ interface Step7Props {
   onSaveDraft: () => void;
   isSubmitting?: boolean;
   isSavingDraft?: boolean;
+  isOfficerOnly?: boolean;
   errors?: Record<string, string>;
 }
 
@@ -56,6 +58,7 @@ export default function Step7ReviewSubmit({
   onSaveDraft,
   isSubmitting = false,
   isSavingDraft = false,
+  isOfficerOnly = false,
   errors = {},
 }: Step7Props) {
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
@@ -854,6 +857,20 @@ export default function Step7ReviewSubmit({
         </div>
       )}
 
+      {/* ── OFFICER DRAFTING MODE NOTICE ── */}
+      {isOfficerOnly && (
+        <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-start gap-3 text-amber-900 text-xs shadow-xs">
+          <Lock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <span className="font-bold text-sm text-amber-950 block">Organization Officer Drafting Mode</span>
+            <p className="leading-relaxed text-amber-900">
+              As an Organization Officer, you can prepare activity details, logistics, and budget allocations, and <strong>Save as Draft</strong>.
+              Only your <strong>Organization Adviser</strong> has the formal authority to sign and submit this proposal for institutional review.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── BOTTOM ACTIONS ── */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -879,7 +896,7 @@ export default function Step7ReviewSubmit({
           </button>
         </div>
 
-        {!canSubmit && (
+        {!canSubmit && !isOfficerOnly && (
           <div className="w-full sm:w-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium">
             <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
             <span>

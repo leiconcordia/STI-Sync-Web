@@ -361,11 +361,16 @@ export default function PostActivityReportDetailModal({
                   </div>
                 </div>
                 <div className="bg-blue-50 p-2.5 rounded-lg border border-blue-200">
-                  <span className="text-[11px] text-blue-700 block font-semibold">Attended (Scanned)</span>
+                  <span className="text-[11px] text-blue-700 block font-semibold">Attended (Turnout)</span>
                   <div className="flex items-center justify-center gap-1.5">
                     <span className="text-base font-black text-blue-800">
                       {report.attendanceSummary?.attendedCount || 0}
                     </span>
+                    {report.attendanceSummary?.turnoutRate !== undefined && (
+                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-300">
+                        {report.attendanceSummary.turnoutRate}%
+                      </span>
+                    )}
                     {diffByPath.get('attendanceSummary.attendedCount') && (
                       <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.attendedCount')} />
                     )}
@@ -392,7 +397,7 @@ export default function PostActivityReportDetailModal({
               <div className="flex items-center gap-2 mb-3">
                 <DollarSign className="w-4 h-4 text-emerald-600" />
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Financial Liquidation Summary
+                  Financial Report (Approved Proposal Budget)
                 </h4>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center mb-3">
@@ -416,7 +421,7 @@ export default function PostActivityReportDetailModal({
                 </div>
               </div>
               <p className="text-[11px] text-slate-500">
-                Financial expenditures verified and approved under financial liquidation clearance.
+                Financial allocations sourced directly from approved Form AP-01 proposal baseline.
               </p>
             </div>
           </div>
@@ -427,9 +432,16 @@ export default function PostActivityReportDetailModal({
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
                 Evaluation of Objectives & Learning Outcomes
               </h4>
-              {diffByPath.get('results.objectiveStatus') && (
-                <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
-              )}
+              <div className="flex items-center gap-2">
+                {report.results?.compositeSuccessScore !== undefined && (
+                  <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                    {report.results.compositeSuccessScore}% Success Rating
+                  </span>
+                )}
+                {diffByPath.get('results.objectiveStatus') && (
+                  <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2 text-xs">
               <span className="text-slate-500 font-semibold">Status:</span>
@@ -447,6 +459,36 @@ export default function PostActivityReportDetailModal({
                 <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-3 rounded-lg border border-slate-100">
                   {report.results.achievementNarrative}
                 </p>
+              </div>
+            )}
+
+            {/* Itemized Objective Assessments */}
+            {report.results?.objectiveAssessments && report.results.objectiveAssessments.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-slate-100">
+                <span className="text-xs font-bold text-slate-700 block">Itemized Objective & KPI Assessment:</span>
+                <div className="space-y-1.5">
+                  {report.results.objectiveAssessments.map((oa: any, idx: number) => (
+                    <div key={idx} className="p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="font-semibold text-slate-800">{oa.objective}</div>
+                        {oa.actualResult && (
+                          <div className="text-[11px] text-slate-600">
+                            <span className="text-slate-400 font-medium">Actual Result: </span>{oa.actualResult}
+                          </div>
+                        )}
+                      </div>
+                      <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full shrink-0 border ${
+                        oa.status === 'fully_achieved'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                          : oa.status === 'partially_achieved'
+                          ? 'bg-amber-50 text-amber-700 border-amber-300'
+                          : 'bg-rose-50 text-rose-700 border-rose-300'
+                      }`}>
+                        {oa.status.replace('_', ' ')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

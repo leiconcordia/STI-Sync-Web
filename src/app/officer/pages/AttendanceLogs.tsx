@@ -32,6 +32,7 @@ import {
 
 import { AttendanceFilterToolbar } from '../../modules/attendance/components/AttendanceFilterToolbar';
 import { AttendanceExportPreviewModal } from '../../modules/attendance/components/AttendanceExportPreviewModal';
+import { StudentAttendancePassModal } from '../../modules/attendance/components/StudentAttendancePassModal';
 import { EventFinesGenerationModal } from '../../modules/finance/components/EventFinesGenerationModal';
 import { EventFinesRosterView } from '../../modules/finance/components/EventFinesRosterView';
 import type { AttendanceFilterState, EnrichedAttendanceRecord } from '../../modules/attendance/types/attendance.types';
@@ -97,6 +98,7 @@ function EventDetail({
   sections,
   activeOrgId,
   currentStudentId,
+  studentMap,
 }: {
   event: OfficerMappedEvent;
   onBack: () => void;
@@ -105,6 +107,7 @@ function EventDetail({
   sections: string[];
   activeOrgId?: string;
   currentStudentId?: string;
+  studentMap?: Map<string, any>;
 }) {
   const [filterState, setFilterState] = useState<AttendanceFilterState>(INITIAL_FILTERS);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
@@ -112,6 +115,10 @@ function EventDetail({
   const [isAssessFinesModalOpen, setIsAssessFinesModalOpen] = useState(false);
   const [showFlagged, setShowFlagged] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [selectedStudentForQR, setSelectedStudentForQR] = useState<{
+    record: EnrichedAttendanceRecord;
+    student?: any;
+  } | null>(null);
   const ATTENDANCE_PER_PAGE = 8;
 
   const allRecords = useMemo(() => event.records || [], [event]);
@@ -343,6 +350,7 @@ function EventDetail({
                     <th className="px-4 py-3 font-bold uppercase tracking-wider">Time-Out</th>
                     <th className="px-4 py-3 font-bold uppercase tracking-wider">Status</th>
                     <th className="px-4 py-3 font-bold uppercase tracking-wider">Remarks</th>
+                    <th className="px-4 py-3 font-bold uppercase tracking-wider text-center">QR Pass</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 font-medium text-gray-800">
@@ -376,11 +384,31 @@ function EventDetail({
                       <td className="px-4 py-3 text-gray-400 text-xs italic">
                         {rec.flaggedReason ?? '—'}
                       </td>
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const studentObj =
+                              studentMap?.get((rec.studentId || '').trim().toLowerCase()) ||
+                              studentMap?.get((rec.studentSchoolId || '').trim().toLowerCase()) ||
+                              studentMap?.get((rec.studentAuthUid || '').trim().toLowerCase());
+                            setSelectedStudentForQR({
+                              record: rec,
+                              student: studentObj,
+                            });
+                          }}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-[#001A4D] text-[#001A4D] hover:text-[#FFD41C] border border-blue-200 hover:border-[#001A4D] font-bold text-[11px] transition-all cursor-pointer shadow-2xs group"
+                          title={`View & print QR pass for ${rec.name}`}
+                        >
+                          <QrCode className="w-3.5 h-3.5 text-[#0E4EBD] group-hover:text-[#FFD41C] transition-colors" />
+                          <span>View QR</span>
+                        </button>
+                      </td>
                     </tr>
                   ))}
                   {filteredRecords.length === 0 && (
                     <tr>
-                      <td colSpan={11} className="px-4 py-12 text-center text-gray-400 text-sm">
+                      <td colSpan={12} className="px-4 py-12 text-center text-gray-400 text-sm">
                         No attendance records match your search or filter criteria.
                       </td>
                     </tr>
@@ -504,6 +532,15 @@ function EventDetail({
         onSuccess={() => {
           setActiveTab('fines');
         }}
+      />
+
+      {/* Universal Student Attendance QR Pass Modal */}
+      <StudentAttendancePassModal
+        isOpen={!!selectedStudentForQR}
+        onClose={() => setSelectedStudentForQR(null)}
+        record={selectedStudentForQR?.record || null}
+        student={selectedStudentForQR?.student || null}
+        eventTitle={event.title}
       />
     </div>
   );
@@ -807,6 +844,7 @@ export default function AttendanceLogs() {
         sections={availableSections}
         activeOrgId={activeOrgId}
         currentStudentId={currentStudentId}
+        studentMap={studentMap}
       />
     );
   }

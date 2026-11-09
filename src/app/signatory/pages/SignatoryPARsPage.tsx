@@ -18,7 +18,7 @@ import {
   Send,
   Eye,
   Users,
-  Image,
+  Image as ImageIcon,
   Award,
   Download,
 } from 'lucide-react';
@@ -225,7 +225,7 @@ export default function SignatoryPARsPage() {
                     </span>
                     {photosCount > 0 && (
                       <span className="flex items-center gap-1">
-                        <Image className="w-3.5 h-3.5 text-slate-400" />
+                        <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
                         {photosCount} Documentation Photos
                       </span>
                     )}

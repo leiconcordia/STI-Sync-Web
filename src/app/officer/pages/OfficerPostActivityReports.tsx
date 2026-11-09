@@ -571,7 +571,8 @@ export default function OfficerPostActivityReports() {
           uid: userUid,
           name: userName,
           email: userEmail,
-          role: 'officer',
+          role: profile?.isAdviser ? 'adviser' : 'officer',
+          isAdviser: Boolean(profile?.isAdviser),
           organizationId: orgId,
           organizationName: orgName,
         }}

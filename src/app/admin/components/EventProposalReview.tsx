@@ -7,7 +7,7 @@ import {
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
-  PenTool, ShieldCheck, Undo2, GitCompare, ChevronDown, Upload
+  PenTool, ShieldCheck, Undo2, GitCompare, ChevronDown, Upload, Building2
 } from 'lucide-react';
 import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -48,6 +48,7 @@ import {
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import DisbursementVoucherModal from '../../modules/finance/components/DisbursementVoucherModal';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import stiOrmocLogo from '../../../imports/STI_ORMOC_LOGO.jpg';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useEventTypesStream, useVenuesStream } from '../../modules/events/hooks/useEventConfigStream';
 import { useDepartments, useCourses, useSections } from '../../modules/academic/hooks/useAcademicStream';
@@ -784,20 +785,20 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     return totalExp > 0;
   }, [isLiquidationExempt, isSchoolBudget, totalExpenseAmount, event, activeEvent]);
 
-  const [isFundingSourceMenuOpen, setIsFundingSourceMenuOpen] = useState(false);
-  const fundingMenuRef = useRef<HTMLDivElement>(null);
+  const [isUtilsOpen, setIsUtilsOpen] = useState(false);
+  const utilsDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (fundingMenuRef.current && !fundingMenuRef.current.contains(e.target as Node)) {
-        setIsFundingSourceMenuOpen(false);
+      if (utilsDropdownRef.current && !utilsDropdownRef.current.contains(e.target as Node)) {
+        setIsUtilsOpen(false);
       }
     };
-    if (isFundingSourceMenuOpen) {
+    if (isUtilsOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isFundingSourceMenuOpen]);
+  }, [isUtilsOpen]);
 
   const handleUpdateFundingSource = async (newSource: 'organization_funds' | 'school_budget' | 'zero_budget') => {
     try {
@@ -995,7 +996,12 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     // Verify each selected step has a specific remark
     const flaggedItems = RETURN_FLAGS_GROUPED.filter((item) => returnFlags.includes(item.flag));
     const missingRemarks = flaggedItems.filter(
-      (item) => !(stepRemarks[item.stepNumber]?.trim() || stepRemarks[item.flag]?.trim() || stepRemarks[`step-${item.stepNumber}`]?.trim())
+      (item) => !(
+        stepRemarks[item.stepNumber]?.trim() ||
+        stepRemarks[item.flag]?.trim() ||
+        stepRemarks[`step-${item.stepNumber}`]?.trim() ||
+        stepRemarks[`step_${item.stepNumber}`]?.trim()
+      )
     );
     if (missingRemarks.length > 0) {
       toast.error(`Please provide specific revision remarks for: ${missingRemarks.map((m) => m.label).join(', ')}.`);
@@ -1264,101 +1270,40 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Funding Source Selector & Switcher */}
-          <div className="relative" ref={fundingMenuRef}>
-            <button
-              type="button"
-              onClick={() => setIsFundingSourceMenuOpen((prev) => !prev)}
-              className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer hover:brightness-110 active:scale-95 ${
+          {/* Funding Source Badge: Only shown if Org-created; SAS activities are automatically school budget so no badge needed */}
+          {isOrgManagedEvent && (
+            <div
+              className={`px-3 py-1 rounded-full text-xs font-semibold border flex items-center gap-1.5 shadow-2xs select-none ${
                 isOrgLedger
-                  ? 'bg-purple-900/80 text-purple-200 border-purple-400/40 hover:bg-purple-900'
+                  ? 'bg-white/10 text-white border-white/20'
                   : isZeroBudget
-                  ? 'bg-emerald-900/80 text-emerald-200 border-emerald-400/40 hover:bg-emerald-900'
-                  : 'bg-blue-900/80 text-blue-200 border-blue-400/40 hover:bg-blue-900'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
+                  : 'bg-sky-500/20 text-sky-300 border-sky-400/30'
               }`}
-              title="Click to view or switch funding source"
+              title="Official Funding Source for this Organization Activity (Read Only)"
             >
+              {isOrgLedger ? (
+                <Building2 className="w-3.5 h-3.5 text-[#FFD41C]" />
+              ) : isZeroBudget ? (
+                <Receipt className="w-3.5 h-3.5 text-emerald-300" />
+              ) : (
+                <Building2 className="w-3.5 h-3.5 text-sky-300" />
+              )}
               <span>
                 {isOrgLedger
-                  ? '💼 Org Ledger / Treasury'
+                  ? 'Organization Treasury'
                   : isZeroBudget
-                  ? '📄 ₱0 Budget'
-                  : '🏛️ School Budget'}
+                  ? '₱0 Budget (Non-monetary)'
+                  : 'School Budget'}
               </span>
-              <ChevronDown className="w-3 h-3 opacity-70" />
-            </button>
-
-            {isFundingSourceMenuOpen && (
-              <div className="absolute left-0 mt-1.5 w-64 bg-slate-900 border border-slate-700 rounded-xl shadow-xl z-50 p-1.5 space-y-1 text-xs">
-                <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 border-b border-slate-800">
-                  Select Funding Source
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleUpdateFundingSource('organization_funds')}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                    isOrgLedger ? 'bg-purple-600/30 text-purple-200 font-bold' : 'text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex flex-col">
-                    <span className="font-semibold text-white">💼 Org Treasury Ledger</span>
-                    <span className="text-[10px] text-slate-400">Club funds • No school voucher needed</span>
-                  </div>
-                  {isOrgLedger && <Check className="w-4 h-4 text-purple-400 shrink-0" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleUpdateFundingSource('school_budget')}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                    isSchoolBudget ? 'bg-blue-600/30 text-blue-200 font-bold' : 'text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex flex-col">
-                    <span className="font-semibold text-white">🏛️ School Budget</span>
-                    <span className="text-[10px] text-slate-400">Cashier release • Voucher required</span>
-                  </div>
-                  {isSchoolBudget && <Check className="w-4 h-4 text-blue-400 shrink-0" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleUpdateFundingSource('zero_budget')}
-                  className={`w-full text-left px-2.5 py-2 rounded-lg flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                    isZeroBudget ? 'bg-emerald-600/30 text-emerald-200 font-bold' : 'text-slate-300 hover:bg-slate-800'
-                  }`}
-                >
-                  <div className="flex flex-col">
-                    <span className="font-semibold text-white">📄 Zero Budget (₱0.00)</span>
-                    <span className="text-[10px] text-slate-400">Non-monetary activity</span>
-                  </div>
-                  {isZeroBudget && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
-                </button>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Status Badge */}
           <div className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 ${currentStatus.bg}`}>
             <StatusIcon className="w-3.5 h-3.5" />
             <span>{currentStatus.label}</span>
           </div>
-
-          {/* Compare Changes Button if revised */}
-          {hasRevisions && (
-            <button
-              type="button"
-              onClick={() => setShowDiffModal(true)}
-              className="px-3.5 py-1.5 bg-amber-400 text-slate-950 hover:bg-amber-300 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-              title="Compare what was revised in this activity proposal"
-            >
-              <GitCompare className="w-3.5 h-3.5" />
-              <span>Compare Changes</span>
-              {proposalDiffs.length > 0 && (
-                <span className="ml-1 px-1.5 py-0.2 rounded-full bg-slate-900 text-amber-300 text-[10px] font-black">
-                  {proposalDiffs.length}
-                </span>
-              )}
-            </button>
-          )}
 
           {/* Export PDF (Form AP-01 Official Engine) */}
           <button
@@ -1371,346 +1316,510 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <span>{exportingPdf ? 'Generating Form AP-01...' : 'Export Form AP-01'}</span>
           </button>
 
-          {/* 1. Publish to Student App */}
-          <button
-            type="button"
-            disabled={!isApproved || isAlreadyPublished}
-            onClick={() => {
-              if (!isApproved) {
-                toast.error('Locked: Proposal must be approved before configuring student mobile feed.');
-                return;
-              }
-              if (isAlreadyPublished) {
-                toast.info('Lockout: This activity has already been published to the student mobile app.');
-                return;
-              }
-              setIsPublishModalOpen(true);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-              !isApproved
-                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-                : isAlreadyPublished
-                ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 cursor-not-allowed select-none opacity-90'
-                : isOrgManagedEvent
-                ? 'bg-slate-800 hover:bg-slate-700 text-sky-200 border border-slate-700 cursor-pointer'
-                : 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer active:scale-95'
-            }`}
-            title={
-              !isApproved
-                ? "Locked: Activity must achieve official approval first"
-                : isAlreadyPublished
-                ? "Already Published: Activity is published and live on the student mobile app"
-                : isOrgManagedEvent
-                ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
-                : "Configure mobile app feed visibility, promotional banner, and target audience"
-            }
-          >
-            {!isApproved ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Publish to App</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
-                  Locked
-                </span>
-              </>
-            ) : isAlreadyPublished ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Published to App</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Published
-                </span>
-              </>
-            ) : isOrgManagedEvent ? (
-              <>
-                <Eye className="w-3.5 h-3.5 text-sky-300" />
-                <span>Feed (View Only)</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-white/20 text-sky-200">
-                  Club
-                </span>
-              </>
-            ) : (
-              <>
-                <Smartphone className="w-3.5 h-3.5 text-sky-300" />
-                <span>Publish to App</span>
-              </>
-            )}
-          </button>
-
-          {/* 2. Attendance & Scanners */}
-          <button
-            type="button"
-            disabled={!isApproved || !isAlreadyPublished}
-            onClick={() => {
-              if (!isApproved) {
-                toast.error('Locked: Proposal must be approved before configuring attendance and scanners.');
-                return;
-              }
-              if (!isAlreadyPublished) {
-                toast.error('Locked: Activity must be published to the mobile app first before configuring attendance and scanners.');
-                return;
-              }
-              setIsAttendanceModalOpen(true);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-              !isApproved || !isAlreadyPublished
-                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-                : isOrgManagedEvent
-                ? 'bg-slate-800 hover:bg-slate-700 text-indigo-200 border border-slate-700 cursor-pointer'
-                : 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer active:scale-95'
-            }`}
-            title={
-              !isApproved
-                ? "Locked: Activity must achieve official approval first"
-                : !isAlreadyPublished
-                ? "Locked: Activity must be published to the mobile app first before configuring attendance & scanners"
-                : isOrgManagedEvent
-                ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
-                : "Manage QR tickets, multi-session scanning windows, and designated officers"
-            }
-          >
-            {!isApproved ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Attendance & Scanners</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
-                  Locked
-                </span>
-              </>
-            ) : !isAlreadyPublished ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Attendance & Scanners</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
-                  Unpublished
-                </span>
-              </>
-            ) : isOrgManagedEvent ? (
-              <>
-                <Eye className="w-3.5 h-3.5 text-indigo-200" />
-                <span>Scanners (View Only)</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-white/20 text-indigo-200">
-                  Club
-                </span>
-              </>
-            ) : (
-              <>
-                <QrCode className="w-3.5 h-3.5 text-indigo-200" />
-                <span>Attendance & Scanners</span>
-              </>
-            )}
-          </button>
-
-          {/* Disbursement Voucher Action */}
-          {isApproved && (
+          {/* Activity Utilities (Utils Dropdown Menu — STI Clean Theme) */}
+          <div className="relative" ref={utilsDropdownRef}>
             <button
               type="button"
-              disabled={isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher}
-              onClick={() => {
-                if (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) {
-                  toast.info('Organization Ledger Funded: No school disbursement voucher is required.');
-                  return;
-                }
-                setIsDisbursementVoucherModalOpen(true);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-                hasDisbursementVoucher
-                  ? isOrgManagedEvent
-                    ? 'bg-slate-800 hover:bg-slate-700 text-emerald-200 border border-slate-700 cursor-pointer'
-                    : 'bg-emerald-700 hover:bg-emerald-800 text-white cursor-pointer active:scale-95'
-                  : isOrgManagedEvent
-                  ? isOrgLedger
-                    ? 'bg-white/5 text-purple-300/60 border border-purple-500/20 cursor-not-allowed select-none'
-                    : 'bg-slate-800 hover:bg-slate-700 text-amber-200 border border-slate-700 cursor-pointer'
-                  : isVoucherRequired
-                  ? 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-amber-400/30 cursor-pointer active:scale-95'
-                  : 'bg-slate-800 hover:bg-slate-700 text-purple-200 border border-purple-500/30 cursor-pointer active:scale-95'
+              onClick={() => setIsUtilsOpen((prev) => !prev)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer select-none ${
+                isUtilsOpen
+                  ? 'bg-white text-[#001A4D] shadow-sm ring-2 ring-white/30'
+                  : 'bg-white/10 hover:bg-white/20 text-white border border-white/15 active:scale-95'
               }`}
-              title={
-                hasDisbursementVoucher
-                  ? isOrgManagedEvent
-                    ? "View attached organization disbursement receipt / voucher (Club Managed • Read Only)"
-                    : isOrgLedger
-                    ? "View or update attached Organization disbursement receipt / slip"
-                    : "View or update official Disbursement Voucher"
-                  : isOrgManagedEvent
-                  ? isOrgLedger
-                    ? "Organization Treasury Funded: No disbursement voucher required from school"
-                    : "Disbursement voucher must be uploaded by the organization adviser or club officers"
-                  : isVoucherRequired
-                  ? "Upload official Disbursement Voucher to unlock Cash Custodians & Liquidation"
-                  : "Optionally attach an acknowledgment receipt or check copy from organization treasury"
-              }
+              title="Open Activity Utilities & Operations"
             >
-              {hasDisbursementVoucher ? (
-                <>
-                  {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-emerald-300" /> : <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />}
-                  <span>{isOrgManagedEvent ? (isOrgLedger ? 'View Org Receipt' : 'View Voucher') : (isOrgLedger ? 'Org Receipt (Attached)' : 'Disbursement Voucher (Attached)')}</span>
-                  {isOrgManagedEvent && (
-                    <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-white/20 text-emerald-200">
-                      Club
-                    </span>
-                  )}
-                </>
-              ) : isOrgManagedEvent ? (
-                isOrgLedger ? (
-                  <>
-                    <FileText className="w-3.5 h-3.5 text-purple-300/60" />
-                    <span>Voucher Exempt</span>
-                    <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-purple-500/10 text-purple-300/70 border border-purple-500/20">
-                      Org Funds
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Eye className="w-3.5 h-3.5 text-amber-300" />
-                    <span>Voucher (Club Managed)</span>
-                    <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      Pending
-                    </span>
-                  </>
-                )
-              ) : isVoucherRequired ? (
-                <>
-                  <FileCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
-                  <span>Upload Disbursement Voucher</span>
-                  <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/20 text-amber-200 border border-amber-400/30">
-                    Required
-                  </span>
-                </>
-              ) : (
-                <>
-                  <FileText className="w-3.5 h-3.5 text-purple-300" />
-                  <span>Attach Receipt (Optional)</span>
-                  <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-purple-400/20 text-purple-200 border border-purple-400/30">
-                    Org Funds
-                  </span>
-                </>
+              <SlidersHorizontal className={`w-3.5 h-3.5 ${isUtilsOpen ? 'text-[#0E4EBD]' : 'text-[#FFD41C]'}`} />
+              <span>Utils</span>
+              {hasRevisions && (
+                <span className="px-1.5 py-0.2 rounded-full bg-[#FFD41C] text-[#001A4D] text-[10px] font-black" title={`${proposalDiffs.length} revision(s)`}>
+                  {proposalDiffs.length}
+                </span>
               )}
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isUtilsOpen ? 'rotate-180 text-[#001A4D]' : 'text-white/70'}`} />
             </button>
-          )}
 
-          {/* 3. Cash Custodians (Locked only if school voucher required and not uploaded) */}
-          <button
-            type="button"
-            disabled={!isApproved || (isVoucherRequired && !hasDisbursementVoucher)}
-            onClick={() => {
-              if (!isApproved) {
-                toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
-                return;
-              }
-              if (isVoucherRequired && !hasDisbursementVoucher) {
-                toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash advance amounts.');
-                return;
-              }
-              setIsCashModalOpen(true);
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
-              !isApproved || (isVoucherRequired && !hasDisbursementVoucher)
-                ? 'bg-white/5 text-white/40 border border-white/10 cursor-not-allowed select-none'
-                : 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-95'
-            }`}
-            title={
-              !isApproved
-                ? "Locked: Activity must achieve official approval first"
-                : (isVoucherRequired && !hasDisbursementVoucher)
-                ? "Locked: Upload the official Disbursement Voucher first before allocating cash custodians"
-                : isOrgManagedEvent
-                ? "Organization Managed: Configured by student club officers. Administrator view is read-only."
-                : "Allocate cash advances per task against approved budget for physical disbursement and liquidation"
-            }
-          >
-            {!isApproved ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Cash Custodians</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-400/10 text-amber-300/80 border border-amber-400/20">
-                  Locked
-                </span>
-              </>
-            ) : (isVoucherRequired && !hasDisbursementVoucher) ? (
-              <>
-                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
-                <span>Cash Custodians</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Voucher Required
-                </span>
-              </>
-            ) : isLiquidationExempt ? (
-              <>
-                <Coins className="w-3.5 h-3.5 text-emerald-300" />
-                <span>Cash Custodians</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Exempt (₱0)
-                </span>
-              </>
-            ) : isOrgManagedEvent ? (
-              <>
-                <Eye className="w-3.5 h-3.5 text-emerald-200" />
-                <span>Custodians (View Only)</span>
-                <span className="text-[9px] uppercase font-mono px-1 py-0.2 rounded bg-white/20 text-emerald-200">
-                  Club
-                </span>
-              </>
-            ) : (
-              <>
-                <Coins className="w-3.5 h-3.5 text-amber-300" />
-                <span>Cash Custodians</span>
-              </>
+            {isUtilsOpen && (
+              <div className="absolute right-0 mt-2 w-88 max-w-[94vw] bg-white border border-slate-200 rounded-2xl shadow-2xl z-50 overflow-hidden text-xs animate-in fade-in zoom-in-95 duration-150 max-h-[85vh] flex flex-col ring-1 ring-black/5">
+                {/* Utilities Header — STI Navy Brand Header */}
+                <div className="px-4 py-3 bg-[#001A4D] text-white flex items-center justify-between shrink-0 border-b border-white/10">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
+                      <SlidersHorizontal className="w-3.5 h-3.5 text-[#FFD41C]" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-white leading-tight">Activity Utilities</div>
+                      <p className="text-[10px] text-blue-200/80 leading-tight">Tools & operations</p>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-white/15 text-[#FFD41C] border border-white/20">
+                    {fullProposal.referenceNo || event.referenceId || 'AP'}
+                  </span>
+                </div>
+
+                <div className="overflow-y-auto p-2.5 space-y-3 flex-1 bg-white divide-y divide-slate-100">
+                  {/* Section 1: Operations & Student App */}
+                  <div className="space-y-1">
+                    <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Operations & Engagement
+                    </div>
+
+                    {/* 1. Mobile App Feed */}
+                    <button
+                      type="button"
+                      disabled={!isApproved || isAlreadyPublished}
+                      onClick={() => {
+                        if (!isApproved) {
+                          toast.error('Locked: Proposal must be approved before configuring student mobile feed.');
+                          return;
+                        }
+                        if (isAlreadyPublished) {
+                          toast.info('Lockout: This activity has already been published to the student mobile app.');
+                          return;
+                        }
+                        setIsUtilsOpen(false);
+                        setIsPublishModalOpen(true);
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                        !isApproved
+                          ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
+                          : isAlreadyPublished
+                          ? 'cursor-not-allowed opacity-90 hover:bg-gray-50'
+                          : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          !isApproved
+                            ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                            : isAlreadyPublished
+                            ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                            : isOrgManagedEvent
+                            ? 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
+                            : 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
+                        }`}>
+                          {!isApproved ? (
+                            <Lock className="w-4 h-4" />
+                          ) : isAlreadyPublished ? (
+                            <CheckCircle2 className="w-4 h-4" />
+                          ) : isOrgManagedEvent ? (
+                            <Eye className="w-4 h-4" />
+                          ) : (
+                            <Smartphone className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-900 truncate">
+                            {isOrgManagedEvent ? 'Mobile Feed (View Only)' : isAlreadyPublished ? 'Mobile Feed (Published)' : 'Publish to Student App'}
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate">
+                            {!isApproved
+                              ? 'Locked: Approval required first'
+                              : isAlreadyPublished
+                              ? 'Live on student mobile feed'
+                              : isOrgManagedEvent
+                              ? 'Managed by student club'
+                              : 'Banner, notifications & audience'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {!isApproved ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Locked
+                          </span>
+                        ) : isAlreadyPublished ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Published
+                          </span>
+                        ) : isOrgManagedEvent ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
+                            Club
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2.5 py-0.5 rounded-full bg-blue-600 text-white shadow-2xs">
+                            Configure
+                          </span>
+                        )}
+                      </div>
+                    </button>
+
+                    {/* 2. Attendance & QR Scanners */}
+                    <button
+                      type="button"
+                      disabled={!isApproved || !isAlreadyPublished}
+                      onClick={() => {
+                        if (!isApproved) {
+                          toast.error('Locked: Proposal must be approved before configuring attendance and scanners.');
+                          return;
+                        }
+                        if (!isAlreadyPublished) {
+                          toast.error('Locked: Activity must be published to the mobile app first before configuring attendance and scanners.');
+                          return;
+                        }
+                        setIsUtilsOpen(false);
+                        setIsAttendanceModalOpen(true);
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                        !isApproved || !isAlreadyPublished
+                          ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
+                          : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          !isApproved || !isAlreadyPublished
+                            ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                            : 'bg-indigo-50 text-indigo-600 border border-indigo-200'
+                        }`}>
+                          {!isApproved || !isAlreadyPublished ? (
+                            <Lock className="w-4 h-4" />
+                          ) : isOrgManagedEvent ? (
+                            <Eye className="w-4 h-4" />
+                          ) : (
+                            <QrCode className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-900 truncate">
+                            {isOrgManagedEvent ? 'Attendance & Scanners (View Only)' : 'Attendance & QR Scanners'}
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate">
+                            {!isApproved
+                              ? 'Locked: Approval required'
+                              : !isAlreadyPublished
+                              ? 'Publish to mobile app first'
+                              : 'QR check-in & designated scanners'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {!isApproved ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Locked
+                          </span>
+                        ) : !isAlreadyPublished ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Unpublished
+                          </span>
+                        ) : isOrgManagedEvent ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            Club
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2.5 py-0.5 rounded-full bg-indigo-600 text-white shadow-2xs">
+                            Manage
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Section 2: Finance & Liquidation */}
+                  <div className="space-y-1 pt-2">
+                    <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                      Finance & Liquidation
+                    </div>
+
+                    {/* 3. Disbursement Voucher */}
+                    {isApproved && (
+                      <button
+                        type="button"
+                        disabled={isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher}
+                        onClick={() => {
+                          if (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) {
+                            toast.info('Organization Ledger Funded: No school disbursement voucher is required.');
+                            return;
+                          }
+                          setIsUtilsOpen(false);
+                          setIsDisbursementVoucherModalOpen(true);
+                        }}
+                        className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                          isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher
+                            ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
+                            : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                            hasDisbursementVoucher
+                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                              : isOrgLedger
+                              ? 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
+                              : isVoucherRequired
+                              ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                              : 'bg-gray-100 text-gray-600 border border-gray-200'
+                          }`}>
+                            {hasDisbursementVoucher ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : isOrgLedger ? (
+                              <FileText className="w-4 h-4" />
+                            ) : isVoucherRequired ? (
+                              <FileCheck className="w-4 h-4" />
+                            ) : (
+                              <FileText className="w-4 h-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-900 truncate">
+                              {hasDisbursementVoucher
+                                ? (isOrgManagedEvent ? (isOrgLedger ? 'View Org Receipt' : 'View Voucher') : (isOrgLedger ? 'Org Receipt (Attached)' : 'Disbursement Voucher'))
+                                : (isOrgLedger ? 'Organization Treasury Slip' : 'Disbursement Voucher')}
+                            </div>
+                            <div className="text-[11px] text-gray-500 truncate">
+                              {hasDisbursementVoucher
+                                ? 'Official voucher/slip attached'
+                                : isOrgManagedEvent && isOrgLedger
+                                ? 'Exempt • Club treasury funds'
+                                : isVoucherRequired
+                                ? 'Required from school accounting'
+                                : 'Optional acknowledgment copy'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="shrink-0">
+                          {hasDisbursementVoucher ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              Attached
+                            </span>
+                          ) : isOrgManagedEvent && isOrgLedger ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
+                              Exempt
+                            </span>
+                          ) : isVoucherRequired ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                              Required
+                            </span>
+                          ) : (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                              Optional
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    )}
+
+                    {/* 4. Cash Custodians & Liquidation */}
+                    <button
+                      type="button"
+                      disabled={!isApproved || (isVoucherRequired && !hasDisbursementVoucher)}
+                      onClick={() => {
+                        if (!isApproved) {
+                          toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
+                          return;
+                        }
+                        if (isVoucherRequired && !hasDisbursementVoucher) {
+                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash advance amounts.');
+                          return;
+                        }
+                        setIsUtilsOpen(false);
+                        setIsCashModalOpen(true);
+                      }}
+                      className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                        !isApproved || (isVoucherRequired && !hasDisbursementVoucher)
+                          ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
+                          : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                          !isApproved || (isVoucherRequired && !hasDisbursementVoucher)
+                            ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                            : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                        }`}>
+                          {!isApproved || (isVoucherRequired && !hasDisbursementVoucher) ? (
+                            <Lock className="w-4 h-4" />
+                          ) : (
+                            <Coins className="w-4 h-4" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-bold text-gray-900 truncate">
+                            {isOrgManagedEvent ? 'Cash Custodians (View Only)' : 'Cash Custodians & Liquidation'}
+                          </div>
+                          <div className="text-[11px] text-gray-500 truncate">
+                            {isLiquidationExempt
+                              ? 'Non-monetary (₱0) • Exempt'
+                              : !isApproved
+                              ? 'Locked: Approval required'
+                              : (isVoucherRequired && !hasDisbursementVoucher)
+                              ? 'Locked: Voucher needed first'
+                              : 'Manage cash advances & liquidation'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {isLiquidationExempt ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Exempt (₱0)
+                          </span>
+                        ) : !isApproved ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Locked
+                          </span>
+                        ) : (isVoucherRequired && !hasDisbursementVoucher) ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Voucher Needed
+                          </span>
+                        ) : isOrgManagedEvent ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
+                            Club
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Open
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  </div>
+
+                  {/* Section 3: Proposal Revisions (if hasRevisions) */}
+                  {hasRevisions && (
+                    <div className="space-y-1 pt-2">
+                      <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-amber-700">
+                        Revisions & Audit
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUtilsOpen(false);
+                          setShowDiffModal(true);
+                        }}
+                        className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 bg-amber-50/40 hover:bg-amber-50 border border-amber-200/60 transition-colors cursor-pointer active:scale-[0.99]"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 border border-amber-300 flex items-center justify-center shrink-0">
+                            <GitCompare className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-900 truncate">Compare Proposal Revisions</div>
+                            <div className="text-[11px] text-amber-800 truncate">
+                              {proposalDiffs.length} field revision(s) recorded
+                            </div>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-200 text-amber-900 border border-amber-300">
+                          {proposalDiffs.length} Diff(s)
+                        </span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Section 4: Lifecycle & Actions */}
+                  {((event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent) ||
+                    ((event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isOrgManagedEvent) ||
+                    (!isCancelled && cancelCheck.canCancel) ||
+                    event.isArchived) && (
+                    <div className="space-y-1 pt-2">
+                      <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                        Lifecycle & Actions
+                      </div>
+
+                      {/* Conclude Action */}
+                      {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUtilsOpen(false);
+                            setShowConcludeModal(true);
+                          }}
+                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-emerald-50 text-emerald-900 border border-transparent hover:border-emerald-200 transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200 flex items-center justify-center shrink-0">
+                              <CheckCircle2 className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold truncate">Conclude Activity</div>
+                              <div className="text-[11px] text-emerald-600 truncate">Mark completed & finalize attendance</div>
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            Finish
+                          </span>
+                        </button>
+                      )}
+
+                      {/* Archive Action */}
+                      {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isOrgManagedEvent && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUtilsOpen(false);
+                            setShowArchiveModal(true);
+                          }}
+                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-indigo-50 text-indigo-900 border border-transparent hover:border-indigo-200 transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200 flex items-center justify-center shrink-0">
+                              <FolderArchive className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold truncate">Archive Activity</div>
+                              <div className="text-[11px] text-indigo-600 truncate">Move to historical archives</div>
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
+                            Archive
+                          </span>
+                        </button>
+                      )}
+
+                      {/* Cancel Action */}
+                      {!isCancelled && cancelCheck.canCancel && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUtilsOpen(false);
+                            setShowCancelModal(true);
+                          }}
+                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-rose-50 text-rose-900 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center shrink-0">
+                              <AlertTriangle className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold truncate">Cancel Activity</div>
+                              <div className="text-[11px] text-rose-600 truncate">Cancel event with justification</div>
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
+                            Cancel
+                          </span>
+                        </button>
+                      )}
+
+                      {/* Delete Action */}
+                      {event.isArchived && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUtilsOpen(false);
+                            setShowDeleteModal(true);
+                          }}
+                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-red-50 text-red-900 border border-transparent hover:border-red-200 transition-colors cursor-pointer"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-lg bg-red-50 text-red-600 border border-red-200 flex items-center justify-center shrink-0">
+                              <Trash2 className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold truncate">Delete Permanently</div>
+                              <div className="text-[11px] text-red-600 truncate">Purge archived record</div>
+                            </div>
+                          </div>
+                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-red-100 text-red-800 border border-red-200">
+                            Delete
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
             )}
-          </button>
-
-          {/* Conclude Action */}
-          {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
-            <button
-              type="button"
-              onClick={() => setShowConcludeModal(true)}
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-              title="Conclude activity and lock attendance"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>Conclude</span>
-            </button>
-          )}
-
-          {/* Archive Action */}
-          {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isOrgManagedEvent && (
-            <button
-              type="button"
-              onClick={() => setShowArchiveModal(true)}
-              className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-              title="Archive completed activity"
-            >
-              <FolderArchive className="w-3.5 h-3.5" />
-              <span>Archive</span>
-            </button>
-          )}
-
-          {/* Delete Action (if archived) */}
-          {event.isArchived && (
-            <button
-              type="button"
-              onClick={() => setShowDeleteModal(true)}
-              className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-              title="Delete archived activity"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Delete</span>
-            </button>
-          )}
-
-          {/* Cancel Event Action */}
-          {!isCancelled && cancelCheck.canCancel && (
-            <button
-              type="button"
-              onClick={() => setShowCancelModal(true)}
-              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer"
-              title="Cancel this activity"
-            >
-              <AlertTriangle className="w-3.5 h-3.5" />
-              <span>Cancel</span>
-            </button>
-          )}
+          </div>
 
           <button
             onClick={onClose}
@@ -2215,20 +2324,20 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </button>
                   </div>
                 ) : isOrgLedger ? (
-                  <div className="p-3.5 bg-purple-50/80 border border-purple-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-purple-950">
+                  <div className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-800">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
-                        <Coins className="w-4 h-4 text-purple-700" />
+                      <div className="w-8 h-8 rounded-xl bg-blue-100 text-[#0E4EBD] flex items-center justify-center shrink-0">
+                        <Building2 className="w-4 h-4 text-[#0E4EBD]" />
                       </div>
                       <div>
-                        <span className="font-bold flex items-center gap-2 text-purple-950">
-                          Organization Treasury Ledger Funded
-                          <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-purple-200 text-purple-900 border border-purple-300">
+                        <span className="font-bold flex items-center gap-2 text-[#001A4D]">
+                          Organization Treasury Funded
+                          <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-blue-100 text-[#0E4EBD] border border-blue-200">
                             No School Voucher Needed
                           </span>
                         </span>
-                        <p className="text-[11px] text-purple-800 mt-0.5 leading-relaxed">
-                          This activity's budget is drawn directly from the organization's own funds ledger. An institutional school disbursement voucher from accounting is not required; cash custodians can be allocated and liquidated directly.
+                        <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
+                          This activity's budget is drawn directly from the organization's own treasury funds. An institutional school disbursement voucher from accounting is not required; cash custodians can be allocated and liquidated directly.
                         </p>
                       </div>
                     </div>
@@ -2236,7 +2345,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       <button
                         type="button"
                         onClick={() => setIsDisbursementVoucherModalOpen(true)}
-                        className="px-3 py-1.5 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-xl text-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
+                        className="px-3 py-1.5 bg-[#0E4EBD] hover:bg-[#00246B] text-white font-bold rounded-xl text-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0"
                       >
                         <Upload className="w-3.5 h-3.5" />
                         <span>Attach Org Slip (Optional)</span>
@@ -3029,29 +3138,41 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             </div>
                           )}
 
-                          {item.stepRemarks && Object.keys(item.stepRemarks).length > 0 && (
-                            <div className="mt-2 space-y-1.5 bg-amber-50/80 border border-amber-200 rounded-xl p-3">
-                              <p className="text-[11px] font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
-                                <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                                <span>Step-by-Step Revision Directives</span>
-                              </p>
-                              <div className="space-y-1.5 mt-1">
-                                {Object.entries(item.stepRemarks)
-                                  .filter(([key]) => !isNaN(Number(key)) || key.startsWith('step_') || key.startsWith('step-') || key.startsWith('Step '))
-                                  .map(([key, directive]: [string, any]) => {
-                                    const stepNum = key.replace(/\D/g, '');
-                                    const matchedFlag = RETURN_FLAGS_GROUPED.find((r) => r.stepNumber === Number(stepNum));
-                                    const label = matchedFlag ? matchedFlag.label : `Step ${stepNum || key}`;
-                                    return (
-                                      <div key={key} className="text-xs bg-white rounded-lg p-2.5 border border-amber-200 shadow-2xs">
+                          {item.stepRemarks && Object.keys(item.stepRemarks).length > 0 && (() => {
+                            const dedupedDirectives = new Map<number, { label: string; text: string }>();
+                            Object.entries(item.stepRemarks).forEach(([key, directive]: [string, any]) => {
+                              if (!directive || typeof directive !== 'string' || !directive.trim()) return;
+                              const numMatch = key.match(/(?:step[-_\s]*)?(\d+)/i);
+                              if (!numMatch) return;
+                              const stepNum = Number(numMatch[1]);
+                              if (!dedupedDirectives.has(stepNum)) {
+                                const matchedFlag = RETURN_FLAGS_GROUPED.find((r) => r.stepNumber === stepNum);
+                                const label = matchedFlag ? matchedFlag.label : `Step ${stepNum}`;
+                                dedupedDirectives.set(stepNum, { label, text: directive.trim() });
+                              }
+                            });
+
+                            if (dedupedDirectives.size === 0) return null;
+
+                            return (
+                              <div className="mt-2 space-y-1.5 bg-amber-50/80 border border-amber-200 rounded-xl p-3">
+                                <p className="text-[11px] font-bold text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                                  <span>Step-by-Step Revision Directives</span>
+                                </p>
+                                <div className="space-y-1.5 mt-1">
+                                  {Array.from(dedupedDirectives.entries())
+                                    .sort(([a], [b]) => a - b)
+                                    .map(([stepNum, { label, text }]) => (
+                                      <div key={stepNum} className="text-xs bg-white rounded-lg p-2.5 border border-amber-200 shadow-2xs">
                                         <span className="font-bold text-[#001A4D] block text-[11px] mb-0.5">{label}:</span>
-                                        <p className="text-gray-700 text-xs leading-relaxed">{String(directive)}</p>
+                                        <p className="text-gray-700 text-xs leading-relaxed">{text}</p>
                                       </div>
-                                    );
-                                  })}
+                                    ))}
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            );
+                          })()}
                         </div>
                       </div>
                     );
@@ -3787,8 +3908,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <div className="space-y-3 bg-gray-50 p-3 rounded-xl border border-gray-200">
                   {RETURN_FLAGS_GROUPED.map((item) => {
                     const isSelected = returnFlags.includes(item.flag);
-                    const stepKey = String(item.stepNumber);
-                    const currentDirective = stepRemarks[stepKey] || stepRemarks[item.flag] || '';
+                    const stepKey = `step_${item.stepNumber}`;
+                    const currentDirective = stepRemarks[stepKey] || stepRemarks[String(item.stepNumber)] || stepRemarks[item.flag] || '';
 
                     return (
                       <div
@@ -3831,9 +3952,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                                 const val = e.target.value;
                                 setStepRemarks((prev) => ({
                                   ...prev,
-                                  [stepKey]: val,
-                                  [item.flag]: val,
-                                  [`step-${item.stepNumber}`]: val,
+                                  [`step_${item.stepNumber}`]: val,
                                 }));
                               }}
                               rows={2}
@@ -3882,7 +4001,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   submitting ||
                   returnFlags.length === 0 ||
                   RETURN_FLAGS_GROUPED.filter((item) => returnFlags.includes(item.flag)).some(
-                    (item) => !(stepRemarks[String(item.stepNumber)]?.trim() || stepRemarks[item.flag]?.trim())
+                    (item) => !(
+                      stepRemarks[String(item.stepNumber)]?.trim() ||
+                      stepRemarks[item.flag]?.trim() ||
+                      stepRemarks[`step_${item.stepNumber}`]?.trim()
+                    )
                   )
                 }
                 className="flex-1 py-3 bg-gradient-to-r from-[#FFC107] to-[#F59E0B] text-[#001A4D] rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer shadow-xs"

@@ -164,18 +164,30 @@ export async function exportPostActivityReportPDF(
           'Post-evaluation forms',
         ];
 
-  // Extract Financial Figures
+  // Extract Financial Figures (Sourced from PAR or Form AP-01 baseline)
   const revenue = Number(
     rawReport.financialSummary?.totalRevenue ||
+      proposalData?.totalApprovedBudget ||
+      proposalData?.allocatedBudget ||
       liquidationData?.actualRevenueTotal ||
       liquidationData?.allocatedBudget ||
-      proposalData?.totalApprovedBudget ||
-      10900
+      0
   );
 
   let financialItems: Array<{ description: string; unitAmount: number; totalAmount: number }> = [];
   if (rawReport.financialSummary?.lineItems && rawReport.financialSummary.lineItems.length > 0) {
     financialItems = rawReport.financialSummary.lineItems;
+  } else if (Array.isArray(proposalData?.lineItems) && proposalData.lineItems.length > 0) {
+    financialItems = proposalData.lineItems.map((li: any) => ({
+      description: li.item || li.particulars || li.description || 'Budget Item',
+      unitAmount: Number(li.unitCost || li.unitPrice || 0),
+      totalAmount: Number(
+        li.totalCost ||
+          li.total ||
+          (Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0)) ||
+          0
+      ),
+    }));
   } else if (Array.isArray(liquidationData?.lineItems) && liquidationData.lineItems.length > 0) {
     financialItems = liquidationData.lineItems.map((li: any) => ({
       description: li.particulars || li.description || li.item || 'Expense Item',

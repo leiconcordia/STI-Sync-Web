@@ -841,12 +841,20 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     applyExpectedReach(expectedReachPercent, includeFaculty, validCount);
   };
 
-  // Auto-initialize 90% expected reach for "all" mode if attendance is unset
+  // Auto-initialize 90% expected reach for "all" mode if attendance is unset on a brand new proposal
   useEffect(() => {
+    const hasExistingCount =
+      Boolean((formData as any).id) ||
+      Boolean((formData as any).referenceNo) ||
+      Boolean((formData as any).isReturnedProposal) ||
+      Boolean(formData.estAttendanceCount && formData.estAttendanceCount > 0) ||
+      Boolean(formData.estimatedAttendance) ||
+      Boolean(formData.targetAudience?.expectedAttendees && formData.targetAudience.expectedAttendees > 0) ||
+      Boolean((formData as any).expectedParticipantCount && (formData as any).expectedParticipantCount > 0);
+
     if (
+      !hasExistingCount &&
       currentMode === 'all' &&
-      !formData.estAttendanceCount &&
-      !formData.estimatedAttendance &&
       totalCampusPopulation > 0
     ) {
       applyExpectedReach(expectedReachPercent, includeFaculty, facultyCount);

@@ -11,7 +11,7 @@ import {
   FileText, FileCheck,
   FileSpreadsheet,
   Image as ImageIcon,
-  File,
+  File as FileIcon,
   Eye,
   Paperclip,
   ExternalLink,
@@ -1477,6 +1477,7 @@ export default function OfficerLiquidationModal({
               documentType="FL"
               currentDocument={effectiveReport}
               versionLabel={`v${effectiveReport.revisionCount || 1}.0`}
+              showActionButtons={false}
             />
           )}
 
@@ -2289,7 +2290,7 @@ export default function OfficerLiquidationModal({
                                       </div>
                                     ) : (
                                       <div className="w-7 h-7 rounded bg-gray-100 text-gray-600 flex items-center justify-center flex-shrink-0 border border-gray-200">
-                                        <File className="w-4 h-4" />
+                                        <FileIcon className="w-4 h-4" />
                                       </div>
                                     )}
 

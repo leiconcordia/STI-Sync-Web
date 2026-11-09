@@ -25,6 +25,7 @@ import {
   AlertCircle,
   RotateCcw,
   Shield,
+  Lock,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, addDays } from 'date-fns';
@@ -40,6 +41,7 @@ import {
 } from '../services/proposal.service';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { canEditProposal } from '../../events/utils/event-lifecycle.utils';
+import { stripSasPhrases } from '../../events/utils/organization-display.utils';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 
 import Step1GeneralInfo from './wizard/Step1GeneralInfo';
@@ -60,6 +62,7 @@ interface CreateProposalModalProps {
     name: string;
     email: string;
     role?: string;
+    isAdviser?: boolean;
     organizationId?: string;
     organizationName?: string;
   };
@@ -97,15 +100,28 @@ function extractStepData(stepNumber: number, data: ProposalFormData | undefined)
         mechanics: (data.mechanics || []).map((m) => m.trim()).filter(Boolean),
         materials: (data.materials || []).map((m) => m.trim()).filter(Boolean),
       };
-    case 3:
+    case 3: {
+      const aud = data.targetAudience || {};
+      const count =
+        (typeof data.estAttendanceCount === 'number' && data.estAttendanceCount > 0 ? data.estAttendanceCount : null) ??
+        (typeof aud.expectedAttendees === 'number' && aud.expectedAttendees > 0 ? aud.expectedAttendees : null) ??
+        (data.estimatedAttendance ? parseInt(String(data.estimatedAttendance).match(/\d+/)?.[0] || '0', 10) || null : null) ??
+        (typeof (data as any).expectedParticipantCount === 'number' && (data as any).expectedParticipantCount > 0 ? (data as any).expectedParticipantCount : null) ??
+        0;
+
       return {
-        targetAudience: data.targetAudience || {},
-        estAttendanceCount: data.estAttendanceCount,
-        estAttendanceQualifier: data.estAttendanceQualifier,
-        estimatedAttendance: (data.estimatedAttendance || '').trim(),
-        marketingPlan: (data.marketingPlan || []).map((m) => m.trim()).filter(Boolean),
-        documentationPlan: (data.documentationPlan || []).map((d) => d.trim()).filter(Boolean),
+        scope: aud.scope || (aud.allStudents ? 'all' : 'specific'),
+        allStudents: Boolean(aud.allStudents),
+        academicLevels: (aud.academicLevels || []).map((l: any) => String(l).trim()).filter(Boolean).sort(),
+        departments: (aud.departments || []).map((d: any) => String(d).trim()).filter(Boolean).sort(),
+        courses: (aud.courses || aud.courseCodes || []).map((c: any) => String(c).trim()).filter(Boolean).sort(),
+        yearLevels: (aud.yearLevels || []).map((y: any) => String(y).trim()).filter(Boolean).sort(),
+        sections: (aud.sections || []).map((s: any) => String(s).trim()).filter(Boolean).sort(),
+        estAttendanceCount: Number(count || 0),
+        marketingPlan: (data.marketingPlan || []).map((m: any) => String(m).trim()).filter(Boolean),
+        documentationPlan: (data.documentationPlan || []).map((d: any) => String(d).trim()).filter(Boolean),
       };
+    }
     case 4:
       return {
         date: data.date || '',
@@ -181,6 +197,16 @@ export default function CreateProposalModal({
     currentUser.role === 'officer' ||
     currentUser.role === 'student_officer' ||
     Boolean(currentUser.organizationId && !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin'].includes(currentUser.organizationId.toLowerCase()));
+
+  const isAdviserOrAdmin = Boolean(
+    currentUser.isAdviser ||
+    currentUser.role === 'adviser' ||
+    currentUser.role === 'admin' ||
+    currentUser.role === 'sas_admin' ||
+    currentUser.role === 'sao' ||
+    currentUser.role === 'sao_admin'
+  );
+  const isOfficerOnly = isOfficerProp && !isAdviserOrAdmin;
 
   const defaultOrgName = currentUser.organizationName || (isOfficerProp ? 'Student Organization' : 'Student Affairs & Services (SAS)');
   const defaultOrgId = currentUser.organizationId || (isOfficerProp ? 'student_org' : 'sas');
@@ -505,34 +531,40 @@ export default function CreateProposalModal({
     return Boolean(getStepDirective(stepNum));
   };
 
-  // Snapshot initial step data upon mounting to detect modifications
-  const [initialStepSnapshots, setInitialStepSnapshots] = useState<Record<number, string>>(() => {
-    if (!initialData) return {};
-    const snaps: Record<number, string> = {};
-    for (let s = 1; s <= 7; s++) {
-      snaps[s] = JSON.stringify(extractStepData(s, initialData));
-    }
-    return snaps;
-  });
-
-  useEffect(() => {
-    if (initialData && Object.keys(initialStepSnapshots).length === 0) {
-      const snaps: Record<number, string> = {};
-      for (let s = 1; s <= 7; s++) {
-        snaps[s] = JSON.stringify(extractStepData(s, initialData));
-      }
-      setInitialStepSnapshots(snaps);
-    }
+  // Identify the immutable submitted/returned baseline (e.g. Version 1 before any draft edits)
+  const baselineSnapshot = useMemo(() => {
+    return (
+      (initialData as any)?.returnedSnapshot ||
+      (initialData as any)?.submittedSnapshot ||
+      (initialData as any)?.previousSnapshot ||
+      (initialData as any)?.versionHistory?.[0]?.dataSnapshot ||
+      (initialData as any)?.initialSnapshot ||
+      null
+    );
   }, [initialData]);
 
-  // Check if a flagged step has been modified from its initial return snapshot
+  const baselineData = useMemo(() => {
+    return baselineSnapshot || initialData;
+  }, [baselineSnapshot, initialData]);
+
+  // Snapshot baseline step data upon mounting or when baselineData updates
+  const baselineStepSnapshots = useMemo(() => {
+    if (!baselineData) return {};
+    const snaps: Record<number, string> = {};
+    for (let s = 1; s <= 7; s++) {
+      snaps[s] = JSON.stringify(extractStepData(s, baselineData as any));
+    }
+    return snaps;
+  }, [baselineData]);
+
+  // Check if a flagged step has been modified compared to the submitted baseline (Version 1)
   const isStepModified = (stepNum: number): boolean => {
     if (!isReturnedProposal) return true;
     if (!isStepFlagged(stepNum)) return true;
-    const initialJson = initialStepSnapshots[stepNum];
-    if (!initialJson) return false;
+    const baselineJson = baselineStepSnapshots[stepNum];
+    if (!baselineJson) return false;
     const currentJson = JSON.stringify(extractStepData(stepNum, formData));
-    return currentJson !== initialJson;
+    return currentJson !== baselineJson;
   };
 
   // Pure validation checker: returns error map for a given step without mutating component error state
@@ -743,12 +775,27 @@ export default function CreateProposalModal({
 
     setIsSavingDraft(true);
     try {
+      // Ensure the returned baseline snapshot is preserved across draft iterations
+      const effectiveReturnedSnapshot =
+        (initialData as any)?.returnedSnapshot ||
+        baselineSnapshot ||
+        (formData as any)?.returnedSnapshot ||
+        (isReturnedProposal ? initialData : null);
+
       const result = await saveProposalDraft(
-        { ...formData, status: 'draft' },
+        {
+          ...formData,
+          status: 'draft',
+          ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
+        },
         currentUser,
         formData.id
       );
-      updateFormData({ id: result.id, referenceNo: result.referenceNo });
+      updateFormData({
+        id: result.id,
+        referenceNo: result.referenceNo,
+        ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
+      });
       toast.success(`Proposal saved as draft (${result.referenceNo})`);
     } catch (err: any) {
       console.error('Failed to save draft:', err);
@@ -760,6 +807,11 @@ export default function CreateProposalModal({
 
   // Submit Proposal
   const handleSubmitProposal = async () => {
+    if (isOfficerOnly) {
+      toast.error('Only the Organization Adviser can formally submit activity proposals for signatory review. Officers can Save as Draft.');
+      return;
+    }
+
     if (!editPermission.canEdit) {
       toast.error('Permission Denied', {
         description: editPermission.reason || 'Only the proponent organization has permission to edit and revise this proposal.',
@@ -998,6 +1050,7 @@ export default function CreateProposalModal({
                 returnRemarks={returnRemarks}
                 returnFlags={returnFlagsList}
                 stepRevisionRemarks={stepRemarksDict}
+                showActionButtons={false}
                 versionHistory={(initialData as any)?.versionHistory}
                 revisionHistory={(initialData as any)?.revisionHistory}
                 versionLabel={
@@ -1199,6 +1252,7 @@ export default function CreateProposalModal({
                   onSaveDraft={handleSaveDraft}
                   isSubmitting={isSubmitting}
                   isSavingDraft={isSavingDraft}
+                  isOfficerOnly={isOfficerOnly}
                   errors={errors}
                 />
               )}
@@ -1239,6 +1293,22 @@ export default function CreateProposalModal({
             ) : !editPermission.canEdit ? (
               <div className="px-4 py-2 rounded-xl bg-slate-100 text-slate-500 text-xs font-semibold border border-slate-200">
                 Read-Only (Non-Owner)
+              </div>
+            ) : isOfficerOnly ? (
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-amber-600" />
+                  <span>Drafting Mode (Adviser Submits)</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSaveDraft}
+                  disabled={isSavingDraft || isSubmitting}
+                  className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-2 shadow-sm shadow-blue-500/20 hover:shadow-blue-500/30 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4 text-white" />
+                  <span>{isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}</span>
+                </button>
               </div>
             ) : (
               <button

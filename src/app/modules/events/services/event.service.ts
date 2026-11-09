@@ -635,7 +635,10 @@ const buildEventSnapshot = (data: any) => {
     targetDepartmentIds: data.targetDepartmentIds || [],
     attendanceEnabled: data.attendanceEnabled !== false,
     certificatesEnabled: data.certificatesEnabled !== false,
-    expectedParticipantCount: data.expectedParticipantCount || 0,
+    expectedParticipantCount: data.expectedParticipantCount || data.estAttendanceCount || 0,
+    estAttendanceCount: data.estAttendanceCount ?? data.expectedParticipantCount ?? 0,
+    estAttendanceQualifier: data.estAttendanceQualifier || 'participants',
+    estimatedAttendance: data.estimatedAttendance || (data.estAttendanceCount ? `${data.estAttendanceCount} ${data.estAttendanceQualifier || 'participants'}` : ''),
     scope: data.scope || '',
     maxAttendees: data.maxAttendees || 0,
     registrationDeadline: data.registrationDeadline || '',
@@ -771,6 +774,20 @@ export const returnEvent = async (
 
   const returnedSnapshot = buildEventSnapshot(currentData);
 
+  // Canonicalize step revision remarks to prevent duplicate aliases ('2', 'step-2', etc.)
+  const canonicalStepRemarks: Record<string, string> = {};
+  if (stepRevisionRemarks && typeof stepRevisionRemarks === 'object') {
+    Object.entries(stepRevisionRemarks).forEach(([key, text]) => {
+      if (!text || typeof text !== 'string' || !text.trim()) return;
+      const numMatch = key.match(/(?:step[-_\s]*)?(\d+)/i);
+      const isNumberedStep = Boolean(numMatch && !key.startsWith('item_'));
+      const canonicalKey = isNumberedStep ? `step_${numMatch![1]}` : key;
+      if (!canonicalStepRemarks[canonicalKey] || text.trim().length > canonicalStepRemarks[canonicalKey].length) {
+        canonicalStepRemarks[canonicalKey] = text.trim();
+      }
+    });
+  }
+
   const historyEntry: EventProposalHistoryLog = cleanUndefined({
     id: `log-${Date.now()}`,
     action: 'returned',
@@ -779,7 +796,7 @@ export const returnEvent = async (
     performedAt: Timestamp.now(),
     returnFlags: flags || [],
     remarks: remarks?.trim() || undefined,
-    stepRemarks: stepRevisionRemarks || {},
+    stepRemarks: canonicalStepRemarks,
   });
 
   let updatedChain = currentData?.approvalChain;
@@ -817,7 +834,7 @@ export const returnEvent = async (
     returnFlags: flags || [],
     returnDeadline: deadline || null,
     adviserRemarks: remarks?.trim() || null,
-    stepRevisionRemarks: stepRevisionRemarks || {},
+    stepRevisionRemarks: canonicalStepRemarks,
     returnedSnapshot,
     previousSnapshot: returnedSnapshot,
     dataSnapshot: returnedSnapshot,
