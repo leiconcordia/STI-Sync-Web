@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/accounts/reset-password.js": {
+    "api/accounts/*.js": {
       "maxDuration": 60,
-      "includeFiles": ["functions/package.json", "functions/reset-handler.js"]
+      "includeFiles": "functions/**"
     }
   },
   "rewrites": [
