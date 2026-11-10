@@ -19,6 +19,7 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../../../../services/firebase';
 import { SAS_ADMINS_COLLECTION } from '../services/auth.service';
 import type { SasAdminDocument } from '../types/adviser.types';
+import { formatPersonName } from '../../../utils/name.utils';
 
 interface UseAdviserProfileResult {
   /** The adviser's Firestore profile, or null if not loaded / not found */
@@ -67,7 +68,8 @@ export function useAdviserProfile(): UseAdviserProfileResult {
         profileRef,
         (snap) => {
           if (snap.exists()) {
-            setProfile({ uid: snap.id, ...snap.data() } as SasAdminDocument);
+            const data = snap.data();
+            setProfile({ uid: snap.id, ...data, displayName: formatPersonName(data) } as SasAdminDocument);
           } else {
             // Auth user exists but no Firestore profile yet — profile is null
             setProfile(null);

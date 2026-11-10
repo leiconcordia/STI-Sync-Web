@@ -1,3 +1,4 @@
+import { ApprovedReportStorage } from '../../modules/reports/components/ApprovedReportStorage';
 import { useState, useMemo, useEffect } from 'react';
 import {
   BarChart3,
@@ -83,9 +84,7 @@ export default function OfficerReportsPage() {
   // Active Organization
   const activeOrg = useMemo(() => {
     return (
-      orgs.find((o) => o.id === profile?.activeOrganizationId) ||
-      orgs.find((o) => (profile?.assignedOrganizations || []).includes(o.id)) ||
-      orgs[0]
+      orgs.find((o) => o.id === profile?.activeOrganizationId) || null
     );
   }, [orgs, profile]);
 
@@ -234,6 +233,8 @@ export default function OfficerReportsPage() {
           </div>
         )}
       </div>
+
+      <ApprovedReportStorage key={profile?.activeOrganizationId || "none"} orgId={profile?.activeOrganizationId || ""} />
 
       {/* ── Organization Operational KPIs ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

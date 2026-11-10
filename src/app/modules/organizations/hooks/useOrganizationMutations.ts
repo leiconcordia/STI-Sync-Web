@@ -32,7 +32,8 @@ export const useOrganizationMutations = () => {
           adviserName: payload.adviser.name,
           orgName: payload.name,
           employeeId: payload.adviser.employeeId,
-          temporaryPassword: payload.adviser.temporaryPassword || 'Adv-2026!#',
+          temporaryPassword: payload.adviser.existingAccountUid ? undefined : payload.adviser.temporaryPassword || 'Adv-2026!#',
+          existingAccount: Boolean(payload.adviser.existingAccountUid),
         })
           .then(() => {
             toast.success(`Welcome email sent to adviser (${payload.adviser?.email})`);

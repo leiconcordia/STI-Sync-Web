@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../utils/name.utils';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -10,7 +11,6 @@ import {
   ShieldCheck,
   Loader2,
   AlertCircle,
-  Coins,
   PenTool,
   RotateCcw,
   CheckCircle2,
@@ -28,10 +28,9 @@ import { updateStudent } from '../../modules/students/services/student.service';
 import { uploadToCloudinary } from '../../../services/cloudinary';
 import { changeOfficerOrAdviserPassword } from '../../auth/services/password.service';
 import OrganizationProfile from './OrganizationProfile';
-import OfficerPayableCategorySettings from '../components/settings/OfficerPayableCategorySettings';
 import { toast } from 'sonner';
 
-type SettingsSection = 'account' | 'signature' | 'organization' | 'payable-categories' | 'security';
+type SettingsSection = 'account' | 'signature' | 'organization' | 'security';
 
 function PasswordStrength({ password }: { password: string }) {
   const checks = [
@@ -73,7 +72,6 @@ const NAV_ITEMS: { key: SettingsSection; label: string }[] = [
   { key: 'account', label: 'Account Profile' },
   { key: 'signature', label: 'Official E-Signature' },
   { key: 'organization', label: 'Organization Profile' },
-  { key: 'payable-categories', label: 'Fee & Fine Categories' },
   { key: 'security', label: 'Security & Password' },
 ];
 
@@ -85,14 +83,14 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [searchParams, setSearchParams] = useSearchParams();
   const tabQuery = searchParams.get('tab') as SettingsSection | null;
   const [activeSection, setActiveSection] = useState<SettingsSection>(
-    tabQuery && ['account', 'signature', 'organization', 'payable-categories', 'security'].includes(tabQuery)
+    tabQuery && ['account', 'signature', 'organization', 'security'].includes(tabQuery)
       ? tabQuery
       : defaultTab
   );
 
   // Sync tabQuery with state if searchParams change
   useEffect(() => {
-    if (tabQuery && ['account', 'signature', 'organization', 'payable-categories', 'security'].includes(tabQuery)) {
+    if (tabQuery && ['account', 'signature', 'organization', 'security'].includes(tabQuery)) {
       setActiveSection(tabQuery);
     }
   }, [tabQuery]);
@@ -389,7 +387,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   // Populate form with real data
   useEffect(() => {
     if (currentStudent) {
-      const derivedName = `${currentStudent.firstName || ''} ${currentStudent.lastName || ''}`.trim();
+      const derivedName = formatPersonName(currentStudent);
       setFullName(derivedName || profile?.studentName || '');
       setContactNumber(currentStudent.contactNumber || '');
       setEmail(currentStudent.email || profile?.email || '');
@@ -919,14 +917,6 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
             {/* ── Organization Profile ── */}
             {activeSection === 'organization' && (
               <OrganizationProfile embedded={true} />
-            )}
-
-            {/* ── Fee & Fine Categories ── */}
-            {activeSection === 'payable-categories' && (
-              <OfficerPayableCategorySettings
-                organizationId={profile?.activeOrganizationId || ''}
-                organizationName={activeOrgName || 'Organization'}
-              />
             )}
 
             {/* ── Security & Password ── */}

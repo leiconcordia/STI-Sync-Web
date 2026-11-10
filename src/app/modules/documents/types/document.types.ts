@@ -11,6 +11,8 @@ export interface DocumentDocument {
 
   // ─── Classification ───
   type: 'submission' | 'broadcast';
+  documentKind?: 'general' | 'activity_proposal' | 'financial_liquidation' | 'post_activity_report';
+  archiveCollection?: 'documents' | 'report_archives';
   title: string;
   description: string;
   category: string;
@@ -21,6 +23,13 @@ export interface DocumentDocument {
   fileName: string;
   fileType: DocFileType;
   fileSize: number;
+  fileStoragePath?: string;
+  archiveStatus?: 'processing' | 'ready' | 'failed';
+  archiveErrorCode?: string | null;
+  sourceCollection?: string;
+  sourceVersion?: number;
+  snapshotStoragePath?: string;
+  attachments?: { name: string; storagePath: string; contentType: string; size: number }[];
 
   // ─── Academic Context ───
   semesterId: string;
@@ -45,6 +54,7 @@ export interface DocumentDocument {
   reviewedAt: Timestamp | null;
   resubmissionOf: string | null;
   resubmissionNote: string | null;
+  resubmittedAs?: string;
 
   // ─── Broadcast-specific (type === 'broadcast') ───
   broadcastBy: string;
@@ -99,6 +109,7 @@ export const DOCUMENT_MAX_BYTES = 25 * 1024 * 1024;
 export interface DocumentCategoryDocument {
   id: string;                              // Auto-generated Firestore document ID
   name: string;                            // e.g., "Activity Letter"
+  normalizedName?: string;
   color: string;                           // Tailwind classes e.g., "bg-blue-50 text-[#0E4EBD]"
   colorDot: string;                        // Dot color e.g., "bg-[#0E4EBD]"
   requiresRemarks: boolean;                // SAS must provide remarks when rejecting

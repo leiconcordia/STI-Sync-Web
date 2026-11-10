@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { useState } from 'react';
 import { X, RotateCcw, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import type { StudentDocument } from '../../../modules/students/types/student.types';
@@ -71,7 +72,7 @@ export default function ReactivateStudentModal({
             </div>
             <div>
               <p className="text-sm font-bold text-[#001A4D]">
-                {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                {formatPersonName(student)}
               </p>
               <p className="text-xs text-gray-500 font-mono">
                 {student.studentId} · {student.courseCode} ({student.yearLevel})

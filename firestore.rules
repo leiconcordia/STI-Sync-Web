@@ -8,10 +8,91 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isSasAdmin() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/sas_admins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/sas_admins/$(request.auth.uid)).data.get('isActive', true) != false &&
+        get(/databases/$(database)/documents/sas_admins/$(request.auth.uid)).data.get('status', '') != 'inactive';
+    }
+    function validEdmsProof(proof) {
+      return proof != null &&
+        get(/databases/$(database)/documents/$(proof.collection)/$(proof.id)).data.get('email', '') == request.auth.token.email &&
+        get(/databases/$(database)/documents/$(proof.collection)/$(proof.id)).data.get('isActive', true) != false &&
+        !(get(/databases/$(database)/documents/$(proof.collection)/$(proof.id)).data.get('status', '') in ['inactive', 'archived', 'suspended']);
+    }
+    function ownsEdmsOrg(orgId) {
+      let proof = get(/databases/$(database)/documents/_edms_access/$(request.auth.uid)).data.get('orgMemberships', {}).get(orgId, null);
+      return isAuthenticated() && orgId != 'sas' && validEdmsProof(proof) &&
+        get(/databases/$(database)/documents/$(proof.collection)/$(proof.id)).data.organizationId == orgId;
+    }
+    function isEdmsReviewer() {
+      return isSasAdmin() || (isAuthenticated() && validEdmsProof(get(/databases/$(database)/documents/_edms_access/$(request.auth.uid)).data.get('signatory', null)));
+    }
+    function ownMembershipProfileUpdate() {
+      return isAuthenticated() && (resource.data.get('email', '') == request.auth.token.email || resource.data.get('authUid', '') == request.auth.uid) &&
+        request.resource.data.get('email', request.auth.token.email) == request.auth.token.email &&
+        request.resource.data.get('authUid', request.auth.uid) == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'signatureUrl', 'signatureDataUrl', 'signatureUpdatedAt', 'signatureRoleTitle',
+          'tempPass', 'requiresPasswordChange', 'resetInProgress', 'temporaryPassword',
+          'defaultPassword', 'customPassword', 'passwordHash', 'requiresChangePassword',
+          'updatedAt', 'authUid', 'email'
+        ]);
+    }
+    function sourceApproved(value) {
+      return value.get('status', '') == 'approved' || value.get('proposalStatus', '') == 'approved' || value.get('isApproved', false) == true;
+    }
+    function sourceOrg(value) { return value.get('hostingOrgId', value.get('organizationId', 'sas')); }
+    function mayCreateSource() {
+      return isEdmsReviewer() || (ownsEdmsOrg(sourceOrg(request.resource.data)) && !sourceApproved(request.resource.data));
+    }
+    function mayUpdateSource() {
+      return isEdmsReviewer() || (ownsEdmsOrg(sourceOrg(resource.data)) && sourceOrg(resource.data) == sourceOrg(request.resource.data) &&
+        (!sourceApproved(request.resource.data) || sourceApproved(resource.data)) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['approvedAt', 'approvedBy']));
+    }
+    match /documents/{id} {
+      allow read: if isSasAdmin() || (isAuthenticated() && (
+        (resource.data.type == 'submission' && resource.data.visibility == 'owner_and_sas' && resource.data.isSasInternal == false && ownsEdmsOrg(resource.data.submittedByOrgId)) ||
+        (resource.data.type == 'broadcast' && (resource.data.distribution == 'all' ||
+          resource.data.targetOrgIds.hasAny(get(/databases/$(database)/documents/_edms_access/$(request.auth.uid)).data.get('orgMemberships', {}).keys())))
+      ));
+      allow write: if false;
+    }
+    match /report_archives/{id} {
+      allow read: if isSasAdmin() || (isAuthenticated() && (
+        (resource.data.type == 'submission' && resource.data.visibility == 'owner_and_sas' && resource.data.isSasInternal == false && ownsEdmsOrg(resource.data.submittedByOrgId)) ||
+        (resource.data.type == 'broadcast' && (resource.data.distribution == 'all' ||
+          resource.data.targetOrgIds.hasAny(get(/databases/$(database)/documents/_edms_access/$(request.auth.uid)).data.get('orgMemberships', {}).keys())))
+      ));
+      allow write: if false;
+    }
+    match /document_categories/{id} { allow read: if isAuthenticated(); allow write: if false; }
+    match /_edms_access/{uid} { allow read: if isAuthenticated() && request.auth.uid == uid; allow write: if false; }
+    match /_edms_jobs/{id}/{rest=**} { allow read, write: if false; }
+    match /_report_archive_jobs/{id}/{rest=**} { allow read, write: if false; }
+    match /_edms_counters/{id} { allow read, write: if false; }
+    match /_edms_reference_reservations/{id} { allow read, write: if false; }
+    match /_document_category_names/{id} { allow read, write: if false; }
+    match /system_settings/document_settings { allow read: if isAuthenticated(); allow write: if isSasAdmin(); }
+    match /organization_advisers/{id} {
+      allow read: if true;
+      allow create, delete: if isSasAdmin();
+      allow update: if isSasAdmin() || ownMembershipProfileUpdate();
+    }
+    match /institutional_signatories/{id} {
+      allow read: if true;
+      allow create, delete: if isSasAdmin();
+      allow update: if isSasAdmin() || ownMembershipProfileUpdate();
+    }
+    match /activities/{id} { allow read: if true; allow create: if mayCreateSource(); allow update: if mayUpdateSource(); allow delete: if isSasAdmin(); }
+    match /activity_proposals/{id} { allow read: if true; allow create: if mayCreateSource(); allow update: if mayUpdateSource(); allow delete: if isSasAdmin(); }
+    match /post_activity_reports/{id} { allow read: if isAuthenticated(); allow create: if mayCreateSource(); allow update: if mayUpdateSource(); allow delete: if isSasAdmin(); }
+
     // 1. Organization Officers: allow public read so officers can log in with temporary passwords / studentId
     match /organization_officers/{docId} {
       allow read: if true;
-      allow write: if isAuthenticated();
+      allow create, delete: if isSasAdmin();
+      allow update: if isSasAdmin() || ownMembershipProfileUpdate();
     }
 
     match /organization_members/{docId} {
@@ -23,14 +104,17 @@ service cloud.firestore {
     // Guard against unauthorized mutation of archived or completed events
     match /events/{eventId} {
       allow read: if true;
-      allow create: if true;
-      allow update: if (resource.data.isArchived != true && resource.data.proposalStatus != 'completed') || isAuthenticated();
+      allow create: if mayCreateSource();
+      allow update: if mayUpdateSource();
       allow delete: if isAuthenticated();
     }
 
     // 3. Liquidations collection: public read/write to allow unauthenticated officer sessions to save & submit
     match /liquidations/{docId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      allow create: if mayCreateSource();
+      allow update: if mayUpdateSource();
+      allow delete: if isSasAdmin();
     }
 
     // 4. Attendance collection group (matches /events/{eventId}/attendance and top-level /attendance)
@@ -87,9 +171,11 @@ service cloud.firestore {
     }
     match /_account_reset_locks/{id} { allow read, write: if false; }
 
+    match /system_settings/{id} { allow read: if isAuthenticated(); allow write: if isSasAdmin(); }
+
     // Fallback rule for all other documents
     match /{collectionId}/{document=**} {
-      allow read, write: if !(collectionId in ['sas_admins', '_account_reset_locks']);
+      allow read, write: if !(collectionId in ['sas_admins', '_account_reset_locks', 'documents', 'report_archives', 'document_categories', '_edms_access', '_edms_jobs', '_report_archive_jobs', '_edms_counters', '_edms_reference_reservations', '_document_category_names', 'organization_officers', 'organization_advisers', 'institutional_signatories', 'events', 'activities', 'activity_proposals', 'liquidations', 'post_activity_reports']) && collectionId != 'system_settings';
     }
   }
 }

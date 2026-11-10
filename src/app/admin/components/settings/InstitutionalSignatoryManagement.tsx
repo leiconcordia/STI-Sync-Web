@@ -164,7 +164,7 @@ export default function InstitutionalSignatoryManagement() {
     name: '',
     firstName: '',
     lastName: '',
-    middleInitial: '',
+    middleName: '',
     email: '',
     role: '',
     roleTitle: '',
@@ -207,7 +207,7 @@ export default function InstitutionalSignatoryManagement() {
       name: '',
       firstName: '',
       lastName: '',
-      middleInitial: '',
+      middleName: '',
       email: '',
       role: '',
       roleTitle: '',
@@ -240,14 +240,14 @@ export default function InstitutionalSignatoryManagement() {
     const parsed = parseFullNameToParts(sig.name || '');
     const firstName = sig.firstName || parsed.firstName;
     const lastName = sig.lastName || parsed.lastName;
-    const middleInitial = sig.middleInitial || parsed.middleInitial;
-    const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || sig.name || '';
+    const middleName = sig.middleName ?? sig.middleInitial ?? parsed.middleInitial;
+    const combinedName = formatStructuredFullName(firstName, lastName, middleName) || sig.name || '';
 
     setEditingSignatory({
       ...sig,
       firstName,
       lastName,
-      middleInitial,
+      middleName,
       name: combinedName,
       applicableScope: isAcct ? 'liquidation_only' : (sig.applicableScope || 'all'),
       applicableWorkflows: resolvedWorkflows,
@@ -571,8 +571,8 @@ export default function InstitutionalSignatoryManagement() {
     e.preventDefault();
     const firstName = (formData.firstName || '').trim();
     const lastName = (formData.lastName || '').trim();
-    const middleInitial = (formData.middleInitial || '').trim();
-    const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || formData.name.trim();
+    const middleName = (formData.middleName || '').trim();
+    const combinedName = formatStructuredFullName(firstName, lastName, middleName) || formData.name.trim();
 
     if (!firstName || !lastName || !formData.email.trim() || !formData.roleTitle.trim()) {
       toast.error('Please enter First Name, Last Name, Official Email, and Signatory Role / Title.');
@@ -617,7 +617,7 @@ export default function InstitutionalSignatoryManagement() {
           ...formData,
           firstName,
           lastName,
-          middleInitial,
+          middleName,
           name: combinedName,
           role: cleanRole,
           roleTitle: cleanTitle,
@@ -656,8 +656,8 @@ export default function InstitutionalSignatoryManagement() {
     if (!editingSignatory) return;
     const firstName = (editingSignatory.firstName || '').trim();
     const lastName = (editingSignatory.lastName || '').trim();
-    const middleInitial = (editingSignatory.middleInitial || '').trim();
-    const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || editingSignatory.name.trim();
+    const middleName = (editingSignatory.middleName || '').trim();
+    const combinedName = formatStructuredFullName(firstName, lastName, middleName) || editingSignatory.name.trim();
 
     if (!firstName || !lastName || !editingSignatory.roleTitle.trim()) {
       toast.error('Please enter First Name, Last Name, and Signatory Role / Title.');
@@ -702,7 +702,7 @@ export default function InstitutionalSignatoryManagement() {
         name: combinedName,
         firstName,
         lastName,
-        middleInitial,
+        middleName,
         role: cleanRole,
         roleTitle: cleanTitle,
         actionType: isApprover ? 'approver' : 'endorser',
@@ -1338,10 +1338,10 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleAddSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
               {/* Scrollable Form Body */}
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {/* Structured Signatory Name: First Name, M.I., Last Name */}
+                {/* Structured Signatory Name: First Name, Middle Name, Last Name */}
                 <div className="space-y-1.5">
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                    <div className="sm:col-span-5">
+                    <div className="sm:col-span-4">
                       <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
                         First Name <span className="text-red-500">*</span>
                       </label>
@@ -1352,32 +1352,33 @@ export default function InstitutionalSignatoryManagement() {
                         value={formData.firstName || ''}
                         onChange={(e) => {
                           const firstName = e.target.value;
-                          const name = formatStructuredFullName(firstName, formData.lastName, formData.middleInitial);
+                          const name = formatStructuredFullName(firstName, formData.lastName, formData.middleName);
                           setFormData({ ...formData, firstName, name });
                         }}
                         className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
                       />
                     </div>
 
-                    <div className="sm:col-span-2">
+                    <div className="sm:col-span-4">
                       <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1 text-center">
-                        M.I. <span className="text-gray-400 font-normal lowercase">(opt)</span>
+                        Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
                       </label>
                       <input
                         type="text"
-                        maxLength={3}
-                        placeholder="B."
-                        value={formData.middleInitial || ''}
+                        autoComplete="additional-name"
+                        placeholder="e.g. Sigmund"
+                        aria-label="Middle name"
+                        value={formData.middleName || ''}
                         onChange={(e) => {
-                          const middleInitial = e.target.value.toUpperCase();
-                          const name = formatStructuredFullName(formData.firstName, formData.lastName, middleInitial);
-                          setFormData({ ...formData, middleInitial, name });
+                          const middleName = e.target.value;
+                          const name = formatStructuredFullName(formData.firstName, formData.lastName, middleName);
+                          setFormData({ ...formData, middleName, name });
                         }}
-                        className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-bold text-center uppercase focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                        className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
                       />
                     </div>
 
-                    <div className="sm:col-span-5">
+                    <div className="sm:col-span-4">
                       <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
                         Last Name <span className="text-red-500">*</span>
                       </label>
@@ -1388,7 +1389,7 @@ export default function InstitutionalSignatoryManagement() {
                         value={formData.lastName || ''}
                         onChange={(e) => {
                           const lastName = e.target.value;
-                          const name = formatStructuredFullName(formData.firstName, lastName, formData.middleInitial);
+                          const name = formatStructuredFullName(formData.firstName, lastName, formData.middleName);
                           setFormData({ ...formData, lastName, name });
                         }}
                         className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
@@ -1665,10 +1666,10 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleEditSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
               {/* Scrollable Form Body */}
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {/* Structured Signatory Name: First Name, M.I., Last Name */}
+              {/* Structured Signatory Name: First Name, Middle Name, Last Name */}
               <div className="space-y-1.5">
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                  <div className="sm:col-span-5">
+                  <div className="sm:col-span-4">
                     <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
                       First Name <span className="text-red-500">*</span>
                     </label>
@@ -1679,32 +1680,33 @@ export default function InstitutionalSignatoryManagement() {
                       value={editingSignatory.firstName || ''}
                       onChange={(e) => {
                         const firstName = e.target.value;
-                        const name = formatStructuredFullName(firstName, editingSignatory.lastName, editingSignatory.middleInitial);
+                        const name = formatStructuredFullName(firstName, editingSignatory.lastName, editingSignatory.middleName);
                         setEditingSignatory({ ...editingSignatory, firstName, name });
                       }}
                       className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div className="sm:col-span-4">
                     <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1 text-center">
-                      M.I. <span className="text-gray-400 font-normal lowercase">(opt)</span>
+                      Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
                     </label>
                     <input
                       type="text"
-                      maxLength={3}
-                      placeholder="B."
-                      value={editingSignatory.middleInitial || ''}
+                      autoComplete="additional-name"
+                      placeholder="e.g. Sigmund"
+                      aria-label="Middle name"
+                      value={editingSignatory.middleName || ''}
                       onChange={(e) => {
-                        const middleInitial = e.target.value.toUpperCase();
-                        const name = formatStructuredFullName(editingSignatory.firstName, editingSignatory.lastName, middleInitial);
-                        setEditingSignatory({ ...editingSignatory, middleInitial, name });
+                        const middleName = e.target.value;
+                        const name = formatStructuredFullName(editingSignatory.firstName, editingSignatory.lastName, middleName);
+                        setEditingSignatory({ ...editingSignatory, middleName, name });
                       }}
-                      className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-bold text-center uppercase focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                      className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
                     />
                   </div>
 
-                  <div className="sm:col-span-5">
+                  <div className="sm:col-span-4">
                     <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
                       Last Name <span className="text-red-500">*</span>
                     </label>
@@ -1715,7 +1717,7 @@ export default function InstitutionalSignatoryManagement() {
                       value={editingSignatory.lastName || ''}
                       onChange={(e) => {
                         const lastName = e.target.value;
-                        const name = formatStructuredFullName(editingSignatory.firstName, lastName, editingSignatory.middleInitial);
+                        const name = formatStructuredFullName(editingSignatory.firstName, lastName, editingSignatory.middleName);
                         setEditingSignatory({ ...editingSignatory, lastName, name });
                       }}
                       className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"

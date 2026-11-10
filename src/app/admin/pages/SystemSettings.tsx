@@ -8,7 +8,6 @@ import CourseDepartment from '../components/settings/CourseDepartment';
 import OrganizationSettings from '../components/settings/OrganizationSettings';
 import OfficerManagement from '../components/settings/OfficerManagement';
 import EventConfiguration from '../components/settings/EventConfiguration';
-import PayableCategorySettings from '../components/settings/PayableCategorySettings';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
 import InstitutionalSignatoryManagement from '../components/settings/InstitutionalSignatoryManagement';
 import ApprovalWorkflowSettings from '../components/settings/ApprovalWorkflowSettings';
@@ -55,8 +54,6 @@ export function SystemSettings() {
         return <OfficerManagement onUnsavedChange={handleUnsavedChange} />;
       case 'event-configuration':
         return <EventConfiguration onUnsavedChange={handleUnsavedChange} />;
-      case 'payable-categories':
-        return <PayableCategorySettings onUnsavedChange={handleUnsavedChange} />;
       case 'document-management':
         return <DocumentManagementSettings />;
       case 'approval-workflows':

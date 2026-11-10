@@ -1,3 +1,8 @@
+import { categoryFilterOptions, matchesDocumentCategory } from '../../modules/documents/utils/document-storage';
+import { useSearchParams as useEdmsSearchParams } from 'react-router';
+import { toast } from 'sonner';
+import { EdmsStorage } from '../../modules/documents/components/EdmsStorage';
+import { downloadDocument } from '../../modules/documents/services/edms-api.service';
 import React, { useState, useRef, useMemo, useEffect } from "react";
 import {
   Upload, Clock, CheckCircle, XCircle, Mail, ArrowUp, ArrowDown,
@@ -22,7 +27,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 import { Timestamp } from 'firebase/firestore';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type MainTab = "submissions" | "inbox";
+type MainTab = "storage" | "submissions" | "inbox";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 const CATEGORY_COLORS: Record<string, string> = {
@@ -39,10 +44,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Policy": "bg-[#001A4D]/10 text-[#001A4D]",
 };
 
-function CategoryPill({ category, categories }: { category: string; categories?: any[] }) {
-  const matched = categories?.find(c => c.name?.toLowerCase() === category?.toLowerCase());
+function CategoryPill({ category, categoryId, categories }: { category: string; categoryId?: string; categories?: any[] }) {
+  const matched = categories?.find(c => categoryId ? c.id === categoryId : c.name?.toLowerCase() === category?.toLowerCase());
   const cls = matched?.color || CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
-  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{category}</span>;
+  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{matched?.name || category || "Uncategorized"}</span>;
 }
 
 function downloadOfficialTemplate(name: string, type: 'docx' | 'xlsx' | 'pdf') {
@@ -54,15 +59,15 @@ function downloadOfficialTemplate(name: string, type: 'docx' | 'xlsx' | 'pdf') {
 OFFICIAL ACTIVITY PROPOSAL & EVENT PERMIT TEMPLATE
 
 1. GENERAL EVENT INFORMATION
-- Organization Name: 
-- Event Title: 
-- Target Date & Time: 
-- Proposed Venue / Platform: 
-- Target Participants & Expected Headcount: 
+- Organization Name:
+- Event Title:
+- Target Date & Time:
+- Proposed Venue / Platform:
+- Target Participants & Expected Headcount:
 
 2. EVENT OBJECTIVES & INSTITUTIONAL ALIGNMENT
-- Primary Objective: 
-- Alignment with Institutional Goals: 
+- Primary Objective:
+- Alignment with Institutional Goals:
 
 3. PROGRAM FLOW & SCHEDULE
 - Time | Activity | Person Responsible
@@ -183,8 +188,9 @@ function toDate(ts: Timestamp | undefined | null): Date | null {
 }
 
 // ─── Submit Document Modal ─────────────────────────────────────────────────────
-function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, officerName, officerEmail }: {
+function SubmitDocModal({ onClose, onViewSubmissions, orgId, orgName, orgAcronym, orgTypeId, officerName, officerEmail }: {
   onClose: () => void;
+  onViewSubmissions: () => void;
   orgId: string;
   orgName: string;
   orgAcronym: string;
@@ -193,7 +199,7 @@ function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, office
   officerEmail: string;
 }) {
   const { data: docCategories } = useDocumentCategories();
-  const activeCategories = docCategories.filter(c => c.active && c.officerCanSubmit);
+  const activeCategories = docCategories.filter(c => c.active && !c.archived);
   const { data: orgs } = useOrganizationStream();
   const { activeCollegePeriod, activeShsPeriod, periods: semesters } = useActiveAcademicPeriods();
 
@@ -234,10 +240,11 @@ function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, office
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const canSubmit = title.trim() && category && uploadedFile && !submitting;
+  const canSubmit = title.trim() && category && uploadedFile && !submitting && !uploading && !uploadError;
 
   const handleFileSelect = async (file: File) => {
     setUploadError(null);
+    setUploadedFile(null);
     setUploading(true);
     try {
       const result = await uploadToCloudinary(file, {
@@ -299,7 +306,7 @@ function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, office
       setSubmitRef(refNum);
       setSubmitted(true);
     } catch (err) {
-      console.error('Submit failed:', err);
+      toast.error((err as Error).message || 'Submission failed. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -331,8 +338,8 @@ function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, office
               <p className="text-white/90 text-sm">The SAS Adviser has been notified and will review your submission.</p>
             </div>
             <div className="px-6 py-4 border-t border-gray-200 flex gap-3">
-              <button onClick={onClose} className="flex-1 py-2.5 border border-[#0E4EBD] text-[#0E4EBD] rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors cursor-pointer">Submit Another</button>
-              <button onClick={onClose} className="flex-1 py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 transition-colors cursor-pointer">View My Submissions</button>
+              <button onClick={() => { setSubmitted(false); setTitle(""); setNotes(""); setUploadedFile(null); }} className="flex-1 py-2.5 border border-[#0E4EBD] text-[#0E4EBD] rounded-lg text-sm font-medium hover:bg-blue-50 transition-colors cursor-pointer">Submit Another</button>
+              <button onClick={onViewSubmissions} className="flex-1 py-2.5 bg-[#001A4D] text-[#FFD41C] rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 transition-colors cursor-pointer">View My Submissions</button>
             </div>
           </div>
         ) : (
@@ -448,10 +455,7 @@ function SubmitDocModal({ onClose, orgId, orgName, orgAcronym, orgTypeId, office
 
             {/* Footer */}
             <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between flex-shrink-0">
-              <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors cursor-pointer">
-                <Save className="w-4 h-4" />
-                Save as Draft
-              </button>
+
               <button
                 onClick={handleSubmit}
                 disabled={!canSubmit}
@@ -490,6 +494,7 @@ function ResubmitModal({ doc, onClose, orgId, orgName, orgAcronym, orgTypeId, of
 
   const handleFileSelect = async (file: File) => {
     setUploadError(null);
+    setUploadedFile(null);
     setUploading(true);
     try {
       const result = await uploadToCloudinary(file, {
@@ -547,7 +552,7 @@ function ResubmitModal({ doc, onClose, orgId, orgName, orgAcronym, orgTypeId, of
       });
       onClose();
     } catch (err) {
-      console.error('Resubmit failed:', err);
+      toast.error((err as Error).message || 'Resubmission failed. Please try again.');
     } finally {
       setSubmitting(false);
     }
@@ -722,14 +727,9 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
 
   const statuses: DocStatus[] = ["Pending", "Approved", "Returned", "Rejected", "Resubmitted", "Draft"];
 
-  const availableCategories = useMemo(() => {
-    const set = new Set<string>();
-    docCategories.filter(c => c.active && c.officerCanSubmit).forEach(c => set.add(c.name));
-    submissions.forEach(d => { if (d.category) set.add(d.category); });
-    return Array.from(set).sort();
-  }, [docCategories, submissions]);
+  const availableCategories = useMemo(() => categoryFilterOptions(docCategories, submissions), [docCategories, submissions]);
 
-  const returnedCount = useMemo(() => submissions.filter(d => d.status === 'Returned').length, [submissions]);
+  const returnedCount = useMemo(() => submissions.filter(d => d.status === 'Returned' && !d.resubmittedAs).length, [submissions]);
   const [showTemplatesShelf, setShowTemplatesShelf] = useState(true);
 
   const availablePeriods = useMemo(() => {
@@ -776,14 +776,14 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
   const filtered = useMemo(() => {
     let list = submissions;
     if (statusFilter !== "All") list = list.filter(d => d.status === statusFilter);
-    if (categoryFilter !== "All") list = list.filter(d => d.category === categoryFilter);
+    if (categoryFilter !== "All") list = list.filter(d => matchesDocumentCategory(d, categoryFilter));
     if (periodFilter !== "All") {
       const [targetSy, targetTerm] = periodFilter.split("__");
       list = list.filter(d => {
         const docAy = d.academicYear || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.academicYear : '');
         const docSem = d.semester || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.semester : '');
         const docTri = d.trimester;
-        
+
         if (docAy !== targetSy) return false;
         if (!targetTerm) return true;
         return docSem === targetTerm || docTri === targetTerm || String(docSem).includes(targetTerm);
@@ -900,7 +900,7 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
         </div>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
           <option value="All">All Categories</option>
-          {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          {availableCategories.map((c: any) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white min-w-[170px]" value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}>
           <option value="All">All Academic Periods</option>
@@ -958,7 +958,7 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
                         <td className="px-4 py-3 min-w-[200px]">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
-                            {doc.sourceModule && (
+                            {doc.isSystemGenerated && doc.sourceModule && doc.sourceModule !== 'general' && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#0E4EBD] border border-blue-200" title={`Auto-archived from ${doc.sourceModule}`}>
                                 <Sparkles className="w-2.5 h-2.5 text-[#0E4EBD]" />
                                 {doc.sourceModule === 'finance' ? 'Liquidation' : 'Proposal'}
@@ -966,11 +966,11 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 mt-1">
-                            <FileChip type={doc.fileType} />
-                            <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
+                            {(doc.fileUrl || doc.fileStoragePath) ? <FileChip type={doc.fileType} /> : <span className="text-gray-400 text-xs">No attachment</span>}
+                            {(doc.fileUrl || doc.fileStoragePath) && <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>}
                           </div>
                         </td>
-                        <td className="px-4 py-3"><CategoryPill category={doc.category} categories={docCategories} /></td>
+                        <td className="px-4 py-3"><CategoryPill category={doc.category} categoryId={doc.categoryId} categories={docCategories} /></td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <AcademicPeriodCell doc={doc} semesters={semesters} />
                         </td>
@@ -996,18 +996,18 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
                           )}
                         </td>
                         <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-1 opacity-100 transition-opacity">
                             <button onClick={() => setPreviewDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors cursor-pointer" title="View Document"><Eye className="w-4 h-4" /></button>
                             <button
                               onClick={async () => {
                                 setDownloadingId(doc.id);
                                 try {
-                                  await downloadFile(doc.fileUrl, doc.fileName);
+                                  await downloadDocument(doc).catch((error) => toast.error(error.message));
                                 } finally {
                                   setDownloadingId(null);
                                 }
                               }}
-                              disabled={downloadingId === doc.id}
+                              disabled={downloadingId === doc.id || (!doc.fileUrl && !doc.fileStoragePath)}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-[#001A4D] transition-colors cursor-pointer"
                               title="Download File"
                             >
@@ -1059,12 +1059,7 @@ function InboxTab({ orgId }: { orgId: string }) {
   const [periodFilter, setPeriodFilter] = useState("All");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
 
-  const availableCategories = useMemo(() => {
-    const set = new Set<string>();
-    docCategories.filter(c => c.active).forEach(c => set.add(c.name));
-    inbox.forEach(d => { if (d.category) set.add(d.category); });
-    return Array.from(set).sort();
-  }, [docCategories, inbox]);
+  const availableCategories = useMemo(() => categoryFilterOptions(docCategories, inbox), [docCategories, inbox]);
 
   const availablePeriods = useMemo(() => {
     const periodMap = new Map<string, { key: string; label: string; sy: string; term: string }>();
@@ -1110,14 +1105,14 @@ function InboxTab({ orgId }: { orgId: string }) {
   const filtered = useMemo(() => {
     let list = inbox;
     if (showUnreadOnly) list = list.filter(d => !d.readBy?.[orgId]);
-    if (categoryFilter !== "All") list = list.filter(d => d.category === categoryFilter);
+    if (categoryFilter !== "All") list = list.filter(d => matchesDocumentCategory(d, categoryFilter));
     if (periodFilter !== "All") {
       const [targetSy, targetTerm] = periodFilter.split("__");
       list = list.filter(d => {
         const docAy = d.academicYear || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.academicYear : '');
         const docSem = d.semester || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.semester : '');
         const docTri = d.trimester;
-        
+
         if (docAy !== targetSy) return false;
         if (!targetTerm) return true;
         return docSem === targetTerm || docTri === targetTerm || String(docSem).includes(targetTerm);
@@ -1181,7 +1176,7 @@ function InboxTab({ orgId }: { orgId: string }) {
         </div>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
           <option value="All">All Categories</option>
-          {availableCategories.map(c => <option key={c} value={c}>{c}</option>)}
+          {availableCategories.map((c: any) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
         <select className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] bg-white min-w-[170px]" value={periodFilter} onChange={(e) => setPeriodFilter(e.target.value)}>
           <option value="All">All Academic Periods</option>
@@ -1235,8 +1230,8 @@ function InboxTab({ orgId }: { orgId: string }) {
                           <div>
                             <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
                             <div className="flex items-center gap-1.5 mt-1">
-                              <FileChip type={doc.fileType} />
-                              <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
+                              {(doc.fileUrl || doc.fileStoragePath) ? <FileChip type={doc.fileType} /> : <span className="text-gray-400 text-xs">No attachment</span>}
+                              {(doc.fileUrl || doc.fileStoragePath) && <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>}
                             </div>
                           </div>
                         </div>
@@ -1249,7 +1244,7 @@ function InboxTab({ orgId }: { orgId: string }) {
                           <span className="text-gray-500 text-xs">{doc.broadcastBy}</span>
                         </div>
                       </td>
-                      <td className="px-4 py-3"><CategoryPill category={doc.category} categories={docCategories} /></td>
+                      <td className="px-4 py-3"><CategoryPill category={doc.category} categoryId={doc.categoryId} categories={docCategories} /></td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <AcademicPeriodCell doc={doc} semesters={semesters} />
                       </td>
@@ -1279,18 +1274,18 @@ function InboxTab({ orgId }: { orgId: string }) {
                         )}
                       </td>
                       <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-1 opacity-100 transition-opacity">
                           <button onClick={() => handleOpenDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors cursor-pointer" title="View Document"><Eye className="w-4 h-4" /></button>
                           <button
                             onClick={async () => {
                               setDownloadingId(doc.id);
                               try {
-                                await downloadFile(doc.fileUrl, doc.fileName);
+                                await downloadDocument(doc).catch((error) => toast.error(error.message));
                               } finally {
                                 setDownloadingId(null);
                               }
                             }}
-                            disabled={downloadingId === doc.id}
+                            disabled={downloadingId === doc.id || (!doc.fileUrl && !doc.fileStoragePath)}
                             className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-[#001A4D] transition-colors cursor-pointer"
                             title="Download Document"
                           >
@@ -1325,7 +1320,9 @@ function InboxTab({ orgId }: { orgId: string }) {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function OfficerDocuments() {
-  const [tab, setTab] = useState<MainTab>("submissions");
+  const [edmsParams, setEdmsParams] = useEdmsSearchParams();
+  const tab = edmsParams.get('view') === 'submissions' ? 'submissions' : edmsParams.get('view') === 'inbox' ? 'inbox' : 'storage';
+  const setTab = (key: string) => setEdmsParams((previous) => { previous.set('view', key); previous.delete('documentId'); return previous; });
   const [showSubmit, setShowSubmit] = useState(false);
 
   const { profile } = useOfficerProfile();
@@ -1408,7 +1405,7 @@ export default function OfficerDocuments() {
 
       {/* Tabs */}
       <div className="flex border-b border-gray-200 gap-2 pb-2">
-        {([["submissions", "My Submissions"], ["inbox", "From SAS — Inbox"]] as const).map(([key, label]) => (
+        {([["storage", "Organization EDMS"], ["submissions", "My Submissions"], ["inbox", "From SAS — Inbox"]] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -1428,11 +1425,11 @@ export default function OfficerDocuments() {
         ))}
       </div>
 
-      {tab === "submissions"
-        ? <SubmissionsTab orgId={orgId} orgName={orgName} orgAcronym={orgAcronym} orgTypeId={orgTypeId} officerName={officerName} officerEmail={officerEmail} />
-        : <InboxTab orgId={orgId} />}
+      {tab === "storage" ? <EdmsStorage key={orgId} orgId={orgId} /> : tab === "submissions"
+        ? <SubmissionsTab key={orgId} orgId={orgId} orgName={orgName} orgAcronym={orgAcronym} orgTypeId={orgTypeId} officerName={officerName} officerEmail={officerEmail} />
+        : <InboxTab key={orgId} orgId={orgId} />}
 
-      {showSubmit && <SubmitDocModal onClose={() => setShowSubmit(false)} orgId={orgId} orgName={orgName} orgAcronym={orgAcronym} orgTypeId={orgTypeId} officerName={officerName} officerEmail={officerEmail} />}
+      {showSubmit && <SubmitDocModal key={orgId} onClose={() => setShowSubmit(false)} onViewSubmissions={() => { setShowSubmit(false); setTab("submissions"); }} orgId={orgId} orgName={orgName} orgAcronym={orgAcronym} orgTypeId={orgTypeId} officerName={officerName} officerEmail={officerEmail} />}
     </div>
   );
 }

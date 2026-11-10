@@ -656,14 +656,19 @@ export default function ActivityCalendar({
                                 {formatAppDate(dateKey)} • {resolveHostAcronym(activity)}
                               </p>
                             </button>
-                            <Link
+                            {onViewActivity ? <button
+                              type="button"
+                              onClick={() => onViewActivity(activity)}
+                              className="text-[10px] font-bold text-[#0E4EBD] bg-blue-50 hover:bg-[#0E4EBD] hover:text-white px-2.5 py-1 rounded-md border border-blue-200/70 transition-all shrink-0 flex items-center gap-1 cursor-pointer"
+                              title="View Activity Details"
+                            ><Eye className="w-3 h-3" /><span>View</span></button> : <Link
                               to={`${basePath}?id=${encodeURIComponent(activity.id)}&tab=approved`}
                               className="text-[10px] font-bold text-[#0E4EBD] bg-blue-50 hover:bg-[#0E4EBD] hover:text-white px-2.5 py-1 rounded-md border border-blue-200/70 transition-all shrink-0 flex items-center gap-1 cursor-pointer"
                               title="View Activity Details"
                             >
                               <Eye className="w-3 h-3" />
                               <span>View</span>
-                            </Link>
+                            </Link>}
                           </div>
                         ))}
                       </div>

@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // EDMS downloads are authorized by the backend and use short-lived signed URLs.
+    // All report writes use the Admin SDK; clients cannot bypass organization checks.
+    match /edms/{path=**} { allow read, write: if false; }
+    match /reports/{path=**} { allow read, write: if false; }
+  }
+}

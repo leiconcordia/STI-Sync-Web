@@ -15,20 +15,21 @@ import {
   Mail,
   KeyRound,
 } from 'lucide-react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../../../services/firebase';
 import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
 import { useDepartments } from '../../modules/academic';
-import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useAdviserProfile } from '../../modules/auth';
 import {
   updateOrganization,
   type AdviserUpdateOptions,
 } from '../../modules/organizations/services/organization.service';
-import { formatStructuredFullName, parseFullNameToParts } from '../../utils/name.utils';
+import { formatStructuredFullName, structuredNameFields, parseFullNameToParts } from '../../utils/name.utils';
 import { toast } from 'sonner';
+import { useAdviserIdentityCheck } from '../../modules/organizations/hooks/useAdviserIdentityCheck';
+import { AdviserIdentityNotice } from '../../modules/organizations/components/AdviserIdentityNotice';
+import { checkAdviserAccount } from '../../modules/organizations/services/adviser-account.service';
+import type { AdviserIdentity } from '../../modules/organizations/utils/adviser-identity.utils';
 
 interface EditOrganizationModalProps {
   organization: OrganizationDocument | null;
@@ -46,7 +47,6 @@ export function EditOrganizationModal({
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
   const { data: departments = [], loading: loadingDepts } = useDepartments();
   const { data: allOrganizations = [] } = useOrganizationStream();
-  const { data: allStudents = [] } = useStudents();
   const { profile } = useAdviserProfile();
 
   const activeDepartments = useMemo(
@@ -74,6 +74,7 @@ export function EditOrganizationModal({
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSelectingPerson, setIsSelectingPerson] = useState(false);
 
   // ─── Adviser Management State ───
   const [adviserMode, setAdviserMode] = useState<'keep' | 'replace' | 'unassign'>('keep');
@@ -81,7 +82,8 @@ export function EditOrganizationModal({
     name: '',
     firstName: '',
     lastName: '',
-    middleInitial: '',
+    middleName: '',
+    existingAccountUid: '',
     email: '',
     employeeId: '',
     temporaryPassword: 'Adv-2026!#',
@@ -115,7 +117,8 @@ export function EditOrganizationModal({
         name: '',
         firstName: '',
         lastName: '',
-        middleInitial: '',
+        middleName: '',
+        existingAccountUid: '',
         email: '',
         employeeId: '',
         temporaryPassword: 'Adv-2026!#',
@@ -124,6 +127,8 @@ export function EditOrganizationModal({
       setAdviserErrors({});
     }
   }, [organization]);
+
+  const adviserIdentity = useAdviserIdentityCheck(newAdviserData, allOrganizations, organization?.id, isOpen && adviserMode === 'replace');
 
   if (!isOpen || !organization) return null;
 
@@ -135,15 +140,26 @@ export function EditOrganizationModal({
     }
   };
 
+  const useExistingPerson = async (person: AdviserIdentity) => {
+    setIsSelectingPerson(true);
+    try {
+      const account = await checkAdviserAccount(person.email || '');
+      if (!account.exists || !account.eligible || !account.uid) throw new Error(account.reason || 'This person has no usable login account. Complete their account setup first.');
+      const fields = structuredNameFields(person.sourceType === 'account' && person.name === person.email ? newAdviserData : person);
+      setNewAdviserData({ ...newAdviserData, ...fields, email: account.email!, employeeId: person.employeeId || newAdviserData.employeeId, existingAccountUid: account.uid });
+      setAdviserErrors({});
+    } catch (error: any) { setAdviserErrors({ email: error.message || 'Unable to select this person.' }); }
+    finally { setIsSelectingPerson(false); }
+  };
+
   // ─── Validation for New Adviser ───
   const validateNewAdviser = async (): Promise<boolean> => {
     const errors: { name?: string; firstName?: string; lastName?: string; email?: string; employeeId?: string } = {};
     const firstName = (newAdviserData.firstName || '').trim();
     const lastName = (newAdviserData.lastName || '').trim();
-    const middleInitial = (newAdviserData.middleInitial || '').trim();
-    const name = formatStructuredFullName(firstName, lastName, middleInitial) || newAdviserData.name.trim();
+    const middleName = (newAdviserData.middleName || '').trim();
+    const name = formatStructuredFullName(firstName, lastName, middleName) || newAdviserData.name.trim();
     const email = newAdviserData.email.trim().toLowerCase();
-    const employeeId = newAdviserData.employeeId.trim();
 
     if (!firstName) errors.firstName = 'Adviser first name is required.';
     if (!lastName) errors.lastName = 'Adviser last name is required.';
@@ -154,58 +170,11 @@ export function EditOrganizationModal({
       errors.email = 'Please enter a valid email address.';
     }
 
-    // 1. Uniqueness check against other organizations
-    if (email) {
-      const existingOtherOrg = allOrganizations.find(
-        (o) => o.id !== organization.id && o.adviser?.email?.toLowerCase().trim() === email
-      );
-      if (existingOtherOrg) {
-        errors.email = `This email is already assigned as Club Adviser for "${existingOtherOrg.name}". An adviser can only advise one organization.`;
-      }
-    }
-
-    if (employeeId) {
-      const existingOtherOrgEmp = allOrganizations.find(
-        (o) => o.id !== organization.id && o.adviser?.employeeId?.trim() === employeeId
-      );
-      if (existingOtherOrgEmp) {
-        errors.employeeId = `This Employee ID is already assigned to the adviser for "${existingOtherOrgEmp.name}".`;
-      }
-    }
-
-    // 2. Conflict check against students roster
-    if (allStudents && allStudents.length > 0) {
-      const studentMatch = allStudents.find(
-        (s) =>
-          s.email?.toLowerCase().trim() === email ||
-          (employeeId && s.studentId?.trim() === employeeId)
-      );
-      if (studentMatch) {
-        if (studentMatch.email?.toLowerCase().trim() === email) {
-          errors.email = `This email belongs to student "${studentMatch.firstName} ${studentMatch.lastName}". Club Advisers must use a faculty/employee account.`;
-        } else if (employeeId) {
-          errors.employeeId = `This ID belongs to student "${studentMatch.firstName} ${studentMatch.lastName}". Please enter a valid Faculty/Employee ID.`;
-        }
-      }
-    }
-
-    // 3. Direct Firestore check in organization_advisers collection for active advisers
-    try {
-      if (email) {
-        const qEmail = query(
-          collection(db, 'organization_advisers'),
-          where('email', '==', email),
-          where('isActive', '==', true)
-        );
-        const snap = await getDocs(qEmail);
-        const otherMatch = snap.docs.find((d) => d.data().organizationId !== organization.id);
-        if (otherMatch) {
-          const adv = otherMatch.data();
-          errors.email = `This email is already registered to active adviser "${adv.name}" (${adv.organizationName || 'Another Club'}).`;
-        }
-      }
-    } catch (err) {
-      console.warn('[validateNewAdviser] Firestore query notice:', err);
+    if (!Object.keys(errors).length) {
+      try {
+        const fresh = await adviserIdentity.validateBeforeNext();
+        Object.assign(errors, fresh.errors);
+      } catch (error: any) { errors.name = error.message || 'Unable to check existing adviser accounts.'; }
     }
 
     setAdviserErrors(errors);
@@ -250,8 +219,8 @@ export function EditOrganizationModal({
     if (adviserMode === 'replace') {
       const firstName = (newAdviserData.firstName || '').trim();
       const lastName = (newAdviserData.lastName || '').trim();
-      const middleInitial = (newAdviserData.middleInitial || '').trim();
-      const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || newAdviserData.name.trim();
+      const middleName = (newAdviserData.middleName || '').trim();
+      const combinedName = formatStructuredFullName(firstName, lastName, middleName) || newAdviserData.name.trim();
 
       adviserUpdate = {
         action: 'assign',
@@ -260,7 +229,9 @@ export function EditOrganizationModal({
           name: combinedName,
           firstName,
           lastName,
-          middleInitial,
+          middleName,
+          ...(newAdviserData.existingAccountUid ? { existingAccountUid: newAdviserData.existingAccountUid } : {}),
+          ...(adviserIdentity.verification ? { nameVerification: adviserIdentity.verification } : {}),
           email: newAdviserData.email.trim().toLowerCase(),
           employeeId: newAdviserData.employeeId.trim(),
           departmentId: isCross ? 'cross-departmental' : formData.department,
@@ -515,6 +486,10 @@ export function EditOrganizationModal({
                           setAdviserMode('replace');
                           setNewAdviserData({
                             name: '',
+                            firstName: '',
+                            middleName: '',
+                            existingAccountUid: '',
+                            lastName: '',
                             email: '',
                             employeeId: '',
                             temporaryPassword: 'Adv-2026!#',
@@ -549,6 +524,10 @@ export function EditOrganizationModal({
                         setAdviserMode('replace');
                         setNewAdviserData({
                           name: '',
+                          firstName: '',
+                          middleName: '',
+                          existingAccountUid: '',
+                          lastName: '',
                           email: '',
                           employeeId: '',
                           temporaryPassword: 'Adv-2026!#',
@@ -633,12 +612,14 @@ export function EditOrganizationModal({
                   </div>
                 )}
 
+                <AdviserIdentityNotice check={adviserIdentity} onUsePerson={useExistingPerson} busy={isSelectingPerson} onVerificationChange={() => setAdviserErrors((previous) => { const next = { ...previous }; delete next.name; return next; })} />
+
                 {/* Form fields for new adviser */}
                 <div className="space-y-3">
-                  {/* Structured Name Inputs: First Name, M.I., Last Name */}
+                  {/* Structured Name Inputs: First Name, Middle Name, Last Name */}
                   <div className="space-y-1.5">
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                      <div className="sm:col-span-5">
+                      <div className="sm:col-span-4">
                         <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
                           First Name <span className="text-red-500">*</span>
                         </label>
@@ -647,8 +628,8 @@ export function EditOrganizationModal({
                           value={newAdviserData.firstName || ''}
                           onChange={(e) => {
                             const firstName = e.target.value;
-                            const name = formatStructuredFullName(firstName, newAdviserData.lastName, newAdviserData.middleInitial);
-                            setNewAdviserData({ ...newAdviserData, firstName, name });
+                            const name = formatStructuredFullName(firstName, newAdviserData.lastName, newAdviserData.middleName);
+                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', firstName, name });
                             if (adviserErrors.firstName) setAdviserErrors({ ...adviserErrors, firstName: undefined });
                           }}
                           placeholder="e.g. Maria"
@@ -661,25 +642,26 @@ export function EditOrganizationModal({
                         )}
                       </div>
 
-                      <div className="sm:col-span-2">
+                      <div className="sm:col-span-4">
                         <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1 text-center">
-                          M.I. <span className="text-gray-400 font-normal lowercase">(opt)</span>
+                          Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
                         </label>
                         <input
                           type="text"
-                          maxLength={3}
-                          value={newAdviserData.middleInitial || ''}
+                          autoComplete="additional-name"
+                          aria-label="Middle name"
+                          value={newAdviserData.middleName || ''}
                           onChange={(e) => {
-                            const middleInitial = e.target.value.toUpperCase();
-                            const name = formatStructuredFullName(newAdviserData.firstName, newAdviserData.lastName, middleInitial);
-                            setNewAdviserData({ ...newAdviserData, middleInitial, name });
+                            const middleName = e.target.value;
+                            const name = formatStructuredFullName(newAdviserData.firstName, newAdviserData.lastName, middleName);
+                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', middleName, name });
                           }}
-                          placeholder="B."
-                          className="w-full px-2 py-2 border border-gray-300 rounded-lg text-xs font-bold text-center uppercase focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
+                          placeholder="e.g. Sigmund"
+                          className="w-full px-2 py-2 border border-gray-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
                         />
                       </div>
 
-                      <div className="sm:col-span-5">
+                      <div className="sm:col-span-4">
                         <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
                           Last Name <span className="text-red-500">*</span>
                         </label>
@@ -688,8 +670,8 @@ export function EditOrganizationModal({
                           value={newAdviserData.lastName || ''}
                           onChange={(e) => {
                             const lastName = e.target.value;
-                            const name = formatStructuredFullName(newAdviserData.firstName, lastName, newAdviserData.middleInitial);
-                            setNewAdviserData({ ...newAdviserData, lastName, name });
+                            const name = formatStructuredFullName(newAdviserData.firstName, lastName, newAdviserData.middleName);
+                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', lastName, name });
                             if (adviserErrors.lastName) setAdviserErrors({ ...adviserErrors, lastName: undefined });
                           }}
                           placeholder="e.g. Santos"
@@ -726,7 +708,7 @@ export function EditOrganizationModal({
                           type="email"
                           value={newAdviserData.email}
                           onChange={(e) =>
-                            setNewAdviserData({ ...newAdviserData, email: e.target.value })
+                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', email: e.target.value })
                           }
                           placeholder="faculty@ormoc.sti.edu.ph"
                           className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
@@ -748,7 +730,7 @@ export function EditOrganizationModal({
                         onChange={(e) =>
                           setNewAdviserData({
                             ...newAdviserData,
-                            employeeId: e.target.value,
+                            employeeId: e.target.value, existingAccountUid: '',
                           })
                         }
                         placeholder="e.g. FAC-2026-042"
@@ -765,9 +747,9 @@ export function EditOrganizationModal({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                     <div>
                       <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                        Initial Temporary Password
+                        {newAdviserData.existingAccountUid ? 'Account access' : 'Initial Temporary Password'}
                       </label>
-                      <div className="flex items-center gap-2">
+                      {newAdviserData.existingAccountUid ? <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">Using this person's existing account and password. They can choose the Club Adviser workspace after login.</p> : <div className="flex items-center gap-2">
                         <input
                           type="text"
                           value={newAdviserData.temporaryPassword}
@@ -794,7 +776,7 @@ export function EditOrganizationModal({
                         >
                           <KeyRound className="w-3.5 h-3.5" />
                         </button>
-                      </div>
+                      </div>}
                     </div>
 
                     <div className="flex items-center pt-5">
@@ -810,7 +792,7 @@ export function EditOrganizationModal({
                           }
                           className="w-4 h-4 rounded text-[#0E4EBD] focus:ring-[#0E4EBD] cursor-pointer"
                         />
-                        <span>Send login credentials via email</span>
+                        <span>{newAdviserData.existingAccountUid ? 'Send role assignment email' : 'Send login credentials via email'}</span>
                       </label>
                     </div>
                   </div>

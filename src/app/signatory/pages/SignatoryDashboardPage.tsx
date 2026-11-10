@@ -3,39 +3,30 @@
  *
  * Executive Dashboard for Institutional Signatories.
  * Features unified pending queue across Proposals, Liquidations, and PARs,
- * quick access cards inspired by modern executive layouts, and stage-lock integrity.
+ * campus calendar, activity compliance highlights, and stage-lock integrity.
  */
 
 import React, { useState } from 'react';
 import { useOutletContext, useNavigate } from 'react-router';
 import {
-  FileText,
-  FileSpreadsheet,
-  FileCheck2,
   Clock,
   CheckCircle2,
   RotateCcw,
-  Sparkles,
-  ArrowRight,
   ShieldCheck,
   Building,
-  Calendar,
-  AlertCircle,
-  Folder,
-  Layers,
-  ChevronRight,
   Send,
-  Eye,
   PenTool,
 } from 'lucide-react';
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
+import { useCampusActivityData } from '../hooks/useCampusActivityData';
+import CampusActivityOverview from '../components/CampusActivityOverview';
+import { resolveActivityName } from '../../modules/events/utils/activity-compliance.utils';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
 import LiquidationEndorsementModal from '../components/LiquidationEndorsementModal';
 import PAREndorsementModal from '../components/PAREndorsementModal';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
 import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
-import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 
 interface ContextType {
   session: any;
@@ -50,26 +41,19 @@ export default function SignatoryDashboardPage() {
   const context = useOutletContext<ContextType>();
   const session = context.session;
   const onOpenSignatureModal = context.onOpenSignatureModal;
-  const canAccessProposal = context.canAccessProposal ?? isSignatoryApplicableTo(session, 'proposal');
-  const canAccessLiquidation = context.canAccessLiquidation ?? isSignatoryApplicableTo(session, 'liquidation');
-  const canAccessPAR = context.canAccessPAR ?? isSignatoryApplicableTo(session, 'par');
   const navigate = useNavigate();
 
+  const documents = useSignatoryDocuments(session);
+  const campusData = useCampusActivityData(documents, session);
   const {
     pendingProposals,
-    endorsedProposals,
-    returnedProposals,
     pendingLiquidations,
-    endorsedLiquidations,
-    returnedLiquidations,
     pendingPARs,
-    endorsedPARs,
-    returnedPARs,
     totalPending,
     totalSigned,
     totalReturned,
     loading,
-  } = useSignatoryDocuments(session);
+  } = documents;
 
   const [selectedProposal, setSelectedProposal] = useState<ActivityProposal | null>(null);
   const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
@@ -93,7 +77,7 @@ export default function SignatoryDashboardPage() {
       id: l.id,
       docType: 'liquidation' as const,
       badgeText: 'Liquidation',
-      title: l.activityTitle || 'Financial Liquidation Report',
+      title: resolveActivityName(l, documents.allProposals),
       org: l.organizationName || 'Student Organization',
       date: l.submittedAt || (l as any).createdAt,
       stage: l.currentStageIndex ?? 1,
@@ -103,7 +87,7 @@ export default function SignatoryDashboardPage() {
       id: par.id,
       docType: 'par' as const,
       badgeText: 'Post-Activity Report',
-      title: par.activityTitle || 'Post-Activity Report',
+      title: resolveActivityName(par, documents.allProposals),
       org: par.organizationName || 'Student Organization',
       date: par.createdAt,
       stage: par.currentStageIndex ?? 1,
@@ -207,148 +191,7 @@ export default function SignatoryDashboardPage() {
         </div>
       </div>
 
-      {/* Quick Access Folders (Adopting Reference Design Pattern) */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-extrabold uppercase tracking-wider text-slate-600 flex items-center gap-2">
-            <Folder className="w-4 h-4 text-[#0E4EBD]" />
-            <span>Document Hub & Governance</span>
-          </h2>
-          <span className="text-xs text-slate-400">Dedicated institutional clearance portals</span>
-        </div>
-
-        <div
-          className={`grid ${
-            [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 4
-              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-4'
-              : [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 3
-              ? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3'
-              : [canAccessProposal, canAccessLiquidation, canAccessPAR, true].filter(Boolean).length === 2
-              ? 'grid-cols-1 sm:grid-cols-2'
-              : 'grid-cols-1'
-          } gap-4`}
-        >
-          {/* Card 1: Proposals */}
-          {canAccessProposal && (
-            <div
-              onClick={() => navigate('/signatory/proposals')}
-              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#0E4EBD] flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <FileText className="w-5 h-5" />
-                  </div>
-                  {pendingProposals.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                      {pendingProposals.length} Pending
-                    </span>
-                  )}
-                </div>
-                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                  Activity Proposals
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                  Event permits, objectives, guest lists, and projected financial budgets.
-                </p>
-              </div>
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-                <span>Review Proposals</span>
-                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-          )}
-
-          {/* Card 2: Liquidations */}
-          {canAccessLiquidation && (
-            <div
-              onClick={() => navigate('/signatory/liquidations')}
-              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <FileSpreadsheet className="w-5 h-5" />
-                  </div>
-                  {pendingLiquidations.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                      {pendingLiquidations.length} Pending
-                    </span>
-                  )}
-                </div>
-                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                  Financial Liquidation
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                  Disbursements, official receipts inspection, variance & surplus reconciliation.
-                </p>
-              </div>
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-                <span>Audit Liquidations</span>
-                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-          )}
-
-          {/* Card 3: Post-Activity Reports */}
-          {canAccessPAR && (
-            <div
-              onClick={() => navigate('/signatory/post-activity-reports')}
-              className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-            >
-              <div>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <FileCheck2 className="w-5 h-5" />
-                  </div>
-                  {pendingPARs.length > 0 && (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#FFD41C] text-[#001A4D]">
-                      {pendingPARs.length} Pending
-                    </span>
-                  )}
-                </div>
-                <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                  Post-Activity Reports
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                  Evaluation narratives, verified attendance turnout, and final documentation.
-                </p>
-              </div>
-              <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-                <span>Inspect Reports</span>
-                <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-              </div>
-            </div>
-          )}
-
-          {/* Card 4: Campus Reports */}
-          <div
-            onClick={() => navigate('/signatory/reports')}
-            className="group relative bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 hover:border-[#0E4EBD]/40 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                  <Layers className="w-5 h-5" />
-                </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
-                  Campus Feed
-                </span>
-              </div>
-              <h3 className="text-sm font-bold text-[#001A4D] group-hover:text-[#0E4EBD] transition-colors">
-                Campus Activity Reports
-              </h3>
-              <p className="text-[11px] text-slate-500 mt-1 line-clamp-2">
-                Real-time executive view of what happened in school: attendance turnout, achievements, and photos.
-              </p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-[#0E4EBD]">
-              <span>View School Reports</span>
-              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-            </div>
-          </div>
-        </div>
-      </div>
+      <CampusActivityOverview data={campusData} />
 
       {/* Urgent Action Queue: Items Pending My Turn */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
@@ -373,7 +216,11 @@ export default function SignatoryDashboardPage() {
           )}
         </div>
 
-        {urgentQueue.length === 0 ? (
+        {documents.error ? (
+          <p role="alert" className="p-8 text-sm text-rose-700">Unable to load the signature queue. Please refresh and try again.</p>
+        ) : loading ? (
+          <p role="status" className="p-8 text-center text-sm text-slate-500">Loading signature queue…</p>
+        ) : urgentQueue.length === 0 ? (
           <div className="p-12 text-center flex flex-col items-center justify-center">
             <div className="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mb-3">
               <CheckCircle2 className="w-7 h-7" />

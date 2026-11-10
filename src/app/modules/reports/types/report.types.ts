@@ -162,7 +162,7 @@ export interface FLAnalyticsSummary {
     totalLiquidatedExpenses: number;
     surplusReturned: number;
     budgetVarianceRate: number; // e.g. -4.5%
-    unliquidatedAgingCount: number; // completed events > 7 days without approved liquidation
+    unliquidatedAgingCount: number; // concluded activities past the 15-day FL submission deadline
   };
   charts: {
     disbursedVsActual: Array<{ org: string; allocated: number; spent: number }>;

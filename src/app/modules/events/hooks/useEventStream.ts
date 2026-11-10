@@ -14,6 +14,8 @@ export function useAllEvents() {
   useEffect(() => {
     let activitiesDocs: EventDocument[] = [];
     let legacyEventsDocs: EventDocument[] = [];
+    let activitiesLoaded = false;
+    let legacyEventsLoaded = false;
 
     const updateCombined = () => {
       // Merge by ID: activities collection combined with legacy events
@@ -104,7 +106,7 @@ export function useAllEvents() {
       });
 
       setEvents(combined);
-      setLoading(false);
+      setLoading(!activitiesLoaded || !legacyEventsLoaded);
     };
 
     // Primary: activities collection
@@ -112,11 +114,15 @@ export function useAllEvents() {
       collection(db, 'activities'),
       (snapshot) => {
         activitiesDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        activitiesLoaded = true;
+        setError(null);
         updateCombined();
       },
       (err) => {
         console.warn('Activities listener error:', err);
-        setLoading(false);
+        activitiesLoaded = true;
+        setError(err);
+        updateCombined();
       }
     );
 
@@ -125,10 +131,13 @@ export function useAllEvents() {
       collection(db, 'events'),
       (snapshot) => {
         legacyEventsDocs = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as EventDocument));
+        legacyEventsLoaded = true;
         updateCombined();
       },
       () => {
         // Silently ignore if events collection doesn't exist or is empty
+        legacyEventsLoaded = true;
+        updateCombined();
       }
     );
 

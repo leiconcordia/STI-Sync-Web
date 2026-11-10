@@ -103,6 +103,7 @@ export interface LateEnrolleePayload {
   firstName: string;
   middleName?: string;
   sex: StudentSex;
+  dateOfBirth?: string;
   academicLevel: AcademicLevel;
   courseId: string;
   courseCode: string;
@@ -125,6 +126,12 @@ export async function createLateEnrolleeStudent(
   adminUid: string
 ): Promise<string> {
   const cleanStudentId = payload.studentId.trim();
+
+  // Enforce strictly 11 numeric digits for Student ID
+  if (!/^\d{11}$/.test(cleanStudentId)) {
+    throw new Error('Student ID must be exactly 11 digits (numbers only).');
+  }
+
   const existing = await getStudentByStudentId(cleanStudentId);
 
   if (existing) {
@@ -134,6 +141,32 @@ export async function createLateEnrolleeStudent(
       throw new Error(`Conflict: Student ID ${cleanStudentId} already belongs to an existing student: ${existing.lastName}, ${existing.firstName}.`);
     } else {
       throw new Error(`Student ${existing.lastName}, ${existing.firstName} is already registered with ID ${cleanStudentId}. Please update/promote their standing instead.`);
+    }
+  }
+
+  // Duplicate Check: Same full name + same birthday not allowed
+  if (payload.dateOfBirth && payload.dateOfBirth.trim()) {
+    const cleanDob = payload.dateOfBirth.trim();
+    const cleanLast = payload.lastName.trim().toUpperCase();
+    const cleanFirst = payload.firstName.trim().toUpperCase();
+
+    const allQ = query(collection(db, STUDENTS_COLLECTION));
+    const allSnap = await getDocs(allQ);
+    const duplicatePerson = allSnap.docs.find((d) => {
+      const data = d.data();
+      const sLast = (data.lastName || '').trim().toUpperCase();
+      const sFirst = (data.firstName || '').trim().toUpperCase();
+      const sDob = data.dateOfBirth || data.birthDate || data.dob || '';
+      const isSameName = sLast === cleanLast && sFirst === cleanFirst;
+      const isSameDob = Boolean(cleanDob && sDob && (sDob === cleanDob || sDob.startsWith(cleanDob) || cleanDob.startsWith(sDob)));
+      return isSameName && isSameDob && data.studentId !== cleanStudentId;
+    });
+
+    if (duplicatePerson) {
+      const dupData = duplicatePerson.data();
+      throw new Error(
+        `Duplicate Student: A student with the same name (${cleanFirst} ${cleanLast}) and birthday (${cleanDob}) is already registered under ID ${dupData.studentId}. Same name and same birthday are not allowed.`
+      );
     }
   }
 
@@ -148,7 +181,7 @@ export async function createLateEnrolleeStudent(
     firstName: payload.firstName.trim().toUpperCase(),
     middleName: (payload.middleName || '').trim().toUpperCase(),
     sex: payload.sex,
-    dateOfBirth: '',
+    dateOfBirth: payload.dateOfBirth?.trim() || '',
     contactNumber: '',
     academicLevel: payload.academicLevel,
     courseId: payload.courseId,

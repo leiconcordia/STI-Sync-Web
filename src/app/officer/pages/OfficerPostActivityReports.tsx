@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router';
 import React, { useState, useMemo, useEffect } from 'react';
 import {
   FileCheck2,
@@ -118,6 +119,15 @@ export default function OfficerPostActivityReports() {
   const [wizardEventId, setWizardEventId] = useState<string>('');
   const [editingReport, setEditingReport] = useState<PostActivityReportDocument | null>(null);
   const [viewingReport, setViewingReport] = useState<PostActivityReportDocument | null>(null);
+  const [documentParams, setDocumentParams] = useSearchParams();
+  const targetDocumentId = documentParams.get('id');
+  useEffect(() => {
+    if (targetDocumentId) {
+      const selected = pars.find((record) => record.id === targetDocumentId);
+      if (selected) setViewingReport(selected);
+    }
+  }, [targetDocumentId, pars]);
+
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingReport, setDeletingReport] = useState<PostActivityReportDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -692,7 +702,7 @@ export default function OfficerPostActivityReports() {
       {/* Detail / Inspection Modal */}
       <PostActivityReportDetailModal
         isOpen={Boolean(viewingReport)}
-        onClose={() => setViewingReport(null)}
+        onClose={() => { setViewingReport(null); setDocumentParams((previous) => { previous.delete('id'); return previous; }); }}
         report={viewingReport}
         canEdit={true}
         onEdit={handleEditReport}

@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, doc } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
+import { auth } from '../../../services/firebase';
+import { signOut } from 'firebase/auth';
+import { clearPortalSessions } from '../services/portal-workspace.service';
 
 export interface OfficerRole {
   id: string; // Document ID
@@ -162,6 +165,8 @@ export function useOfficerProfile() {
   };
 
   const logout = () => {
+    clearPortalSessions();
+    void signOut(auth);
     localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem('sti_dismissed_pwd_reminder');
     setProfile(null);

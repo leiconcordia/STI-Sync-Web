@@ -1,6 +1,7 @@
 import { collection, getDocs, type DocumentData } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { isAdministratorSignatory } from './signatory-filter.mjs';
+import { formatPersonName } from '../../../utils/name.utils';
 
 export type AccountKind = 'advisers' | 'students' | 'signatories';
 export interface AccountRow {
@@ -19,7 +20,7 @@ const collections: Record<AccountKind, string> = {
 };
 
 export function toAccountRow(id: string, data: DocumentData): AccountRow {
-  const name = [data.firstName, data.middleName, data.lastName].filter(Boolean).join(' ').trim();
+  const name = formatPersonName(data);
   return {
     id,
     name: name || data.name || 'Unnamed account',

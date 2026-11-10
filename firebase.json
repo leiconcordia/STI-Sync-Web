@@ -1,5 +1,35 @@
 {
-  "functions": [{ "source": "functions", "codebase": "accounts" }],
-  "firestore": { "rules": "firestore.rules" },
-  "emulators": { "auth": { "port": 9099 }, "firestore": { "port": 8080 }, "functions": { "port": 5001 }, "ui": { "enabled": true } }
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "accounts",
+      "predeploy": [
+        "node scripts/build-edms-renderers.mjs"
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "auth": {
+      "port": 9099
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "functions": {
+      "port": 5001
+    },
+    "ui": {
+      "enabled": true
+    },
+    "storage": {
+      "port": 9199
+    }
+  },
+  "storage": {
+    "rules": "storage.rules"
+  }
 }

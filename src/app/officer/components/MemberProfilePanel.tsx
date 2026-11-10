@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../utils/name.utils';
 import { useState, useEffect, useMemo } from 'react';
 import {
   X,
@@ -95,10 +96,7 @@ export function MemberProfilePanel({
   // Full Name including Middle Name
   const fullNameWithMiddle = useMemo(() => {
     if (studentDoc?.firstName || studentDoc?.lastName) {
-      return [studentDoc.firstName, studentDoc.middleName, studentDoc.lastName]
-        .filter(Boolean)
-        .join(' ')
-        .trim();
+      return formatPersonName(studentDoc);
     }
     return member.studentName || 'Student';
   }, [studentDoc, member]);

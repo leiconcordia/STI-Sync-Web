@@ -14,6 +14,7 @@ import {
   increment,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import { formatPersonName } from '../../../utils/name.utils';
 import type { AddMemberPayload, OrganizationMemberStatus } from '../types/member.types';
 
 const COLLECTION = 'organization_members';
@@ -422,7 +423,7 @@ export const appointAsOfficer = async (
     roleId,
     roleName: roleName || '',
     studentId,
-    studentName,
+    studentName: formatPersonName(student, studentName),
     email: email || '',
     authUid: student?.authUid || null,
     tempPass: student?.tempPass || null,

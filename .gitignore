@@ -35,3 +35,6 @@ dist-ssr
 *.service-account.json
 *firebase-adminsdk*.json
 server/credentials/
+
+# Rebuilt from the shared report templates before deploying Functions.
+functions/generated/

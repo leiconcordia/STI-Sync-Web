@@ -3,7 +3,7 @@ import {
   CheckCircle2, XCircle, AlertCircle, UserCheck, Clock,
   ArrowLeft, Calendar, MapPin, Users, Search, Download,
   ChevronRight, QrCode, Timer, TrendingUp, Filter, Loader2, FileSpreadsheet,
-  DollarSign, AlertTriangle, Coins, Info, ShieldAlert, Shield
+  DollarSign, AlertTriangle, Info, ShieldAlert, Shield
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAllEvents } from "../../modules/events/hooks/useEventStream";
@@ -12,7 +12,6 @@ import { useVenuesStream, useEventCategoriesStream } from "../../modules/events/
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
 import { useDepartments, useCourses, useSections } from "../../modules/academic/hooks/useAcademicStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
-import { recordEventFinePayables } from "../../modules/finance/services/payable.service";
 import {
   isSessionCheckInPassed,
   isStudentTargetedForEvent,
@@ -24,8 +23,6 @@ import { format12HourTime } from "../../utils/date";
 import { AttendanceFilterToolbar } from "../../modules/attendance/components/AttendanceFilterToolbar";
 import { AttendanceExportPreviewModal } from "../../modules/attendance/components/AttendanceExportPreviewModal";
 import { StudentAttendancePassModal } from "../../modules/attendance/components/StudentAttendancePassModal";
-import { EventFinesGenerationModal } from "../../modules/finance/components/EventFinesGenerationModal";
-import { EventFinesRosterView } from "../../modules/finance/components/EventFinesRosterView";
 import type { AttendanceFilterState, EnrichedAttendanceRecord } from "../../modules/attendance/types/attendance.types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -103,31 +100,10 @@ function EventDetail({
 }) {
   const [filterState, setFilterState] = useState<AttendanceFilterState>(INITIAL_FILTERS);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'attendance' | 'fines'>('attendance');
-  const [isAssessFinesModalOpen, setIsAssessFinesModalOpen] = useState(false);
   const [selectedStudentForQR, setSelectedStudentForQR] = useState<{
     record: EnrichedAttendanceRecord;
     student?: any;
   } | null>(null);
-
-  const handleRecordFines = async () => {
-    setIsRecordingFines(true);
-    try {
-      const res = await recordEventFinePayables(event.id, 'sao_admin_user', false);
-      if (res.created > 0) {
-        toast.success(`Recorded ${res.created} fine payable(s) for ${event.name}.${res.skipped > 0 ? ` (${res.skipped} already recorded)` : ''}`);
-      } else if (res.skipped > 0) {
-        toast.info(`No new fines created. All ${res.skipped} eligible fine(s) were already recorded.`);
-      } else {
-        toast.info(`No fine-eligible attendance records found for ${event.name}.`);
-      }
-    } catch (err: any) {
-      console.error('[EventDetail] Record fines error:', err);
-      toast.error(err?.message || 'Failed to record event fines.');
-    } finally {
-      setIsRecordingFines(false);
-    }
-  };
 
   const allRecords = useMemo(() => event.records || event.sessions.flatMap((s) => s.records), [event]);
 
@@ -279,50 +255,15 @@ function EventDetail({
         })}
       </div>
 
-      {/* Sub-Tab Switcher - Fines tab only shown for institutional SAS events */}
-      <div className="flex items-center gap-3 border-b border-gray-200 pb-1">
-        <button
-          type="button"
-          onClick={() => setActiveTab('attendance')}
-          className={`pb-3 px-2 text-sm font-bold transition-all relative cursor-pointer ${
-            activeTab === 'attendance'
-              ? 'text-[#001A4D]'
-              : 'text-gray-400 hover:text-gray-700'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <UserCheck className="w-4 h-4" />
-            Attendance Roster ({allRecords.length})
-          </span>
-          {activeTab === 'attendance' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#001A4D] rounded-full" />
-          )}
-        </button>
-
-        {event.isInstitutional && (
-          <button
-            type="button"
-            onClick={() => setActiveTab('fines')}
-            className={`pb-3 px-2 text-sm font-bold transition-all relative cursor-pointer ${
-              activeTab === 'fines'
-                ? 'text-[#001A4D]'
-                : 'text-gray-400 hover:text-gray-700'
-            }`}
-          >
-            <span className="flex items-center gap-2">
-              <Coins className="w-4 h-4 text-[#FFD41C]" />
-              Event Fines & Collections
-            </span>
-            {activeTab === 'fines' && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#001A4D] rounded-full" />
-            )}
-          </button>
-        )}
+      {/* Attendance Roster Section Header */}
+      <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+        <div className="flex items-center gap-2 text-[#001A4D] text-sm font-bold">
+          <UserCheck className="w-4 h-4" />
+          <span>Attendance Roster ({allRecords.length})</span>
+        </div>
       </div>
 
-      {activeTab === 'attendance' || !event.isInstitutional ? (
-        <>
-          {/* Shared Filter Toolbar */}
+      {/* Shared Filter Toolbar */}
           <AttendanceFilterToolbar
             filters={filterState}
             onFilterChange={handleFilterChange}
@@ -423,60 +364,6 @@ function EventDetail({
           <p>Event: <strong>{event.name}</strong></p>
         </div>
       </div>
-      </>
-      ) : (
-        <EventFinesRosterView
-          eventId={event.id}
-          eventTitle={event.name}
-          isOfficer={false}
-          orgId={event.hostingOrgId || null}
-          orgName={event.org}
-          canAssessFines={!!event.isInstitutional}
-          recordedByUid="sao_admin_user"
-          semesterId="active"
-          onOpenAssessFinesModal={() => {
-            if (!event.isInstitutional) {
-              toast.error(`Fines for ${event.org} events can only be assessed and managed by club officers.`);
-              return;
-            }
-            setIsAssessFinesModalOpen(true);
-          }}
-          isEventCompleted={event.status === 'Completed'}
-          isEventCancelled={
-            event.status === 'Cancelled' ||
-            event.status === 'cancelled' ||
-            (event as any).isCancelled === true
-          }
-        />
-      )}
-
-      {/* Dynamic Fines Assessment Modal */}
-      <EventFinesGenerationModal
-        isOpen={isAssessFinesModalOpen}
-        onClose={() => setIsAssessFinesModalOpen(false)}
-        event={{
-          id: event.id,
-          name: event.name,
-          title: event.name,
-          sessions: event.sessions.map((s) => ({
-            id: s.id,
-            title: s.label,
-            date: s.date,
-            startTime: s.timeStart,
-            endTime: s.timeEnd,
-            hasTimeOut: true,
-          })),
-          status: event.status,
-          hostingOrgId: event.hostingOrgId || 'sas',
-          hostingOrgName: event.org || 'Student Affairs and Services (SAS)',
-        }}
-        isOfficer={false}
-        attendanceRecords={allRecords}
-        currentUserId="sao_admin_user"
-        onSuccess={() => {
-          setActiveTab('fines');
-        }}
-      />
 
       {/* Excel Export Preview Modal */}
       <AttendanceExportPreviewModal

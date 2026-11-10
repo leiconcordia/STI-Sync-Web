@@ -10,6 +10,11 @@ import React, { useState, useEffect } from 'react';
 import { Outlet, useNavigate, Navigate, NavLink, useLocation } from 'react-router';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
+import { formatPersonName } from '../../utils/name.utils';
+import { WorkspaceSwitcher } from '../../auth/components/WorkspaceSwitcher';
+import { clearPortalSessions } from '../../auth/services/portal-workspace.service';
+import { auth } from '../../../services/firebase';
+import { signOut } from 'firebase/auth';
 import {
   isSignatoryApplicableTo,
   getSignatoryAuthorizedWorkflows,
@@ -54,7 +59,7 @@ export default function SignatoryLayout() {
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
-        setSession(parsed);
+        setSession({ ...parsed, name: formatPersonName(parsed) });
         // Automatically open password modal if user is on temporary credentials
         if (parsed.requiresPasswordChange) {
           setIsPasswordModalOpen(true);
@@ -79,6 +84,7 @@ export default function SignatoryLayout() {
             const updated = {
               ...prev,
               ...data,
+              name: formatPersonName(data, prev.name),
               requiresPasswordChange: Boolean(data.tempPass || data.requiresPasswordChange || data.requiresChangePassword || data.resetInProgress),
               id: docSnap.id,
               applicableWorkflows: workflows,
@@ -104,8 +110,8 @@ export default function SignatoryLayout() {
   }, [session?.id]);
 
   const handleLogout = () => {
-    localStorage.removeItem(SIGNATORY_SESSION_KEY);
-    localStorage.removeItem('sti_sync_officer_session');
+    clearPortalSessions();
+    void signOut(auth);
     navigate('/portal/login');
   };
 
@@ -321,6 +327,7 @@ export default function SignatoryLayout() {
 
           {/* Sidebar Footer: User Capsule & Logout */}
           <div className="pt-4 border-t border-white/10 space-y-3">
+            <WorkspaceSwitcher />
             {/* Quick Profile Capsule */}
             <NavLink
               to="/signatory/account"

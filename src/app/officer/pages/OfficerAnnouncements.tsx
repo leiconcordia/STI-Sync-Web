@@ -1,13 +1,14 @@
 import { useState, useMemo } from 'react';
-import { Plus, X, Eye, Trash2, Pin, Globe, Building2, Users, Calendar, Search, Loader2, Megaphone, AlertCircle } from 'lucide-react';
+import { Plus, X, Eye, Trash2, Pin, Globe, Building2, Users, Calendar, Search, Loader2, Megaphone, AlertCircle, Pencil, AlertTriangle } from 'lucide-react';
 import { formatAppDateTime } from '../../utils/date';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useAnnouncementStream } from '../../modules/announcements/hooks/useAnnouncementStream';
-import { createAnnouncement, togglePin, deleteAnnouncement } from '../../modules/announcements/services/announcement.service';
-import type { AnnouncementPriority, AnnouncementAudience } from '../../modules/announcements/types/announcement.types';
+import { createAnnouncement, updateAnnouncement, togglePin, deleteAnnouncement } from '../../modules/announcements/services/announcement.service';
+import type { AnnouncementPriority, AnnouncementAudience, AnnouncementDocument } from '../../modules/announcements/types/announcement.types';
+import { toast } from 'sonner';
 
 export default function OfficerAnnouncements() {
   const { profile, loading: profileLoading } = useOfficerProfile();
@@ -18,9 +19,12 @@ export default function OfficerAnnouncements() {
   const { events: dbEvents } = useAllEvents();
   const { announcements, loading: announcementsLoading } = useAnnouncementStream(activeOrgId);
 
-  const [activeTab, setActiveTab] = useState<'all' | 'sao' | 'org' | 'priority'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'sas' | 'org' | 'priority'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingAnnouncement, setEditingAnnouncement] = useState<AnnouncementDocument | null>(null);
+  const [deletingAnnouncement, setDeletingAnnouncement] = useState<AnnouncementDocument | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
   const activeOrgName = activeOrg ? activeOrg.name : 'Student Organization';
@@ -56,7 +60,7 @@ export default function OfficerAnnouncements() {
       if (!matchesSearch) return false;
 
       // Tab filter
-      if (activeTab === 'sao') {
+      if (activeTab === 'sas') {
         return a.audience === 'campus-wide' || a.audience === 'all-organizations' || !a.organizationId;
       }
       if (activeTab === 'org') {
@@ -73,18 +77,25 @@ export default function OfficerAnnouncements() {
   const handleTogglePin = async (id: string, currentPinned: boolean) => {
     try {
       await togglePin(id, !currentPinned);
-    } catch (err) {
+      toast.success(currentPinned ? 'Announcement unpinned.' : 'Announcement pinned to top.');
+    } catch (err: any) {
       console.error('Failed to toggle pin status:', err);
+      toast.error('Failed to update pin status.');
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('Are you sure you want to delete this announcement?')) {
-      try {
-        await deleteAnnouncement(id);
-      } catch (err) {
-        console.error('Failed to delete announcement:', err);
-      }
+  const handleConfirmDelete = async () => {
+    if (!deletingAnnouncement) return;
+    try {
+      setIsDeleting(true);
+      await deleteAnnouncement(deletingAnnouncement.id);
+      toast.success('Announcement deleted successfully.');
+      setDeletingAnnouncement(null);
+    } catch (err: any) {
+      console.error('Failed to delete announcement:', err);
+      toast.error(err.message || 'Failed to delete announcement.');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -97,12 +108,15 @@ export default function OfficerAnnouncements() {
         <div>
           <div className="text-[#888780] text-[13px] font-medium">Dashboard &gt; Announcements</div>
           <p className="text-gray-500 text-xs mt-0.5">
-            Broadcast updates to your members and view campus announcements from SAO
+            Broadcast updates to your members and view campus announcements from SAS
           </p>
         </div>
         <button
-          onClick={() => setShowCreateModal(true)}
-          className="flex items-center gap-2 px-4 py-2.5 bg-[#7F77DD] text-white rounded-lg text-[14px] font-medium hover:bg-[#7F77DD]/90 transition-all shadow-sm"
+          onClick={() => {
+            setEditingAnnouncement(null);
+            setShowCreateModal(true);
+          }}
+          className="flex items-center gap-2 px-4 py-2.5 bg-[#7F77DD] text-white rounded-lg text-[14px] font-medium hover:bg-[#7F77DD]/90 transition-all shadow-sm cursor-pointer"
         >
           <Plus className="w-5 h-5" />
           Post Announcement
@@ -125,14 +139,14 @@ export default function OfficerAnnouncements() {
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 md:pb-0">
           {[
             { id: 'all', label: 'All Feed' },
-            { id: 'sao', label: 'SAO Campus' },
+            { id: 'sas', label: 'SAS Campus' },
             { id: 'org', label: 'My Org Announcements' },
             { id: 'priority', label: 'Important / Urgent' },
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
                 activeTab === tab.id
                   ? 'bg-[#001A4D] text-white'
                   : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -144,16 +158,16 @@ export default function OfficerAnnouncements() {
         </div>
       </div>
 
-      {/* Announcements Feed */}
+      {/* Announcements Stream */}
       {isLoading ? (
-        <div className="flex flex-col items-center justify-center min-h-[300px]">
+        <div className="bg-white border border-[#E0E0E0] rounded-xl p-12 flex flex-col items-center justify-center">
           <Loader2 className="w-8 h-8 animate-spin text-[#7F77DD] mb-3" />
           <p className="text-gray-500 text-sm font-medium">Loading announcements...</p>
         </div>
       ) : (
         <div className="space-y-4">
           {filteredAnnouncements.map((announcement) => {
-            const isSAO = !announcement.organizationId || announcement.audience === 'campus-wide' || announcement.audience === 'all-organizations';
+            const isSAS = !announcement.organizationId || announcement.audience === 'campus-wide' || announcement.audience === 'all-organizations';
             const isMyOrgPost = announcement.organizationId === activeOrgId;
 
             return (
@@ -175,21 +189,21 @@ export default function OfficerAnnouncements() {
                   <div className="flex items-start gap-3">
                     <div
                       className={`w-11 h-11 rounded-full flex items-center justify-center text-white font-bold text-xs flex-shrink-0 ${
-                        isSAO ? 'bg-[#001A4D] ring-2 ring-[#BA7517]' : 'bg-[#7F77DD]'
+                        isSAS ? 'bg-[#001A4D] ring-2 ring-[#BA7517]' : 'bg-[#7F77DD]'
                       }`}
                     >
-                      {isSAO ? 'SAO' : (announcement.organizationName ? announcement.organizationName.substring(0, 3).toUpperCase() : activeOrgInitials)}
+                      {isSAS ? 'SAS' : (announcement.organizationName ? announcement.organizationName.substring(0, 3).toUpperCase() : activeOrgInitials)}
                     </div>
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <h3 className="text-[#001A4D] text-[14px] font-bold">{announcement.authorName || 'Author'}</h3>
                         <span className="text-gray-400 text-xs">•</span>
                         <span className="text-gray-500 text-xs font-medium">
-                          {announcement.authorRole || (isSAO ? 'SAO Adviser' : 'Officer')}
+                          {announcement.authorRole || (isSAS ? 'SAS Adviser' : 'Officer')}
                         </span>
-                        {isSAO && (
+                        {isSAS && (
                           <span className="px-2 py-0.5 bg-[#001A4D] text-white rounded-full text-[10px] font-bold">
-                            Official SAO
+                            Official SAS
                           </span>
                         )}
                         {isMyOrgPost && (
@@ -229,14 +243,24 @@ export default function OfficerAnnouncements() {
                         <button
                           onClick={() => handleTogglePin(announcement.id, announcement.pinned)}
                           title={announcement.pinned ? 'Unpin Announcement' : 'Pin Announcement'}
-                          className="p-1.5 hover:bg-amber-50 rounded-lg text-amber-600 transition-colors"
+                          className="p-1.5 hover:bg-amber-50 rounded-lg text-amber-600 transition-colors cursor-pointer"
                         >
                           <Pin className={`w-4 h-4 ${announcement.pinned ? 'fill-amber-600' : ''}`} />
                         </button>
                         <button
-                          onClick={() => handleDelete(announcement.id)}
+                          onClick={() => {
+                            setEditingAnnouncement(announcement);
+                            setShowCreateModal(true);
+                          }}
+                          title="Edit Announcement"
+                          className="p-1.5 hover:bg-blue-50 rounded-lg text-blue-600 transition-colors cursor-pointer"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setDeletingAnnouncement(announcement)}
                           title="Delete Announcement"
-                          className="p-1.5 hover:bg-red-50 rounded-lg text-red-600 transition-colors"
+                          className="p-1.5 hover:bg-red-50 rounded-lg text-red-600 transition-colors cursor-pointer"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -278,16 +302,16 @@ export default function OfficerAnnouncements() {
 
                         {announcement.targetYearLevels && announcement.targetYearLevels.length > 0 && (
                           <span className="bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                            Years: {announcement.targetYearLevels.join(', ')}
+                            {announcement.targetYearLevels.join(', ')}
                           </span>
                         )}
                       </span>
                     )}
                   </div>
 
-                  {announcement.schoolYear && (
-                    <span className="text-gray-400 font-mono text-[11px]">S.Y. {announcement.schoolYear}</span>
-                  )}
+                  <div className="text-[11px] text-gray-400">
+                    ID: {announcement.id.slice(0, 8)}
+                  </div>
                 </div>
               </div>
             );
@@ -296,13 +320,16 @@ export default function OfficerAnnouncements() {
           {filteredAnnouncements.length === 0 && (
             <div className="bg-white border border-[#E0E0E0] rounded-xl p-12 text-center">
               <Megaphone className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-              <h3 className="text-[#001A4D] font-bold text-lg mb-1">No Announcements Found</h3>
-              <p className="text-gray-500 text-sm max-w-md mx-auto mb-4">
-                There are no active announcements in this view. Click below to post a new announcement for your members.
+              <h3 className="text-base font-bold text-[#001A4D] mb-1">No Announcements Found</h3>
+              <p className="text-gray-500 text-xs max-w-sm mx-auto mb-4">
+                No announcement matching your selected filter or search term.
               </p>
               <button
-                onClick={() => setShowCreateModal(true)}
-                className="px-4 py-2 bg-[#7F77DD] text-white rounded-lg text-sm font-medium hover:bg-[#7F77DD]/90"
+                onClick={() => {
+                  setEditingAnnouncement(null);
+                  setShowCreateModal(true);
+                }}
+                className="px-4 py-2 bg-[#7F77DD] text-white text-xs font-semibold rounded-lg hover:bg-[#7F77DD]/90 cursor-pointer"
               >
                 Post New Announcement
               </button>
@@ -311,10 +338,14 @@ export default function OfficerAnnouncements() {
         </div>
       )}
 
-      {/* Create Announcement Modal */}
+      {/* Create / Edit Modal */}
       {showCreateModal && (
         <CreateModal
-          onClose={() => setShowCreateModal(false)}
+          announcement={editingAnnouncement}
+          onClose={() => {
+            setShowCreateModal(false);
+            setEditingAnnouncement(null);
+          }}
           activeOrgId={activeOrgId}
           activeOrgName={activeOrgName}
           authorUid={profile?.studentId || ''}
@@ -323,12 +354,72 @@ export default function OfficerAnnouncements() {
           orgEvents={orgEvents}
         />
       )}
+
+      {/* Styled Delete Confirmation Modal */}
+      {deletingAnnouncement && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div 
+            className="absolute inset-0 bg-black/60 backdrop-blur-xs transition-opacity" 
+            onClick={() => !isDeleting && setDeletingAnnouncement(null)} 
+          />
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 z-10 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-3.5 text-red-600 mb-4">
+              <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-6 h-6 text-red-600" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-[#001A4D]">Delete Announcement</h3>
+                <p className="text-xs text-gray-500">This action cannot be undone</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-2 leading-relaxed">
+              Are you sure you want to permanently delete:
+            </p>
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded-xl mb-5">
+              <p className="text-sm font-bold text-[#001A4D] line-clamp-2">
+                "{deletingAnnouncement.title}"
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setDeletingAnnouncement(null)}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-semibold cursor-pointer"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    Delete Announcement
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 interface CreateModalProps {
   onClose: () => void;
+  announcement?: AnnouncementDocument | null;
   activeOrgId: string;
   activeOrgName: string;
   authorUid: string;
@@ -339,6 +430,7 @@ interface CreateModalProps {
 
 function CreateModal({
   onClose,
+  announcement,
   activeOrgId,
   activeOrgName,
   authorUid,
@@ -346,13 +438,16 @@ function CreateModal({
   authorRole,
   orgEvents,
 }: CreateModalProps) {
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [priority, setPriority] = useState<AnnouncementPriority>('Normal');
-  const [targetType, setTargetType] = useState<'all' | 'year'>('all');
-  const [selectedYears, setSelectedYears] = useState<string[]>([]);
-  const [selectedEventId, setSelectedEventId] = useState('');
-  const [isPinned, setIsPinned] = useState(false);
+  const isEditing = Boolean(announcement);
+  const [title, setTitle] = useState(announcement?.title || '');
+  const [content, setContent] = useState(announcement?.content || '');
+  const [priority, setPriority] = useState<AnnouncementPriority>(announcement?.priority || 'Normal');
+  const [targetType, setTargetType] = useState<'all' | 'year'>(
+    announcement?.targetYearLevels && announcement.targetYearLevels.length > 0 ? 'year' : 'all'
+  );
+  const [selectedYears, setSelectedYears] = useState<string[]>(announcement?.targetYearLevels || []);
+  const [selectedEventId, setSelectedEventId] = useState(announcement?.linkedEventId || '');
+  const [isPinned, setIsPinned] = useState(Boolean(announcement?.pinned));
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const availableYears = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
@@ -371,34 +466,51 @@ function CreateModal({
     try {
       const linkedEvent = orgEvents.find((evt) => evt.id === selectedEventId);
 
-      await createAnnouncement(
-        {
+      if (isEditing && announcement) {
+        await updateAnnouncement(announcement.id, {
           title: title.trim(),
           content: content.trim(),
           priority,
           audience: targetType === 'all' ? 'specific' : 'specific',
           targetOrgIds: [activeOrgId],
           targetOrgNames: [activeOrgName],
-          targetDepartments: [],
           targetYearLevels: targetType === 'year' ? selectedYears : [],
-          organizationId: activeOrgId,
-          organizationName: activeOrgName,
           linkedEventId: selectedEventId || null,
           linkedEventTitle: linkedEvent ? linkedEvent.title : null,
           pinned: isPinned,
-          semesterId: '1st-sem-2026',
-          schoolYear: '2025-2026',
-          authorRole,
-        },
-        authorUid,
-        authorName,
-        authorRole
-      );
+        });
+        toast.success('Organization announcement updated successfully.');
+      } else {
+        await createAnnouncement(
+          {
+            title: title.trim(),
+            content: content.trim(),
+            priority,
+            audience: targetType === 'all' ? 'specific' : 'specific',
+            targetOrgIds: [activeOrgId],
+            targetOrgNames: [activeOrgName],
+            targetDepartments: [],
+            targetYearLevels: targetType === 'year' ? selectedYears : [],
+            organizationId: activeOrgId,
+            organizationName: activeOrgName,
+            linkedEventId: selectedEventId || null,
+            linkedEventTitle: linkedEvent ? linkedEvent.title : null,
+            pinned: isPinned,
+            semesterId: '1st-sem-2026',
+            schoolYear: '2025-2026',
+            authorRole,
+          },
+          authorUid,
+          authorName,
+          authorRole
+        );
+        toast.success('Organization announcement posted successfully.');
+      }
 
       onClose();
-    } catch (err) {
-      console.error('Failed to post announcement:', err);
-      alert('Error creating announcement. Please try again.');
+    } catch (err: any) {
+      console.error('Failed to save announcement:', err);
+      toast.error(isEditing ? 'Failed to update announcement.' : 'Failed to post announcement.');
     } finally {
       setIsSubmitting(false);
     }
@@ -410,10 +522,12 @@ function CreateModal({
         {/* Header */}
         <div className="sticky top-0 bg-white border-b border-[#E0E0E0] px-6 py-4 flex items-center justify-between z-10">
           <div>
-            <h2 className="text-[#001A4D] text-[18px] font-bold">Post Organization Announcement</h2>
+            <h2 className="text-[#001A4D] text-[18px] font-bold">
+              {isEditing ? 'Edit Organization Announcement' : 'Post Organization Announcement'}
+            </h2>
             <p className="text-gray-500 text-xs">Publishing for {activeOrgName}</p>
           </div>
-          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
+          <button onClick={onClose} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer">
             <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
@@ -447,7 +561,7 @@ function CreateModal({
                   type="button"
                   key={p.id}
                   onClick={() => setPriority(p.id as AnnouncementPriority)}
-                  className={`p-3 rounded-lg border text-left transition-all ${
+                  className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
                     priority === p.id
                       ? 'bg-[#EEEDFE] border-[#7F77DD] ring-2 ring-[#7F77DD]/20'
                       : `bg-white ${p.border} hover:bg-gray-50`
@@ -557,17 +671,17 @@ function CreateModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50"
+              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="flex items-center gap-2 px-5 py-2 bg-[#7F77DD] text-white rounded-lg text-sm font-medium hover:bg-[#7F77DD]/90 disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2 bg-[#7F77DD] text-white rounded-lg text-sm font-medium hover:bg-[#7F77DD]/90 disabled:opacity-50 cursor-pointer"
             >
               {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              Publish Announcement
+              {isEditing ? 'Save Changes' : 'Publish Announcement'}
             </button>
           </div>
         </form>
@@ -575,4 +689,3 @@ function CreateModal({
     </div>
   );
 }
-

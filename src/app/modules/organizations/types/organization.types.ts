@@ -1,4 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
+import type { AdviserNameVerification } from '../utils/adviser-identity.utils';
 
 export interface OrganizationTypeDocument {
   id: string;
@@ -15,6 +16,7 @@ export interface OrgAdviserData {
   name: string;
   firstName?: string;
   lastName?: string;
+  middleName?: string;
   middleInitial?: string;
   employeeId?: string;
   email: string;
@@ -24,6 +26,9 @@ export interface OrgAdviserData {
   requiresPasswordChange?: boolean;
   tempPass?: string | null;
   resetInProgress?: boolean;
+  nameVerification?: AdviserNameVerification;
+  existingAccountUid?: string;
+  accountProvisioning?: 'created' | 'reused';
 }
 
 export interface OrganizationDocument {

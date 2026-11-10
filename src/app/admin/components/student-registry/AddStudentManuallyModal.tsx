@@ -62,6 +62,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
   const [lastName, setLastName] = useState('');
   const [firstName, setFirstName] = useState('');
   const [middleName, setMiddleName] = useState('');
+  const [dateOfBirth, setDateOfBirth] = useState('');
   const [sex, setSex] = useState<StudentSex>('Male');
   const [academicLevel, setAcademicLevel] = useState<AcademicLevel>('COLLEGE');
   const [courseCode, setCourseCode] = useState('');
@@ -104,10 +105,41 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
     return sections.filter((s) => !s.archived && s.courseId === matchedCourse.id);
   }, [sections, courses, courseCode]);
 
+  // Ensure selected section is valid for current program
+  useEffect(() => {
+    if (section !== 'UNASSIGNED' && !availableSections.some((s) => s.name === section)) {
+      setSection('UNASSIGNED');
+    }
+  }, [availableSections, section]);
+
   // ─── Real-Time Duplicate & Collision Validation ─────────────────────────────
 
   const duplicateCheck = useMemo(() => {
     const cleanId = studentId.trim();
+    const cleanLast = lastName.trim().toUpperCase();
+    const cleanFirst = firstName.trim().toUpperCase();
+    const cleanDob = dateOfBirth.trim();
+
+    // 1. Duplicate Person Check: Same name and same birthday is strictly prohibited
+    if (cleanLast && cleanFirst && cleanDob) {
+      const samePerson = allStudents.find((s) => {
+        const sLast = (s.lastName || '').trim().toUpperCase();
+        const sFirst = (s.firstName || '').trim().toUpperCase();
+        const sDob = s.dateOfBirth || (s as any).birthDate || (s as any).dob || '';
+        const sameName = sLast === cleanLast && sFirst === cleanFirst;
+        const sameDob = Boolean(sDob && (sDob === cleanDob || sDob.startsWith(cleanDob) || cleanDob.startsWith(sDob)));
+        return sameName && sameDob && s.studentId !== cleanId;
+      });
+
+      if (samePerson) {
+        return {
+          status: 'DUPLICATE_PERSON' as const,
+          student: samePerson,
+          message: `Duplicate Student: A student named ${cleanFirst} ${cleanLast} with birthdate ${cleanDob} is already registered under ID ${samePerson.studentId}. Same name and same birthday are not allowed.`,
+        };
+      }
+    }
+
     if (!cleanId || cleanId.length < 5) return null;
 
     const existing = allStudents.find((s) => s.studentId && s.studentId.trim() === cleanId);
@@ -131,7 +163,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
       student: existing,
       message: `Student ${existing.lastName}, ${existing.firstName} is already registered in ${existing.courseCode || ''} (${existing.yearLevel || ''}, ${existing.schoolYear || ''} ${existing.semester || ''}).`,
     };
-  }, [studentId, lastName, allStudents]);
+  }, [studentId, lastName, firstName, dateOfBirth, allStudents]);
 
   // Computed Default Password
   const generatedPassword = useMemo(() => {
@@ -149,12 +181,22 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
     const cleanLast = lastName.trim().toUpperCase();
     const cleanFirst = firstName.trim().toUpperCase();
 
-    if (!cleanId || !/^\d{8,15}$/.test(cleanId)) {
-      setSubmitError('Please enter a valid official Student ID (digits only).');
+    // Enforce Student ID: 11 numbers only
+    if (!cleanId || !/^\d{11}$/.test(cleanId)) {
+      setSubmitError('Student ID must be exactly 11 numeric digits (numbers only).');
       return;
     }
     if (!cleanLast || !cleanFirst) {
       setSubmitError('Please enter the student full legal name (Last and First name).');
+      return;
+    }
+    if (!dateOfBirth.trim()) {
+      setSubmitError('Please enter the student Date of Birth.');
+      return;
+    }
+
+    if (duplicateCheck?.status === 'DUPLICATE_PERSON') {
+      setSubmitError(duplicateCheck.message);
       return;
     }
 
@@ -193,6 +235,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             firstName: cleanFirst,
             middleName: middleName.trim().toUpperCase(),
             sex,
+            dateOfBirth: dateOfBirth.trim(),
             academicLevel,
             courseId: selectedCourseObj.id,
             courseCode: selectedCourseObj.code,
@@ -252,6 +295,20 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             </div>
           )}
 
+          {/* Duplicate Person Warning (Same Name + Same Birthday) */}
+          {duplicateCheck?.status === 'DUPLICATE_PERSON' && (
+            <div className="p-3.5 rounded-xl bg-red-50 border border-red-300 flex items-start gap-2.5 text-xs text-red-800 animate-fade-in">
+              <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-600" />
+              <div>
+                <strong className="font-bold">Duplicate Student Detected:</strong>
+                <p className="mt-0.5">{duplicateCheck.message}</p>
+                <span className="text-[11px] text-red-600 font-semibold block mt-1">
+                  Registration blocked. A student with the exact same name and birthday cannot be registered again.
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Conflict Warning */}
           {duplicateCheck?.status === 'COLLISION' && (
             <div className="p-3.5 rounded-xl bg-red-50 border border-red-300 flex items-start gap-2.5 text-xs text-red-800 animate-fade-in">
@@ -286,23 +343,29 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
               <User className="w-3.5 h-3.5 text-[#001A4D]" /> Identity & Registration
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Student ID / Number <span className="text-red-500">*</span>
+                  Student ID (11 Digits, Numbers Only) <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   required
+                  maxLength={11}
                   placeholder="e.g. 02000496332"
                   value={studentId}
-                  onChange={(e) => setStudentId(e.target.value.trim())}
+                  onChange={(e) => setStudentId(e.target.value.replace(/\D/g, '').slice(0, 11))}
                   className={`w-full px-3 py-2 text-xs font-mono rounded-lg border focus:ring-2 focus:outline-none transition-all ${
                     duplicateCheck?.status === 'COLLISION'
                       ? 'border-red-400 bg-red-50/30 focus:ring-red-300'
+                      : studentId.length === 11
+                      ? 'border-green-400 bg-green-50/20 focus:ring-green-100 focus:border-green-600'
                       : 'border-gray-300 focus:ring-blue-100 focus:border-[#001A4D]'
                   }`}
                 />
+                <span className="text-[10px] text-gray-500 mt-0.5 block">
+                  {studentId.length}/11 digits entered {studentId.length === 11 ? '✓ Complete' : '(Must be exactly 11 digits)'}
+                </span>
               </div>
 
               <div>
@@ -356,11 +419,31 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
                 <input
                   type="text"
                   placeholder="e.g. DELA CRUZ"
+                  aria-label="Middle name"
+                  autoComplete="additional-name"
                   value={middleName}
                   onChange={(e) => setMiddleName(e.target.value.toUpperCase())}
                   className="w-full px-3 py-2 text-xs uppercase rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-[#001A4D]"
                 />
               </div>
+            </div>
+
+            {/* Date of Birth */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 mb-1">
+                Date of Birth <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="date"
+                required
+                max={new Date().toISOString().split('T')[0]}
+                value={dateOfBirth}
+                onChange={(e) => setDateOfBirth(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-[#001A4D] bg-white text-gray-800"
+              />
+              <span className="text-[10px] text-gray-500 mt-0.5 block">
+                Required for duplicate prevention (same name + same birthday not allowed).
+              </span>
             </div>
           </div>
 
@@ -441,27 +524,22 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
                   Section <span className="text-gray-400 font-normal">(Optional)</span>
                 </label>
-                {availableSections.length > 0 ? (
-                  <select
-                    value={section}
-                    onChange={(e) => setSection(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-[#001A4D] bg-white font-medium"
-                  >
-                    <option value="UNASSIGNED">UNASSIGNED</option>
-                    {availableSections.map((sec) => (
-                      <option key={sec.id} value={sec.name}>
-                        {sec.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    placeholder="e.g. BSIT-1A or UNASSIGNED"
-                    value={section}
-                    onChange={(e) => setSection(e.target.value)}
-                    className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-[#001A4D]"
-                  />
+                <select
+                  value={section}
+                  onChange={(e) => setSection(e.target.value)}
+                  className="w-full px-3 py-2 text-xs rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-100 focus:border-[#001A4D] bg-white font-medium"
+                >
+                  <option value="UNASSIGNED">UNASSIGNED</option>
+                  {availableSections.map((sec) => (
+                    <option key={sec.id} value={sec.name}>
+                      {sec.name}
+                    </option>
+                  ))}
+                </select>
+                {availableSections.length === 0 && (
+                  <span className="text-[10px] text-gray-400 mt-1 block">
+                    No active sections registered for this program (defaults to UNASSIGNED).
+                  </span>
                 )}
               </div>
             </div>
@@ -500,7 +578,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             </button>
             <button
               type="submit"
-              disabled={saving || duplicateCheck?.status === 'COLLISION'}
+              disabled={saving || duplicateCheck?.status === 'COLLISION' || duplicateCheck?.status === 'DUPLICATE_PERSON' || studentId.trim().length !== 11}
               className="px-5 py-2.5 bg-gradient-to-r from-[#001A4D] to-[#0A3D91] text-white rounded-xl text-xs font-bold hover:opacity-95 transition-all shadow-sm flex items-center gap-2 disabled:opacity-50 cursor-pointer"
             >
               {saving ? (

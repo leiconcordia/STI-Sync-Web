@@ -1,0 +1,1 @@
+export { WORKFLOW_KINDS, WORKFLOW_LABELS, documentKind, ownsDocument, isStoredDocument, storageKey, storageTabs, reportStorageTabs, categoryFilterOptions, matchesDocumentCategory, CATEGORY_COLORS } from '../../../../../functions/edms-domain.mjs';

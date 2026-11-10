@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { DevDataSeederModal } from '../../../dev/components/DevDataSeederModal';
 import { NotificationDropdown } from '../../modules/notifications';
+import { WorkspaceSwitcher } from '../../auth/components/WorkspaceSwitcher';
 
 interface OfficerTopNavProps {
   title: string;
@@ -41,6 +42,7 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
 
       {/* Right Side */}
       <div className="flex items-center gap-3">
+        <WorkspaceSwitcher />
         {/* Quick Dev Data Seeder Trigger */}
         <button
           type="button"

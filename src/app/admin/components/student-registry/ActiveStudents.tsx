@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { useState, useMemo, useEffect } from 'react';
 import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
@@ -497,7 +498,7 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
                           </div>
                           <div>
                             <div className="font-semibold text-[#001A4D]">
-                              {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                              {formatPersonName(student)}
                             </div>
                             <div className="text-xs text-gray-500 font-mono">{student.studentId}</div>
                           </div>

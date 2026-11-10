@@ -42,7 +42,7 @@ import {
   isEventLiquidationExempt,
 } from '../../../modules/events/utils/organization-display.utils';
 import { formatAppDate, format12HourTime } from '../../../utils/date';
-import { getMillis } from '../../../modules/students/utils/date.utils';
+import { activityConclusionDate, calendarDaysRemaining, isActivityConcluded, liquidationSubmissionDeadline } from '../../../modules/events/utils/activity-compliance.utils';
 
 export interface CalendarAndActivityMonitorPaneProps {
   activities: EventDocument[];
@@ -173,40 +173,23 @@ export function CalendarAndActivityMonitorPane({
       const isSas = isSasCreatedEvent(act, orgMap);
       const cleanOrg = resolveCleanOrgName(act, orgMap);
 
-      // Implementation / Concluded date
-      const lastSessionDate = act.sessions && act.sessions.length > 0
-        ? act.sessions[act.sessions.length - 1].date
-        : (act.date || (act as any).targetImplementationDate || '');
-
-      let concludedDate = lastSessionDate ? new Date(lastSessionDate) : null;
-      if (!concludedDate || isNaN(concludedDate.getTime())) {
-        concludedDate = act.createdAt ? new Date(getMillis(act.createdAt)) : new Date();
-      }
-
-      const isConcluded =
-        (lastSessionDate && new Date(lastSessionDate) < today) ||
-        act.lifecycleStatus === 'completed' ||
-        act.status === 'completed' ||
-        act.proposalStatus === 'completed';
-
-      // 15-day liquidation deadline calculation
-      const deadlineDate = new Date(concludedDate.getTime() + 15 * 86400000);
-      const diffMs = deadlineDate.getTime() - today.getTime();
-      const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-      const deadlineDateStr = formatAppDate(deadlineDate.toISOString().split('T')[0]);
-      const concludedDateStr = formatAppDate(concludedDate.toISOString().split('T')[0]);
+      const isConcluded = isActivityConcluded(act);
+      const concludedDateStr = formatAppDate(activityConclusionDate(act));
 
       // Check linked liquidation (FL)
       const matchingLiq = liquidations.find(
-        (l) => l.eventId === act.id || (l as any).eventReportId === act.id
+        (l) => !l.isDeleted && l.status !== 'voided' && (l.eventId === act.id || (l as any).eventReportId === act.id)
       );
+      const deadline = liquidationSubmissionDeadline(act, matchingLiq);
+      const daysRemaining = calendarDaysRemaining(deadline, today) ?? 0;
+      const deadlineDateStr = formatAppDate(deadline);
 
       let flStatus: 'approved' | 'under_review' | 'returned' | 'draft' | 'missing' | 'upcoming' = 'upcoming';
       if (matchingLiq) {
         const s = (matchingLiq.status || '').toLowerCase();
         if (s === 'approved') flStatus = 'approved';
         else if (s === 'under_review' || s === 'pending' || s === 'pending_adviser_review') flStatus = 'under_review';
-        else if (s === 'returned') flStatus = 'returned';
+        else if (s === 'returned' || s === 'returned_for_revision') flStatus = 'returned';
         else flStatus = 'draft';
       } else if (isConcluded) {
         flStatus = 'missing';
@@ -214,7 +197,7 @@ export function CalendarAndActivityMonitorPane({
 
       // Check linked Post-Activity Report (PAR)
       const matchingPAR = postActivityReports.find(
-        (p) => p.eventId === act.id || act.parId === p.id
+        (p) => !p.isDeleted && !['voided', 'cancelled'].includes(p.status) && (p.eventId === act.id || act.parId === p.id)
       );
 
       let parStatus: 'approved' | 'under_review' | 'returned' | 'missing' | 'upcoming' = 'upcoming';
@@ -222,8 +205,8 @@ export function CalendarAndActivityMonitorPane({
         const s = (matchingPAR.status || '').toLowerCase();
         if (s === 'approved') parStatus = 'approved';
         else if (s === 'under_review' || s === 'pending') parStatus = 'under_review';
-        else if (s === 'returned') parStatus = 'returned';
-        else parStatus = 'under_review';
+        else if (s === 'returned' || s === 'returned_for_revision') parStatus = 'returned';
+        else parStatus = 'missing';
       } else if (isConcluded) {
         parStatus = 'missing';
       }
@@ -231,20 +214,11 @@ export function CalendarAndActivityMonitorPane({
       // ─── Compliance Completion & Lacking Determination ─────────────────
       // If no budget or no financial projection, no need for liquidation
       const isExemptFromLiquidation = isEventLiquidationExempt(act);
-      const isZeroBudget = act.fundingSource === 'zero_budget' || isExemptFromLiquidation;
-      const isStatusCompleted =
-        act.lifecycleStatus === 'completed' ||
-        act.status === 'completed' ||
-        act.proposalStatus === 'completed';
-
+      const isZeroBudget = isExemptFromLiquidation;
       const flDone = isExemptFromLiquidation || flStatus === 'approved';
       const parDone = parStatus === 'approved';
 
-      // An activity is already completed if both FL and PAR are approved/cleared
-      // or if its status is marked completed without lacking requirements
-      const isCompletedAlready =
-        (flDone && parDone) ||
-        (isStatusCompleted && (isExemptFromLiquidation || flStatus !== 'missing') && parStatus !== 'missing');
+      const isCompletedAlready = isConcluded && flDone && parDone;
 
       // What is lacking? (Exempt activities never lack FL)
       const needsFl = !isExemptFromLiquidation && (flStatus === 'missing' || flStatus === 'draft' || flStatus === 'returned');

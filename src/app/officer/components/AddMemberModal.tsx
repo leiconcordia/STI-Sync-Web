@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../utils/name.utils';
 import { useState, useEffect } from 'react';
 import { X, Search, Loader2, Building2 } from 'lucide-react';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
@@ -89,7 +90,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     setFormData({
       ...formData,
       studentId: student.studentId || student.id || '',
-      studentName: `${student.firstName || ''} ${student.lastName || ''}`.trim(),
+      studentName: formatPersonName(student),
       email: student.email || '',
       course: student.courseCode || student.courseName || '',
       year: student.yearLevel || '',
@@ -257,7 +258,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                         onClick={() => handleSelectStudent(s)}
                         className="px-4 py-2.5 hover:bg-blue-50/60 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
                       >
-                        <div className="font-medium text-[#001A4D] text-sm">{s.firstName} {s.lastName}</div>
+                        <div className="font-medium text-[#001A4D] text-sm">{formatPersonName(s)}</div>
                         <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
                           <span className="font-mono">{s.studentId}</span>
                           <span>•</span>
@@ -356,18 +357,6 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                   className="w-full px-3 py-2 border border-[#E0E0E0] bg-gray-100 text-gray-700 rounded-lg text-sm cursor-not-allowed outline-none select-none"
                 />
               </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Membership Payment</label>
-              <select
-                value={formData.paymentStatus}
-                onChange={(e) => setFormData({ ...formData, paymentStatus: e.target.value as 'paid' | 'outstanding' })}
-                className="w-full px-3 py-2 border border-[#E0E0E0] bg-white rounded-lg text-sm focus:ring-2 focus:ring-[#1E70E8] outline-none cursor-pointer"
-              >
-                <option value="outstanding">Outstanding (Pending Payment)</option>
-                <option value="paid">Paid</option>
-              </select>
             </div>
           </form>
         </div>

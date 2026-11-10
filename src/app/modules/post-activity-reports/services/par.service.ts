@@ -37,7 +37,7 @@ import type {
   PARFormData,
   PostActivityReportStatus,
 } from '../types/par.types';
-import { autoArchiveApprovedPAR } from '../../documents/services/document_archive_bridge.service';
+import { autoArchiveApprovedPAR } from '../../reports/services/report-archive.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
@@ -836,7 +836,7 @@ export async function endorsePARStep(
     try {
       await autoArchiveApprovedPAR(parId, { ...data, ...updates }, signerUid || signatory.email);
     } catch (archErr) {
-      console.warn('[endorsePARStep] Auto-archive to EDMS notice:', archErr);
+      console.warn('[endorsePARStep] Approved report storage notice:', archErr);
     }
   }
 
@@ -1020,11 +1020,11 @@ export async function approvePAR(
     }));
   } catch {}
 
-  // Auto-Archive to EDMS
+  // Archive in Reports & Analytics
   try {
     await autoArchiveApprovedPAR(parId, data, adminUserId);
   } catch (archErr) {
-    console.warn('[approvePAR] Auto-archive to EDMS notice:', archErr);
+    console.warn('[approvePAR] Approved report storage notice:', archErr);
   }
 }
 

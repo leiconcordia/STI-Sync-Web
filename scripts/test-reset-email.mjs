@@ -43,12 +43,18 @@ try {
   const missingRecipient = await deliverResetEmail({ ...pending, recipientEmail: '' }, 'students', emailService.sendAccountPasswordResetCredentialsEmail);
   assert.equal(missingRecipient.delivery, 'failed');
   assert.equal(requests.length, 1, 'Do not email without a server-confirmed recipient');
+  await emailService.sendAdviserWelcomeCredentialsEmail({ to: 'faculty@example.test', adviserName: 'John S. Doe', orgName: 'Logic Club', existingAccount: true });
+  const adviser = requests.at(-1).template_params;
+  assert.match(adviser.message, /existing email and password/); assert.match(adviser.message, /choose Club Adviser/);
+  assert.equal(adviser.temp_password, 'Use your existing password'); assert.equal(adviser.temporary_password, 'Use your existing password');
+  assert.equal(adviser.login_url, 'http://localhost:5173/portal/login');
+  assert.doesNotMatch(adviser.html_content, /Adv-2026|Temporary Password/);
   fail = true;
   const failed = await deliverResetEmail(pending, 'advisers', emailService.sendAccountPasswordResetCredentialsEmail);
   assert.equal(failed.delivery, 'failed');
   assert.equal(failed.temporaryPassword, pending.temporaryPassword);
   assert.match(failed.deliveryError, /EmailJS test provider unavailable/);
-  console.log('PASS: existing EmailJS SDK/service/template, recipient/password fields, HTML escaping, duplicate prevention, and delivery failure');
+  console.log('PASS: EmailJS reset fields, escaping, duplicate prevention, adviser account-reuse message, and delivery failure');
 } finally {
   globalThis.fetch = originalFetch;
   delete globalThis.window; delete globalThis.location;

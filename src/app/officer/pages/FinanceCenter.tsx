@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../utils/name.utils';
 import { useState, useMemo, useEffect } from "react";
 import { toast } from 'sonner';
 
@@ -19,6 +20,7 @@ import { Timestamp } from 'firebase/firestore';
 import { GenerateDuesModal } from '../components/GenerateDuesModal';
 import { AddPayableModal } from '../components/AddPayableModal';
 import { RecordPaymentModal } from '../components/RecordPaymentModal';
+import { ExportFinancialReportModal, formatTransactionSource } from '../../modules/finance/components/ExportFinancialReportModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDate, formatAppDateTime } from '../../utils/date';
 import { uploadToCloudinary } from '../../../services/cloudinary';
@@ -658,6 +660,22 @@ function BudgetTrackerTab({
     return ledgerData.filter((t) => !t.semesterId || t.semesterId === semesterId);
   }, [ledgerData, semesterId]);
 
+  // Dynamic sources only - derived from actual transactions (no static sources)
+  const availableSources = useMemo(() => {
+    const map = new Map<string, number>();
+    currentSemTransactions.forEach((tx) => {
+      const src = tx.source || 'general';
+      map.set(src, (map.get(src) || 0) + 1);
+    });
+    return Array.from(map.entries())
+      .map(([value, count]) => ({
+        value,
+        label: formatTransactionSource(value),
+        count,
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [currentSemTransactions]);
+
   // Sort chronological (oldest first) to compute running balance accurately
   const chronological = useMemo(() => {
     return [...currentSemTransactions].sort((a, b) => {
@@ -791,20 +809,18 @@ function BudgetTrackerTab({
               />
             </div>
 
-            {/* Source Filter */}
+            {/* Dynamic Source Filter (no static sources) */}
             <select
               value={sourceFilter}
               onChange={(e) => setSourceFilter(e.target.value)}
               className="px-2.5 py-1.5 rounded-lg text-xs font-medium bg-gray-50 border border-gray-200 text-gray-700 outline-none focus:ring-2 focus:ring-[#0E4EBD]/20 cursor-pointer"
             >
-              <option value="all">All Sources</option>
-              <option value="allocation">Club Allocation</option>
-              <option value="student_collection">Student Collections</option>
-              <option value="event_budget">Event Budgets</option>
-              <option value="liquidation_surplus">Liquidation Surplus</option>
-              <option value="liquidation_deficit">Liquidation Deficit</option>
-              <option value="manual_expense">Manual Expenses</option>
-              <option value="carry_over">Carry-Over</option>
+              <option value="all">All Sources ({currentSemTransactions.length})</option>
+              {availableSources.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label} ({s.count})
+                </option>
+              ))}
             </select>
 
             <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
@@ -906,15 +922,7 @@ function BudgetTrackerTab({
                           ? 'bg-red-100 text-red-700'
                           : 'bg-blue-100 text-blue-700'
                       }`}>
-                        {item.source === 'event_budget'
-                          ? 'Event Budget Allocation'
-                          : item.source === 'liquidation_surplus'
-                          ? 'Liquidation Surplus Refund'
-                          : item.source === 'liquidation_deficit'
-                          ? 'Liquidation Deficit Expense'
-                          : item.source === 'student_collection'
-                          ? 'Student Collection'
-                          : item.source.replace('_', ' ')}
+                        {formatTransactionSource(item.source)}
                       </span>
                     </td>
                     <td className={`px-4 py-3 text-sm font-medium ${item.type === 'income' ? 'text-green-600' : 'text-red-600'}`}>
@@ -1542,7 +1550,7 @@ function StudentCollectionsAndPayablesTab({
       });
 
       const officialName = sDoc
-        ? [sDoc.firstName, sDoc.middleName, sDoc.lastName].filter(Boolean).join(' ')
+        ? formatPersonName(sDoc)
         : (m.studentName || 'Member');
       const officialSchoolId = sDoc?.studentId || m.studentId || m.id;
       const officialCourse = m.course || sDoc?.course || sDoc?.courseCode || '';
@@ -2394,6 +2402,7 @@ export default function FinanceCenter() {
   const currentOrg = orgs.find((o) => o.id === activeOrgId);
   const activeOrgName = currentOrg ? currentOrg.name : 'My Organization';
   const officerStudentId = profile?.studentId || 'officer';
+  const officerName = profile?.displayName || (profile?.firstName ? `${profile.firstName} ${profile.lastName}`.trim() : '') || 'Student Officer';
 
   const { data: ledgerData } = useOrgLedger(activeOrgId);
   const selectedSemId = "all";
@@ -2408,6 +2417,7 @@ export default function FinanceCenter() {
   }, [payablesData]);
 
   const [activeTab, setActiveTab] = useState<FinanceTab>("budget");
+  const [showExportModal, setShowExportModal] = useState(false);
 
   return (
     <div className="space-y-5">
@@ -2420,7 +2430,10 @@ export default function FinanceCenter() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer shadow-xs">
+          <button
+            onClick={() => setShowExportModal(true)}
+            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors cursor-pointer shadow-xs"
+          >
             <Download className="w-4 h-4" />
             Export Financial Report
           </button>
@@ -2473,6 +2486,18 @@ export default function FinanceCenter() {
           />
         )}
       </div>
+
+      {showExportModal && (
+        <ExportFinancialReportModal
+          isOpen={showExportModal}
+          onClose={() => setShowExportModal(false)}
+          organizationId={activeOrgId}
+          organizationName={activeOrgName}
+          ledgerData={ledgerData}
+          currentSemesterId={selectedSemId}
+          officerName={officerName}
+        />
+      )}
     </div>
   );
 }

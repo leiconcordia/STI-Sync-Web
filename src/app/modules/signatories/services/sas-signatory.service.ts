@@ -19,11 +19,13 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { SIGNATORIES_COLLECTION } from './signatory.service';
+import { structuredNameFields } from '../../../utils/name.utils';
 
 export interface SasSignatoryConfig {
   name: string;
   firstName?: string;
   lastName?: string;
+  middleName?: string;
   middleInitial?: string;
   roleTitle: string; // Position Title, e.g. "Student Affairs & Services Head" or "SAS Coordinator"
   email: string;
@@ -66,7 +68,7 @@ export async function getSasSignatoryConfig(): Promise<SasSignatoryConfig> {
       return {
         ...DEFAULT_SAS_SIGNATORY_CONFIG,
         ...data,
-        name: data.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name,
+        ...structuredNameFields({ ...data, name: data.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name }),
         roleTitle: data.roleTitle?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle,
         email: data.email?.trim().toLowerCase() || DEFAULT_SAS_SIGNATORY_CONFIG.email,
         department: data.department?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.department,
@@ -85,7 +87,7 @@ export async function getSasSignatoryConfig(): Promise<SasSignatoryConfig> {
       const sigData = sigSnap.docs[0].data();
       return {
         ...DEFAULT_SAS_SIGNATORY_CONFIG,
-        name: sigData.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name,
+        ...structuredNameFields({ ...sigData, name: sigData.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name }),
         roleTitle: sigData.roleTitle?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle,
         email: sigData.email?.trim().toLowerCase() || DEFAULT_SAS_SIGNATORY_CONFIG.email,
         department: sigData.department?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.department,
@@ -101,7 +103,8 @@ export async function getSasSignatoryConfig(): Promise<SasSignatoryConfig> {
   try {
     const cached = localStorage.getItem('sti_sync_sas_signatory');
     if (cached) {
-      return { ...DEFAULT_SAS_SIGNATORY_CONFIG, ...JSON.parse(cached) };
+      const data = JSON.parse(cached);
+      return { ...DEFAULT_SAS_SIGNATORY_CONFIG, ...data, ...structuredNameFields(data) };
     }
   } catch {}
 
@@ -115,7 +118,8 @@ export function getCachedSasSignatoryConfig(): SasSignatoryConfig {
   try {
     const cached = localStorage.getItem('sti_sync_sas_signatory');
     if (cached) {
-      return { ...DEFAULT_SAS_SIGNATORY_CONFIG, ...JSON.parse(cached) };
+      const data = JSON.parse(cached);
+      return { ...DEFAULT_SAS_SIGNATORY_CONFIG, ...data, ...structuredNameFields(data) };
     }
   } catch {}
   return DEFAULT_SAS_SIGNATORY_CONFIG;
@@ -137,7 +141,7 @@ export function subscribeToSasSignatoryConfig(
         const resolved: SasSignatoryConfig = {
           ...DEFAULT_SAS_SIGNATORY_CONFIG,
           ...data,
-          name: data.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name,
+          ...structuredNameFields({ ...data, name: data.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name }),
           roleTitle: data.roleTitle?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle,
           email: data.email?.trim().toLowerCase() || DEFAULT_SAS_SIGNATORY_CONFIG.email,
           department: data.department?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.department,
@@ -168,7 +172,7 @@ export async function saveSasSignatoryConfig(
   payload: Partial<SasSignatoryConfig>,
   adminUid?: string
 ): Promise<{ success: boolean; config: SasSignatoryConfig }> {
-  const cleanName = payload.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name;
+  const nameFields = structuredNameFields({ ...payload, name: payload.name?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.name });
   const cleanRoleTitle = payload.roleTitle?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle;
   const cleanEmail = payload.email?.trim().toLowerCase() || DEFAULT_SAS_SIGNATORY_CONFIG.email;
   const cleanDept = payload.department?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.department;
@@ -176,7 +180,7 @@ export async function saveSasSignatoryConfig(
   const sigUrl = payload.signatureUrl || payload.signatureDataUrl || undefined;
 
   const docPayload: Record<string, any> = {
-    name: cleanName,
+    ...nameFields,
     roleTitle: cleanRoleTitle,
     email: cleanEmail,
     department: cleanDept,
@@ -205,7 +209,7 @@ export async function saveSasSignatoryConfig(
       {
         id: 'sas_coordinator',
         uid: adminUid || 'sas_coordinator',
-        name: cleanName,
+        ...nameFields,
         email: cleanEmail,
         role: 'sas_coordinator',
         roleTitle: cleanRoleTitle,
@@ -231,7 +235,7 @@ export async function saveSasSignatoryConfig(
 
   // 3. Cache in localStorage
   const resolvedConfig: SasSignatoryConfig = {
-    name: cleanName,
+    ...nameFields,
     roleTitle: cleanRoleTitle,
     email: cleanEmail,
     department: cleanDept,

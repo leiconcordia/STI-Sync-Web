@@ -8,7 +8,13 @@
     "dev": "vite",
     "setup:backend": "npm --prefix functions ci",
     "test:reset-ui": "node scripts/test-reset-modal.mjs && node scripts/test-reset-email.mjs",
-    "test:accounts": "firebase emulators:exec --only auth,firestore --project demo-sti-sync \"node scripts/test-local-reset-api.mjs && node scripts/test-vercel-reset.mjs && node scripts/test-account-creation.mjs\""
+    "test:accounts": "firebase emulators:exec --only auth,firestore --project demo-sti-sync \"node scripts/test-local-reset-api.mjs && node scripts/test-vercel-reset.mjs && node scripts/test-account-creation.mjs\"",
+    "build:edms": "node scripts/build-edms-renderers.mjs",
+    "test:edms": "node --test functions/test/edms-domain.test.mjs",
+    "test:campus": "node scripts/test-campus-reports.mjs && node scripts/test-signatory-navigation.mjs",
+    "test:names": "node scripts/test-person-names.mjs",
+    "test:adviser-accounts": "node scripts/test-adviser-account-api.mjs",
+    "test:edms:integration": "node scripts/build-edms-renderers.mjs && firebase emulators:exec --only auth,firestore,storage --project demo-sti-sync \"node --test functions/test/edms-integration.test.cjs functions/test/firestore-rules.test.cjs\""
   },
   "dependencies": {
     "@emailjs/browser": "^4.4.1",
@@ -59,6 +65,7 @@
     "lucide-react": "0.487.0",
     "motion": "12.23.24",
     "next-themes": "0.4.6",
+    "pdfjs-dist": "^6.5.438",
     "qrcode.react": "^4.2.0",
     "react": "18.3.1",
     "react-day-picker": "8.10.1",
@@ -82,6 +89,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
     "@vitejs/plugin-react": "4.7.0",
+    "esbuild": "^0.25.12",
     "happy-dom": "^21.0.4",
     "tailwindcss": "4.1.12",
     "vite": "6.3.5"

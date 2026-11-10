@@ -22,6 +22,7 @@ import AdminPostActivityReports from "./admin/pages/AdminPostActivityReports";
 import SASAdminLogin from "./auth/SASAdminLogin";
 import OfficerLogin from "./auth/OfficerLogin";
 import PortalLogin from "./auth/PortalLogin";
+import PortalWorkspaces from './auth/PortalWorkspaces';
 
 // Signatory Components
 import SignatoryLayout from "./signatory/components/SignatoryLayout";
@@ -68,6 +69,7 @@ export const router = createBrowserRouter([
     Component: PortalLogin,
     ErrorBoundary: ErrorPage,
   },
+  { path: '/portal/workspaces', Component: PortalWorkspaces, ErrorBoundary: ErrorPage },
   {
     path: "/officer/login",
     element: <Navigate to="/portal/login" replace />,

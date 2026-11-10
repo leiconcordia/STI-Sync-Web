@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { StudentDocument } from '../../students/types/student.types';
 import { EventDocument } from '../../events/types/event.types';
 import { FinancialLiquidationDocument, PayableDocument } from '../../finance/types/finance.types';
@@ -57,7 +58,7 @@ export function generateStudentEnrollmentReport(
 
   const rows = filtered.map((s) => ({
     studentId: s.studentId || '—',
-    name: `${s.lastName}, ${s.firstName} ${s.middleName || ''}`.trim(),
+    name: formatPersonName(s),
     track: isStudentInTrack(s, 'SHS') ? 'SHS (Trimester)' : 'College (Semester)',
     program: s.courseCode || '—',
     yearLevel: s.yearLevel || '—',
@@ -639,7 +640,7 @@ export function generateOfficerFinancialStatement(
   const netCashBalance = totalInflows - totalExpenses;
 
   const rows = [
-    { item: 'SAO Institutional Budget Allocation', category: 'Inflow', amount: `₱${allocatedBudget.toLocaleString()}`, ref: 'SAO-GRANT' },
+    { item: 'SAS Institutional Budget Allocation', category: 'Inflow', amount: `₱${allocatedBudget.toLocaleString()}`, ref: 'SAS-GRANT' },
     { item: 'Membership Dues Collected', category: 'Inflow', amount: `₱${duesCollected.toLocaleString()}`, ref: 'DUES-COLLECTION' },
     { item: 'Event Ticket & Fee Collections', category: 'Inflow', amount: `₱${eventFeesCollected.toLocaleString()}`, ref: 'EVENT-FEES' },
     ...orgLiquidations.map((l) => ({

@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import { ApprovedReportStorage } from '../../modules/reports/components/ApprovedReportStorage';
+import React, { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import {
   BarChart3,
   FileText,
@@ -61,6 +63,12 @@ export function ReportsAnalytics() {
     overviewSummary,
     loading,
   } = useReportsAnalyticsData();
+  const [reportParams, setReportParams] = useSearchParams();
+  const requestedKind = reportParams.get('reportStorage') || ['activity_proposal', 'financial_liquidation', 'post_activity_report'].find((kind) => reportParams.get('reportId')?.startsWith(`${kind}_`));
+  useEffect(() => {
+    const tab = { activity_proposal: 'ACTIVITY_PROPOSALS', financial_liquidation: 'FINANCIAL_LIQUIDATIONS', post_activity_report: 'POST_ACTIVITY_REPORTS' }[requestedKind || ''];
+    if (tab) setActiveTab(tab as ReportTabId);
+  }, [requestedKind, setActiveTab]);
 
   // Admin session
   const [session] = useState(() => {
@@ -199,7 +207,15 @@ export function ReportsAnalytics() {
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setReportParams((previous) => {
+                    previous.delete('reportId');
+                    const kind = { ACTIVITY_PROPOSALS: 'activity_proposal', FINANCIAL_LIQUIDATIONS: 'financial_liquidation', POST_ACTIVITY_REPORTS: 'post_activity_report' }[tab.id];
+                    if (kind) previous.set('reportStorage', kind); else previous.delete('reportStorage');
+                    return previous;
+                  });
+                }}
                 className={`flex items-center gap-2 py-3 px-3.5 border-b-2 font-bold text-xs whitespace-nowrap transition-all cursor-pointer ${
                   isActive
                     ? 'border-[#001A4D] text-[#001A4D]'
@@ -236,27 +252,36 @@ export function ReportsAnalytics() {
         )}
 
         {activeTab === 'ACTIVITY_PROPOSALS' && (
+          <div className="space-y-6">
+          <ApprovedReportStorage kind="activity_proposal" />
           <ActivityProposalsTab
             summary={apSummary}
             onSelectEvent={setInspectingEvent}
             onExport={handleExportAP}
           />
+          </div>
         )}
 
         {activeTab === 'FINANCIAL_LIQUIDATIONS' && (
+          <div className="space-y-6">
+          <ApprovedReportStorage kind="financial_liquidation" />
           <FinancialLiquidationsTab
             summary={flSummary}
             onInspectLiquidation={setInspectingLiquidation}
             onExport={handleExportFL}
           />
+          </div>
         )}
 
         {activeTab === 'POST_ACTIVITY_REPORTS' && (
+          <div className="space-y-6">
+          <ApprovedReportStorage kind="post_activity_report" />
           <PostActivityReportsTab
             summary={parSummary}
             onSelectPAR={setInspectingPAR}
             onExport={handleExportPAR}
           />
+          </div>
         )}
 
         {activeTab === 'CLUBS_AND_OFFICERS' && (

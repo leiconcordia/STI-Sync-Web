@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { OrganizationDocument } from '../types/organization.types';
+import { formatPersonName } from '../../../utils/name.utils';
 
 export const useOrganizationStream = () => {
   const [data, setData] = useState<OrganizationDocument[]>([]);
@@ -13,7 +14,10 @@ export const useOrganizationStream = () => {
     const unsubscribe = onSnapshot(
       q,
       (snapshot) => {
-        setData(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as OrganizationDocument)));
+        setData(snapshot.docs.map(doc => {
+          const data = doc.data();
+          return { id: doc.id, ...data, ...(data.adviser ? { adviser: { ...data.adviser, name: formatPersonName(data.adviser) } } : {}) } as OrganizationDocument;
+        }));
         setLoading(false);
       },
       (err) => {

@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { db, auth } from '../../../services/firebase';
-import { getSignatoryAuthorizedWorkflows } from '../../modules/signatories/types/signatory.types';
+import { loadPortalWorkspaces, activatePortalWorkspace } from '../services/portal-workspace.service';
 
 export const SESSION_KEY = 'sti_sync_officer_session';
 export const SIGNATORY_SESSION_KEY = 'sti_sync_signatory_session';
@@ -244,8 +244,6 @@ export function useOfficerAuth() {
       // ── 2. Authenticate: Firebase Auth vs. Student Default Password vs. Permanent/Temporary Password ──
       let authenticated = false;
       let matchedRecord: any = null;
-      let isSignatoryUser = false;
-      let isAdviserUser = false;
 
       // Strategy A: First try authenticating against Firebase Auth (used when user has set their permanent password)
       if (targetEmail) {
@@ -255,13 +253,10 @@ export function useOfficerAuth() {
           // When Firebase Auth succeeds, select their primary role (signatory takes precedence if available)
           if (signatoryRecords.length > 0) {
             matchedRecord = signatoryRecords[0];
-            isSignatoryUser = true;
           } else if (officerRecords.length > 0) {
             matchedRecord = officerRecords[0];
-            isSignatoryUser = false;
           } else {
             matchedRecord = adviserRecords[0];
-            isAdviserUser = true;
           }
         } catch (authErr: any) {
           // Firebase Auth failed with the entered password.
@@ -277,92 +272,14 @@ export function useOfficerAuth() {
         return null;
       }
 
-      // ── 3. Verify Organization Status (For Officers) ──
-      if (matchedRecord.organizationId && !isSignatoryUser) {
-        try {
-          const orgSnap = await getDoc(doc(db, 'organizations', matchedRecord.organizationId));
-          if (orgSnap.exists()) {
-            const orgData = orgSnap.data();
-            const orgStatus = orgData.status || 'active';
-            if (['suspended', 'inactive', 'archived'].includes(orgStatus)) {
-              // If user also has an institutional signatory role, fall back to signatory instead of blocking!
-              if (signatoryRecords.length > 0) {
-                matchedRecord = signatoryRecords[0];
-                isSignatoryUser = true;
-              } else {
-                setError(
-                  `Your organization (${orgData.name || 'Organization'}) is currently ${orgStatus}. Access is restricted by SAO Administration.`
-                );
-                return null;
-              }
-            }
-          }
-        } catch (orgCheckErr) {
-          console.warn('[useOfficerAuth] Org status check failed:', orgCheckErr);
-        }
+      const workspaces = await loadPortalWorkspaces();
+      if (!workspaces.length) {
+        setError('No active organization or signatory role is available for this account. Contact SAS.');
+        return null;
       }
-
-      // ── 4. Create Session & Route Based on Role ──
-      let redirectPath = '/officer/dashboard';
-
-      if (isSignatoryUser) {
-        redirectPath = '/signatory/endorsements';
-        const workflows = getSignatoryAuthorizedWorkflows(matchedRecord);
-        const signatorySession = {
-          uid: matchedRecord.uid || matchedRecord.id,
-          id: matchedRecord.id,
-          name: matchedRecord.name,
-          email: matchedRecord.email,
-          role: matchedRecord.role,
-          roleTitle: matchedRecord.roleTitle,
-          actionType: matchedRecord.actionType || (matchedRecord.role === 'school_president' ? 'approve' : 'endorse'),
-          department: matchedRecord.department,
-          departmentId: matchedRecord.departmentId || '',
-          employeeId: matchedRecord.employeeId || '',
-          signatureUrl: matchedRecord.signatureUrl || null,
-          isSignatory: true,
-          requiresPasswordChange: Boolean(matchedRecord.tempPass || matchedRecord.requiresPasswordChange || matchedRecord.requiresChangePassword || matchedRecord.resetInProgress),
-          applicableScope: matchedRecord.applicableScope,
-          applicableWorkflows: workflows,
-          canApproveProposal: matchedRecord.canApproveProposal ?? (matchedRecord.actionType === 'approver'),
-          canApproveLiquidation: matchedRecord.canApproveLiquidation ?? (matchedRecord.actionType === 'approver'),
-          canApprovePar: matchedRecord.canApprovePar ?? (matchedRecord.actionType === 'approver'),
-          availableWorkspaces: {
-            hasSignatory: true,
-            hasOfficer: officerRecords.length > 0,
-            hasAdviser: adviserRecords.length > 0,
-          },
-        };
-
-        localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(signatorySession));
-        localStorage.setItem(
-          SESSION_KEY,
-          JSON.stringify({
-            ...signatorySession,
-            studentName: matchedRecord.name,
-            activeRoleId: matchedRecord.role,
-          })
-        );
-      } else {
-        const session = {
-          studentId: matchedRecord.studentId || matchedRecord.employeeId || matchedRecord.email,
-          studentName: matchedRecord.studentName || matchedRecord.name || (studentDocData ? `${studentDocData.firstName} ${studentDocData.lastName}` : 'Club Officer'),
-          email: studentDocData?.email || matchedRecord.email || '',
-          activeOrganizationId: matchedRecord.organizationId,
-          activeRoleId: isAdviserUser ? 'adviser' : matchedRecord.roleId,
-          isAdviser: isAdviserUser,
-          isSignatory: false,
-          signatureUrl: matchedRecord.signatureUrl || null,
-          requiresPasswordChange: Boolean(studentDocData?.tempPass || studentDocData?.requiresPasswordChange || matchedRecord.tempPass || matchedRecord.requiresPasswordChange || matchedRecord.resetInProgress),
-          availableWorkspaces: {
-            hasSignatory: signatoryRecords.length > 0,
-            hasOfficer: true,
-            hasAdviser: isAdviserUser,
-          },
-        };
-        localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-      }
-
+      localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(SIGNATORY_SESSION_KEY);
+      const redirectPath = workspaces.length > 1 ? '/portal/workspaces' : activatePortalWorkspace(workspaces[0]);
       return { success: true, redirectPath };
     } catch (e: any) {
       console.error('Login failed:', e);

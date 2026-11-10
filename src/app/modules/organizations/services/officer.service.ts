@@ -1,5 +1,6 @@
 import { collection, doc, writeBatch, updateDoc, increment, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import { formatPersonName } from '../../../utils/name.utils';
 
 export interface OfficerAssignmentData {
   roleId: string;
@@ -33,7 +34,7 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
       roleId: officer.roleId,
       roleName: officer.roleName || '',
       studentId: officer.studentId,
-      studentName: officer.studentName,
+      studentName: formatPersonName(student, officer.studentName),
       email: officer.email,
       authUid: student?.authUid || null,
       tempPass: student?.tempPass || null,
@@ -50,7 +51,7 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
       id: memberDocRef.id,
       organizationId,
       studentId: officer.studentId,
-      studentName: officer.studentName,
+      studentName: formatPersonName(student, officer.studentName),
       email: officer.email,
       course: officer.course || 'N/A',
       year: officer.year || 'N/A',

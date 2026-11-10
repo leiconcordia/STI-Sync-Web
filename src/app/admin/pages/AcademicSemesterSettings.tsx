@@ -2107,7 +2107,9 @@ export function AcademicSemesterSettings() {
       {/* Page Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-[#001A4D]">Academic Year &amp; Semester</h2>
+          <p className="text-gray-500 text-sm font-medium">
+            Manage institutional academic years, active semester sessions, and term rollover configurations
+          </p>
         </div>
         <button
           onClick={() => setShowRollover(true)}

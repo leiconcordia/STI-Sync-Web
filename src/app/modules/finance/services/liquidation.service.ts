@@ -29,7 +29,7 @@ import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.ser
 import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { createNotification } from '../../notifications';
-import { autoArchiveApprovedLiquidation } from '../../documents/services/document_archive_bridge.service';
+import { autoArchiveApprovedLiquidation } from '../../reports/services/report-archive.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import {
@@ -943,11 +943,11 @@ export const approveLiquidationReport = async (
     console.warn('[approveLiquidationReport] Ledger write note:', err);
   }
 
-  // Auto-archive approved liquidation report into EDMS
+  // Store approved liquidation in Reports & Analytics
   try {
     await autoArchiveApprovedLiquidation(id, liquidationData, adminUserId);
   } catch (archErr) {
-    console.warn('[approveLiquidationReport] Auto-archive to EDMS notice:', archErr);
+    console.warn('[approveLiquidationReport] Approved report storage notice:', archErr);
   }
 };
 
@@ -1266,7 +1266,7 @@ export async function endorseLiquidationStep(
     try {
       await autoArchiveApprovedLiquidation(liquidationId, { ...data, ...rawUpdates }, signerUid || signatory.email);
     } catch (archErr) {
-      console.warn('[endorseLiquidationStep] Auto-archive to EDMS notice:', archErr);
+      console.warn('[endorseLiquidationStep] Approved report storage notice:', archErr);
     }
   }
 

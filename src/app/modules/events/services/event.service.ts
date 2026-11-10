@@ -34,7 +34,7 @@ import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
 import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
 import { logAuditEvent } from '../../audit/services/audit.service';
-import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
+import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
@@ -601,7 +601,7 @@ export const approveEvent = async (
   try {
     await autoArchiveApprovedEvent(eventId, adminUserId, remarks);
   } catch (archErr) {
-    console.warn('[approveEvent] Auto-archive to EDMS notice:', archErr);
+    console.warn('[approveEvent] Approved report storage notice:', archErr);
   }
 };
 

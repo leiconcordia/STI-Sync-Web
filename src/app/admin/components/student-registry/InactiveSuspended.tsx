@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { useState, useMemo, useEffect } from 'react';
 import { Download, RotateCcw, Eye, UserX, Archive, Search } from 'lucide-react';
 import { StudentDocument } from '../../../modules/students/types/student.types';
@@ -214,7 +215,7 @@ export default function InactiveSuspended({ inactiveStudents }: InactiveSuspende
                           </div>
                           <div>
                             <div className="font-semibold text-[#001A4D]">
-                              {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                              {formatPersonName(student)}
                             </div>
                             <div className="text-xs text-gray-500 font-mono">{student.studentId}</div>
                           </div>

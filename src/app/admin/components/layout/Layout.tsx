@@ -20,6 +20,7 @@ const pageTitles: Record<string, string> = {
   "/home/budget-fund": "Budget & Fund Management",
   "/home/documents": "Document Management",
   "/home/certificates": "Certificates",
+  "/home/audit-logs": "Audit Logs",
 };
 
 export function Layout() {

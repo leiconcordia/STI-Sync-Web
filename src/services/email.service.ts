@@ -8,6 +8,8 @@
 import axios from 'axios';
 import emailjs from '@emailjs/browser';
 
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
+
 export const EMAILJS_SERVICE_ID = import.meta.env.VITE_EMAILJS_SERVICE_ID || '';
 export const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID || '';
 export const EMAILJS_PUBLIC_KEY = import.meta.env.VITE_EMAILJS_PUBLIC_KEY || '';
@@ -139,7 +141,6 @@ export async function sendAccountPasswordResetCredentialsEmail(params: {
   temporaryPassword: string;
   accountType: 'advisers' | 'students' | 'signatories';
 }): Promise<EmailResponse> {
-  const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
   const instructions = params.accountType === 'students'
     ? 'Open the STI Sync mobile app and sign in with your Student ID or personal email.'
     : `Open ${window.location.origin}/portal/login and sign in with your email.`;
@@ -260,9 +261,18 @@ export async function sendAdviserWelcomeCredentialsEmail(params: {
   orgName: string;
   employeeId?: string;
   temporaryPassword?: string;
+  existingAccount?: boolean;
   loginUrl?: string;
 }): Promise<ResendResponse> {
-  const loginUrl = params.loginUrl || `${window.location.origin}/welcome`;
+  const loginUrl = params.loginUrl || `${window.location.origin}/portal/login`;
+  if (params.existingAccount) {
+    const message = `You have been assigned as Club Adviser for ${params.orgName}. Sign in with your existing email and password, then choose Club Adviser from your workspaces. Your password has not changed.`;
+    return sendEmail({ to: params.to, subject: `[STI Sync] Club Adviser role added — ${params.orgName}`, recipientName: params.adviserName,
+      text: `Hello ${params.adviserName},\n\n${message}\n\nLogin: ${loginUrl}`,
+      html: `<div style="font-family:Arial,sans-serif"><h2>Club Adviser role added</h2><p>Hello ${escapeHtml(params.adviserName)},</p><p>${escapeHtml(message)}</p><p><a href="${escapeHtml(loginUrl)}">Open STI Sync</a></p></div>`,
+      templateParams: { to_email: params.to, to_name: params.adviserName, adviser_name: params.adviserName, org_name: params.orgName, login_url: loginUrl, message, temp_password: 'Use your existing password', temporary_password: 'Use your existing password', password: 'Use your existing password' },
+    });
+  }
   const tempPass = params.temporaryPassword || 'Adv-2026!#';
 
   const html = `

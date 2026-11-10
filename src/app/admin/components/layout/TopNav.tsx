@@ -88,7 +88,7 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
               <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-20 overflow-hidden">
                 <div className="p-3 border-b border-[#E0E0E0]">
                   <p className="text-sm font-bold text-[#001A4D]">
-                    {profile?.displayName ?? 'SAO Adviser'}
+                    {profile?.displayName ?? 'SAS Adviser'}
                   </p>
                   <p className="text-xs text-gray-500">
                     {profile?.position ?? ''}

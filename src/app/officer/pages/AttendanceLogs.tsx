@@ -6,7 +6,6 @@ import {
   QrCode,
   Loader2,
   Calendar,
-  Coins,
   CheckCircle2,
   XCircle,
   ArrowLeft,
@@ -33,8 +32,6 @@ import {
 import { AttendanceFilterToolbar } from '../../modules/attendance/components/AttendanceFilterToolbar';
 import { AttendanceExportPreviewModal } from '../../modules/attendance/components/AttendanceExportPreviewModal';
 import { StudentAttendancePassModal } from '../../modules/attendance/components/StudentAttendancePassModal';
-import { EventFinesGenerationModal } from '../../modules/finance/components/EventFinesGenerationModal';
-import { EventFinesRosterView } from '../../modules/finance/components/EventFinesRosterView';
 import type { AttendanceFilterState, EnrichedAttendanceRecord } from '../../modules/attendance/types/attendance.types';
 import { TablePagination } from '../../components/common/TablePagination';
 
@@ -111,8 +108,6 @@ function EventDetail({
 }) {
   const [filterState, setFilterState] = useState<AttendanceFilterState>(INITIAL_FILTERS);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'attendance' | 'fines'>('attendance');
-  const [isAssessFinesModalOpen, setIsAssessFinesModalOpen] = useState(false);
   const [showFlagged, setShowFlagged] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedStudentForQR, setSelectedStudentForQR] = useState<{
@@ -278,48 +273,15 @@ function EventDetail({
         })}
       </div>
 
-      {/* Sub-Tab Switcher */}
-      <div className="flex items-center gap-3 border-b border-gray-200 pb-1">
-        <button
-          type="button"
-          onClick={() => setActiveTab('attendance')}
-          className={`pb-3 px-2 text-sm font-bold transition-all relative cursor-pointer ${
-            activeTab === 'attendance'
-              ? 'text-[#001A4D]'
-              : 'text-gray-400 hover:text-gray-700'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <UserCheck className="w-4 h-4" />
-            Attendance Roster ({allRecords.length})
-          </span>
-          {activeTab === 'attendance' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#001A4D] rounded-full" />
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('fines')}
-          className={`pb-3 px-2 text-sm font-bold transition-all relative cursor-pointer ${
-            activeTab === 'fines'
-              ? 'text-[#001A4D]'
-              : 'text-gray-400 hover:text-gray-700'
-          }`}
-        >
-          <span className="flex items-center gap-2">
-            <Coins className="w-4 h-4 text-[#FFD41C]" />
-            Club Fines & Collections
-          </span>
-          {activeTab === 'fines' && (
-            <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#001A4D] rounded-full" />
-          )}
-        </button>
+      {/* Attendance Roster Section Header */}
+      <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+        <div className="flex items-center gap-2 text-[#001A4D] text-sm font-bold">
+          <UserCheck className="w-4 h-4" />
+          <span>Attendance Roster ({allRecords.length})</span>
+        </div>
       </div>
 
-      {activeTab === 'attendance' ? (
-        <>
-          {/* Shared Filter Toolbar */}
+      {/* Shared Filter Toolbar */}
           <AttendanceFilterToolbar
             filters={filterState}
             onFilterChange={handleFilterChange}
@@ -490,51 +452,8 @@ function EventDetail({
             venueName={event.venue}
             activeFiltersSummary={activeFiltersSummary}
           />
-        </>
-      ) : (
-        <EventFinesRosterView
-          eventId={event.id}
-          eventTitle={event.title}
-          isOfficer={true}
-          orgId={activeOrgId || event.hostingOrgId}
-          recordedByUid={currentStudentId || 'officer'}
-          semesterId="active"
-          onOpenAssessFinesModal={() => setIsAssessFinesModalOpen(true)}
-          isEventCompleted={event.status === 'Completed'}
-          isEventCancelled={
-            event.status === 'Cancelled' ||
-            event.status === 'cancelled' ||
-            (event as any).isCancelled === true
-          }
-        />
-      )}
 
-      {/* Dynamic Fines Assessment Modal */}
-      <EventFinesGenerationModal
-        isOpen={isAssessFinesModalOpen}
-        onClose={() => setIsAssessFinesModalOpen(false)}
-        event={{
-          id: event.id,
-          name: event.title,
-          title: event.title,
-          sessions: event.sessions.map((s) => ({
-            id: s.id,
-            title: s.title,
-            hasTimeOut: true,
-          })),
-          status: event.status,
-          hostingOrgId: activeOrgId || event.hostingOrgId,
-          hostingOrgName: event.orgName,
-        }}
-        isOfficer={true}
-        attendanceRecords={event.records}
-        currentUserId={currentStudentId || 'officer'}
-        onSuccess={() => {
-          setActiveTab('fines');
-        }}
-      />
-
-      {/* Universal Student Attendance QR Pass Modal */}
+          {/* Universal Student Attendance QR Pass Modal */}
       <StudentAttendancePassModal
         isOpen={!!selectedStudentForQR}
         onClose={() => setSelectedStudentForQR(null)}

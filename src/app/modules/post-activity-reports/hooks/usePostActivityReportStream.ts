@@ -111,6 +111,7 @@ export function useAdminPARs() {
 export function useAllPARsForSignatories() {
   const [pars, setPars] = useState<PostActivityReportDocument[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
     const q = collection(db, PAR_COLLECTION);
@@ -126,15 +127,16 @@ export function useAllPARsForSignatories() {
           return bTime - aTime;
         });
         setPars(list);
+        setError(null);
         setLoading(false);
       },
-      () => setLoading(false)
+      (err) => { setError(err); setLoading(false); }
     );
 
     return () => unsub();
   }, []);
 
-  return { pars, loading };
+  return { pars, loading, error };
 }
 
 /**

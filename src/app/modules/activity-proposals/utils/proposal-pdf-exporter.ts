@@ -23,13 +23,15 @@
  * - Pure black-and-white / grayscale matching institutional paperwork
  */
 
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import type { ActivityProposal, ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import { STI_LOGO_BASE64 } from './sti-logo-asset';
 
 export interface ExportProposalPdfOptions {
   watermarkStatus?: boolean;
+  download?: boolean;
+  imageLoader?: (url?: string) => Promise<string | null>;
 }
 
 /**
@@ -818,7 +820,7 @@ export async function exportActivityProposalPDF(
 
         // Render digital signature image above underline if signed
         if (sig.signatureUrl && (sig.status === 'endorsed' || sig.status === 'approved')) {
-          const sigB64 = await getBase64Image(sig.signatureUrl);
+          const sigB64 = await (_options.imageLoader || getBase64Image)(sig.signatureUrl);
           if (sigB64) {
             try {
               doc.addImage(sigB64, 'PNG', slotX + 4, currentLineY - 9.5, 30, 9.0);
@@ -926,7 +928,7 @@ export async function exportActivityProposalPDF(
 
     // ─── 9. SAVE PDF FILE ────────────────────────────────────────────────────
     const cleanFileName = `STI_Activity_Proposal_${referenceNo.replace(/[^a-zA-Z0-9_-]/g, '_')}.pdf`;
-    if (typeof window !== 'undefined' && doc.save) {
+    if (_options.download !== false && typeof window !== 'undefined' && doc.save) {
       doc.save(cleanFileName);
     }
     return doc;

@@ -316,20 +316,12 @@ export function resolveCleanOrgAcronym(
  * Checks whether an activity has no budget or no financial projection,
  * meaning financial liquidation (Form LF-01) is not applicable / not required.
  *
- * An activity is liquidation-exempt if:
- * 1. Explicitly marked liquidationRequired === false
- * 2. Explicitly marked fundingSource === 'zero_budget'
- * 3. Total approved budget / total budget is 0
- * 4. Financial projections total expenses is 0
- * 5. Has no financial projections, or expenses array is empty / non-monetary
- * 6. No cash advance custodians with allocated amount > 0
+ * Exemption requires no monetary budget, projected expenses, or allocated cash
+ * custodians, and no explicit liquidation requirement. Recorded funds take
+ * precedence over stale zero-budget / liquidationRequired=false flags.
  */
 export function isEventLiquidationExempt(event: any): boolean {
   if (!event) return true;
-
-  // 1. Explicit flags
-  if (event.liquidationRequired === false) return true;
-  if (event.fundingSource === 'zero_budget') return true;
 
   // 2. Budget numbers on event root
   const rootBudget = Math.max(
@@ -373,6 +365,10 @@ export function isEventLiquidationExempt(event: any): boolean {
     event.budgetCustodians.some((c: any) => Number(c.allocatedAmount || 0) > 0);
 
   const effectiveBudget = Math.max(rootBudget, fpTotal, fpListTotal, budgetItemsTotal);
+
+  // Recorded monetary obligations take precedence over a stale zero-budget flag.
+  if (effectiveBudget > 0 || hasCashCustodians || event.liquidationRequired === true) return false;
+  if (event.liquidationRequired === false || event.fundingSource === 'zero_budget') return true;
 
   // If there's no budget and no cash custodians allocated, it is exempt
   if (effectiveBudget <= 0 && !hasCashCustodians) {

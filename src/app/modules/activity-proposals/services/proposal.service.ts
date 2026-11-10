@@ -33,7 +33,7 @@ import {
   removeLedgerTransactionsForEvent,
   deductApprovedEventBudget,
 } from '../../finance/services/finance.service';
-import { autoArchiveApprovedEvent } from '../../documents/services/document_archive_bridge.service';
+import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { createNotification } from '../../notifications';
 
@@ -760,7 +760,8 @@ export async function restoreProposal(
  */
 export function subscribeToProposals(
   callback: (proposals: ActivityProposal[]) => void,
-  creatorUid?: string
+  creatorUid?: string,
+  onError?: (error: Error) => void
 ): () => void {
   let q = query(collection(db, PROPOSALS_COLLECTION), orderBy('updatedAt', 'desc'));
 
@@ -785,6 +786,7 @@ export function subscribeToProposals(
     },
     (err) => {
       console.error('[ProposalService] Subscription error:', err);
+      onError?.(err);
     }
   );
 }
@@ -1050,7 +1052,7 @@ export async function endorseProposal(
     try {
       await autoArchiveApprovedEvent(proposalId, userUid || signatory.email, remarks);
     } catch (archErr) {
-      console.warn('[endorseProposal] Auto-archive to EDMS notice:', archErr);
+      console.warn('[endorseProposal] Approved report storage notice:', archErr);
     }
 
     // Encumber club treasury ledger if club-funded

@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { useState, useMemo } from 'react';
 import {
   X,
@@ -210,7 +211,7 @@ export function AddAdminPayableModal({
       for (const s of targetStudents) {
         const authUid = s.id || s.studentId;
         const studentFullName =
-          [s.firstName, s.middleName, s.lastName].filter(Boolean).join(' ').trim() ||
+          formatPersonName(s) ||
           s.name ||
           'Student';
 

@@ -3264,31 +3264,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </div>
                 </div>
 
-                {/* Event Parameters Card */}
-                <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-xs space-y-3">
-                  <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                    Activity Parameters
-                  </p>
-                  <div className="space-y-2.5 text-xs">
-                    <div className="flex justify-between py-1.5 border-b border-gray-100">
-                      <span className="text-gray-500">Approved Budget</span>
-                      <span className="font-bold text-[#001A4D] font-mono">{formatPHP(totalExpenseAmount)}</span>
-                    </div>
-                    <div className="flex justify-between py-1.5 border-b border-gray-100">
-                      <span className="text-gray-500">Expected Attendance</span>
-                      <span className="font-bold text-[#001A4D]">{event.expectedParticipantCount || 0} Students</span>
-                    </div>
-                    <div className="flex justify-between py-1.5 border-b border-gray-100">
-                      <span className="text-gray-500">Sessions</span>
-                      <span className="font-bold text-[#001A4D]">{event.sessions?.length || 1} Session{(event.sessions?.length || 1) > 1 ? 's' : ''}</span>
-                    </div>
-                    <div className="flex justify-between py-1.5">
-                      <span className="text-gray-500">Venue</span>
-                      <span className="font-bold text-[#001A4D] truncate max-w-[150px]">{venueName}</span>
-                    </div>
-                  </div>
-                </div>
-
                 {/* Action Buttons */}
                 <div className="space-y-2 pt-1">
                   <button
@@ -3347,31 +3322,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     <span className="font-semibold font-mono">{formatAppDateTime(event.approvedAt)}</span>
                   </div>
                 )}
-              </div>
-
-              {/* Approved Parameters Summary Card */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-xs space-y-3">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                  Approved Parameters
-                </p>
-                <div className="space-y-2.5 text-xs">
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Approved Budget</span>
-                    <span className="font-bold text-[#001A4D] font-mono">{formatPHP(totalExpenseAmount)}</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Expected Attendance</span>
-                    <span className="font-bold text-[#001A4D]">{event.expectedParticipantCount || 0} Students</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Sessions</span>
-                    <span className="font-bold text-[#001A4D]">{event.sessions?.length || 1} Session{(event.sessions?.length || 1) > 1 ? 's' : ''}</span>
-                  </div>
-                  <div className="flex justify-between py-1.5">
-                    <span className="text-gray-500">Venue</span>
-                    <span className="font-bold text-[#001A4D] truncate max-w-[150px]">{venueName}</span>
-                  </div>
-                </div>
               </div>
 
               {/* Adviser Approval Remarks */}
@@ -3530,31 +3480,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <p className="text-blue-800 leading-relaxed text-[11px]">
                   This activity was authored by SAS. Operational tools (Publishing, Attendance, Financial Liquidation) will automatically unlock once all designated signatories have completed their endorsement.
                 </p>
-              </div>
-
-              {/* Activity Parameters Card */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-xs space-y-3">
-                <p className="text-[11px] font-bold uppercase tracking-wider text-gray-400">
-                  Activity Parameters
-                </p>
-                <div className="space-y-2.5 text-xs">
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Proposed Budget</span>
-                    <span className="font-bold text-[#001A4D] font-mono">{formatPHP(totalExpenseAmount)}</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Expected Attendance</span>
-                    <span className="font-bold text-[#001A4D]">{event.expectedParticipantCount || 0} Students</span>
-                  </div>
-                  <div className="flex justify-between py-1.5 border-b border-gray-100">
-                    <span className="text-gray-500">Sessions</span>
-                    <span className="font-bold text-[#001A4D]">{event.sessions?.length || 1} Session{(event.sessions?.length || 1) > 1 ? 's' : ''}</span>
-                  </div>
-                  <div className="flex justify-between py-1.5">
-                    <span className="text-gray-500">Venue</span>
-                    <span className="font-bold text-[#001A4D] truncate max-w-[150px]">{venueName}</span>
-                  </div>
-                </div>
               </div>
 
               {/* Actions */}

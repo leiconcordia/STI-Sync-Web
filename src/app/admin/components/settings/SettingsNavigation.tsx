@@ -1,7 +1,7 @@
 import {
   UserCircle, Lock, Calendar, Book,
   Building, Users, CalendarDays,
-  Coins, Files, Archive, FileSignature, GitBranch,
+  Files, Archive, FileSignature, GitBranch,
 } from 'lucide-react';
 
 interface SettingsNavigationProps {
@@ -37,12 +37,6 @@ const navItems = [
     group: 'EVENTS',
     items: [
       { id: 'event-configuration', icon: CalendarDays, label: 'Event Configuration' },
-    ]
-  },
-  {
-    group: 'FINANCE',
-    items: [
-      { id: 'payable-categories', icon: Coins, label: 'Fee & Fine Categories' },
     ]
   },
   {

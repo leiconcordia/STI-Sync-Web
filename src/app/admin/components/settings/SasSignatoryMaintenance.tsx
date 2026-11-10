@@ -53,7 +53,7 @@ export default function SasSignatoryMaintenance() {
   // Form Fields
   const [firstName, setFirstName] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.firstName || '');
   const [lastName, setLastName] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.lastName || '');
-  const [middleInitial, setMiddleInitial] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.middleInitial || '');
+  const [middleName, setMiddleName] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.middleName ?? DEFAULT_SAS_SIGNATORY_CONFIG.middleInitial ?? '');
   const [name, setName] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.name);
   const [roleTitle, setRoleTitle] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle);
   const [email, setEmail] = useState(DEFAULT_SAS_SIGNATORY_CONFIG.email);
@@ -79,10 +79,10 @@ export default function SasSignatoryMaintenance() {
       const parsed = parseFullNameToParts(cfg.name || profile?.displayName || DEFAULT_SAS_SIGNATORY_CONFIG.name);
       const fn = cfg.firstName || parsed.firstName;
       const ln = cfg.lastName || parsed.lastName;
-      const mi = cfg.middleInitial || parsed.middleInitial;
+      const mi = cfg.middleName ?? cfg.middleInitial ?? parsed.middleInitial;
       setFirstName(fn);
       setLastName(ln);
-      setMiddleInitial(mi);
+      setMiddleName(mi);
       setName(formatStructuredFullName(fn, ln, mi) || cfg.name || DEFAULT_SAS_SIGNATORY_CONFIG.name);
       setRoleTitle(cfg.roleTitle || profile?.position || DEFAULT_SAS_SIGNATORY_CONFIG.roleTitle);
       setEmail(cfg.email || profile?.email || DEFAULT_SAS_SIGNATORY_CONFIG.email);
@@ -212,7 +212,7 @@ export default function SasSignatoryMaintenance() {
 
   // ── Save All Configurations ──
   const handleSaveAll = async () => {
-    const combinedName = formatStructuredFullName(firstName, lastName, middleInitial) || name.trim();
+    const combinedName = formatStructuredFullName(firstName, lastName, middleName) || name.trim();
     if (!firstName.trim() || !lastName.trim()) {
       toast.error('Signatory First Name and Last Name are required.');
       return;
@@ -237,7 +237,7 @@ export default function SasSignatoryMaintenance() {
           name: combinedName,
           firstName: firstName.trim(),
           lastName: lastName.trim(),
-          middleInitial: middleInitial.trim(),
+          middleName: middleName.trim(),
           roleTitle: roleTitle.trim(),
           email: email.trim().toLowerCase(),
           department: department.trim(),
@@ -351,7 +351,7 @@ export default function SasSignatoryMaintenance() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div className="sm:col-span-2 space-y-1.5">
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-              <div className="sm:col-span-5">
+              <div className="sm:col-span-4">
                 <label className="block text-xs font-bold text-gray-700 mb-1.5">
                   Signatory First Name <span className="text-red-500">*</span>
                 </label>
@@ -362,7 +362,7 @@ export default function SasSignatoryMaintenance() {
                     onChange={(e) => {
                       const fn = e.target.value;
                       setFirstName(fn);
-                      setName(formatStructuredFullName(fn, lastName, middleInitial));
+                      setName(formatStructuredFullName(fn, lastName, middleName));
                     }}
                     placeholder="e.g. Riselle Mae"
                     className="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none transition-all"
@@ -371,25 +371,26 @@ export default function SasSignatoryMaintenance() {
                 </div>
               </div>
 
-              <div className="sm:col-span-2">
+              <div className="sm:col-span-4">
                 <label className="block text-xs font-bold text-gray-700 mb-1.5 text-center">
-                  M.I. <span className="text-gray-400 font-normal lowercase">(opt)</span>
+                  Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
                 </label>
                 <input
                   type="text"
-                  maxLength={3}
-                  value={middleInitial}
+                  autoComplete="additional-name"
+                  aria-label="Middle name"
+                  value={middleName}
                   onChange={(e) => {
-                    const mi = e.target.value.toUpperCase();
-                    setMiddleInitial(mi);
+                    const mi = e.target.value;
+                    setMiddleName(mi);
                     setName(formatStructuredFullName(firstName, lastName, mi));
                   }}
-                  placeholder="B."
-                  className="w-full px-2 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-xs font-bold text-center uppercase text-slate-800 focus:bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none transition-all"
+                  placeholder="e.g. Sigmund"
+                  className="w-full px-2 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-xs font-medium text-slate-800 focus:bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none transition-all"
                 />
               </div>
 
-              <div className="sm:col-span-5">
+              <div className="sm:col-span-4">
                 <label className="block text-xs font-bold text-gray-700 mb-1.5">
                   Signatory Last Name <span className="text-red-500">*</span>
                 </label>
@@ -400,7 +401,7 @@ export default function SasSignatoryMaintenance() {
                     onChange={(e) => {
                       const ln = e.target.value;
                       setLastName(ln);
-                      setName(formatStructuredFullName(firstName, ln, middleInitial));
+                      setName(formatStructuredFullName(firstName, ln, middleName));
                     }}
                     placeholder="e.g. Lucanas"
                     className="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 border border-gray-300 rounded-xl text-xs font-bold text-slate-800 focus:bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none transition-all"

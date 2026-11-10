@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import { useState, useMemo, useEffect } from 'react';
 import { GraduationCap, Download, Eye, RotateCcw, Trash2, Search, Loader2 } from 'lucide-react';
 import { StudentDocument } from '../../../modules/students/types/student.types';
@@ -147,7 +148,7 @@ export default function ArchivedGraduates({ students: archivedStudents }: Archiv
                         </div>
                         <div>
                           <div className="font-semibold text-[#001A4D]">
-                            {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                            {formatPersonName(student)}
                           </div>
                           <div className="text-xs text-gray-500 font-mono">{student.studentId}</div>
                         </div>

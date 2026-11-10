@@ -81,6 +81,7 @@ export interface InstitutionalSignatory {
   name: string;
   firstName?: string;
   lastName?: string;
+  middleName?: string;
   middleInitial?: string;
   email: string;
   role: SignatoryRole;
@@ -115,6 +116,7 @@ export interface CreateSignatoryPayload {
   name: string;
   firstName?: string;
   lastName?: string;
+  middleName?: string;
   middleInitial?: string;
   email: string;
   role: SignatoryRole;

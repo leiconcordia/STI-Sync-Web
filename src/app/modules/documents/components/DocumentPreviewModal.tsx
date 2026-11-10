@@ -1,7 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { X, Download, FileText, AlertCircle, Mail, Loader2, Check, RotateCcw, ExternalLink, Sparkles, Lock } from 'lucide-react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { Download, ExternalLink, Loader2, FileText } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../../../components/ui/dialog';
 import type { DocumentDocument } from '../types/document.types';
-import { downloadFile } from '../../../../utils/fileDownloader';
+import { documentKind, ownsDocument, WORKFLOW_LABELS } from '../utils/document-storage';
+import { documentFileUrl, downloadDocument } from '../services/edms-api.service';
+import { DocumentReviewActionModal } from './DocumentReviewActionModal';
+const PdfDocumentPreview = lazy(() => import('./PdfDocumentPreview'));
 
 interface DocumentPreviewModalProps {
   doc: DocumentDocument;
@@ -13,532 +17,56 @@ interface DocumentPreviewModalProps {
   currentOrgId?: string | null;
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
-}
-
-// Helper to ensure Cloudinary serves the correct MIME type for PDFs
-function getPdfUrl(url: string) {
-  if (!url) return '';
-  if (url.includes('cloudinary.com') && !url.toLowerCase().endsWith('.pdf')) {
-    return `${url}.pdf`;
-  }
-  return url;
-}
-
-export function DocumentPreviewModal({
-  doc,
-  onClose,
-  onApprove,
-  onReturn,
-  onReject,
-  isAdmin,
-  currentOrgId,
-}: DocumentPreviewModalProps) {
-  // Strict Privacy Guard: If SAS-only or belongs to another student organization, block access
-  const isUnauthorized = !isAdmin && (
-    doc.visibility === 'sas_only' ||
-    doc.isSasInternal === true ||
-    doc.submittedByOrgId === 'sas' ||
-    (doc.submittedByOrgId && currentOrgId && doc.submittedByOrgId !== currentOrgId)
-  );
-
-  if (isUnauthorized) {
-    return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-        <div className="absolute inset-0 bg-[#001A4D]/80 backdrop-blur-sm" onClick={onClose} />
-        <div className="relative bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border border-red-200">
-          <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
-            <Lock className="w-8 h-8" />
-          </div>
-          <h3 className="text-lg font-bold text-[#001A4D] mb-2">Access Restricted</h3>
-          <p className="text-gray-500 text-sm mb-6 leading-relaxed">
-            This document contains confidential institutional records restricted strictly to Student Affairs Services (SAS) and the owning student organization.
-          </p>
-          <button
-            onClick={onClose}
-            className="w-full py-2.5 bg-[#001A4D] text-[#FFD41C] font-bold rounded-xl hover:bg-[#001A4D]/90 transition-colors cursor-pointer"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const type = doc.fileType?.toUpperCase() || 'UNKNOWN';
-  const isImage = ['JPG', 'JPEG', 'PNG', 'GIF', 'WEBP', 'SVG'].includes(type);
-  const isPdf = type === 'PDF';
-  const isOffice = ['DOCX', 'DOC', 'XLSX', 'XLS', 'PPTX', 'PPT'].includes(type);
-  
-  const pdfUrl = getPdfUrl(doc.fileUrl);
-
-  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
-  const [pdfLoading, setPdfLoading] = useState(false);
-  const [pdfError, setPdfError] = useState<{message: string, status?: number} | null>(null);
-  const [downloading, setDownloading] = useState(false);
-
-  // Review states
-  const [actionType, setActionType] = useState<'Approve' | 'Return' | 'Reject' | null>(null);
-  const [remarks, setRemarks] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  const isPendingReview = doc.type === 'submission' && (doc.status === 'Pending' || doc.status === 'Resubmitted');
-  const canReview = !!(onApprove || onReturn || onReject || isAdmin);
-
-  const handleDownload = async () => {
-    setDownloading(true);
-    try {
-      await downloadFile(doc.fileUrl, doc.fileName);
-    } finally {
-      setDownloading(false);
-    }
-  };
-
-  const handleExecuteReview = async () => {
-    if (!actionType) return;
-    setSubmitting(true);
-    try {
-      if (actionType === 'Approve' && onApprove) {
-        await onApprove(remarks);
-      } else if (actionType === 'Return' && onReturn) {
-        await onReturn(remarks);
-      } else if (actionType === 'Reject' && onReject) {
-        await onReject(remarks);
-      }
-      setActionType(null);
-      setRemarks('');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
+export function DocumentPreviewModal({ doc, onClose, onApprove, onReturn, onReject, isAdmin = false, currentOrgId }: DocumentPreviewModalProps) {
+  const allowed = isAdmin || (doc.type === 'broadcast'
+    ? Boolean(currentOrgId && (doc.distribution === 'all' || doc.targetOrgIds?.includes(currentOrgId)))
+    : ownsDocument(doc, currentOrgId));
+  const kind = documentKind(doc);
+  const hasFile = Boolean(doc.fileUrl || doc.fileStoragePath);
+  const ready = doc.archiveStatus !== 'processing' && doc.archiveStatus !== 'failed';
+  const canReview = isAdmin && kind === 'general' && doc.type === 'submission' && ['Pending', 'Resubmitted'].includes(doc.status);
+  const [url, setUrl] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState<'Approve' | 'Return' | 'Reject' | null>(null);
   useEffect(() => {
-    if (isPdf && pdfUrl) {
-      setPdfLoading(true);
-      setPdfError(null);
-      fetch(pdfUrl)
-        .then(res => {
-          if (!res.ok) {
-            throw { message: `HTTP Error ${res.status}: ${res.statusText}`, status: res.status };
-          }
-          return res.blob();
-        })
-        .then(blob => {
-          const fileBlob = new Blob([blob], { type: 'application/pdf' });
-          const url = URL.createObjectURL(fileBlob);
-          setPdfBlobUrl(url);
-          setPdfLoading(false);
-        })
-        .catch(err => {
-          console.error('Error fetching PDF:', err);
-          setPdfError(err.status ? err : { message: err.message || 'Network error or CORS issue' });
-          setPdfLoading(false);
-        });
-    }
-
-    return () => {
-      if (pdfBlobUrl) {
-        URL.revokeObjectURL(pdfBlobUrl);
-      }
-    };
-  }, [isPdf, pdfUrl]);
-
-  const DirectDownload = () => (
-    <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-gray-50">
-      <div className={`w-20 h-20 rounded-2xl flex items-center justify-center mb-6 shadow-sm ${doc.sourceModule ? 'bg-gradient-to-br from-[#001A4D] to-[#0E4EBD]' : isPdf ? 'bg-red-500' : 'bg-blue-600'}`}>
-        {doc.sourceModule ? <Sparkles className="w-10 h-10 text-[#FFD41C]" /> : <FileText className="w-10 h-10 text-white" />}
+    let active = true; let objectUrl = ''; const controller = new AbortController();
+    setUrl(''); setError('');
+    if (!allowed || !hasFile || !ready) return;
+    setLoading(true);
+    documentFileUrl(doc).then(async (remoteUrl) => {
+      if (doc.fileType === 'PDF' && !remoteUrl.startsWith('blob:')) {
+        const response = await fetch(remoteUrl, { signal: controller.signal });
+        if (!response.ok) throw new Error('The stored file could not be loaded. Try downloading it.');
+        objectUrl = URL.createObjectURL(new Blob([await response.blob()], { type: 'application/pdf' }));
+      } else if (remoteUrl.startsWith('blob:')) objectUrl = remoteUrl;
+      if (active) setUrl(objectUrl || remoteUrl);
+      else if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }).catch((error) => { if (active && error.name !== 'AbortError') setError(error.message); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [doc.id, doc.fileUrl, doc.fileStoragePath, doc.archiveStatus, allowed, hasFile, ready]);
+  const sourceRoute = isAdmin ? kind === 'financial_liquidation' ? '/home/liquidations' : kind === 'post_activity_report' ? '/home/post-activity-reports' : '/home/event-approvals'
+    : kind === 'financial_liquidation' ? '/officer/liquidation' : kind === 'post_activity_report' ? '/officer/post-activity-reports' : '/officer/events';
+  const download = async (attachmentIndex?: number) => {
+    setBusy(true); setError('');
+    try { await downloadDocument(doc, attachmentIndex); } catch (error: any) { setError(error.message); } finally { setBusy(false); }
+  };
+  return <Dialog open onOpenChange={(open) => { if (!open && !busy && !action) onClose(); }}><DialogContent className="flex max-h-[92vh] w-[95vw] max-w-5xl sm:max-w-5xl flex-col overflow-hidden">
+    <DialogHeader><DialogTitle>{allowed ? doc.title : 'Access Restricted'}</DialogTitle><DialogDescription>{allowed ? `${doc.referenceNumber || 'Document'} · ${kind === 'general' ? doc.category || 'Uncategorized' : WORKFLOW_LABELS[kind]} · ${doc.status}` : 'This document is unavailable to the selected organization.'}</DialogDescription></DialogHeader>
+    {allowed && <>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b pb-3 text-sm"><div><p>{doc.type === 'broadcast' ? `Sent by ${doc.broadcastBy || 'SAS'}` : doc.submittedByOrgName}</p><p className="text-xs text-gray-500">{[doc.academicYear, doc.trimester || doc.semester].filter(Boolean).join(' · ')}{hasFile ? ` · ${doc.fileName} · ${(doc.fileSize / 1024).toFixed(1)} KB` : ''}</p></div><div className="flex flex-wrap gap-2">{kind !== 'general' && doc.sourceRecordId && <a href={`${sourceRoute}?id=${encodeURIComponent(doc.sourceRecordId)}`} className="inline-flex items-center gap-2 rounded-lg border px-3 py-2" target="_blank" rel="noreferrer"><ExternalLink size={16} />Open Source</a>}{hasFile && ready && <button disabled={busy} onClick={() => download()} className="inline-flex items-center gap-2 rounded-lg bg-[#001A4D] px-3 py-2 text-white disabled:opacity-50"><Download size={16} />{busy ? 'Downloading…' : 'Download'}</button>}</div></div>
+      {error && <p role="alert" className="rounded bg-red-50 p-2 text-sm text-red-600">{error}</p>}
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+        {doc.description && <p className="whitespace-pre-wrap rounded-lg bg-blue-50 p-4 text-sm text-gray-700">{doc.description}</p>}
+        {doc.archiveStatus === 'processing' ? <p className="p-12 text-center text-amber-700">Approved; storing the report in Reports & Analytics…</p> : doc.archiveStatus === 'failed' ? <p className="p-12 text-center text-red-600">Approved; report storage failed. SAS can retry from Reports & Analytics.</p> : !hasFile ? <div className="rounded-lg border border-dashed p-10 text-center text-gray-500"><FileText className="mx-auto mb-2" />No attachment</div> : loading ? <div className="flex justify-center p-16"><Loader2 className="animate-spin" aria-label="Loading file" /></div> : doc.fileType === 'PDF' && url ? <Suspense fallback={<p className="p-8 text-center text-sm">Loading PDF preview…</p>}><PdfDocumentPreview url={url} title={doc.title} /></Suspense> : ['JPG', 'PNG'].includes(doc.fileType) && url ? <img src={url} alt={doc.fileName} className="mx-auto max-h-[55vh] max-w-full object-contain" /> : <p className="rounded-lg bg-gray-50 p-10 text-center text-sm text-gray-500">Download the {doc.fileType} file to view its contents.</p>}
+        {doc.remarks && <div className="rounded-lg border p-3 text-sm"><strong>Review remarks</strong><p className="whitespace-pre-wrap">{doc.remarks}</p></div>}
+        {(doc as any).approvalHistory?.length > 0 && <div className="rounded-lg border p-3 text-sm"><h3 className="mb-2 font-semibold">Approval History</h3>{(doc as any).approvalHistory.map((step: any, index: number) => <p key={step.id || index}>{step.signatoryName || step.name || step.roleTitle || `Step ${index + 1}`} · {step.status}{step.remarks ? ` · ${step.remarks}` : ''}</p>)}</div>}
+        {doc.reviewedBy && <p className="text-xs text-gray-500">Reviewed by {doc.reviewedBy}</p>}
+        {!!doc.attachments?.length && <div className="rounded-lg border p-3 text-sm"><h3 className="mb-2 font-semibold">Supporting Attachments</h3>{doc.attachments.map((item, index) => <button key={item.storagePath} disabled={busy} onClick={() => download(index)} className="mb-2 flex items-center gap-2 text-left text-blue-700 hover:underline"><Download size={15} />{item.name}</button>)}</div>}
       </div>
-      <p className="text-[#001A4D] font-bold text-xl mb-2">
-        {doc.sourceModule ? 'Officially Approved Institutional Document' : `Preview not available for ${doc.fileType}`}
-      </p>
-      <p className="text-gray-500 text-sm mb-6 max-w-lg">
-        {doc.description || (doc.sourceModule
-          ? 'This record was automatically compiled and preserved in the EDMS audit vault upon institutional approval.'
-          : 'This file format cannot be previewed directly in the browser. Please download the file to view it on your device.')}
-      </p>
-
-      {doc.sourceRecordId && (
-        <a
-          href={
-            doc.sourceModule === 'finance'
-              ? `/home/liquidations?id=${doc.sourceRecordId}`
-              : `/home/event-approvals?id=${doc.sourceRecordId}`
-          }
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 px-6 py-3 bg-[#001A4D] text-[#FFD41C] rounded-xl font-bold hover:bg-[#001A4D]/90 transition-colors shadow-sm cursor-pointer mb-4"
-        >
-          <span>Open Original {doc.sourceModule === 'finance' ? 'Liquidation' : 'Event Proposal'}</span>
-          <ExternalLink className="w-4 h-4" />
-        </a>
-      )}
-
-      {doc.fileUrl && (
-        <button 
-          onClick={handleDownload}
-          disabled={downloading}
-          className="flex items-center gap-2 px-6 py-3 bg-[#0E4EBD] text-white rounded-xl font-bold hover:bg-[#0E4EBD]/90 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-        >
-          {downloading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-          {downloading ? 'Downloading...' : `Download ${doc.fileName}`}
-        </button>
-      )}
-      <p className="text-gray-400 text-xs mt-4">{formatBytes(doc.fileSize)}</p>
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 md:p-10">
-      {/* Backdrop */}
-      <div 
-        className="absolute inset-0 bg-[#001A4D]/80 backdrop-blur-sm" 
-        onClick={onClose} 
-      />
-      
-      {/* Modal Container */}
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full h-full max-w-6xl flex flex-col overflow-hidden border border-white/20">
-        
-        {/* Header */}
-        <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between flex-shrink-0">
-          <div className="flex items-center gap-4 min-w-0">
-            <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 shadow-inner ${isPdf ? 'bg-red-500' : 'bg-blue-600'}`}>
-              <FileText className="w-5 h-5 text-white" />
-            </div>
-            <div className="min-w-0 pr-4">
-              <h3 className="text-white font-bold text-base truncate" title={doc.title}>
-                {doc.title}
-              </h3>
-              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                <span className="text-white/70 text-xs font-mono">{doc.referenceNumber}</span>
-                <span className="text-white/30 text-xs">•</span>
-                <span className="text-white/70 text-xs truncate" title={doc.fileName}>{doc.fileName}</span>
-                <span className="text-white/30 text-xs">•</span>
-                <span className="text-[#FFD41C] text-xs font-medium">{formatBytes(doc.fileSize)}</span>
-                {doc.academicYear && (
-                  <>
-                    <span className="text-white/30 text-xs">•</span>
-                    <span className="text-blue-200 text-xs">SY {doc.academicYear}</span>
-                  </>
-                )}
-                {doc.semester && (
-                  <>
-                    <span className="text-white/30 text-xs">•</span>
-                    <span className="text-blue-200 text-xs">{doc.semester}</span>
-                  </>
-                )}
-                {doc.trimester && doc.trimester !== doc.semester && (
-                  <>
-                    <span className="text-white/30 text-xs">•</span>
-                    <span className="text-blue-200 text-xs">{doc.trimester}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex items-center gap-2 flex-shrink-0">
-            {doc.fileUrl && (
-              <button 
-                onClick={handleDownload}
-                disabled={downloading}
-                className="flex items-center gap-2 px-4 py-2 bg-white/10 text-white rounded-lg text-sm font-medium hover:bg-white/20 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {downloading ? 'Downloading...' : 'Download'}
-              </button>
-            )}
-            <div className="w-px h-6 bg-white/20 mx-1"></div>
-            <button 
-              onClick={onClose} 
-              className="text-white/70 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* System Archival Notice Banner */}
-        {doc.sourceModule && (
-          <div className="bg-blue-50/90 border-b border-blue-200 px-6 py-2.5 flex items-center justify-between text-xs text-[#001A4D] flex-shrink-0">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
-              <span>
-                <strong>Cross-Module Auto-Archive:</strong> Preserved automatically from the{' '}
-                <span className="font-semibold">{doc.sourceModule === 'finance' ? 'Financial Liquidations' : 'Activity Proposals'}</span> module upon approval.
-              </span>
-            </div>
-            {doc.sourceRecordId && (
-              <a
-                href={
-                  doc.sourceModule === 'finance'
-                    ? `/home/liquidations?id=${doc.sourceRecordId}`
-                    : `/home/event-approvals?id=${doc.sourceRecordId}`
-                }
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 font-semibold text-[#0E4EBD] hover:underline"
-              >
-                <span>View Original Record</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
-          </div>
-        )}
-
-        {/* Content Area */}
-        <div className="flex-1 bg-gray-100 relative w-full h-full flex flex-col overflow-hidden">
-          {isImage ? (
-            <div className="w-full h-full p-4 flex items-center justify-center overflow-auto">
-              <img src={doc.fileUrl} alt={doc.fileName} className="max-w-full max-h-full object-contain bg-white shadow-md" />
-            </div>
-          ) : isPdf ? (
-            pdfLoading ? (
-              <div className="w-full h-full flex flex-col items-center justify-center bg-white space-y-4">
-                <div className="w-8 h-8 border-4 border-[#0E4EBD] border-t-transparent rounded-full animate-spin"></div>
-                <p className="text-gray-500 font-medium">Loading PDF...</p>
-              </div>
-            ) : pdfError ? (
-              <div className="flex flex-col items-center justify-center w-full h-full bg-gray-50 p-8 text-center">
-                <div className="w-20 h-20 rounded-2xl flex items-center justify-center mb-6 shadow-sm bg-red-500">
-                  <AlertCircle className="w-10 h-10 text-white" />
-                </div>
-                <p className="text-[#001A4D] font-bold text-xl mb-2">Failed to load PDF</p>
-                <p className="text-gray-500 text-sm mb-6 max-w-md">
-                  We couldn't preview this document. This usually happens if the storage provider restricts access or the file is corrupted.
-                </p>
-                <div className="p-4 bg-red-50 border border-red-200 rounded-xl mb-6 text-left max-w-md w-full">
-                  <p className="text-red-800 text-xs font-bold mb-1">Diagnostic Info:</p>
-                  <p className="text-red-600 text-xs font-mono break-all">{pdfError.message}</p>
-                  {pdfError.status === 401 && (
-                    <p className="text-red-600 text-xs mt-2 font-medium">
-                      Note: A 401 error on Cloudinary means "Allow delivery of PDF and ZIP files" is disabled in your Cloudinary Security settings.
-                    </p>
-                  )}
-                </div>
-                <button 
-                  onClick={handleDownload}
-                  disabled={downloading}
-                  className="flex items-center gap-2 px-6 py-3 bg-[#0E4EBD] text-white rounded-xl font-bold hover:bg-[#0E4EBD]/90 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
-                >
-                  {downloading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Download className="w-5 h-5" />}
-                  Try Downloading Anyway
-                </button>
-              </div>
-            ) : pdfBlobUrl ? (
-              <iframe 
-                src={`${pdfBlobUrl}#toolbar=0`} 
-                className="w-full h-full border-0 bg-white flex-1"
-                title="PDF Preview"
-              />
-            ) : null
-          ) : isOffice ? (
-            <iframe 
-              src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(doc.fileUrl)}`}
-              className="w-full h-full border-0 bg-white flex-1"
-              title="Office Document Preview"
-            />
-          ) : (
-            <DirectDownload />
-          )}
-        </div>
-
-        {/* Inline Review Remarks Panel (When an action button is clicked) */}
-        {actionType && (
-          <div className="bg-white border-t border-gray-200 p-4 shadow-lg animate-in slide-in-from-bottom-2">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                {actionType === 'Approve' && <Check className="w-4 h-4 text-green-600" />}
-                {actionType === 'Return' && <RotateCcw className="w-4 h-4 text-amber-600" />}
-                {actionType === 'Reject' && <X className="w-4 h-4 text-red-600" />}
-                <span className={`text-xs font-bold ${
-                  actionType === 'Approve' ? 'text-green-700' :
-                  actionType === 'Return' ? 'text-amber-700' : 'text-red-700'
-                }`}>
-                  {actionType === 'Approve' ? 'Approve Document' :
-                   actionType === 'Return' ? 'Return Document for Revision' : 'Reject Document'}
-                </span>
-                <span className="text-gray-400 text-xs">· {doc.title}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => { setActionType(null); setRemarks(''); }}
-                className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer"
-              >
-                Cancel
-              </button>
-            </div>
-            <div className="space-y-3">
-              <textarea
-                rows={2}
-                placeholder={
-                  actionType === 'Approve'
-                    ? 'Optional remarks or approval notes for the officer...'
-                    : actionType === 'Return'
-                    ? 'Specify required revisions or feedback (Required)...'
-                    : 'Specify rejection reason (Required)...'
-                }
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none resize-none"
-                autoFocus
-              />
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-gray-500">
-                  {actionType === 'Approve'
-                    ? 'Remarks are optional.'
-                    : 'Remarks are required so the officer understands the decision.'}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setActionType(null); setRemarks(''); }}
-                    className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={submitting || ((actionType === 'Return' || actionType === 'Reject') && !remarks.trim())}
-                    onClick={handleExecuteReview}
-                    className={`px-4 py-1.5 text-xs font-bold rounded-lg text-white transition-all flex items-center gap-1.5 cursor-pointer shadow-sm ${
-                      actionType === 'Approve'
-                        ? 'bg-gradient-to-r from-green-500 to-green-400 hover:opacity-90 disabled:opacity-50 cursor-not-allowed disabled:cursor-not-allowed'
-                        : actionType === 'Return'
-                        ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 disabled:opacity-50 cursor-not-allowed disabled:cursor-not-allowed'
-                        : 'bg-gradient-to-r from-red-500 to-orange-500 hover:opacity-90 disabled:opacity-50 cursor-not-allowed disabled:cursor-not-allowed'
-                    }`}
-                  >
-                    {submitting ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Processing...</span>
-                      </>
-                    ) : (
-                      <>
-                        {actionType === 'Approve' && <Check className="w-3.5 h-3.5" />}
-                        {actionType === 'Return' && <RotateCcw className="w-3.5 h-3.5" />}
-                        {actionType === 'Reject' && <X className="w-3.5 h-3.5" />}
-                        <span>
-                          {actionType === 'Approve' ? 'Confirm Approval' :
-                           actionType === 'Return' ? 'Return for Revision' : 'Confirm Rejection'}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-        
-        {/* Footer info & Action Buttons */}
-        <div className="bg-white border-t border-gray-200 px-6 py-3 flex items-center justify-between flex-shrink-0 flex-wrap gap-3">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex flex-col">
-              <span className="text-gray-400 text-[10px] uppercase font-bold tracking-wider">Type</span>
-              <span className="text-[#001A4D] text-xs font-medium">{doc.type === 'submission' ? 'Submission to SAS' : 'Broadcast from SAS'}</span>
-            </div>
-            <div className="w-px h-8 bg-gray-200"></div>
-            <div className="flex flex-col">
-              <span className="text-gray-400 text-[10px] uppercase font-bold tracking-wider">Category</span>
-              <span className="text-[#001A4D] text-xs font-medium">{doc.category}</span>
-            </div>
-            {doc.type === 'submission' && (
-              <>
-                <div className="w-px h-8 bg-gray-200"></div>
-                <div className="flex flex-col">
-                  <span className="text-gray-400 text-[10px] uppercase font-bold tracking-wider">Status</span>
-                  <span className={`text-xs font-bold ${
-                    doc.status === 'Approved' ? 'text-green-600' : 
-                    doc.status === 'Rejected' ? 'text-red-600' : 
-                    doc.status === 'Returned' ? 'text-amber-700' :
-                    doc.status === 'Pending' ? 'text-amber-500' : 'text-blue-600'
-                  }`}>{doc.status}</span>
-                </div>
-              </>
-            )}
-            {doc.type === 'broadcast' && (
-              <>
-                <div className="w-px h-8 bg-gray-200"></div>
-                <div className="flex flex-col">
-                  <span className="text-gray-400 text-[10px] uppercase font-bold tracking-wider">Distribution</span>
-                  <span className="text-[#0E4EBD] text-xs font-semibold">
-                    {doc.distribution === 'all' ? 'All Organizations' : `${doc.targetOrgIds?.length || 0} Organizations`}
-                  </span>
-                </div>
-              </>
-            )}
-            {doc.submittedByOrgName && (
-              <>
-                <div className="w-px h-8 bg-gray-200"></div>
-                <div className="flex flex-col">
-                  <span className="text-gray-400 text-[10px] uppercase font-bold tracking-wider">Submitted By</span>
-                  <span className="text-[#001A4D] text-xs font-medium">{doc.submittedByOrgName}</span>
-                </div>
-              </>
-            )}
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* Show Remarks if already provided */}
-            {(doc.type === 'submission' && doc.remarks && !actionType) && (
-              <div className="flex items-center gap-2 max-w-md bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
-                <AlertCircle className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
-                <p className="text-[#001A4D] text-xs truncate" title={doc.remarks}>
-                  <span className="font-bold">Remarks:</span> {doc.remarks}
-                </p>
-              </div>
-            )}
-
-            {(doc.type === 'broadcast' && doc.description) && (
-              <div className="flex items-center gap-2 max-w-md bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
-                <Mail className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                <p className="text-blue-800 text-xs truncate" title={doc.description}>
-                  <span className="font-bold">Message:</span> {doc.description}
-                </p>
-              </div>
-            )}
-
-            {/* Admin Review Action Buttons */}
-            {canReview && isPendingReview && !actionType && (
-              <div className="flex items-center gap-2">
-                {onApprove && (
-                  <button
-                    type="button"
-                    onClick={() => { setActionType('Approve'); setRemarks(''); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-green-500 to-green-400 hover:opacity-90 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Approve</span>
-                  </button>
-                )}
-                {onReturn && (
-                  <button
-                    type="button"
-                    onClick={() => { setActionType('Return'); setRemarks(''); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Return</span>
-                  </button>
-                )}
-                {onReject && (
-                  <button
-                    type="button"
-                    onClick={() => { setActionType('Reject'); setRemarks(''); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-red-500 to-orange-500 hover:opacity-90 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-sm"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                    <span>Reject</span>
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+      {canReview && <div className="flex justify-end gap-3 border-t pt-3">{onApprove && <button onClick={() => setAction('Approve')} className="rounded-lg bg-green-700 px-4 py-2 text-white">Approve</button>}{onReturn && <button onClick={() => setAction('Return')} className="rounded-lg bg-amber-600 px-4 py-2 text-white">Return for Revision</button>}{onReject && <button onClick={() => setAction('Reject')} className="rounded-lg bg-red-700 px-4 py-2 text-white">Reject</button>}</div>}
+    </>}
+    {allowed && action && <DocumentReviewActionModal doc={doc} action={action} onClose={() => setAction(null)} onConfirm={async (remarks) => { const handler = action === 'Approve' ? onApprove : action === 'Return' ? onReturn : onReject; if (handler) await handler(remarks); }} />}
+  </DialogContent></Dialog>;
 }

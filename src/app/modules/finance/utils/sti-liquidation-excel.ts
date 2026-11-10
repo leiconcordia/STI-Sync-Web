@@ -215,7 +215,7 @@ function resolveOfficialSignatories(
  * matching LIQUIDATION-FORMAT_v1 (2) - Copy.xlsx with full styles,
  * solid black borders, column widths, and accounting formats.
  */
-export function exportOfficialStiLiquidationXlsx(
+export function buildOfficialStiLiquidationWorkbook(
   report: LiquidationDocument,
   options: StiLiquidationExcelOptions = {}
 ) {
@@ -614,7 +614,12 @@ export function exportOfficialStiLiquidationXlsx(
 
   XLSX.utils.book_append_sheet(wb, ws, 'Liquidation Format');
 
-  const cleanFilename = eventTitle.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 35);
+  return wb;
+}
+
+export function exportOfficialStiLiquidationXlsx(report: LiquidationDocument, options: StiLiquidationExcelOptions = {}) {
+  const wb = buildOfficialStiLiquidationWorkbook(report, options);
+  const cleanFilename = (report.eventTitle || 'Activity').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 35);
   XLSX.writeFile(wb, `${cleanFilename}_Official_STI_Liquidation.xlsx`);
 }
 

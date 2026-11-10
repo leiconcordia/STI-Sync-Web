@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../utils/name.utils';
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams } from 'react-router';
 import {
@@ -172,7 +173,7 @@ export default function MemberDirectory() {
       (m.email ? studentMap.get(m.email.toLowerCase()) : undefined);
 
     const fullName = sDoc
-      ? [sDoc.firstName, sDoc.middleName, sDoc.lastName].filter(Boolean).join(' ').trim()
+      ? formatPersonName(sDoc)
       : m.studentName || 'Student';
 
     const photoUrl =

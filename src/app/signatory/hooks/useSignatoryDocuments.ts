@@ -14,13 +14,15 @@ import { subscribeToProposals } from '../../modules/activity-proposals/services/
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
+import { documentStatus, isCurrentDocument } from '../utils/campus-activity-report';
 
 export function useSignatoryDocuments(session: any) {
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
   const [proposalsLoading, setProposalsLoading] = useState(true);
+  const [proposalsError, setProposalsError] = useState<Error | null>(null);
 
-  const { liquidations: allLiquidations, loading: liquidationsLoading } = useAllLiquidations();
-  const { pars: allPARs, loading: parsLoading } = useAllPARsForSignatories();
+  const { liquidations: allLiquidations, loading: liquidationsLoading, error: liquidationsError } = useAllLiquidations();
+  const { pars: allPARs, loading: parsLoading, error: parsError } = useAllPARsForSignatories();
 
   const userUid = session?.id || session?.uid;
   const userEmail = (session?.email || '').toLowerCase();
@@ -43,8 +45,9 @@ export function useSignatoryDocuments(session: any) {
   useEffect(() => {
     const unsubscribe = subscribeToProposals((list) => {
       setAllProposals(list);
+      setProposalsError(null);
       setProposalsLoading(false);
-    });
+    }, undefined, (error) => { setProposalsError(error); setProposalsLoading(false); });
     return () => unsubscribe();
   }, []);
 
@@ -62,6 +65,7 @@ export function useSignatoryDocuments(session: any) {
     const returned: ActivityProposal[] = [];
 
     allProposals.forEach((p) => {
+      if (!isCurrentDocument(p)) return;
       const chain = p.approvalChain || [];
       const currentIdx = p.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
@@ -138,6 +142,7 @@ export function useSignatoryDocuments(session: any) {
     const returned: LiquidationDocument[] = [];
 
     allLiquidations.forEach((l) => {
+      if (!isCurrentDocument(l)) return;
       const chain = l.approvalChain || [];
       const currentIdx = l.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
@@ -165,17 +170,17 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = chain.some(
+      const hasEndorsedStep = documentStatus(l) !== 'returned' && chain.some(
         (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
       );
       if (hasEndorsedStep) {
         endorsed.push(l);
       }
 
-      const isReturnedStatus = l.status === 'returned_for_revision' || l.status === 'rejected';
+      const isReturnedStatus = documentStatus(l) === 'returned';
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
-          (s) => (s.status === 'returned' || s.status === 'rejected') && matchesSignatory(s)
+          (s) => ['returned', 'returned_for_revision', 'rejected'].includes(s.status) && matchesSignatory(s)
         );
         if (hasReturnedStep) {
           returned.push(l);
@@ -200,6 +205,7 @@ export function useSignatoryDocuments(session: any) {
     const returned: PostActivityReportDocument[] = [];
 
     allPARs.forEach((par) => {
+      if (!isCurrentDocument(par)) return;
       const chain = par.approvalChain || [];
       const currentIdx = par.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
@@ -229,14 +235,14 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = chain.some(
+      const hasEndorsedStep = documentStatus(par) !== 'returned' && chain.some(
         (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
       );
       if (hasEndorsedStep) {
         endorsed.push(par);
       }
 
-      const isReturnedStatus = par.status === 'returned_for_revision' || (par as any).reportStatus === 'returned';
+      const isReturnedStatus = documentStatus(par) === 'returned';
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
           (s) => s.status === 'returned' && matchesSignatory(s)
@@ -276,6 +282,7 @@ export function useSignatoryDocuments(session: any) {
     totalSigned,
     totalReturned,
     loading,
+    error: proposalsError || liquidationsError || parsError,
     matchesSignatory,
   };
 }

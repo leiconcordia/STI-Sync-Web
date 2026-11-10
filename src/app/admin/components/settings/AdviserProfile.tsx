@@ -5,6 +5,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { formatStructuredFullName } from '../../../utils/name.utils';
 import { useAdviserProfile, updateAdviserProfile } from '../../../modules/auth';
 import {
   getSasSignatoryConfig,
@@ -79,7 +80,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
   }
 
   const initials = `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
-  const currentDisplayName = [firstName, middleName, lastName].filter(Boolean).join(' ') || profile.displayName;
+  const currentDisplayName = formatStructuredFullName(firstName, lastName, middleName) || profile.displayName;
 
   // ── Canvas Interaction Handlers ──
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
@@ -213,7 +214,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
     setErrorMessage('');
     
     try {
-      const displayName = [firstName, middleName, lastName].filter(Boolean).join(' ');
+      const displayName = formatStructuredFullName(firstName, lastName, middleName);
       const resolvedPosition = position.trim() || 'SAS Coordinator';
       const resolvedDept = department.trim() || 'Student Affairs Office';
 
@@ -242,6 +243,9 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
       // 2. Synchronize to global SAS Signatory Configuration (for locked organization proposals & approval)
       await saveSasSignatoryConfig({
         name: displayName,
+        firstName,
+        lastName,
+        middleName,
         roleTitle: resolvedPosition,
         email: profile.email,
         department: resolvedDept,

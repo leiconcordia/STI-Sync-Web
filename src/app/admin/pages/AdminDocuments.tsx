@@ -1,3 +1,10 @@
+import { categoryFilterOptions, matchesDocumentCategory } from '../../modules/documents/utils/document-storage';
+import { useSearchParams as useEdmsSearchParams } from 'react-router';
+import { AddDocumentCategoryModal } from '../../modules/documents/components/AddDocumentCategoryModal';
+import { DocumentReviewActionModal } from '../../modules/documents/components/DocumentReviewActionModal';
+import { toast } from 'sonner';
+import { EdmsStorage } from '../../modules/documents/components/EdmsStorage';
+import { downloadDocument } from '../../modules/documents/services/edms-api.service';
 import { useState, useRef, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router";
 import {
@@ -97,10 +104,10 @@ const CATEGORY_COLORS: Record<string, string> = {
   "Guidelines": "bg-blue-100 text-blue-700",
 };
 
-function CategoryPill({ category, categories }: { category: string; categories?: any[] }) {
-  const matched = categories?.find(c => c.name?.toLowerCase() === category?.toLowerCase());
+function CategoryPill({ category, categoryId, categories }: { category: string; categoryId?: string; categories?: any[] }) {
+  const matched = categories?.find(c => categoryId ? c.id === categoryId : c.name?.toLowerCase() === category?.toLowerCase());
   const cls = matched?.color || CATEGORY_COLORS[category] || "bg-gray-100 text-gray-600";
-  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{category}</span>;
+  return <span className={`px-2 py-0.5 text-xs rounded-full font-medium whitespace-nowrap ${cls}`}>{matched?.name || category || "Uncategorized"}</span>;
 }
 
 function FileChip({ type }: { type: string }) {
@@ -132,95 +139,20 @@ function toDate(ts: Timestamp | undefined | null): Date | null {
 }
 
 // ─── Quick Action Popovers ─────────────────────────────────────────────────────
-function QuickApprovePopover({ doc, onClose, onApprove }: { doc: DocumentDocument; onClose: () => void; onApprove: (remarks: string) => void }) {
-  const [remarks, setRemarks] = useState("");
-  const [saving, setSaving] = useState(false);
-  return (
-    <div className="absolute right-0 top-full mt-1 w-72 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-30 overflow-hidden">
-      <div className="h-8 bg-gradient-to-r from-green-500 to-green-400 flex items-center gap-2 px-3">
-        <Check className="w-3.5 h-3.5 text-white" />
-        <p className="text-white font-bold text-xs">Quick Approve?</p>
-      </div>
-      <div className="p-3 space-y-3">
-        <p className="text-[#001A4D] text-xs">Approve <strong>{doc.title.slice(0, 30)}...</strong> from <strong>{doc.submittedByOrgName}</strong>?</p>
-        <textarea rows={3} placeholder="Optional approval remarks..." className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] resize-none" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
-        <div className="flex items-center justify-between">
-          <button onClick={onClose} className="text-gray-500 text-xs hover:text-gray-700">Cancel</button>
-          <button disabled={saving} onClick={async () => { setSaving(true); await onApprove(remarks); setSaving(false); }} className="px-3 py-1.5 bg-gradient-to-r from-green-500 to-green-400 text-white text-xs font-bold rounded-lg disabled:opacity-50">
-            {saving ? "Approving..." : "Approve"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+function QuickApprovePopover({ doc, onClose, onApprove }: { doc: DocumentDocument; onClose: () => void; onApprove: (remarks: string) => Promise<void> | void }) {
+  return <DocumentReviewActionModal doc={doc} action="Approve" onClose={onClose} onConfirm={onApprove} />;
 }
-
-function QuickReturnPopover({ doc, onClose, onReturn }: { doc: DocumentDocument; onClose: () => void; onReturn: (remarks: string) => void }) {
-  const [remarks, setRemarks] = useState("");
-  const [saving, setSaving] = useState(false);
-  const canReturn = remarks.trim().length > 0;
-  return (
-    <div className="absolute right-0 top-full mt-1 w-80 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-30 overflow-hidden">
-      <div className="h-8 bg-gradient-to-r from-amber-500 to-orange-500 flex items-center gap-2 px-3">
-        <RotateCcw className="w-3.5 h-3.5 text-white" />
-        <p className="text-white font-bold text-xs">Return for Revision</p>
-      </div>
-      <div className="p-3 space-y-3">
-        <p className="text-[#001A4D] text-xs"><strong>{doc.title.slice(0, 30)}...</strong> · {doc.submittedByOrgName}</p>
-        <textarea
-          rows={3}
-          placeholder="Required revision remarks / instructions for the officer..."
-          className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] resize-none border-gray-300"
-          value={remarks}
-          onChange={(e) => setRemarks(e.target.value)}
-        />
-        <div className="flex items-center justify-between">
-          <button onClick={onClose} className="text-gray-500 text-xs hover:text-gray-700">Cancel</button>
-          <button
-            disabled={!canReturn || saving}
-            onClick={async () => { setSaving(true); await onReturn(remarks); setSaving(false); }}
-            className={`px-3 py-1.5 text-white text-xs font-bold rounded-lg transition-colors ${canReturn ? "bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 cursor-pointer" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
-          >
-            {saving ? "Returning..." : "Return for Revision"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+function QuickReturnPopover({ doc, onClose, onReturn }: { doc: DocumentDocument; onClose: () => void; onReturn: (remarks: string) => Promise<void> | void }) {
+  return <DocumentReviewActionModal doc={doc} action="Return" onClose={onClose} onConfirm={onReturn} />;
 }
-
-function QuickRejectPopover({ doc, onClose, onReject }: { doc: DocumentDocument; onClose: () => void; onReject: (remarks: string) => void }) {
-  const [remarks, setRemarks] = useState("");
-  const [saving, setSaving] = useState(false);
-  const canReject = remarks.trim().length > 0;
-  return (
-    <div className="absolute right-0 top-full mt-1 w-80 bg-white border border-[#E0E0E0] rounded-xl shadow-lg z-30 overflow-hidden">
-      <div className="h-8 bg-gradient-to-r from-red-500 to-orange-500 flex items-center gap-2 px-3">
-        <X className="w-3.5 h-3.5 text-white" />
-        <p className="text-white font-bold text-xs">Quick Reject</p>
-      </div>
-      <div className="p-3 space-y-3">
-        <p className="text-[#001A4D] text-xs"><strong>{doc.title.slice(0, 30)}...</strong> · {doc.submittedByOrgName}</p>
-        <textarea rows={3} placeholder="Rejection reason — required..." className="w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] resize-none border-gray-300" value={remarks} onChange={(e) => setRemarks(e.target.value)} />
-        <div className="flex items-center justify-between">
-          <button onClick={onClose} className="text-gray-500 text-xs hover:text-gray-700">Cancel</button>
-          <button
-            disabled={!canReject || saving}
-            onClick={async () => { setSaving(true); await onReject(remarks); setSaving(false); }}
-            className={`px-3 py-1.5 text-white text-xs font-bold rounded-lg transition-colors ${canReject ? "bg-gradient-to-r from-red-500 to-orange-500 hover:opacity-90" : "bg-gray-200 text-gray-400 cursor-not-allowed"}`}
-          >
-            {saving ? "Rejecting..." : "Reject"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
+function QuickRejectPopover({ doc, onClose, onReject }: { doc: DocumentDocument; onClose: () => void; onReject: (remarks: string) => Promise<void> | void }) {
+  return <DocumentReviewActionModal doc={doc} action="Reject" onClose={onClose} onConfirm={onReject} />;
 }
 
 // ─── Broadcast Modal ───────────────────────────────────────────────────────────
-function BroadcastModal({ onClose }: { onClose: () => void }) {
+function BroadcastModal({ onClose, onViewSent }: { onClose: () => void; onViewSent: () => void }) {
   const { data: docCategories } = useDocumentCategories();
-  const activeCategories = docCategories.filter(c => c.active);
+  const activeCategories = docCategories.filter(c => c.active && !c.archived);
   const { data: orgs } = useOrganizationStream();
   const { profile: adminProfile } = useAdviserProfile();
   const { activeCollegePeriod, activeShsPeriod, periods: semesters } = useActiveAcademicPeriods();
@@ -236,6 +168,8 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("");
   const [categoryId, setCategoryId] = useState("");
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [createdCategory, setCreatedCategory] = useState<{ id: string; name: string } | null>(null);
   const [description, setDescription] = useState("");
   const [pushNotif, setPushNotif] = useState(true);
   const [broadcast, setBroadcast] = useState(false);
@@ -264,12 +198,13 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
     ? activeOrgs.length
     : selectedOrgs.length;
 
-  const canBroadcast = title && uploadedFile && targetOrgCount > 0 && !broadcasting;
+  const canBroadcast = Boolean(title.trim() && targetOrgCount > 0 && !broadcasting && !uploading && !uploadError && adminProfile);
 
   const toggleOrg = (id: string) => setSelectedOrgs(p => p.includes(id) ? p.filter(o => o !== id) : [...p, id]);
 
   const handleFileSelect = async (file: File) => {
     setUploadError(null);
+    setUploadedFile(null);
     setUploading(true);
     try {
       const result = await uploadToCloudinary(file, {
@@ -286,7 +221,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
   };
 
   const handleBroadcast = async () => {
-    if (!canBroadcast || !uploadedFile || !adminProfile) return;
+    if (!canBroadcast || !adminProfile) return;
     setBroadcasting(true);
     try {
       const refNum = await getNextReferenceNumber('SAS');
@@ -300,10 +235,10 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
         description,
         category: category || '',
         categoryId: categoryId || '',
-        fileUrl: uploadedFile.url,
-        fileName: uploadedFile.name,
-        fileType: inferFileType(uploadedFile.name),
-        fileSize: uploadedFile.size,
+        fileUrl: uploadedFile?.url || '',
+        fileName: uploadedFile?.name || '',
+        fileType: uploadedFile ? inferFileType(uploadedFile.name) : 'OTHER',
+        fileSize: uploadedFile?.size || 0,
         semesterId: resolvedSemesterId,
         academicYear: resolvedAy,
         semester: resolvedSemester || resolvedTrimester || '',
@@ -334,7 +269,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
       setBroadcastRef(refNum);
       setBroadcast(true);
     } catch (err) {
-      console.error('Broadcast failed:', err);
+      setUploadError((err as Error).message || 'Broadcast failed. Please try again.');
     } finally {
       setBroadcasting(false);
     }
@@ -342,6 +277,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {addingCategory && <AddDocumentCategoryModal onClose={() => setAddingCategory(false)} onCreated={(id, name) => { setCreatedCategory({ id, name }); setCategoryId(id); setCategory(name); }} />}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-[640px] max-h-[88vh] flex flex-col overflow-hidden">
         <div className="bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] px-6 py-4 flex items-center justify-between flex-shrink-0">
@@ -364,8 +300,8 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
               <p className="text-[#FFD41C] font-bold font-mono text-base">{broadcastRef}</p>
             </div>
             <div className="px-6 py-4 border-t border-gray-200 flex gap-3">
-              <button onClick={onClose} className="flex-1 py-2.5 border border-white/50 text-white bg-[#001A4D] rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 transition-colors">Broadcast Another</button>
-              <button onClick={onClose} className="flex-1 py-2.5 bg-[#FFD41C] text-[#001A4D] rounded-lg text-sm font-bold hover:bg-[#FFD41C]/90 transition-colors">View Sent Documents</button>
+              <button onClick={() => { setBroadcast(false); setTitle(""); setDescription(""); setUploadedFile(null); }} className="flex-1 py-2.5 border border-white/50 text-white bg-[#001A4D] rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 transition-colors">Broadcast Another</button>
+              <button onClick={onViewSent} className="flex-1 py-2.5 bg-[#FFD41C] text-[#001A4D] rounded-lg text-sm font-bold hover:bg-[#FFD41C]/90 transition-colors">View Sent Documents</button>
             </div>
           </div>
         ) : (
@@ -383,15 +319,15 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">Category</label>
-                    <select className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]" value={category} onChange={(e) => {
-                      setCategory(e.target.value);
-                      const cat = activeCategories.find(c => c.name === e.target.value);
-                      setCategoryId(cat?.id ?? '');
+                    <select aria-label="Broadcast category" className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm" value={categoryId} onChange={(e) => {
+                      if (e.target.value === '__add_category__') { setAddingCategory(true); return; }
+                      const selected = activeCategories.find(c => c.id === e.target.value) || (createdCategory?.id === e.target.value ? createdCategory : null);
+                      setCategoryId(e.target.value); setCategory(selected?.name || '');
                     }}>
-                      <option value="">Select category...</option>
-                      {activeCategories.map((cat) => (
-                        <option key={cat.id} value={cat.name}>{cat.name}</option>
-                      ))}
+                      <option value="">Uncategorized</option>
+                      {activeCategories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                      {createdCategory && !activeCategories.some((cat) => cat.id === createdCategory.id) && <option value={createdCategory.id}>{createdCategory.name}</option>}
+                      <option value="__add_category__">+ Add Category</option>
                     </select>
                   </div>
                   <div>
@@ -404,7 +340,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
               {/* Section B — File */}
               <div>
                 <div className="border-l-4 border-[#0E4EBD] pl-3 mb-3">
-                  <p className="text-[#001A4D] font-bold text-sm">File Attachment</p>
+                  <p className="text-[#001A4D] font-bold text-sm">File Attachment (Optional)</p>
                 </div>
                 <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.xlsx,.xls,.jpg,.jpeg,.png" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileSelect(f); e.target.value = ''; }} />
                 {uploadedFile ? (
@@ -433,7 +369,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
                     <p className="text-gray-400 text-xs italic">PDF, DOCX, XLSX, JPG, PNG · Max 25MB</p>
                   </div>
                 )}
-                {uploadError && <p className="text-red-500 text-xs mt-2"><AlertCircle className="w-3 h-3 inline mr-1" />{uploadError}</p>}
+                {uploadError && <div role="alert" className="text-red-500 text-xs mt-2"><p>{uploadError}</p><button type="button" onClick={() => { setUploadError(null); setUploadedFile(null); }} className="underline mt-1">Clear error and continue without attachment</button></div>}
               </div>
 
               {/* Section C — Distribution */}
@@ -490,10 +426,7 @@ function BroadcastModal({ onClose }: { onClose: () => void }) {
             </div>
 
             <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between flex-shrink-0">
-              <button className="flex items-center gap-2 px-4 py-2 border border-[#0E4EBD] text-[#0E4EBD] rounded-lg text-sm font-medium hover:bg-[#0E4EBD]/5 transition-colors">
-                <Save className="w-4 h-4" />
-                Save as Draft
-              </button>
+
               <button
                 onClick={handleBroadcast}
                 disabled={!canBroadcast}
@@ -561,7 +494,8 @@ function InboxTab() {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [previewDoc, setPreviewDoc] = useState<DocumentDocument | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  
+  const [bulkApprove, setBulkApprove] = useState(false);
+
   // Filter States
   const [searchQuery, setSearchQuery] = useState("");
   const [orgFilter, setOrgFilter] = useState("All");
@@ -575,12 +509,7 @@ function InboxTab() {
     return Array.from(map.entries());
   }, [incoming]);
 
-  const availableCategories = useMemo(() => {
-    const set = new Set<string>();
-    categories.forEach(c => { if (c.name) set.add(c.name); });
-    incoming.forEach(d => { if (d.category) set.add(d.category); });
-    return Array.from(set).sort();
-  }, [categories, incoming]);
+  const availableCategories = useMemo(() => categoryFilterOptions(categories, incoming), [categories, incoming]);
 
   const availablePeriods = useMemo(() => {
     const periodMap = new Map<string, { key: string; label: string; sy: string; term: string }>();
@@ -630,14 +559,14 @@ function InboxTab() {
     let list = incoming;
     if (statusFilter !== "All") list = list.filter(d => d.status === statusFilter);
     if (orgFilter !== "All") list = list.filter(d => d.submittedByOrgId === orgFilter);
-    if (categoryFilter !== "All") list = list.filter(d => d.category === categoryFilter || d.categoryId === categoryFilter);
+    if (categoryFilter !== "All") list = list.filter(d => matchesDocumentCategory(d, categoryFilter));
     if (periodFilter !== "All") {
       const [targetSy, targetTerm] = periodFilter.split("__");
       list = list.filter(d => {
         const docAy = d.academicYear || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.academicYear : '');
         const docSem = d.semester || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.semester : '');
         const docTri = d.trimester;
-        
+
         if (docAy !== targetSy) return false;
         if (!targetTerm) return true;
         return docSem === targetTerm || docTri === targetTerm || String(docSem).includes(targetTerm);
@@ -670,19 +599,19 @@ function InboxTab() {
   }, [filtered, currentPage]);
 
   const handleApprove = async (docId: string, remarks: string) => {
-    if (!adminProfile) return;
+    if (!adminProfile) throw new Error('Your SAS session is not ready. Please sign in again.');
     await reviewDocument(docId, 'Approved', adminProfile.uid, remarks || null);
     setApprovePopover(null);
   };
 
   const handleReturn = async (docId: string, remarks: string) => {
-    if (!adminProfile) return;
+    if (!adminProfile) throw new Error('Your SAS session is not ready. Please sign in again.');
     await reviewDocument(docId, 'Returned', adminProfile.uid, remarks);
     setReturnPopover(null);
   };
 
   const handleReject = async (docId: string, remarks: string) => {
-    if (!adminProfile) return;
+    if (!adminProfile) throw new Error('Your SAS session is not ready. Please sign in again.');
     await reviewDocument(docId, 'Rejected', adminProfile.uid, remarks);
     setRejectPopover(null);
   };
@@ -725,7 +654,7 @@ function InboxTab() {
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
             <option value="All">All Categories</option>
-            {availableCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+            {availableCategories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
           </select>
 
           {/* Combined Academic Period (SY & Semester) Filter */}
@@ -817,7 +746,7 @@ function InboxTab() {
                         <td className="px-4 py-3 min-w-[180px]">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <p className="text-[#001A4D] font-bold text-sm leading-tight">{doc.title}</p>
-                            {doc.sourceModule && (
+                            {doc.isSystemGenerated && doc.sourceModule && doc.sourceModule !== 'general' && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-[#0E4EBD] border border-blue-200" title={`Auto-archived from ${doc.sourceModule}`}>
                                 <Sparkles className="w-2.5 h-2.5 text-[#0E4EBD]" />
                                 {doc.sourceModule === 'finance' ? 'Liquidation' : 'Proposal'}
@@ -825,17 +754,19 @@ function InboxTab() {
                             )}
                           </div>
                           <div className="flex items-center gap-1.5 mt-1">
-                            <FileChip type={doc.fileType} />
-                            <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>
+                            {(doc.fileUrl || doc.fileStoragePath) ? <FileChip type={doc.fileType} /> : <span className="text-xs text-gray-400">No attachment</span>}
+                            {(doc.fileUrl || doc.fileStoragePath) && <span className="text-gray-400 text-xs">{formatBytes(doc.fileSize)}</span>}
                           </div>
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
                             <div className={`w-7 h-7 ${doc.isSasInternal ? 'bg-gradient-to-br from-[#001A4D] to-purple-700' : 'bg-gradient-to-br from-[#001A4D] to-[#0E4EBD]'} rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0`}>
-                              {doc.submittedByOrgAcronym?.slice(0, 2) || (doc.isSasInternal ? 'SA' : '??')}
+                              {doc.submittedByOrgAcronym?.slice(0, 3) || (doc.isSasInternal ? 'SAS' : '??')}
                             </div>
                             <div>
-                              <p className="text-[#001A4D] text-xs font-medium leading-tight">{doc.submittedByOrgName}</p>
+                              <p className="text-[#001A4D] text-xs font-medium leading-tight">
+                                {doc.submittedByOrgName || (doc.isSasInternal ? 'Student Affairs Services' : 'Unknown Organization')}
+                              </p>
                               {doc.isSasInternal && (
                                 <span className="inline-block mt-0.5 px-1 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
                                   SAS Internal
@@ -844,7 +775,7 @@ function InboxTab() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3"><CategoryPill category={doc.category} categories={categories} /></td>
+                        <td className="px-4 py-3"><CategoryPill category={doc.category} categoryId={doc.categoryId} categories={categories} /></td>
                         <td className="px-4 py-3 whitespace-nowrap">
                           <AcademicPeriodCell doc={doc} semesters={semesters} />
                         </td>
@@ -870,18 +801,18 @@ function InboxTab() {
                         </td>
                         <td className="px-4 py-3"><StatusPill status={doc.status} /></td>
                         <td className="px-4 py-3 relative">
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <div className="flex items-center gap-1 opacity-100 transition-opacity">
                             <button onClick={() => setPreviewDoc(doc)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors cursor-pointer" title="View Document"><Eye className="w-4 h-4" /></button>
                             <button
                               onClick={async () => {
                                 setDownloadingId(doc.id);
                                 try {
-                                  await downloadFile(doc.fileUrl, doc.fileName);
+                                  await downloadDocument(doc).catch((error) => toast.error(error.message));
                                 } finally {
                                   setDownloadingId(null);
                                 }
                               }}
-                              disabled={downloadingId === doc.id}
+                              disabled={downloadingId === doc.id || (!doc.fileUrl && !doc.fileStoragePath)}
                               className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-gray-100 text-[#001A4D] transition-colors cursor-pointer"
                               title="Download File"
                             >
@@ -940,12 +871,21 @@ function InboxTab() {
       {selected.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-4 px-5 py-3 bg-[#001A4D] rounded-2xl shadow-2xl z-20">
           <p className="text-white text-sm font-medium">{selected.length} documents selected</p>
-          <button className="px-4 py-2 bg-gradient-to-r from-green-500 to-green-400 text-white text-xs font-bold rounded-lg">Approve Selected</button>
-          <button className="px-4 py-2 border border-white/30 text-white text-xs rounded-lg hover:bg-white/10 transition-colors">Export Selected</button>
+          <button onClick={() => setBulkApprove(true)} className="px-4 py-2 bg-gradient-to-r from-green-500 to-green-400 text-white text-xs font-bold rounded-lg">Approve Selected</button>
+
           <button onClick={() => setSelected([])} className="text-white/60 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
       )}
 
+      {bulkApprove && selected.length > 0 && incoming[0] && <DocumentReviewActionModal doc={{ ...incoming[0], title: `${selected.length} selected documents`, referenceNumber: '', submittedByOrgName: 'Only pending submissions will be approved' }} action="Approve" onClose={() => setBulkApprove(false)} onConfirm={async (remarks) => {
+        const eligible = incoming.filter((item) => selected.includes(item.id) && ['Pending', 'Resubmitted'].includes(item.status));
+        if (!eligible.length) throw new Error('No selected documents are pending review.');
+        const outcomes = await Promise.allSettled(eligible.map((item) => handleApprove(item.id, remarks)));
+        const failed = eligible.filter((_item, index) => outcomes[index].status === 'rejected').map((item) => item.id);
+        setSelected(failed);
+        if (failed.length) throw new Error(`${failed.length} documents could not be approved. Refresh their status and retry.`);
+        setBulkApprove(false);
+      }} />}
       {previewDoc && (
         <DocumentPreviewModal
           doc={previewDoc}
@@ -977,18 +917,13 @@ function SentTab() {
   const { data: semesters } = useSemesters();
   const [previewDoc, setPreviewDoc] = useState<DocumentDocument | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  
+
   // Filter States
   const [searchQuery, setSearchQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("All");
   const [periodFilter, setPeriodFilter] = useState("All");
 
-  const availableCategories = useMemo(() => {
-    const set = new Set<string>();
-    categories.forEach(c => { if (c.name) set.add(c.name); });
-    sent.forEach(d => { if (d.category) set.add(d.category); });
-    return Array.from(set).sort();
-  }, [categories, sent]);
+  const availableCategories = useMemo(() => categoryFilterOptions(categories, sent), [categories, sent]);
 
   const availablePeriods = useMemo(() => {
     const periodMap = new Map<string, { key: string; label: string; sy: string; term: string }>();
@@ -1032,14 +967,14 @@ function SentTab() {
 
   const filteredSent = useMemo(() => {
     let list = sent;
-    if (categoryFilter !== "All") list = list.filter(d => d.category === categoryFilter || d.categoryId === categoryFilter);
+    if (categoryFilter !== "All") list = list.filter(d => matchesDocumentCategory(d, categoryFilter));
     if (periodFilter !== "All") {
       const [targetSy, targetTerm] = periodFilter.split("__");
       list = list.filter(d => {
         const docAy = d.academicYear || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.academicYear : '');
         const docSem = d.semester || (d.semesterId ? semesters.find(s => s.id === d.semesterId)?.semester : '');
         const docTri = d.trimester;
-        
+
         if (docAy !== targetSy) return false;
         if (!targetTerm) return true;
         return docSem === targetTerm || docTri === targetTerm || String(docSem).includes(targetTerm);
@@ -1091,7 +1026,7 @@ function SentTab() {
             onChange={(e) => setCategoryFilter(e.target.value)}
           >
             <option value="All">All Categories</option>
-            {availableCategories.map((c) => <option key={c} value={c}>{c}</option>)}
+            {availableCategories.map((category) => <option key={category.value} value={category.value}>{category.label}</option>)}
           </select>
 
           {/* Combined Academic Period (SY & Semester) Filter */}
@@ -1153,9 +1088,9 @@ function SentTab() {
                     <td className="px-4 py-3 font-mono text-xs text-gray-500">{doc.referenceNumber}</td>
                     <td className="px-4 py-3">
                       <p className="text-[#001A4D] font-bold text-sm">{doc.title}</p>
-                      <div className="flex items-center gap-1.5 mt-1"><FileChip type={doc.fileType} /></div>
+                      <div className="flex items-center gap-1.5 mt-1">{(doc.fileUrl || doc.fileStoragePath) ? <FileChip type={doc.fileType} /> : <span className="text-xs text-gray-400">No attachment</span>}</div>
                     </td>
-                    <td className="px-4 py-3"><CategoryPill category={doc.category} categories={categories} /></td>
+                    <td className="px-4 py-3"><CategoryPill category={doc.category} categoryId={doc.categoryId} categories={categories} /></td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <AcademicPeriodCell doc={doc} semesters={semesters} />
                     </td>
@@ -1171,18 +1106,18 @@ function SentTab() {
                       <p className="text-gray-400 text-xs">{readCount} of {totalTargets} orgs opened</p>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex gap-1 opacity-100 transition-opacity">
                         <button onClick={() => setPreviewDoc(doc)} className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-blue-50 text-blue-600 transition-colors cursor-pointer" title="View Document"><Eye className="w-3.5 h-3.5" /></button>
                         <button
                           onClick={async () => {
                             setDownloadingId(doc.id);
                             try {
-                              await downloadFile(doc.fileUrl, doc.fileName);
+                              await downloadDocument(doc).catch((error) => toast.error(error.message));
                             } finally {
                               setDownloadingId(null);
                             }
                           }}
-                          disabled={downloadingId === doc.id}
+                          disabled={downloadingId === doc.id || (!doc.fileUrl && !doc.fileStoragePath)}
                           className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 text-[#001A4D] transition-colors cursor-pointer"
                           title="Download Document"
                         >
@@ -1208,7 +1143,7 @@ function SentTab() {
         </div>
       )}
 
-      {previewDoc && <DocumentPreviewModal doc={previewDoc} onClose={() => setPreviewDoc(null)} />}
+      {previewDoc && <DocumentPreviewModal doc={previewDoc} isAdmin onClose={() => setPreviewDoc(null)} />}
     </div>
   );
 }
@@ -1216,7 +1151,9 @@ function SentTab() {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 export function AdminDocuments() {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<"incoming" | "sent">("incoming");
+  const [edmsParams, setEdmsParams] = useEdmsSearchParams();
+  const tab = edmsParams.get('view') === 'incoming' ? 'incoming' : edmsParams.get('view') === 'sent' ? 'sent' : 'storage';
+  const setTab = (key: string) => setEdmsParams((previous) => { previous.set('view', key); previous.delete('documentId'); return previous; });
   const [showBroadcast, setShowBroadcast] = useState(false);
 
   const { data: incoming } = useIncomingDocuments();
@@ -1299,7 +1236,7 @@ export function AdminDocuments() {
 
       {/* Tabs */}
       <div className="flex border-b border-gray-200">
-        {([["incoming", "Inbox"], ["sent", "Sent to Clubs"]] as const).map(([key, label]) => (
+        {([["storage", "EDMS Storage"], ["incoming", "Inbox"], ["sent", "Sent to Clubs"]] as const).map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -1313,9 +1250,9 @@ export function AdminDocuments() {
         ))}
       </div>
 
-      {tab === "incoming" ? <InboxTab /> : <SentTab />}
+      {tab === "storage" ? <EdmsStorage /> : tab === "incoming" ? <InboxTab /> : <SentTab />}
 
-      {showBroadcast && <BroadcastModal onClose={() => setShowBroadcast(false)} />}
+      {showBroadcast && <BroadcastModal onClose={() => setShowBroadcast(false)} onViewSent={() => { setShowBroadcast(false); setTab("sent"); }} />}
     </div>
   );
 }

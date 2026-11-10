@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { generateAcronym } from '../../modules/organizations/components/CreateClubModal';
 import { X, Upload, Crown, Star, FileText, Calculator, ClipboardCheck, Users, Plus, Mail, Lock, Eye, EyeOff, Building, ChevronDown, Check, ArrowRight, ArrowLeft, Search } from 'lucide-react';
 
 interface CreateOrganizationModalProps {
@@ -123,7 +124,10 @@ export default function CreateOrganizationModal({ isOpen, onClose }: CreateOrgan
           <input
             type="text"
             value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            onChange={(e) => {
+              const newName = e.target.value;
+              setFormData({ ...formData, name: newName, acronym: generateAcronym(newName) });
+            }}
             placeholder="Enter organization name"
             className="w-full px-4 py-2.5 border border-[#E0E0E0] rounded-lg focus:ring-2 focus:ring-[#1E70E8] focus:border-transparent"
           />
@@ -168,11 +172,12 @@ export default function CreateOrganizationModal({ isOpen, onClose }: CreateOrgan
             <label className="block text-sm font-medium text-gray-700 mb-1.5">Organization Acronym</label>
             <input
               type="text"
+              readOnly
               value={formData.acronym}
-              onChange={(e) => setFormData({ ...formData, acronym: e.target.value.toUpperCase() })}
-              placeholder="e.g. ITG"
-              className="w-full px-4 py-2.5 border border-[#E0E0E0] rounded-lg focus:ring-2 focus:ring-[#1E70E8] focus:border-transparent"
+              placeholder="Auto-generated"
+              className="w-full px-4 py-2.5 border border-[#E0E0E0] rounded-lg font-mono font-bold bg-gray-100 text-gray-800 cursor-not-allowed"
             />
+            <p className="text-[11px] text-gray-500 mt-1">Auto-populated from name in uppercase (read-only).</p>
           </div>
 
           <div>

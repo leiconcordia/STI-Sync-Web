@@ -1,28 +1,31 @@
 import { useState, useMemo } from 'react';
-import { X, Send, AlertCircle, Building2, Globe, Users } from 'lucide-react';
+import { X, Send, Edit3, AlertCircle, Building2, Globe, Users } from 'lucide-react';
 import { Button } from '@/app/components/ui/button';
+import { toast } from 'sonner';
 import { useSemesters } from '@/app/modules/academic';
 import { useOrganizationStream } from '@/app/modules/organizations/hooks/useOrganizationStream';
 import { useAdviserProfile } from '@/app/modules/auth/hooks/useAdviserProfile';
-import { createAnnouncement } from '../services/announcement.service';
-import type { AnnouncementPriority, AnnouncementAudience, CreateAnnouncementPayload } from '../types/announcement.types';
+import { createAnnouncement, updateAnnouncement } from '../services/announcement.service';
+import type { AnnouncementPriority, AnnouncementAudience, CreateAnnouncementPayload, AnnouncementDocument } from '../types/announcement.types';
 
 interface CreateAnnouncementModalProps {
   onClose: () => void;
+  announcement?: AnnouncementDocument | null;
 }
 
-export function CreateAnnouncementModal({ onClose }: CreateAnnouncementModalProps) {
+export function CreateAnnouncementModal({ onClose, announcement }: CreateAnnouncementModalProps) {
+  const isEditing = Boolean(announcement);
   const { profile } = useAdviserProfile();
   const { data: semesters } = useSemesters();
   const activeSemester = useMemo(() => semesters.find(s => s.status === 'ACTIVE'), [semesters]);
   const { data: organizations = [], loading: orgsLoading } = useOrganizationStream();
   
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [priority, setPriority] = useState<AnnouncementPriority>('Normal');
-  const [audience, setAudience] = useState<AnnouncementAudience>('campus-wide');
-  const [targetOrgIds, setTargetOrgIds] = useState<string[]>([]);
-  const [pinned, setPinned] = useState(false);
+  const [title, setTitle] = useState(announcement?.title || '');
+  const [content, setContent] = useState(announcement?.content || '');
+  const [priority, setPriority] = useState<AnnouncementPriority>(announcement?.priority || 'Normal');
+  const [audience, setAudience] = useState<AnnouncementAudience>(announcement?.audience || 'campus-wide');
+  const [targetOrgIds, setTargetOrgIds] = useState<string[]>(announcement?.targetOrgIds || []);
+  const [pinned, setPinned] = useState(Boolean(announcement?.pinned));
   
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -23,6 +23,7 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db, storage, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../../../services/firebase';
 import { sendSignatoryWelcomeCredentialsEmail } from '../../../../services/email.service';
 import { resetAccountPassword } from '../../accounts/services/account-reset.service';
+import { formatPersonName, structuredNameFields } from '../../../utils/name.utils';
 import type {
   InstitutionalSignatory,
   CreateSignatoryPayload,
@@ -64,7 +65,7 @@ export function subscribeToSignatories(
         return {
           id: docSnap.id,
           uid: data.uid || docSnap.id,
-          name: data.name || '',
+          ...structuredNameFields(data),
           email: data.email || '',
           role: data.role || 'program_head',
           roleTitle: data.roleTitle || '',
@@ -121,7 +122,7 @@ export async function getInstitutionalSignatories(): Promise<InstitutionalSignat
       return {
         id: docSnap.id,
         uid: data.uid || docSnap.id,
-        name: data.name || '',
+        ...structuredNameFields(data),
         email: data.email || '',
         role: data.role || 'program_head',
         roleTitle: data.roleTitle || '',
@@ -191,10 +192,7 @@ export async function createInstitutionalSignatory(
     const docData: any = {
       uid: authUid || docId,
       authUid,
-      name: payload.name.trim(),
-      firstName: payload.firstName ? payload.firstName.trim() : '',
-      lastName: payload.lastName ? payload.lastName.trim() : '',
-      middleInitial: payload.middleInitial ? payload.middleInitial.trim() : '',
+      ...structuredNameFields(payload),
       email: cleanEmail,
       role: payload.role,
       roleTitle: payload.roleTitle.trim(),
@@ -224,7 +222,7 @@ export async function createInstitutionalSignatory(
     // 3. Dispatch automated credentials email in background
     sendSignatoryWelcomeCredentialsEmail({
       to: cleanEmail,
-      signatoryName: payload.name.trim(),
+      signatoryName: formatPersonName(payload),
       roleName: payload.role,
       positionTitle: payload.roleTitle.trim(),
       department: (payload.department || '').trim(),
@@ -293,11 +291,14 @@ export async function toggleSignatoryStatus(
  */
 export async function updateSignatoryDetails(
   signatoryId: string,
-  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'firstName' | 'lastName' | 'middleInitial' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows' | 'canApproveProposal' | 'canApproveLiquidation' | 'canApprovePar' | 'defaultSignatoryLabel'>>
+  updates: Partial<Pick<InstitutionalSignatory, 'name' | 'firstName' | 'lastName' | 'middleName' | 'middleInitial' | 'role' | 'roleTitle' | 'actionType' | 'department' | 'departmentId' | 'employeeId' | 'isPermanentSigner' | 'isMandatoryForDepartment' | 'applicableScope' | 'applicableWorkflows' | 'canApproveProposal' | 'canApproveLiquidation' | 'canApprovePar' | 'defaultSignatoryLabel'>>
 ): Promise<void> {
   const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
+  const changesNames = ['firstName', 'lastName', 'middleName', 'middleInitial'].some((key) => Object.prototype.hasOwnProperty.call(updates, key));
+  const existing = changesNames ? await getDoc(docRef) : null;
   await updateDoc(docRef, {
     ...updates,
+    ...(changesNames ? structuredNameFields({ ...(existing?.data() || {}), ...updates }) : {}),
     updatedAt: serverTimestamp(),
   });
 }

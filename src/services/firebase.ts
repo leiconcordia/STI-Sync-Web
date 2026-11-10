@@ -12,7 +12,8 @@
 import { initializeApp, getApps, getApp, deleteApp } from "firebase/app";
 import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, signOut, connectAuthEmulator } from "firebase/auth";
-import { getStorage }                      from "firebase/storage";
+import { getStorage, connectStorageEmulator } from "firebase/storage";
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { getAnalytics, isSupported }       from "firebase/analytics";
 
 // ─── Firebase Project Configuration ───────────────────────────────────────────
@@ -37,14 +38,17 @@ export const db = getFirestore(app);
 
 /** Firebase Authentication */
 export const auth = getAuth(app);
+export const functions = getFunctions(app);
 
 if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') {
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
   connectFirestoreEmulator(db, '127.0.0.1', 8080);
+  connectFunctionsEmulator(functions, '127.0.0.1', 5001);
 }
 
 /** Firebase Storage — for event cover images, documents, certificate templates */
 export const storage = getStorage(app);
+if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') connectStorageEmulator(storage, '127.0.0.1', 9199);
 
 /**
  * Creates a new Firebase Auth user account without disrupting the currently signed-in admin session.
@@ -88,7 +92,7 @@ export async function rollbackSecondaryAuthUser(email: string, password: string,
  * Analytics requires a browser environment (not SSR / Node).
  * Resolved as a Promise<Analytics | null> to handle unsupported environments gracefully.
  */
-export const analyticsPromise = isSupported().then((supported) =>
+export const analyticsPromise = import.meta.env.VITE_FIREBASE_EMULATORS === 'true' ? Promise.resolve(null) : isSupported().then((supported) =>
   supported ? getAnalytics(app) : null
 );
 

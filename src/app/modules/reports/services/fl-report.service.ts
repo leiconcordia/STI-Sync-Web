@@ -7,6 +7,8 @@ import type {
   FLReportRow,
 } from '../types/report.types';
 import { isEventInTrack } from './report-generator.service';
+import { isEventLiquidationExempt } from '../../events/utils/organization-display.utils';
+import { calendarDaysRemaining, isActivityConcluded, liquidationSubmissionDeadline } from '../../events/utils/activity-compliance.utils';
 
 /**
  * Filter liquidations according to universal filters
@@ -17,7 +19,7 @@ export function filterLiquidationsByUniversalFilters(
   filters: UniversalFilterState
 ): LiquidationDocument[] {
   return liquidations.filter((liq) => {
-    if (liq.isDeleted) return false;
+    if (liq.isDeleted || liq.status === 'voided') return false;
 
     // Scope check via linked event or liq fields
     const linkedEvent = eventsMap.get(liq.eventId);
@@ -151,14 +153,11 @@ export function computeFLAnalytics(
     // Days lapsed & overdue check
     let daysLapsedVal: number | string = liq.daysLapsed || '—';
     let isOverdue = false;
-    if (liq.submissionDeadline && liq.status !== 'approved') {
-      const deadline = new Date(liq.submissionDeadline);
-      const now = new Date();
-      if (!isNaN(deadline.getTime()) && now > deadline) {
+    const deadline = liquidationSubmissionDeadline(eventsMap.get(liq.eventId), liq);
+    const daysRemaining = calendarDaysRemaining(deadline);
+    if (liq.status === 'draft' && !isEventLiquidationExempt(eventsMap.get(liq.eventId)) && daysRemaining !== null && daysRemaining < 0) {
         isOverdue = true;
-        const diff = Math.round((now.getTime() - deadline.getTime()) / (1000 * 60 * 60 * 24));
-        daysLapsedVal = `${diff} days overdue`;
-      }
+        daysLapsedVal = `${Math.abs(daysRemaining)} days overdue`;
     }
 
     return {
@@ -180,30 +179,19 @@ export function computeFLAnalytics(
     };
   });
 
-  // Calculate unliquidated aging count: completed events without approved liquidation past 7 days
+  // Use the same 15-calendar-day submission policy as campus compliance monitoring.
   const unliquidatedAgingCount = events.filter((e) => {
     if (e.isDeleted) return false;
-    if (e.proposalStatus !== 'completed') return false;
+    if (!isActivityConcluded(e) || isEventLiquidationExempt(e)) return false;
     const hasApprovedLiq = liquidations.some(
       (l) => l.eventId === e.id && l.status === 'approved' && !l.isDeleted
     );
     if (hasApprovedLiq) return false;
 
-    // Check completion date
-    let completedDate: Date | null = null;
-    if (e.completedAt) {
-      if (typeof (e.completedAt as any).toDate === 'function') completedDate = (e.completedAt as any).toDate();
-      else if (typeof (e.completedAt as any).seconds === 'number') completedDate = new Date((e.completedAt as any).seconds * 1000);
-      else completedDate = new Date(e.completedAt as any);
-    } else if (e.sessions && e.sessions.length > 0 && e.sessions[0].date) {
-      completedDate = new Date(e.sessions[0].date);
-    }
-
-    if (completedDate && !isNaN(completedDate.getTime())) {
-      const daysSince = (Date.now() - completedDate.getTime()) / (1000 * 60 * 60 * 24);
-      return daysSince >= 7;
-    }
-    return false;
+    const current = liquidations.find((liq) => liq.eventId === e.id && !liq.isDeleted && liq.status !== 'voided');
+    if (current && ['under_review', 'pending', 'returned'].includes(current.status)) return false;
+    const remaining = calendarDaysRemaining(liquidationSubmissionDeadline(e, current));
+    return remaining !== null && remaining < 0;
   }).length;
 
   const budgetVarianceRate =

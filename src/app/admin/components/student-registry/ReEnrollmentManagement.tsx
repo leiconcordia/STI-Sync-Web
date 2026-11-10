@@ -1,3 +1,4 @@
+import { formatPersonName } from '../../../utils/name.utils';
 import {
   Bell,
   Download,
@@ -956,7 +957,7 @@ export default function ReEnrollmentManagement({
                         </div>
                         <div>
                           <p className="font-bold text-[#001A4D] leading-tight">
-                            {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                            {formatPersonName(student)}
                           </p>
                           <p className="text-xs text-gray-500 font-mono mt-0.5">{student.email}</p>
                         </div>
@@ -1355,7 +1356,7 @@ function IndividualReEnrollModal({
           <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 space-y-1">
             <div className="flex items-center justify-between">
               <p className="font-bold text-[#001A4D] text-base">
-                {student.firstName} {student.middleName ? `${student.middleName} ` : ''}{student.lastName}
+                {formatPersonName(student)}
               </p>
               <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                 isCurrentlyShs ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-blue-100 text-blue-900 border border-blue-300'

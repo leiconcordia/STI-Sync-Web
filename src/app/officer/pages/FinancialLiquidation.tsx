@@ -1,3 +1,4 @@
+import { useSearchParams } from 'react-router';
 import { useState, useEffect, useMemo } from 'react';
 import {
   Plus,
@@ -81,6 +82,9 @@ export default function FinancialLiquidation() {
   const [deletingReport, setDeletingReport] = useState<LiquidationDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewingDetailReport, setViewingDetailReport] = useState<LiquidationDocument | null>(null);
+  const [documentParams, setDocumentParams] = useSearchParams();
+  const targetDocumentId = documentParams.get('id');
+
   const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
   const [lightboxData, setLightboxData] = useState<{
     url: string;
@@ -112,6 +116,9 @@ export default function FinancialLiquidation() {
   const userName = profile?.studentName || session?.studentName || 'Officer';
 
   const { liquidations, loading } = useOrgLiquidations(orgId);
+  useEffect(() => {
+    if (targetDocumentId) { const selected = liquidations.find((record) => record.id === targetDocumentId); if (selected) setViewingDetailReport(selected); }
+  }, [targetDocumentId, liquidations]);
   const { events = [] } = useOrgEvents(orgId);
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
@@ -810,7 +817,7 @@ export default function FinancialLiquidation() {
                 <div className="text-xs text-white/70">Liquidation Detail &amp; Receipts</div>
               </div>
               <button
-                onClick={() => setViewingDetailReport(null)}
+                onClick={() => { setViewingDetailReport(null); setDocumentParams((previous) => { previous.delete('id'); return previous; }); }}
                 className="p-1 hover:bg-white/10 rounded-lg text-white cursor-pointer"
               >
                 ✕
@@ -1145,7 +1152,7 @@ export default function FinancialLiquidation() {
                 )}
               </div>
               <button
-                onClick={() => setViewingDetailReport(null)}
+                onClick={() => { setViewingDetailReport(null); setDocumentParams((previous) => { previous.delete('id'); return previous; }); }}
                 className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-xs font-bold hover:bg-gray-300 cursor-pointer"
               >
                 Close
