@@ -46,6 +46,10 @@ export default function SignatoryLayout() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   useEffect(() => {
+    if (session?.requiresPasswordChange) setIsPasswordModalOpen(true);
+  }, [session?.requiresPasswordChange]);
+
+  useEffect(() => {
     const raw = localStorage.getItem(SIGNATORY_SESSION_KEY);
     if (raw) {
       try {
@@ -75,6 +79,7 @@ export default function SignatoryLayout() {
             const updated = {
               ...prev,
               ...data,
+              requiresPasswordChange: Boolean(data.tempPass || data.requiresPasswordChange || data.requiresChangePassword || data.resetInProgress),
               id: docSnap.id,
               applicableWorkflows: workflows,
               applicableScope: data.applicableScope,
@@ -82,6 +87,10 @@ export default function SignatoryLayout() {
               canApproveLiquidation: data.canApproveLiquidation ?? (data.actionType === 'approver'),
               canApprovePar: data.canApprovePar ?? (data.actionType === 'approver'),
             };
+            delete updated.tempPass;
+            delete updated.temporaryPassword;
+            delete updated.customPassword;
+            delete updated.passwordHash;
             localStorage.setItem(SIGNATORY_SESSION_KEY, JSON.stringify(updated));
             return updated;
           });

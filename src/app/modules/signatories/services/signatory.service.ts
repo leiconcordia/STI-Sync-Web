@@ -20,8 +20,9 @@ import {
   onSnapshot,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db, storage, createSecondaryAuthUser } from '../../../../services/firebase';
+import { db, storage, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../../../services/firebase';
 import { sendSignatoryWelcomeCredentialsEmail } from '../../../../services/email.service';
+import { resetAccountPassword } from '../../accounts/services/account-reset.service';
 import type {
   InstitutionalSignatory,
   CreateSignatoryPayload,
@@ -159,6 +160,7 @@ export async function createInstitutionalSignatory(
 ): Promise<{ success: boolean; id: string; temporaryPassword: string; error?: string }> {
   const cleanEmail = payload.email.trim().toLowerCase();
   const tempPassword = payload.temporaryPassword || generateTemporaryPassword();
+  let createdAuthUid = '';
 
   try {
     // ── STRICT DUPLICATE PREVENTION: Prevent adding the same signatory email twice ──
@@ -176,11 +178,10 @@ export async function createInstitutionalSignatory(
     let authUid = '';
     try {
       authUid = await createSecondaryAuthUser(cleanEmail, tempPassword);
+      createdAuthUid = authUid;
     } catch (authErr: any) {
       console.warn('[SignatoryService] Secondary auth error:', authErr);
-      if (authErr?.code !== 'auth/email-already-in-use') {
-        throw new Error(authErr?.message || 'Failed to create Firebase Auth user');
-      }
+      throw new Error(authErr?.message || 'Failed to create Firebase Auth user');
     }
 
     // 2. Prepare Firestore Document
@@ -189,6 +190,7 @@ export async function createInstitutionalSignatory(
 
     const docData: any = {
       uid: authUid || docId,
+      authUid,
       name: payload.name.trim(),
       firstName: payload.firstName ? payload.firstName.trim() : '',
       lastName: payload.lastName ? payload.lastName.trim() : '',
@@ -209,6 +211,8 @@ export async function createInstitutionalSignatory(
       applicableScope: payload.applicableScope || (payload.role === 'accountant' ? 'liquidation_only' : 'both'),
       isActive: true,
       requiresPasswordChange: true,
+      tempPass: tempPassword,
+      resetInProgress: false,
       temporaryPassword: tempPassword,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -223,7 +227,7 @@ export async function createInstitutionalSignatory(
       signatoryName: payload.name.trim(),
       roleName: payload.role,
       positionTitle: payload.roleTitle.trim(),
-      department: payload.department.trim(),
+      department: (payload.department || '').trim(),
       temporaryPassword: tempPassword,
     }).catch((emailErr) => {
       console.warn('[SignatoryService] Background credentials email dispatch error:', emailErr);
@@ -235,6 +239,10 @@ export async function createInstitutionalSignatory(
       temporaryPassword: tempPassword,
     };
   } catch (err: any) {
+    if (createdAuthUid) {
+      try { await rollbackSecondaryAuthUser(cleanEmail, tempPassword, createdAuthUid); }
+      catch { console.warn('Could not roll back newly provisioned signatory. Account repair may be needed.'); }
+    }
     console.error('[SignatoryService] Failed to create institutional signatory:', err);
     return {
       success: false,
@@ -254,32 +262,15 @@ export async function resetSignatoryCredentials(
   name: string,
   roleTitle: string,
   department: string
-): Promise<{ success: boolean; temporaryPassword: string; error?: string }> {
-  const newTempPassword = generateTemporaryPassword();
+): Promise<{ success: boolean; temporaryPassword: string; error?: string; delivery?: 'accepted' | 'failed' }> {
+  if (import.meta.env.VITE_ACCOUNT_RESET_ENABLED === 'false') {
+    return { success: false, temporaryPassword: '', error: 'Password reset service is not configured.' };
+  }
   try {
-    const docRef = doc(db, SIGNATORIES_COLLECTION, signatoryId);
-    await updateDoc(docRef, {
-      temporaryPassword: newTempPassword,
-      requiresPasswordChange: true,
-      customPassword: null,
-      passwordHash: null,
-      updatedAt: serverTimestamp(),
-    });
-
-    // Send email
-    await sendSignatoryWelcomeCredentialsEmail({
-      to: email,
-      signatoryName: name,
-      roleName: roleTitle,
-      positionTitle: roleTitle,
-      department: department,
-      temporaryPassword: newTempPassword,
-    });
-
-    return { success: true, temporaryPassword: newTempPassword };
+    const result = await resetAccountPassword('signatories', signatoryId, 'Reset requested in signatory management');
+    return { success: true, temporaryPassword: result.temporaryPassword, delivery: result.delivery, error: result.deliveryError };
   } catch (err: any) {
-    console.error('[SignatoryService] Error resetting credentials:', err);
-    return { success: false, temporaryPassword: '', error: err?.message || 'Failed to reset credentials' };
+    return { success: false, temporaryPassword: '', error: err?.message || 'Failed to reset credentials.' };
   }
 }
 

@@ -30,3 +30,8 @@ dist-ssr
 
 # Antigravity artifacts
 .gemini/
+
+# Local Firebase administrator keys must never enter source control.
+*.service-account.json
+*firebase-adminsdk*.json
+server/credentials/

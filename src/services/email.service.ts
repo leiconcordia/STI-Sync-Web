@@ -25,6 +25,7 @@ const getResendEndpoint = () => {
 };
 
 export interface SendEmailPayload {
+  provider?: 'auto' | 'emailjs';
   to: string | string[];
   subject: string;
   html?: string;
@@ -56,6 +57,9 @@ export async function sendEmail(payload: SendEmailPayload): Promise<EmailRespons
   const recipients = Array.isArray(to) ? to : [to];
 
   // ── 1. If EmailJS is configured, send via EmailJS (Direct Gmail OAuth) ──
+  if (payload.provider === 'emailjs' && (!EMAILJS_PUBLIC_KEY || !EMAILJS_SERVICE_ID || !EMAILJS_TEMPLATE_ID)) {
+    throw new Error('EmailJS is not configured. Check VITE_EMAILJS_SERVICE_ID, VITE_EMAILJS_TEMPLATE_ID, and VITE_EMAILJS_PUBLIC_KEY, then restart the web server.');
+  }
   if (EMAILJS_PUBLIC_KEY && EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID) {
     try {
       const recipientString = recipients.join(', ');
@@ -98,6 +102,7 @@ export async function sendEmail(payload: SendEmailPayload): Promise<EmailRespons
   }
 
   // ── 2. Otherwise send via Resend API ──
+  if (!RESEND_API_KEY) throw new Error('Resend is not configured. Set the existing VITE_RESEND_API_KEY and restart the web server.');
   const sender = from || RESEND_FROM_EMAIL;
   const endpoint = getResendEndpoint();
 
@@ -126,6 +131,34 @@ export async function sendEmail(payload: SendEmailPayload): Promise<EmailRespons
     console.error('[EmailService] Error sending email via Resend:', errorMsg);
     throw new Error(errorMsg);
   }
+}
+
+/** Account resets explicitly use the existing EmailJS service and template. */
+export async function sendAccountPasswordResetCredentialsEmail(params: {
+  to: string;
+  temporaryPassword: string;
+  accountType: 'advisers' | 'students' | 'signatories';
+}): Promise<EmailResponse> {
+  const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!));
+  const instructions = params.accountType === 'students'
+    ? 'Open the STI Sync mobile app and sign in with your Student ID or personal email.'
+    : `Open ${window.location.origin}/portal/login and sign in with your email.`;
+  return sendEmail({
+    provider: 'emailjs',
+    to: params.to,
+    subject: '[STI Sync] Your temporary password',
+    text: `Your STI Sync password has been reset by SAS.\n\nLogin email: ${params.to}\nTemporary password: ${params.temporaryPassword}\n\n${instructions}\nYou must change this password after signing in. If you did not request this reset, contact SAS.`,
+    templateParams: {
+      temp_password: params.temporaryPassword,
+      temporary_password: params.temporaryPassword,
+      password: params.temporaryPassword,
+      login_email: params.to,
+      account_type: params.accountType,
+      login_url: params.accountType === 'students' ? '' : `${window.location.origin}/portal/login`,
+      link: params.accountType === 'students' ? '' : `${window.location.origin}/portal/login`,
+    },
+    html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #ddd;border-radius:12px;overflow:hidden"><div style="background:#001A4D;color:#FFD41C;padding:24px;font-size:24px;font-weight:bold">STI SYNC</div><div style="padding:24px"><h2>Password reset</h2><p>Your password has been reset by SAS.</p><p><strong>Login email:</strong> ${escapeHtml(params.to)}</p><p><strong>Temporary password:</strong></p><p style="background:#f4f6fb;padding:16px;font-family:monospace;font-size:18px;overflow-wrap:anywhere">${escapeHtml(params.temporaryPassword)}</p><p>${escapeHtml(instructions)}</p><p><strong>You must change this password after signing in.</strong></p><p>If you did not request this reset, contact SAS.</p></div></div>`,
+  });
 }
 
 /**

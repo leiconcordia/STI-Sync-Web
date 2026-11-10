@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite"
+    "dev": "vite",
+    "setup:backend": "npm --prefix functions ci",
+    "test:reset-ui": "node scripts/test-reset-modal.mjs && node scripts/test-reset-email.mjs",
+    "test:accounts": "firebase emulators:exec --only auth,firestore --project demo-sti-sync \"node scripts/test-local-reset-api.mjs && node scripts/test-vercel-reset.mjs && node scripts/test-account-creation.mjs\""
   },
   "dependencies": {
     "@emailjs/browser": "^4.4.1",
@@ -48,6 +51,8 @@
     "date-fns": "3.6.0",
     "embla-carousel-react": "8.6.0",
     "firebase": "^12.14.0",
+    "firebase-admin": "^13.10.0",
+    "firebase-functions": "^6.6.0",
     "html2canvas": "^1.4.1",
     "input-otp": "1.4.2",
     "jspdf": "^4.2.1",
@@ -77,6 +82,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "4.1.12",
     "@vitejs/plugin-react": "4.7.0",
+    "happy-dom": "^21.0.4",
     "tailwindcss": "4.1.12",
     "vite": "6.3.5"
   },

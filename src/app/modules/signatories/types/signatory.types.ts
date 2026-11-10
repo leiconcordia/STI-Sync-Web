@@ -102,6 +102,7 @@ export interface InstitutionalSignatory {
   defaultSignatoryLabel?: string;
   isActive: boolean;
   requiresPasswordChange?: boolean;
+  tempPass?: string | null;
   temporaryPassword?: string;
   customPassword?: string;
   passwordHash?: string;

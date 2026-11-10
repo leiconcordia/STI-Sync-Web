@@ -75,11 +75,21 @@ service cloud.firestore {
     match /event_categories/{id} { allow read: if true; allow write: if isAuthenticated(); }
     match /venues/{id} { allow read: if true; allow write: if isAuthenticated(); }
     match /officer_roles/{id} { allow read: if true; allow write: if isAuthenticated(); }
-    match /sas_admins/{id} { allow read: if isAuthenticated(); allow write: if isAuthenticated(); }
+    // Admin membership and reset locks must not be writable by client SDKs.
+    match /sas_admins/{id} {
+      allow read: if isAuthenticated();
+      allow update: if isAuthenticated() && request.auth.uid == id &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'firstName', 'lastName', 'middleName', 'displayName', 'phoneNumber',
+          'position', 'department', 'avatarUrl', 'signatureUrl', 'signatureDataUrl',
+          'signatureRoleTitle', 'signatureUpdatedAt', 'updatedAt'
+        ]);
+    }
+    match /_account_reset_locks/{id} { allow read, write: if false; }
 
     // Fallback rule for all other documents
-    match /{document=**} {
-      allow read, write: if true;
+    match /{collectionId}/{document=**} {
+      allow read, write: if !(collectionId in ['sas_admins', '_account_reset_locks']);
     }
   }
 }

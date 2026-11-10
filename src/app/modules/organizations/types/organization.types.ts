@@ -11,6 +11,7 @@ export interface OrganizationTypeDocument {
 }
 
 export interface OrgAdviserData {
+  authUid?: string;
   name: string;
   firstName?: string;
   lastName?: string;
@@ -21,6 +22,8 @@ export interface OrgAdviserData {
   title: string; // 'Club Adviser'
   temporaryPassword?: string;
   requiresPasswordChange?: boolean;
+  tempPass?: string | null;
+  resetInProgress?: boolean;
 }
 
 export interface OrganizationDocument {

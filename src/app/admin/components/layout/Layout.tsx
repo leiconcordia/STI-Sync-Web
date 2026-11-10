@@ -10,19 +10,22 @@ const pageTitles: Record<string, string> = {
   "/home/event-approvals": "Activities",
   "/home/attendance": "Attendance Monitoring",
   "/home/liquidations": "Financial Liquidations",
+  "/home/post-activity-reports": "Post-Activity Reports",
   "/home/students": "Student Registry",
   "/home/reports": "Reports & Analytics",
   "/home/announcements": "Announcements",
   "/home/settings": "System Settings",
+  "/home/account-management": "Account Management",
   "/home/academic-semester": "Academic Year & Semester",
   "/home/budget-fund": "Budget & Fund Management",
   "/home/documents": "Document Management",
+  "/home/certificates": "Certificates",
 };
 
 export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const title = pageTitles[location.pathname] || "SAO Admin Panel";
+  const title = pageTitles[location.pathname] || "SAS Admin Portal";
   const [globalSearch, setGlobalSearch] = useState("");
 
   const handleLogout = () => {

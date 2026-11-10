@@ -60,9 +60,9 @@ export default function SignatoryChangePasswordModal({
     e.preventDefault();
     setErrorMsg(null);
 
-    const trimmedCurrent = currentPassword.trim();
-    const trimmedNew = newPassword.trim();
-    const trimmedConfirm = confirmPassword.trim();
+    const trimmedCurrent = currentPassword;
+    const trimmedNew = newPassword;
+    const trimmedConfirm = confirmPassword;
 
     if (!trimmedCurrent) {
       setErrorMsg('Please enter your current or temporary password.');

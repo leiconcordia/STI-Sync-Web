@@ -1,5 +1,9 @@
 # STI Sync — Officer Backend Context
 
+<!-- AGENT-UPDATED: 2026-11-10 — Portal login now requires actual Firebase Auth for both temporary and permanent credentials. Mandatory notices derive from tempPass plus compatibility flags. `changeAccountPassword` updates Auth, atomically clears linked role/organization tempPass and legacy credential fields, and clears session flags only after cleanup succeeds. Mobile reads the same temporary state and clears linked role state after permanent-password setup. -->
+
+<!-- AGENT-UPDATED: 2026-11-10 — Officer credentials inherit canonical student identity/state. Reset and permanent-password cleanup also find officers by student ID to repair stale provisional email links. The reset backend runs inside the local Node/Vite server using privileged Firebase access and existing EmailJS; no Cloud Functions deployment is required. See docs/temp-pass-implementation.md. -->
+
 > **Scope:** Backend integration patterns for the Student Officer role (president, secretary, treasurer, etc.).
 > **Primary domain:** `src/app/modules/events/`, `src/app/modules/attendance/`, `src/app/modules/payables/`, `src/app/modules/members/`
 > **Route prefix:** `/officer/*`

@@ -1,5 +1,9 @@
 # STI Sync — Admin Backend Context
 
+<!-- AGENT-UPDATED: 2026-11-10 — Vercel deployments now have api/accounts/reset-password.js using the shared Node endpoint and server-only FIREBASE_ADMIN_SERVICE_ACCOUNT JSON. Root dependencies include the backend SDKs, and SPA rewrites exclude /api. Configure variables and redeploy; see docs/vercel-account-reset.md. Local Vite/CLI operation remains supported. -->
+
+<!-- AGENT-UPDATED: 2026-11-10 — Account Management is at /home/account-management. Reset uses the local Node/Vite endpoint in server/, the active SAS Firebase session, actual Firebase Auth replacement, linked tempPass fields, and existing EmailJS. No Cloud Functions deployment or billing upgrade is required. The modal previews and retains the confirmed credential and distinguishes email failure. Administrator targets are excluded. New-account flows initialize temporary state and preserve the SAS session. See docs/temp-pass-implementation.md for setup, tests, and the observed live Firestore quota blocker. -->
+
 > **Scope:** Backend integration patterns for the SAO Administrator role.
 > **Primary domain:** `src/app/modules/events/`, `src/app/modules/payables/`, `src/app/modules/organizations/`, `src/app/modules/attendance/`
 > **Route prefix:** `/home/*`

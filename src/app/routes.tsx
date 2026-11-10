@@ -10,6 +10,7 @@ import { ReportsAnalytics } from "./admin/pages/ReportsAnalytics";
 import { Certificates } from "./admin/pages/Certificates";
 import { Announcements } from "./admin/pages/Announcements";
 import { SystemSettings } from "./admin/pages/SystemSettings";
+import { AccountManagement } from "./admin/pages/AccountManagement";
 import { AcademicSemesterSettings } from "./admin/pages/AcademicSemesterSettings";
 import { BudgetFundSettings } from "./admin/pages/BudgetFundSettings";
 import { AdminDocuments } from "./admin/pages/AdminDocuments";
@@ -108,6 +109,7 @@ export const router = createBrowserRouter([
       { path: "certificates", Component: Certificates },
       { path: "announcements", Component: Announcements },
       { path: "settings", Component: SystemSettings },
+      { path: "account-management", Component: AccountManagement },
       { path: "archive", element: <Navigate to="/home/settings?section=archive-center" replace /> },
       { path: "academic-semester", Component: AcademicSemesterSettings },
       { path: "budget-fund", Component: BudgetFundSettings },

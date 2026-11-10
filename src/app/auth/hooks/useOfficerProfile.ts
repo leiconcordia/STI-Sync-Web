@@ -31,6 +31,24 @@ export function useOfficerProfile() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cached: any;
+    try { cached = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { return; }
+    if (!cached?.email) return;
+    const states = new Map<string, { found: boolean; pending: boolean }>();
+    const names = ['organization_advisers', 'institutional_signatories', 'students', 'organization_officers'];
+    const unsubscribes = names.map((name) => onSnapshot(query(collection(db, name), where('email', '==', cached.email.trim().toLowerCase())), (snap) => {
+      states.set(name, { found: !snap.empty, pending: snap.docs.some((item) => {
+        const value = item.data();
+        return Boolean(value.tempPass || value.requiresPasswordChange || value.requiresChangePassword || value.resetInProgress);
+      }) });
+      if (states.size !== names.length || ![...states.values()].some((value) => value.found)) return;
+      const pending = [...states.values()].some((value) => value.pending);
+      setProfile((previous) => previous ? { ...previous, requiresPasswordChange: pending } : previous);
+    }, () => { /* Preserve the existing mandatory notice if a read fails. */ }));
+    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+  }, []);
+
+  useEffect(() => {
     const rawSession = localStorage.getItem(SESSION_KEY);
     if (!rawSession) {
       setProfile(null);

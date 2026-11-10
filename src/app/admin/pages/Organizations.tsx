@@ -205,7 +205,9 @@ export function Organizations() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-[#001A4D]">Organization Management</h2>
+          <p className="text-gray-500 text-sm font-medium">
+            Manage recognized student organizations, member rosters, and governance compliance
+          </p>
         </div>
         <Button
           onClick={() => setIsModalOpen(true)}

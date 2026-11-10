@@ -5,6 +5,7 @@ import { OfficerSidebar } from './OfficerSidebar';
 import { OfficerTopNav } from './OfficerTopNav';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { FirstTimePasswordReminderModal } from './FirstTimePasswordReminderModal';
+import { RequiredPasswordChange } from './RequiredPasswordChange';
 
 const pageTitles: Record<string, string> = {
   '/officer/dashboard': 'Dashboard',
@@ -59,6 +60,10 @@ export function OfficerLayout() {
   // If active user is purely a signatory without an active officer role, redirect to signatory portal
   if (profile.isSignatory && !profile.activeOrganizationId) {
     return <Navigate to="/signatory/endorsements" replace />;
+  }
+
+  if (profile.requiresPasswordChange) {
+    return <RequiredPasswordChange profile={profile} />;
   }
 
   // Intercept layout if organization status is suspended, inactive, or archived

@@ -156,10 +156,7 @@ export function ReportsAnalytics() {
       {/* ── Page Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-black text-[#001A4D] tracking-tight">
-            Reports & Operational Analytics
-          </h1>
-          <p className="text-gray-500 text-xs sm:text-sm font-medium mt-0.5">
+          <p className="text-gray-500 text-sm font-medium">
             Institutional intelligence, accreditation audits, financial liquidations, and leadership directories.
           </p>
         </div>

@@ -4,10 +4,10 @@ import {
   AlertTriangle, Check, Copy, Shield, Building, Loader2
 } from 'lucide-react';
 import { doc, updateDoc, deleteDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
-import { sendPasswordResetEmail } from 'firebase/auth';
 import { toast } from 'sonner';
-import { auth, db } from '../../../../services/firebase';
-import { sendOfficerPasswordResetCredentialsEmail } from '../../../../services/email.service';
+import { db } from '../../../../services/firebase';
+import { resetAccountPassword } from '../../../modules/accounts/services/account-reset.service';
+import { generateTemporaryPassword } from '../../../modules/accounts/services/temporary-password.mjs';
 import {
   useAllActiveOfficers,
   type OrganizationOfficerDocument
@@ -35,6 +35,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
   const [resetOfficer, setResetOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [copiedPassword, setCopiedPassword] = useState(false);
+  const [resetNotice, setResetNotice] = useState('');
   const [revokeOfficer, setRevokeOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [revokeConfirmation, setRevokeConfirmation] = useState('');
 
@@ -119,9 +120,8 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
   // 2. Reset Officer Password & Email New Credentials
   const handleOpenReset = (officer: OrganizationOfficerDocument) => {
     setResetOfficer(officer);
-    const code = Math.random().toString(36).substring(2, 7).toUpperCase();
-    const tempPass = `STISync-${code}!`;
-    setGeneratedPassword(tempPass);
+    setGeneratedPassword(generateTemporaryPassword());
+    setResetNotice('');
     setCopiedPassword(false);
   };
 
@@ -135,56 +135,14 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
 
     setIsProcessing(true);
     try {
-      // 1. Update organization_officers document in Firestore
-      await updateDoc(doc(db, 'organization_officers', resetOfficer.id), {
-        temporaryPassword: generatedPassword,
-        requiresPasswordChange: true,
-        updatedAt: serverTimestamp(),
-      });
-
-      // 2. Also update matching student record in students collection
-      if (resetOfficer.studentId) {
-        try {
-          const qStudent = query(
-            collection(db, 'students'),
-            where('studentId', '==', resetOfficer.studentId)
-          );
-          const studentSnap = await getDocs(qStudent);
-          for (const sDoc of studentSnap.docs) {
-            await updateDoc(doc(db, 'students', sDoc.id), {
-              temporaryPassword: generatedPassword,
-              requiresPasswordChange: true,
-              updatedAt: serverTimestamp(),
-            });
-          }
-        } catch (studentErr) {
-          console.warn('Could not sync to students collection:', studentErr);
-        }
-      }
-
-      // 3. Dispatch email containing the new password directly to the officer!
-      const orgInfo = orgMap.get(resetOfficer.organizationId);
-      const roleTitle = roleMap.get(resetOfficer.roleId) || (resetOfficer as any).roleName || 'Officer';
-
-      await sendOfficerPasswordResetCredentialsEmail({
-        to: targetEmail,
-        officerName: resetOfficer.studentName,
-        temporaryPassword: generatedPassword,
-        studentId: resetOfficer.studentId,
-        orgName: orgInfo ? `${orgInfo.name} (${orgInfo.acronym})` : undefined,
-        roleName: roleTitle,
-      });
-
-      // 4. Also trigger Firebase Auth password reset email as secondary
-      try {
-        await sendPasswordResetEmail(auth, targetEmail);
-      } catch {
-        // Safe to ignore
-      }
-
-      toast.success(`Password reset successful! New password emailed to ${targetEmail}.`);
+      const studentSnap = await getDocs(query(collection(db, 'students'), where('studentId', '==', resetOfficer.studentId)));
+      if (studentSnap.size !== 1) throw new Error('Exactly one student account must be linked to this officer. Resolve the student record before resetting.');
+      const result = await resetAccountPassword('students', studentSnap.docs[0].id, 'Officer forgot password', generatedPassword);
+      setGeneratedPassword(result.temporaryPassword);
+      setResetNotice(result.delivery === 'accepted' ? 'Password reset completed. EmailJS accepted the email. Save the active temporary password before closing.' : result.deliveryError || 'Password reset completed, but email was not confirmed. Copy the active temporary password.');
+      if (result.delivery === 'accepted') toast.success('Password reset completed; EmailJS accepted the email.');
+      else toast.warning('Password reset completed, but email failed. Copy the active temporary password.');
       onUnsavedChange();
-      setResetOfficer(null);
     } catch (err: any) {
       console.error('Failed to reset and email credentials:', err);
       toast.error(err?.message || 'Failed to email new password.');
@@ -567,6 +525,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                     type="text"
                     value={generatedPassword}
                     onChange={(e) => setGeneratedPassword(e.target.value)}
+                    readOnly={Boolean(resetNotice)}
                     className="flex-1 px-3 py-2 bg-gray-50 border border-gray-300 rounded-lg text-sm font-mono font-bold text-gray-900 select-all"
                   />
                   <button
@@ -581,7 +540,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
               </div>
 
               <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 leading-relaxed">
-                Clicking <strong>Confirm & Email Password</strong> will immediately dispatch an email containing this new password to <strong>{resetOfficer.email}</strong>.
+                {resetNotice || 'Confirming updates the student’s actual Firebase password and then sends it to their saved email using EmailJS. This preview is not active before confirmation.'}
               </div>
 
               <div className="flex gap-3 pt-2">
@@ -596,7 +555,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                 <button
                   type="button"
                   onClick={handleConfirmReset}
-                  disabled={isProcessing || !resetOfficer.email || !generatedPassword}
+                  disabled={isProcessing || !resetOfficer.email || !generatedPassword || Boolean(resetNotice)}
                   className="flex-1 py-2.5 bg-[#001A4D] hover:bg-[#001A4D]/90 text-white rounded-xl text-sm font-bold disabled:opacity-40"
                 >
                   {isProcessing ? 'Sending Email...' : 'Confirm & Email Password'}

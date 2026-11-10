@@ -905,6 +905,8 @@ export async function executeRegistrarBulkImport(
           term: analysis.fileSummary.detectedSemester,
           email: '', // Student uploads/provides their email directly on mobile app during first login
           authUid: '',
+          tempPass: null,
+          resetInProgress: false,
           requiresPasswordChange: true,
           isProfileComplete: false,
           defaultPassword,

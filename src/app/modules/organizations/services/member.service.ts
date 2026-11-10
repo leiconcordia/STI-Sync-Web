@@ -412,6 +412,9 @@ export const appointAsOfficer = async (
   // 2. Create the officer doc in organization_officers
   const officersCollectionRef = collection(db, 'organization_officers');
   const officerDocRef = doc(officersCollectionRef);
+  const studentProfiles = await getDocs(query(collection(db, 'students'), where('studentId', '==', studentId)));
+  if (studentProfiles.size > 1) throw new Error('Several student profiles have this ID. Resolve the duplicate before appointing an officer.');
+  const student = studentProfiles.docs[0]?.data();
   
   batch.set(officerDocRef, {
     id: officerDocRef.id,
@@ -421,7 +424,11 @@ export const appointAsOfficer = async (
     studentId,
     studentName,
     email: email || '',
-    temporaryPassword: tempPassword || null,
+    authUid: student?.authUid || null,
+    tempPass: student?.tempPass || null,
+    requiresPasswordChange: Boolean(student?.tempPass || student?.requiresPasswordChange || student?.requiresChangePassword),
+    resetInProgress: student?.resetInProgress === true,
+    temporaryPassword: student?.tempPass || null,
     useStudentCredentials: true,
     isActive: true,
     createdAt: serverTimestamp(),

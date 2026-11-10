@@ -13,6 +13,7 @@ import {
   Settings,
   Files,
   FileCheck2,
+  UserCog,
 } from "lucide-react";
 
 const navGroups = [
@@ -45,6 +46,7 @@ const navGroups = [
     items: [
       { icon: Bell, label: "Announcements", path: "/home/announcements" },
       { icon: BarChart3, label: "Reports & Analytics", path: "/home/reports" },
+      { icon: UserCog, label: "Account Management", path: "/home/account-management" },
       { icon: Settings, label: "System Settings", path: "/home/settings" },
     ]
   }

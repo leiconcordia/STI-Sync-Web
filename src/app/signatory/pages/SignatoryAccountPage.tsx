@@ -95,7 +95,7 @@ export default function SignatoryAccountPage() {
 
     setIsChangingPassword(true);
     try {
-      await changeSignatoryPassword(currentPassword.trim(), newPassword.trim(), session);
+      await changeSignatoryPassword(currentPassword, newPassword, session);
       toast.success('Password updated successfully! Your account is now secured.');
       
       setCurrentPassword('');

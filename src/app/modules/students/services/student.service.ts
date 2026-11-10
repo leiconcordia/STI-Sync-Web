@@ -20,10 +20,9 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import {
-  createUserWithEmailAndPassword,
   sendPasswordResetEmail,
 } from 'firebase/auth';
-import { auth, db } from '../../../../services/firebase';
+import { auth, db, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../../../services/firebase';
 import { sendStudentWelcomeCredentialsEmail } from '../../../../services/email.service';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate } from '../../../utils/date';
@@ -164,6 +163,8 @@ export async function createLateEnrolleeStudent(
     term: payload.semester,
     email: '', // Student uploads/provides their email directly on mobile app during first login
     authUid: '',
+    tempPass: null, // Registrar onboarding has not provisioned Firebase Auth yet.
+    resetInProgress: false,
     requiresPasswordChange: true,
     isProfileComplete: false,
     defaultPassword,
@@ -289,12 +290,10 @@ export async function createStudentManually(
   // ── 2. Create Firebase Auth account ────────────────────────────────────
   let authUid: string;
   try {
-    const credential = await createUserWithEmailAndPassword(
-      auth,
+    authUid = await createSecondaryAuthUser(
       payload.email.trim().toLowerCase(),
       payload.password
     );
-    authUid = credential.user.uid;
   } catch (authErr: unknown) {
     const code = (authErr as { code?: string }).code ?? '';
     if (code === 'auth/email-already-in-use') {
@@ -334,6 +333,9 @@ export async function createStudentManually(
     email:           payload.email.trim().toLowerCase(),
     authUid,
     requiresPasswordChange: true,
+    tempPass: payload.password,
+    resetInProgress: false,
+    isProfileComplete: false,
 
     profilePhotoUrl:  payload.profilePhotoUrl,
     schoolIdPhotoUrl: payload.schoolIdPhotoUrl,
@@ -346,7 +348,13 @@ export async function createStudentManually(
     updatedAt: Timestamp.now(),
   };
 
-  await setDoc(docRef, studentDoc);
+  try {
+    await setDoc(docRef, studentDoc);
+  } catch (error) {
+    try { await rollbackSecondaryAuthUser(payload.email, payload.password, authUid); }
+    catch { console.warn('Could not roll back newly provisioned student. Account repair may be needed.'); }
+    throw error;
+  }
 
   // ── 4 & 5. Background Asynchronous Tasks (Payables Sync & Credentials Email) ──
   // Run non-blocking so the admin registration completes immediately (<300ms)

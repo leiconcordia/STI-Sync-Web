@@ -1,5 +1,7 @@
 # STI Sync — Agent Routing Protocol
 
+<!-- AGENT-UPDATED: 2026-11-10 — Added `src/app/modules/accounts/` and `/home/account-management`. Server-only reset API modules live in server/ and share functions/reset-handler.js. Vite dev hosts resets without Cloud Functions deployment. Privileged credentials must never enter src/. -->
+
 > **Purpose:** Execution protocol for AI coding agents working on the STI Sync codebase. Follow this document before writing a single line of code. It eliminates wasted context tokens by routing you to the exact files, schemas, and domain rules relevant to the request.
 
 testtest

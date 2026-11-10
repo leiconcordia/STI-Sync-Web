@@ -34,7 +34,6 @@ import { toast } from 'sonner';
 import {
   subscribeToSignatories,
   createInstitutionalSignatory,
-  resetSignatoryCredentials,
   toggleSignatoryStatus,
   updateSignatoryDetails,
   generateTemporaryPassword,
@@ -60,6 +59,7 @@ import type {
   CreateSignatoryRolePayload,
 } from '../../../modules/signatories/types/signatory-role.types';
 import { useAdviserProfile } from '../../../modules/auth';
+import { ResetPasswordModal } from '../../../modules/accounts/components/ResetPasswordModal';
 import { useDepartments } from '../../../modules/academic';
 import { SIGNATORY_LABEL_OPTIONS } from '../../../modules/signatories/utils/signatory-label.utils';
 import {
@@ -126,6 +126,7 @@ export default function InstitutionalSignatoryManagement() {
   // View Tabs: Directory vs Signatory Labels Maintenance
   const [activeTab, setActiveTab] = useState<'signatories' | 'labels'>('signatories');
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
+  const [resetTarget, setResetTarget] = useState<InstitutionalSignatory | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRoleFilter, setSelectedRoleFilter] = useState<string>('all');
@@ -726,36 +727,8 @@ export default function InstitutionalSignatoryManagement() {
   };
 
   const handleResetPassword = async (signatory: InstitutionalSignatory) => {
-    if (
-      !confirm(
-        `Are you sure you want to generate a new temporary password and email credentials to ${signatory.name} (${signatory.email})?`
-      )
-    ) {
-      return;
-    }
-
-    try {
-      const res = await resetSignatoryCredentials(
-        signatory.id,
-        signatory.email,
-        signatory.name,
-        signatory.roleTitle,
-        signatory.department
-      );
-      if (res.success) {
-        toast.success(`New credentials dispatched to ${signatory.email}!`);
-        setCredentialsSuccess({
-          name: signatory.name,
-          email: signatory.email,
-          roleTitle: signatory.roleTitle,
-          temporaryPassword: res.temporaryPassword,
-        });
-      } else {
-        toast.error('Failed to reset credentials.');
-      }
-    } catch (err: any) {
-      toast.error(err.message || 'Error resetting password');
-    }
+    if (import.meta.env.VITE_ACCOUNT_RESET_ENABLED === 'false') { toast.error('Password resets are disabled.'); return; }
+    setResetTarget(signatory);
   };
 
   const handleToggleStatus = async (signatory: InstitutionalSignatory) => {
@@ -2236,6 +2209,10 @@ export default function InstitutionalSignatoryManagement() {
           </div>
         </div>
       )}
+      {resetTarget && <ResetPasswordModal kind="signatories" account={resetTarget} onClose={() => setResetTarget(null)} onCompleted={(result) => {
+        if (result.delivery === 'accepted') toast.success('Password reset completed; email accepted by the provider.');
+        else toast.warning('Password reset completed, but email failed. Copy the active temporary password in the reset window.');
+      }} />}
     </div>
   );
 }

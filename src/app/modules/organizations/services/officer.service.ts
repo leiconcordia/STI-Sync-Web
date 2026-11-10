@@ -1,4 +1,4 @@
-import { collection, doc, writeBatch, updateDoc, increment, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, writeBatch, updateDoc, increment, serverTimestamp, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 
 export interface OfficerAssignmentData {
@@ -22,6 +22,9 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
   const membersCollectionRef = collection(db, 'organization_members');
   
   for (const officer of officers) {
+    const profiles = await getDocs(query(collection(db, 'students'), where('studentId', '==', officer.studentId)));
+    if (profiles.size > 1) throw new Error('Resolve duplicate student profiles before appointing an officer.');
+    const student = profiles.docs[0]?.data();
     // 1. Create Officer document
     const officerDocRef = doc(officersCollectionRef);
     batch.set(officerDocRef, {
@@ -32,6 +35,10 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
       studentId: officer.studentId,
       studentName: officer.studentName,
       email: officer.email,
+      authUid: student?.authUid || null,
+      tempPass: student?.tempPass || null,
+      requiresPasswordChange: Boolean(student?.tempPass || student?.requiresPasswordChange || student?.requiresChangePassword),
+      resetInProgress: student?.resetInProgress === true,
       isActive: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

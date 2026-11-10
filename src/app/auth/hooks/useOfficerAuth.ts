@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { db, auth } from '../../../services/firebase';
-import { hashPassword } from '../services/password.service';
 import { getSignatoryAuthorizedWorkflows } from '../../modules/signatories/types/signatory.types';
 
 export const SESSION_KEY = 'sti_sync_officer_session';
@@ -22,7 +21,7 @@ export function useOfficerAuth() {
     setError(null);
     try {
       const trimmedId = identifier.trim();
-      const trimmedPass = password.trim();
+      const trimmedPass = password;
 
       if (!trimmedId || !trimmedPass) {
         setError('Please enter both student/employee ID or email and password.');
@@ -270,71 +269,8 @@ export function useOfficerAuth() {
         }
       }
 
-      // Strategy B: Student Default Password Check (for newly appointed officers or before mobile profile completion)
-      if (!authenticated && studentDocData && officerRecords.length > 0) {
-        const lastName = (studentDocData.lastName || '').trim();
-        const sId = (studentDocData.studentId || '').trim();
-        const formulaPass = lastName && sId.length >= 6
-          ? `${lastName[0].toUpperCase()}${lastName.slice(1).toLowerCase()}${sId.slice(-6)}`
-          : '';
-
-        const isDefaultValid =
-          (studentDocData.defaultPassword && studentDocData.defaultPassword === trimmedPass) ||
-          (formulaPass && formulaPass === trimmedPass);
-
-        if (isDefaultValid) {
-          authenticated = true;
-          matchedRecord = officerRecords[0];
-          isSignatoryUser = false;
-        }
-      }
-
-      // Strategy C: Check Permanent Custom / Hashed Password in Firestore (for advisers / signatories)
-      if (!authenticated) {
-        const hashedInput = await hashPassword(trimmedPass);
-        const matchingPermanentRecord = allRecords.find((rec) => {
-          if (rec.requiresPasswordChange === true) return false;
-          return (
-            (rec.passwordHash && rec.passwordHash === hashedInput) ||
-            (rec.customPassword && rec.customPassword === trimmedPass)
-          );
-        });
-
-        if (matchingPermanentRecord) {
-          authenticated = true;
-          matchedRecord = matchingPermanentRecord;
-          if (signatoryRecords.some((s) => s.id === matchingPermanentRecord.id)) {
-            isSignatoryUser = true;
-          } else if (adviserRecords.some((a) => a.email === matchingPermanentRecord.email)) {
-            isAdviserUser = true;
-          } else {
-            isSignatoryUser = false;
-          }
-        }
-      }
-
-      // Strategy D: Temporary Password ONLY for first-time login or after Admin Reset (signatories / advisers)
-      if (!authenticated) {
-        const matchingTempRecord = allRecords.find(
-          (rec) =>
-            rec.requiresPasswordChange === true &&
-            rec.temporaryPassword &&
-            rec.temporaryPassword === trimmedPass
-        );
-
-        if (matchingTempRecord) {
-          authenticated = true;
-          matchedRecord = matchingTempRecord;
-
-          if (signatoryRecords.some((s) => s.id === matchingTempRecord.id)) {
-            isSignatoryUser = true;
-          } else if (adviserRecords.some((a) => a.email === matchingTempRecord.email)) {
-            isAdviserUser = true;
-          } else {
-            isSignatoryUser = false;
-          }
-        }
-      }
+      // Never turn a Firestore password match into a local-only session.
+      // Both temporary and permanent credentials must authenticate with Firebase.
 
       if (!authenticated || !matchedRecord) {
         setError('Incorrect password. Please enter your valid student password or account credentials.');
@@ -385,7 +321,7 @@ export function useOfficerAuth() {
           employeeId: matchedRecord.employeeId || '',
           signatureUrl: matchedRecord.signatureUrl || null,
           isSignatory: true,
-          requiresPasswordChange: matchedRecord.requiresPasswordChange ?? false,
+          requiresPasswordChange: Boolean(matchedRecord.tempPass || matchedRecord.requiresPasswordChange || matchedRecord.requiresChangePassword || matchedRecord.resetInProgress),
           applicableScope: matchedRecord.applicableScope,
           applicableWorkflows: workflows,
           canApproveProposal: matchedRecord.canApproveProposal ?? (matchedRecord.actionType === 'approver'),
@@ -411,13 +347,13 @@ export function useOfficerAuth() {
         const session = {
           studentId: matchedRecord.studentId || matchedRecord.employeeId || matchedRecord.email,
           studentName: matchedRecord.studentName || matchedRecord.name || (studentDocData ? `${studentDocData.firstName} ${studentDocData.lastName}` : 'Club Officer'),
-          email: matchedRecord.email || studentDocData?.email || '',
+          email: studentDocData?.email || matchedRecord.email || '',
           activeOrganizationId: matchedRecord.organizationId,
           activeRoleId: isAdviserUser ? 'adviser' : matchedRecord.roleId,
           isAdviser: isAdviserUser,
           isSignatory: false,
           signatureUrl: matchedRecord.signatureUrl || null,
-          requiresPasswordChange: studentDocData?.requiresPasswordChange ?? (matchedRecord.requiresPasswordChange ?? false),
+          requiresPasswordChange: Boolean(studentDocData?.tempPass || studentDocData?.requiresPasswordChange || matchedRecord.tempPass || matchedRecord.requiresPasswordChange || matchedRecord.resetInProgress),
           availableWorkspaces: {
             hasSignatory: signatoryRecords.length > 0,
             hasOfficer: true,

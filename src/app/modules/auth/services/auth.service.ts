@@ -77,6 +77,9 @@ export async function createAdviserProfile(
   const ref = doc(db, SAS_ADMINS_COLLECTION, uid);
   await setDoc(ref, {
     ...data,
+    tempPass: null,
+    requiresPasswordChange: false,
+    resetInProgress: false,
     uid,
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),

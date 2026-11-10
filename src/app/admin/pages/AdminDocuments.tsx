@@ -1232,8 +1232,9 @@ export function AdminDocuments() {
       {/* Page Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-xl font-bold text-[#001A4D]">Document Management</h1>
-          <p className="text-gray-500 text-xs font-medium">Dashboard &rsaquo; Document Management</p>
+          <p className="text-gray-500 text-sm font-medium">
+            Manage institutional documents, incoming organizational submissions, and campus broadcast archives
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button

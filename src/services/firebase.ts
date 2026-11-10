@@ -10,8 +10,8 @@
  */
 
 import { initializeApp, getApps, getApp, deleteApp } from "firebase/app";
-import { getFirestore }                    from "firebase/firestore";
-import { getAuth, createUserWithEmailAndPassword, signOut } from "firebase/auth";
+import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, signOut, connectAuthEmulator } from "firebase/auth";
 import { getStorage }                      from "firebase/storage";
 import { getAnalytics, isSupported }       from "firebase/analytics";
 
@@ -19,7 +19,7 @@ import { getAnalytics, isSupported }       from "firebase/analytics";
 export const firebaseConfig = {
   apiKey:            "AIzaSyCW-g385o-RT7GE_z-Q0FpMz9P5HR4LUuo",
   authDomain:        "sti-sync.firebaseapp.com",
-  projectId:         "sti-sync",
+  projectId:         import.meta.env.VITE_FIREBASE_EMULATORS === 'true' ? 'demo-sti-sync' : 'sti-sync',
   storageBucket:     "sti-sync.firebasestorage.app",
   messagingSenderId: "821083100323",
   appId:             "1:821083100323:web:b18bb485a6df1bb5d31b16",
@@ -38,6 +38,11 @@ export const db = getFirestore(app);
 /** Firebase Authentication */
 export const auth = getAuth(app);
 
+if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(db, '127.0.0.1', 8080);
+}
+
 /** Firebase Storage — for event cover images, documents, certificate templates */
 export const storage = getStorage(app);
 
@@ -48,6 +53,9 @@ export const createSecondaryAuthUser = async (email: string, pass: string): Prom
   const secondaryAppName = `SecondaryAuth-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
   const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
   const secondaryAuth = getAuth(secondaryApp);
+  if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') {
+    connectAuthEmulator(secondaryAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  }
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, email.trim().toLowerCase(), pass);
     const uid = cred.user.uid;
@@ -57,12 +65,23 @@ export const createSecondaryAuthUser = async (email: string, pass: string): Prom
   } catch (err: any) {
     await deleteApp(secondaryApp).catch(() => {});
     if (err?.code === 'auth/email-already-in-use') {
-      console.info('[createSecondaryAuthUser] Email already registered in Firebase Auth.');
-      return '';
+      throw new Error('This email already has a Firebase account. Use its existing account or reset its password instead of issuing unrelated temporary credentials.');
     }
     throw err;
   }
 };
+
+/** Roll back only the exact account just provisioned when profile creation fails. */
+export async function rollbackSecondaryAuthUser(email: string, password: string, expectedUid: string): Promise<void> {
+  const rollbackApp = initializeApp(firebaseConfig, `AccountRollback-${crypto.randomUUID()}`);
+  const rollbackAuth = getAuth(rollbackApp);
+  if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') connectAuthEmulator(rollbackAuth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  try {
+    const credential = await signInWithEmailAndPassword(rollbackAuth, email, password);
+    if (credential.user.uid !== expectedUid) throw new Error('Account rollback identity mismatch.');
+    await deleteUser(credential.user);
+  } finally { await deleteApp(rollbackApp); }
+}
 
 /**
  * Firebase Analytics — conditionally initialized.

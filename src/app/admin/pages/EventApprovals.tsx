@@ -273,7 +273,7 @@ export function EventApprovals() {
 
   const handleRestoreEvent = async (event: EventDocument) => {
     try {
-      await restoreArchivedEvent(event.id, adviserProfile?.uid || 'admin', adviserProfile?.displayName || 'SAO Admin');
+      await restoreArchivedEvent(event.id, adviserProfile?.uid || 'admin', adviserProfile?.displayName || 'SAS Admin');
       toast.success(`Event "${event.title}" has been restored to active records.`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to restore event.');
@@ -543,7 +543,7 @@ export function EventApprovals() {
       await withdrawProposal(
         event.id,
         adviserProfile?.uid || 'admin-user',
-        adviserProfile?.displayName || 'SAO Admin'
+        adviserProfile?.displayName || 'SAS Admin'
       );
       toast.success('Proposal Withdrawn', {
         description: `"${event.title}" has been returned to Draft status. Opening editor...`,
@@ -766,9 +766,8 @@ export function EventApprovals() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-black text-[#001A4D] tracking-tight">Activity Approvals & Registry</h2>
           <p className="text-gray-500 text-sm font-medium">
-            Review and endorse activity proposals from student organizations, or author institutional SAO activities
+            Review and endorse activity proposals from student organizations, or author institutional SAS activities
           </p>
         </div>
 
@@ -898,7 +897,7 @@ export function EventApprovals() {
           </div>
         </div>
 
-        {/* 5. SAO Made */}
+        {/* 5. SAS Authored */}
         <div
           onClick={() => {
             handleTabChange("all");
@@ -908,7 +907,7 @@ export function EventApprovals() {
         >
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
-              SAO Made
+              SAS Authored
             </span>
             <div className="p-2 rounded-xl bg-blue-50 text-[#001A4D]">
               <FileEdit className="w-4 h-4 text-[#001A4D]" />
@@ -1148,7 +1147,7 @@ export function EventApprovals() {
               <div className="font-bold text-gray-700 text-sm">No activities found</div>
               <p className="text-xs text-gray-400 max-w-sm">
                 {activeTab === "drafts"
-                  ? "No saved drafts. You can create a new SAO activity proposal and save as draft."
+                  ? "No saved drafts. You can create a new SAS activity proposal and save as draft."
                   : "No activities match the current filter or search criteria."}
               </p>
             </div>
@@ -1594,7 +1593,7 @@ export function EventApprovals() {
           event={cancellingEvent}
           userRole="admin"
           userId={adviserProfile?.uid || 'admin-user'}
-          userName={adviserProfile?.displayName || 'SAO Admin'}
+          userName={adviserProfile?.displayName || 'SAS Admin'}
         />
       )}
 
@@ -1605,7 +1604,7 @@ export function EventApprovals() {
           onClose={() => setConcludingEvent(null)}
           event={concludingEvent}
           adminUid={adviserProfile?.uid || 'admin-user'}
-          adminName={adviserProfile?.displayName || 'SAO Admin'}
+          adminName={adviserProfile?.displayName || 'SAS Admin'}
         />
       )}
 
@@ -1616,7 +1615,7 @@ export function EventApprovals() {
           onClose={() => setArchivingEvent(null)}
           event={archivingEvent}
           adminUid={adviserProfile?.uid || 'admin-user'}
-          adminName={adviserProfile?.displayName || 'SAO Admin'}
+          adminName={adviserProfile?.displayName || 'SAS Admin'}
         />
       )}
 
@@ -1627,7 +1626,7 @@ export function EventApprovals() {
           onClose={() => setDeletingArchivedEvent(null)}
           event={deletingArchivedEvent}
           adminUid={adviserProfile?.uid || 'admin-user'}
-          adminName={adviserProfile?.displayName || 'SAO Admin'}
+          adminName={adviserProfile?.displayName || 'SAS Admin'}
         />
       )}
 
@@ -1642,8 +1641,8 @@ export function EventApprovals() {
           initialData={resumeDraft ?? undefined}
           currentUser={{
             uid: adviserProfile?.uid || 'admin-user',
-            name: adviserProfile?.displayName || 'SAO Admin',
-            email: adviserProfile?.email || 'sao@ormoc.sti.edu.ph',
+            name: adviserProfile?.displayName || 'SAS Admin',
+            email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
             role: 'sas_admin',
           }}
         />

@@ -4,44 +4,23 @@ import {
   CalendarCheck,
   Receipt,
   Building2,
-  Users,
-  TrendingUp,
   ArrowRight,
-  ShieldCheck,
-  Award,
-  Sparkles,
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
+import { Card, CardContent } from '../../../components/ui/card';
 import type { OverviewAnalyticsSummary, ReportTabId } from '../types/report.types';
 import { formatCurrency } from '../../../utils/currency';
 
 interface OverviewAnalyticsTabProps {
   summary: OverviewAnalyticsSummary;
   onNavigateTab: (tab: ReportTabId) => void;
-  onOpenQuickReport: (type: 'ap' | 'fl' | 'par' | 'roster') => void;
+  onOpenQuickReport?: (type: 'ap' | 'fl' | 'par' | 'roster') => void;
 }
 
 export const OverviewAnalyticsTab: React.FC<OverviewAnalyticsTabProps> = ({
   summary,
   onNavigateTab,
-  onOpenQuickReport,
 }) => {
-  const { kpis, monthlyTrends, orgBudgetStats, programDistribution } = summary;
+  const { kpis } = summary;
 
   return (
     <div className="space-y-6">
@@ -187,142 +166,6 @@ export const OverviewAnalyticsTab: React.FC<OverviewAnalyticsTabProps> = ({
             <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{item.desc}</p>
           </div>
         ))}
-      </div>
-
-      {/* ── Interactive Charts Grid ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Monthly Activity Trajectory */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Campus Activity & Approval Trajectory</span>
-              <span className="text-xs font-normal text-gray-500">Submissions vs Approvals</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <LineChart data={monthlyTrends}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="month" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Line
-                  type="monotone"
-                  dataKey="proposals"
-                  stroke="#0E4EBD"
-                  strokeWidth={2.5}
-                  name="Proposals Submitted"
-                  dot={{ r: 3 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="events"
-                  stroke="#22C55E"
-                  strokeWidth={2.5}
-                  name="Approved Events"
-                  dot={{ r: 3 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Organization Budget vs Disbursed */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Organization Budget Allocation vs Spent</span>
-              <span className="text-xs font-normal text-gray-500">Top Campus Organizations</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={orgBudgetStats}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="org" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip formatter={(val: number) => `₱${val.toLocaleString()}`} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="allocated" fill="#001A4D" name="Allocated (₱)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="spent" fill="#22C55E" name="Liquidated (₱)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Student Enrollment Distribution */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D]">Academic Population Distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie
-                  data={programDistribution}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={50}
-                  outerRadius={80}
-                  paddingAngle={3}
-                  dataKey="value"
-                >
-                  {programDistribution.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.color} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Quick Report Generation Hub */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs flex flex-col justify-between">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D]">Accreditation & Audit Report Hub</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2.5">
-            {[
-              {
-                type: 'ap' as const,
-                title: 'Activity Proposals (AP) Audit Summary',
-                desc: 'Consolidated report of all proposals, approvals, and budget releases.',
-              },
-              {
-                type: 'fl' as const,
-                title: 'Financial Liquidations (FL) Ledger',
-                desc: 'Audited expenses, OR receipt attachments, and return cash balances.',
-              },
-              {
-                type: 'par' as const,
-                title: 'Post-Activity (PAR) Accomplishment Report',
-                desc: 'Verified student attendance turnouts, evaluations, and certifications.',
-              },
-              {
-                type: 'roster' as const,
-                title: 'Master Campus Organizations & Officer Roster',
-                desc: 'Certified roster of accredited clubs, advisers, and elected leaders.',
-              },
-            ].map((rep) => (
-              <div
-                key={rep.type}
-                onClick={() => onOpenQuickReport(rep.type)}
-                className="p-3 bg-gray-50 hover:bg-blue-50 border border-gray-200 hover:border-[#0E4EBD] rounded-xl flex items-center justify-between cursor-pointer transition-all group"
-              >
-                <div>
-                  <h5 className="font-bold text-xs text-[#001A4D] group-hover:text-[#0E4EBD]">
-                    {rep.title}
-                  </h5>
-                  <p className="text-[11px] text-gray-500 mt-0.5">{rep.desc}</p>
-                </div>
-                <ArrowRight className="w-4 h-4 text-gray-400 group-hover:text-[#0E4EBD] group-hover:translate-x-1 transition-all flex-shrink-0 ml-2" />
-              </div>
-            ))}
-          </CardContent>
-        </Card>
       </div>
     </div>
   );

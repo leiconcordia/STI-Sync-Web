@@ -1,5 +1,9 @@
 # STI Sync — Database Schema Reference
 
+<!-- AGENT-UPDATED: 2026-11-10 — `tempPass: string | null` is the canonical temporary credential on students, organization_advisers, institutional_signatories, and officers. It must match Firebase Auth and clears to null only after permanent Auth update succeeds. `requiresPasswordChange` remains compatible; `resetInProgress` marks incomplete reset. New provisioned accounts initialize tempPass and requiresPasswordChange true/resetInProgress false. Imports retain registrar onboarding with tempPass null. Self-registered students and SAS profiles use tempPass null and false flags. Officers inherit canonical student credentials. Permanent passwords are never stored here. -->
+
+<!-- AGENT-UPDATED: 2026-11-10 — `_account_reset_locks/{authUid}` is server-managed and contains `operationId: string` and `expiresAt: Timestamp`; clients cannot read or write it. Reset actions create `audit_logs` entries with `actionType: 'Account Actions'`. No password is saved in these documents. -->
+
 > **Purpose:** Single source of truth for all Firestore document structures and WebSocket message contracts. Every field, type, and constraint is defined here. AI agents and developers must validate field references against this document before writing queries or mutations.
 
 ---

@@ -70,23 +70,31 @@ export function Certificates() {
       {/* Page Header */}
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-[#001A4D] font-bold text-2xl">{currentTitle}</h1>
-          <nav className="flex items-center gap-1.5 mt-1">
-            {currentBreadcrumbs.map((crumb, i, arr) => (
-              <span key={crumb} className="flex items-center gap-1.5">
-                <button
-                  onClick={() => {
-                    if (i === 0) setScreen("dashboard");
-                    if (i === 1 && arr.length > 2) setScreen("certificate-library");
-                  }}
-                  className={`text-xs transition-colors ${i === arr.length - 1 ? "text-[#001A4D] font-semibold" : "text-[#9E9E9E] hover:text-[#001A4D]"}`}
-                >
-                  {crumb}
-                </button>
-                {i < arr.length - 1 && <ChevronRight className="w-3 h-3 text-[#9E9E9E]" />}
-              </span>
-            ))}
-          </nav>
+          {screen === "dashboard" ? (
+            <p className="text-gray-500 text-sm font-medium">
+              Design, issue, and verify official institutional certificate templates and event credentials
+            </p>
+          ) : (
+            <>
+              <h2 className="text-[#001A4D] font-bold text-xl">{currentTitle}</h2>
+              <nav className="flex items-center gap-1.5 mt-1">
+                {currentBreadcrumbs.map((crumb, i, arr) => (
+                  <span key={crumb} className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => {
+                        if (i === 0) setScreen("dashboard");
+                        if (i === 1 && arr.length > 2) setScreen("certificate-library");
+                      }}
+                      className={`text-xs transition-colors ${i === arr.length - 1 ? "text-[#001A4D] font-semibold" : "text-[#9E9E9E] hover:text-[#001A4D]"}`}
+                    >
+                      {crumb}
+                    </button>
+                    {i < arr.length - 1 && <ChevronRight className="w-3 h-3 text-[#9E9E9E]" />}
+                  </span>
+                ))}
+              </nav>
+            </>
+          )}
         </div>
         {screen !== "template-editor" && (
           <button

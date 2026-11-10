@@ -1,6 +1,5 @@
 import {
   collection,
-  addDoc,
   doc,
   updateDoc,
   serverTimestamp,
@@ -8,8 +7,10 @@ import {
   where,
   getDocs,
   deleteField,
+  writeBatch,
 } from 'firebase/firestore';
-import { db, createSecondaryAuthUser } from '../../../../services/firebase';
+import { db, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../../../services/firebase';
+import { generateTemporaryPassword } from '../../accounts/services/temporary-password.mjs';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { sendAdviserWelcomeCredentialsEmail } from '../../../../services/email.service';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
@@ -54,125 +55,59 @@ export const assignOrRevokeOrganizationAdviser = async (
     return currentAdviser || null;
   }
 
-  // ── 1. Revoke access to current adviser if one was assigned ──
-  if (currentAdviser && currentAdviser.email) {
-    try {
-      const qAdvisers = query(
-        collection(db, 'organization_advisers'),
-        where('organizationId', '==', orgId)
-      );
-      const snap = await getDocs(qAdvisers);
-
-      const updatePromises = snap.docs
-        .filter((d) => {
-          const data = d.data();
-          return (
-            data.isActive !== false ||
-            data.email?.toLowerCase() === currentAdviser.email.toLowerCase()
-          );
-        })
-        .map((d) =>
-          updateDoc(doc(db, 'organization_advisers', d.id), {
-            isActive: false,
-            status: 'revoked',
-            revokedAt: serverTimestamp(),
-            revokedBy: adminUser,
-            revocationReason:
-              action === 'assign'
-                ? `Replaced by new adviser: ${newAdviser?.name || 'Newly appointed adviser'}`
-                : 'Unassigned by administrator in organization edit',
-            updatedAt: serverTimestamp(),
-          })
-        );
-
-      await Promise.all(updatePromises);
-      console.info(
-        `[assignOrRevokeOrganizationAdviser] Revoked ${updatePromises.length} adviser document(s) for org ${orgId}`
-      );
-    } catch (revokeErr) {
-      console.warn(
-        '[assignOrRevokeOrganizationAdviser] Could not revoke existing adviser documents:',
-        revokeErr
-      );
-    }
+  if (action === 'assign' && (!newAdviser?.name?.trim() || !newAdviser?.email?.trim())) {
+    throw new Error('Enter the new adviser name and email.');
   }
-
-  // ── 2. Handle Action: 'unassign' ──
-  if (action === 'unassign') {
-    return null;
-  }
-
-  // ── 3. Handle Action: 'assign' ──
-  if (action === 'assign' && newAdviser && newAdviser.name && newAdviser.email) {
-    const cleanEmail = newAdviser.email.trim().toLowerCase();
-    const cleanName = newAdviser.name.trim();
-    const cleanEmployeeId = (newAdviser.employeeId || '').trim();
-    const tempPassword = newAdviser.temporaryPassword || 'Adv-2026!#';
-
-    // A. Provision Firebase Auth User if not existing
-    let authUid = '';
-    try {
+  const cleanEmail = newAdviser?.email.trim().toLowerCase() || '';
+  const tempPassword = newAdviser?.temporaryPassword || generateTemporaryPassword();
+  let authUid = '';
+  let adviser: OrgAdviserData | null = null;
+  try {
+    // Provision before revoking the current adviser. A duplicate/failed account
+    // creation must leave the existing adviser able to use the organization.
+    if (action === 'assign' && newAdviser) {
       authUid = await createSecondaryAuthUser(cleanEmail, tempPassword);
-    } catch (authErr) {
-      console.warn('[assignOrRevokeOrganizationAdviser] Firebase Auth creation notice:', authErr);
+      adviser = {
+        authUid, name: newAdviser.name.trim(),
+        firstName: newAdviser.firstName?.trim() || '',
+        lastName: newAdviser.lastName?.trim() || '',
+        middleInitial: newAdviser.middleInitial?.trim() || '',
+        email: cleanEmail, employeeId: newAdviser.employeeId?.trim() || '',
+        departmentId: newAdviser.departmentId || '', title: 'Club Adviser',
+        temporaryPassword: tempPassword, tempPass: tempPassword,
+        requiresPasswordChange: true, resetInProgress: false,
+      };
     }
-
-    // B. Create new active document in organization_advisers
-    try {
-      await addDoc(collection(db, 'organization_advisers'), {
-        authUid,
-        organizationId: orgId,
-        organizationName: orgName,
-        name: cleanName,
-        firstName: newAdviser.firstName ? newAdviser.firstName.trim() : '',
-        lastName: newAdviser.lastName ? newAdviser.lastName.trim() : '',
-        middleInitial: newAdviser.middleInitial ? newAdviser.middleInitial.trim() : '',
-        email: cleanEmail,
-        employeeId: cleanEmployeeId,
-        departmentId: newAdviser.departmentId || '',
-        title: 'Club Adviser',
-        temporaryPassword: tempPassword,
-        requiresPasswordChange: true,
-        isActive: true,
-        createdBy: adminUser,
-        createdAt: serverTimestamp(),
+    const current = await getDocs(query(collection(db, 'organization_advisers'), where('organizationId', '==', orgId)));
+    const batch = writeBatch(db);
+    for (const item of current.docs) {
+      if (item.data().isActive === false) continue;
+      batch.update(item.ref, {
+        isActive: false, status: 'revoked', revokedAt: serverTimestamp(),
+        revokedBy: adminUser, revocationReason: action === 'assign' ? `Replaced by new adviser: ${adviser?.name}` : 'Unassigned by administrator',
         updatedAt: serverTimestamp(),
       });
-    } catch (createErr) {
-      console.warn(
-        '[assignOrRevokeOrganizationAdviser] Could not create organization_advisers record:',
-        createErr
-      );
     }
-
-    // C. Dispatch welcome credentials email asynchronously
-    if (sendEmailNotice) {
-      sendAdviserWelcomeCredentialsEmail({
-        to: cleanEmail,
-        adviserName: cleanName,
-        orgName: orgName,
-        employeeId: cleanEmployeeId,
-        temporaryPassword: tempPassword,
-      }).catch((err) => {
-        console.warn('[assignOrRevokeOrganizationAdviser] Welcome email notice:', err);
-      });
+    if (adviser) batch.set(doc(collection(db, 'organization_advisers')), {
+      ...adviser, organizationId: orgId, organizationName: orgName,
+      isActive: true, createdBy: adminUser, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+    batch.update(doc(db, COLLECTION, orgId), { adviser: adviser || deleteField(), updatedAt: serverTimestamp() });
+    await batch.commit();
+  } catch (error) {
+    if (authUid) {
+      try { await rollbackSecondaryAuthUser(cleanEmail, tempPassword, authUid); }
+      catch { console.warn('Could not roll back newly provisioned adviser. Account repair may be needed.'); }
     }
-
-    return {
-      name: cleanName,
-      firstName: newAdviser.firstName ? newAdviser.firstName.trim() : '',
-      lastName: newAdviser.lastName ? newAdviser.lastName.trim() : '',
-      middleInitial: newAdviser.middleInitial ? newAdviser.middleInitial.trim() : '',
-      email: cleanEmail,
-      employeeId: cleanEmployeeId,
-      departmentId: newAdviser.departmentId || '',
-      title: 'Club Adviser',
-      temporaryPassword: tempPassword,
-      requiresPasswordChange: true,
-    };
+    throw error;
   }
-
-  return null;
+  if (adviser && sendEmailNotice) {
+    void sendAdviserWelcomeCredentialsEmail({
+      to: cleanEmail, adviserName: adviser.name, orgName,
+      employeeId: adviser.employeeId || '', temporaryPassword: tempPassword,
+    }).catch(() => console.warn('Adviser created, but welcome email delivery failed.'));
+  }
+  return adviser;
 };
 
 export const createOrganization = async (
@@ -209,9 +144,15 @@ export const createOrganization = async (
     isCrossDepartmental: isCross,
   };
 
+  let createdAdviserUid = '';
+  const adviserPassword = payload.adviser?.temporaryPassword || generateTemporaryPassword();
   try {
-    const addPromise = addDoc(collection(db, COLLECTION), {
+    if (payload.adviser?.name && payload.adviser?.email) createdAdviserUid = await createSecondaryAuthUser(payload.adviser.email, adviserPassword);
+    const docRef = doc(collection(db, COLLECTION));
+    const batch = writeBatch(db);
+    batch.set(docRef, {
       ...normalizedPayload,
+      ...(payload.adviser?.email ? { adviser: { ...payload.adviser, email: payload.adviser.email.trim().toLowerCase(), authUid: createdAdviserUid, tempPass: adviserPassword, requiresPasswordChange: true, resetInProgress: false } } : {}),
       logoUrl,
       status: 'active',
       memberCount: 0,
@@ -227,34 +168,13 @@ export const createOrganization = async (
       updatedAt: ReturnType<typeof serverTimestamp>;
     });
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(
-        () =>
-          reject(
-            new Error(
-              'Firestore database write timed out. Check your network or Firestore security rules.'
-            )
-          ),
-        15000
-      );
-    });
-
-    const docRef = await Promise.race([addPromise, timeoutPromise]);
     const orgId = docRef.id;
 
     // ── Create Real Firebase Auth Account & Document for Club Adviser ──
     if (payload.adviser && payload.adviser.name && payload.adviser.email) {
-      let authUid = '';
-      const adviserPassword = payload.adviser.temporaryPassword || 'Adv-2026!#';
+      const authUid = createdAdviserUid;
 
-      try {
-        authUid = await createSecondaryAuthUser(payload.adviser.email, adviserPassword);
-      } catch (authErr: any) {
-        console.warn('[createOrganization] Could not create Firebase Auth user for adviser:', authErr);
-      }
-
-      try {
-        await addDoc(collection(db, 'organization_advisers'), {
+        batch.set(doc(collection(db, 'organization_advisers')), {
           authUid,
           organizationId: orgId,
           organizationName: payload.name,
@@ -264,22 +184,26 @@ export const createOrganization = async (
           middleInitial: payload.adviser.middleInitial ? payload.adviser.middleInitial.trim() : '',
           email: payload.adviser.email.trim().toLowerCase(),
           employeeId: (payload.adviser.employeeId || '').trim(),
-          departmentId: payload.adviser.departmentId,
+          departmentId: payload.adviser.departmentId || '',
           title: payload.adviser.title || 'Club Adviser',
           temporaryPassword: adviserPassword,
+          tempPass: adviserPassword,
+          resetInProgress: false,
           requiresPasswordChange: true,
           isActive: true,
           createdBy,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-      } catch (advErr) {
-        console.warn('Could not create organization_advisers document:', advErr);
-      }
     }
 
+    await batch.commit();
     return orgId;
   } catch (error: any) {
+    if (createdAdviserUid && payload.adviser?.email) {
+      try { await rollbackSecondaryAuthUser(payload.adviser.email, adviserPassword, createdAdviserUid); }
+      catch { console.warn('Could not roll back newly provisioned adviser. Account repair may be needed.'); }
+    }
     console.error('Organization creation failed:', error);
     throw new Error(`Organization creation failed: ${error.message}`);
   }
