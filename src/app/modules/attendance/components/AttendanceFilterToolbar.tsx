@@ -9,6 +9,7 @@ interface AttendanceFilterToolbarProps {
   sections: string[];
   courses?: { id: string; name: string; code: string }[];
   sessions?: { id: string; title: string }[];
+  yearLevels?: string[];
   onExportClick: () => void;
   totalCount: number;
   filteredCount: number;
@@ -33,6 +34,7 @@ export function AttendanceFilterToolbar({
   sections,
   courses,
   sessions,
+  yearLevels,
   onExportClick,
   totalCount,
   filteredCount,
@@ -45,6 +47,11 @@ export function AttendanceFilterToolbar({
     filters.yearLevel !== 'all' ||
     filters.sessionId !== 'all' ||
     filters.status !== 'all';
+
+  const effectiveYearOptions =
+    yearLevels && yearLevels.length > 0
+      ? ['all', ...yearLevels]
+      : ['all', '1st Year', '2nd Year', '3rd Year', '4th Year', 'Grade 11', 'Grade 12'];
 
   return (
     <div className="bg-white border border-[#E0E0E0] rounded-2xl p-4 shadow-sm space-y-4">
@@ -164,9 +171,9 @@ export function AttendanceFilterToolbar({
             onChange={(e) => onFilterChange({ yearLevel: e.target.value })}
             className="w-full px-2.5 py-1.5 bg-gray-50 border border-gray-300 rounded-lg text-xs font-medium text-[#001A4D] focus:ring-1 focus:ring-[#83358E] focus:bg-white outline-none"
           >
-            {YEAR_LEVEL_OPTIONS.map((y) => (
-              <option key={y} value={y === 'All' ? 'all' : y}>
-                {y === 'All' ? 'All Year Levels' : y}
+            {effectiveYearOptions.map((y) => (
+              <option key={y} value={y}>
+                {y === 'all' ? 'All Year Levels' : y}
               </option>
             ))}
           </select>

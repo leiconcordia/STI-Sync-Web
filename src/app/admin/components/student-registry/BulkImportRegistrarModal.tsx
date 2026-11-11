@@ -36,6 +36,7 @@ import {
   Layers,
   PlusCircle,
   UserMinus,
+  Search,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDepartments, useCourses, useSections } from '../../../modules/academic';
@@ -976,6 +977,60 @@ export default function BulkImportRegistrarModal({
                         </div>
                       </div>
 
+                      {/* Search Bar & Visible Selection Toolbar to assign each selected student a section */}
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2 border-t border-white/10">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-blue-200 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search students by Student ID, last name, or first name to assign section..."
+                            className="w-full pl-9 pr-8 py-1.5 bg-white/10 border border-white/20 rounded-lg text-xs text-white placeholder:text-blue-200/70 focus:bg-white focus:text-gray-900 focus:placeholder:text-gray-400 focus:ring-2 focus:ring-yellow-400 outline-none transition-all"
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setSearchQuery('')}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/80 hover:text-yellow-300 text-xs cursor-pointer"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const visibleNos = filteredPromotions.map((p) => p.incoming.studentNo);
+                              setSelectedPromotionStudentNos((prev) => {
+                                const next = new Set(prev);
+                                visibleNos.forEach((no) => next.add(no));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-white/15 hover:bg-white/25 text-white rounded-md text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Select All Visible ({filteredPromotions.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const visibleNos = filteredPromotions.map((p) => p.incoming.studentNo);
+                              setSelectedPromotionStudentNos((prev) => {
+                                const next = new Set(prev);
+                                visibleNos.forEach((no) => next.delete(no));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-blue-200 hover:text-white rounded-md text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Deselect Visible
+                          </button>
+                        </div>
+                      </div>
+
                       {/* Dropout / Transfer & Quick Add Irregular Controls */}
                       {currentSectionFilter !== 'ALL' && (
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-white/10 text-xs">
@@ -1073,6 +1128,41 @@ export default function BulkImportRegistrarModal({
                                     <span className="inline-flex items-center gap-1 font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded text-[11px]">
                                       {item.incoming.yearLevel} • {item.incoming.courseCode}
                                     </span>
+                                    {/* Inline Row Target Section Dropdown */}
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      <select
+                                        value={item.targetSection || ''}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setPromotions((prev) =>
+                                            prev.map((p) =>
+                                              p.incoming.studentNo === item.incoming.studentNo
+                                                ? {
+                                                    ...p,
+                                                    targetSection: val,
+                                                    decision: val ? 'AUTO_PROMOTE' : p.decision,
+                                                  }
+                                                : p
+                                            )
+                                          );
+                                          if (val) {
+                                            setSelectedPromotionStudentNos((prev) => {
+                                              const next = new Set(prev);
+                                              next.add(item.incoming.studentNo);
+                                              return next;
+                                            });
+                                          }
+                                        }}
+                                        className="text-[11px] font-semibold px-2 py-1 rounded-md border border-gray-300 bg-white text-gray-800 focus:ring-1 focus:ring-blue-500 cursor-pointer max-w-[170px]"
+                                      >
+                                        <option value="">-- Assign Section --</option>
+                                        {availableCohortTargetSections.map((s) => (
+                                          <option key={s.id} value={s.name}>
+                                            {s.name}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
                                     {item.targetSection ? (
                                       <span className="inline-flex items-center gap-1 font-bold text-emerald-800 bg-emerald-100 border border-emerald-200 px-1.5 py-0.5 rounded text-[10px]">
                                         Promoting to: {item.targetSection}
@@ -1225,6 +1315,60 @@ export default function BulkImportRegistrarModal({
                           </button>
                         </div>
                       </div>
+
+                      {/* Search Bar & Visible Selection Toolbar for New Students */}
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pt-2 border-t border-white/10">
+                        <div className="relative flex-1">
+                          <Search className="w-3.5 h-3.5 text-emerald-200 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search new students by ID, last name, or first name to assign section..."
+                            className="w-full pl-9 pr-8 py-1.5 bg-white/10 border border-white/20 rounded-lg text-xs text-white placeholder:text-emerald-200/70 focus:bg-white focus:text-gray-900 focus:placeholder:text-gray-400 focus:ring-2 focus:ring-yellow-400 outline-none transition-all"
+                          />
+                          {searchQuery && (
+                            <button
+                              type="button"
+                              onClick={() => setSearchQuery('')}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/80 hover:text-yellow-300 text-xs cursor-pointer"
+                              title="Clear search"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const visibleNos = filteredNewStudents.map((s) => s.studentNo);
+                              setSelectedNewStudentNos((prev) => {
+                                const next = new Set(prev);
+                                visibleNos.forEach((no) => next.add(no));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-white/15 hover:bg-white/25 text-white rounded-md text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Select All Visible ({filteredNewStudents.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const visibleNos = filteredNewStudents.map((s) => s.studentNo);
+                              setSelectedNewStudentNos((prev) => {
+                                const next = new Set(prev);
+                                visibleNos.forEach((no) => next.delete(no));
+                                return next;
+                              });
+                            }}
+                            className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-emerald-200 hover:text-white rounded-md text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Deselect Visible
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="overflow-x-auto max-h-[360px] border border-gray-100 rounded-xl">
@@ -1270,15 +1414,37 @@ export default function BulkImportRegistrarModal({
                                 <td className="p-3 font-semibold text-emerald-700">{st.courseCode}</td>
                                 <td className="p-3 text-gray-700">{st.yearLevel}</td>
                                 <td className="p-3">
-                                  {st.assignedSection ? (
-                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                      Sec: {st.assignedSection}
-                                    </span>
-                                  ) : (
-                                    <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-gray-100 text-gray-500">
-                                      Unassigned
-                                    </span>
-                                  )}
+                                  <div className="flex flex-col gap-1 items-start">
+                                    <select
+                                      value={st.assignedSection || ''}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        setNewStudentsList((prev) =>
+                                          prev.map((s) => (s.studentNo === st.studentNo ? { ...s, assignedSection: val } : s))
+                                        );
+                                        if (val) {
+                                          setSelectedNewStudentNos((prev) => {
+                                            const next = new Set(prev);
+                                            next.add(st.studentNo);
+                                            return next;
+                                          });
+                                        }
+                                      }}
+                                      className="text-[11px] font-semibold px-2 py-1 rounded-md border border-gray-300 bg-white text-gray-800 focus:ring-1 focus:ring-emerald-500 cursor-pointer max-w-[170px]"
+                                    >
+                                      <option value="">-- Assign Section --</option>
+                                      {availableNewStudentSections.map((s) => (
+                                        <option key={s.id} value={s.name}>
+                                          {s.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    {st.assignedSection ? (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                        Assigned: {st.assignedSection}
+                                      </span>
+                                    ) : null}
+                                  </div>
                                 </td>
                                 <td className="p-3 font-mono font-bold text-blue-600 bg-blue-50/50">
                                   {pwd}

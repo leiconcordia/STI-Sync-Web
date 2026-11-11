@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { X, Download, FileSpreadsheet, Check, Filter, Eye, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
+import * as XLSX from 'xlsx';
 import type { EnrichedAttendanceRecord } from '../types/attendance.types';
 import { formatAppDateTime } from '../../../utils/date';
 
@@ -31,7 +32,6 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { key: 'sessionTitle', label: 'Session Name', enabled: true },
   { key: 'checkIn', label: 'Time-In', enabled: true },
   { key: 'checkOut', label: 'Time-Out', enabled: true },
-  { key: 'duration', label: 'Duration', enabled: true },
   { key: 'status', label: 'Attendance Status', enabled: true },
   { key: 'flaggedReason', label: 'Remarks / Notes', enabled: true },
 ];
@@ -83,7 +83,6 @@ export function AttendanceExportPreviewModal({
       case 'sessionTitle': return rec.sessionTitle || 'Main Session';
       case 'checkIn': return rec.checkIn && rec.checkIn !== '—' ? rec.checkIn : 'Not Checked In';
       case 'checkOut': return rec.checkOut && rec.checkOut !== '—' ? rec.checkOut : 'Not Checked Out';
-      case 'duration': return rec.duration || '—';
       case 'status': return rec.status || 'Checked In';
       case 'flaggedReason': return rec.flaggedReason || '—';
       default: return '';
@@ -94,184 +93,75 @@ export function AttendanceExportPreviewModal({
     return name.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_');
   };
 
-  const escapeXml = (unsafe: string) => {
-    return unsafe.replace(/[<>&'"]/g, c => {
-      switch (c) {
-        case '<': return '&lt;';
-        case '>': return '&gt;';
-        case '&': return '&amp;';
-        case '\'': return '&apos;';
-        case '"': return '&quot;';
-        default: return c;
-      }
-    });
-  };
-
-  const exportToExcelXML = () => {
+  const exportToExcel = () => {
     setIsExporting(true);
     try {
-      const now = formatAppDateTime(new Date());
-      const filename = `${sanitizeFileName(eventTitle)}_Attendance_Report.xls`;
+      const filename = `${sanitizeFileName(eventTitle)}_Attendance_Report.xlsx`;
 
-      let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Center"/>
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Color="#000000"/>
-  </Style>
-  <Style ss:ID="TitleStyle">
-   <Font ss:FontName="Calibri" ss:Size="16" ss:Bold="1" ss:Color="#001A4D"/>
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-  </Style>
-  <Style ss:ID="SubTitleStyle">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Italic="1" ss:Color="#555555"/>
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-  </Style>
-  <Style ss:ID="HeaderStyle">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#FFFFFF"/>
-   <Interior ss:Color="#83358E" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-  </Style>
-  <Style ss:ID="RowEven">
-   <Interior ss:Color="#F9FAFB" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="RowOdd">
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="StatusComplete">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#166534"/>
-   <Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center"/>
-  </Style>
-  <Style ss:ID="StatusLate">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#C2410C"/>
-   <Interior ss:Color="#FFEDD5" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center"/>
-  </Style>
-  <Style ss:ID="StatusAbsent">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#991B1B"/>
-   <Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center"/>
-  </Style>
-  <Style ss:ID="StatusFlagged">
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Bold="1" ss:Color="#92400E"/>
-   <Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/>
-   <Alignment ss:Horizontal="Center"/>
-  </Style>
- </Styles>
- <Worksheet ss:Name="Attendance Log">
-  <Table>
-   <Column ss:Width="110"/>
-   <Column ss:Width="160"/>
-   <Column ss:Width="150"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="140"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="180"/>
-   <Row ss:Height="26">
-    <Cell ss:MergeAcross="${Math.max(0, enabledColumns.length - 1)}" ss:StyleID="TitleStyle"><Data ss:Type="String">STI Sync — Attendance Monitoring Report</Data></Cell>
-   </Row>
-   <Row ss:Height="20">
-    <Cell ss:MergeAcross="${Math.max(0, enabledColumns.length - 1)}" ss:StyleID="SubTitleStyle"><Data ss:Type="String">Event: ${eventTitle} | Date: ${eventDate} | Host: ${hostingOrgName}</Data></Cell>
-   </Row>
-   <Row ss:Height="20">
-    <Cell ss:MergeAcross="${Math.max(0, enabledColumns.length - 1)}" ss:StyleID="SubTitleStyle"><Data ss:Type="String">Filters Applied: ${activeFiltersSummary} | Generated: ${now} | Total Records: ${records.length}</Data></Cell>
-   </Row>
-   <Row ss:Height="10"></Row>
-   <Row ss:Height="24">`;
-
-      enabledColumns.forEach(col => {
-        xml += `<Cell ss:StyleID="HeaderStyle"><Data ss:Type="String">${col.label}</Data></Cell>`;
-      });
-      xml += `</Row>`;
-
-      records.forEach((rec, idx) => {
-        const rowStyle = idx % 2 === 0 ? 'RowEven' : 'RowOdd';
-        xml += `<Row ss:Height="20">`;
-        enabledColumns.forEach(col => {
-          const val = getRecordValue(rec, col.key);
-          let cellStyle = rowStyle;
-          if (col.key === 'status') {
-            if (val === 'Complete' || val === 'Checked In') cellStyle = 'StatusComplete';
-            else if (val === 'Late') cellStyle = 'StatusLate';
-            else if (val === 'Absent') cellStyle = 'StatusAbsent';
-            else if (val === 'Flagged') cellStyle = 'StatusFlagged';
-          }
-          xml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(val)}</Data></Cell>`;
+      const rows = records.map((rec, idx) => {
+        const rowObj: Record<string, any> = { 'No.': idx + 1 };
+        enabledColumns.forEach((col) => {
+          rowObj[col.label] = getRecordValue(rec, col.key);
         });
-        xml += `</Row>`;
+        return rowObj;
       });
 
-      xml += `  </Table>
- </Worksheet>
-</Workbook>`;
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows, { raw: true });
 
-      const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      // Enforce text formatting for Student IDs to prevent 2E+09 scientific notation
+      if (ws['!ref'] && rows.length > 0) {
+        const range = XLSX.utils.decode_range(ws['!ref']);
+        const headers = Object.keys(rows[0]);
+        for (let R = range.s.r; R <= range.e.r; ++R) {
+          for (let C = range.s.c; C <= range.e.c; ++C) {
+            const cellAddr = XLSX.utils.encode_cell({ r: R, c: C });
+            const cell = ws[cellAddr];
+            if (!cell) continue;
+            if (R === 0) {
+              cell.t = 's';
+              continue;
+            }
+            const hName = headers[C] || '';
+            if (hName === 'No.') {
+              cell.t = 'n';
+            } else {
+              const str = String(cell.v ?? '').trim();
+              cell.t = 's';
+              cell.z = '@';
+              cell.v = str;
+              cell.w = str;
+            }
+          }
+        }
+
+        // Auto-fit column widths
+        ws['!cols'] = headers.map((h) => {
+          let maxLen = h.length;
+          for (const r of rows) {
+            const v = r[h];
+            if (v !== undefined && v !== null) {
+              const strLen = String(v).length;
+              if (strLen > maxLen) maxLen = strLen;
+            }
+          }
+          if (h === 'No.') return { wch: 6 };
+          if (h === 'Student ID') return { wch: Math.max(maxLen + 4, 18) };
+          if (h.includes('Name')) return { wch: Math.max(maxLen + 4, 22) };
+          return { wch: Math.max(maxLen + 3, 14) };
+        });
+      }
+
+      XLSX.utils.book_append_sheet(wb, ws, 'Attendance Roster');
+      XLSX.writeFile(wb, filename);
 
       toast.success('Excel File Downloaded!', {
         description: `Successfully exported ${records.length} records to ${filename}`,
       });
       onClose();
     } catch (err) {
-      console.error('Failed to export Excel XML', err);
+      console.error('Failed to export Excel file', err);
       toast.error('Failed to export Excel file.');
-    } finally {
-      setIsExporting(false);
-    }
-  };
-
-  const exportToCSV = () => {
-    setIsExporting(true);
-    try {
-      const filename = `${sanitizeFileName(eventTitle)}_Attendance.csv`;
-      const headers = enabledColumns.map(c => `"${c.label}"`).join(',');
-      const rows = records.map(rec =>
-        enabledColumns.map(c => `"${getRecordValue(rec, c.key).replace(/"/g, '""')}"`).join(',')
-      );
-
-      const meta = [
-        `"STI Sync — Attendance Monitoring Report"`,
-        `"Event: ${eventTitle} | Date: ${eventDate} | Host: ${hostingOrgName}"`,
-        `"Filters: ${activeFiltersSummary} | Total Records: ${records.length}"`,
-        `""`,
-      ].join('\n');
-
-      const csvContent = '\uFEFF' + meta + '\n' + headers + '\n' + rows.join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-
-      toast.success('CSV File Downloaded!', {
-        description: `Exported ${records.length} records to ${filename}`,
-      });
-      onClose();
-    } catch (err) {
-      console.error('Failed to export CSV', err);
-      toast.error('Failed to export CSV file.');
     } finally {
       setIsExporting(false);
     }
@@ -443,9 +333,9 @@ export function AttendanceExportPreviewModal({
               Cancel
             </button>
             <button
-              onClick={exportToExcelXML}
+              onClick={exportToExcel}
               disabled={isExporting || records.length === 0}
-              className="px-6 py-2.5 bg-gradient-to-r from-[#83358E] to-[#001A4D] text-white rounded-xl text-sm font-bold hover:from-[#6D2A78] hover:to-[#00143D] disabled:opacity-50 transition-all shadow-md flex items-center gap-2"
+              className="px-6 py-2.5 bg-gradient-to-r from-[#83358E] to-[#001A4D] text-white rounded-xl text-sm font-bold hover:from-[#6D2A78] hover:to-[#00143D] disabled:opacity-50 transition-all shadow-md flex items-center gap-2 cursor-pointer"
             >
               <FileSpreadsheet className="w-4 h-4 text-[#FFC107]" />
               {isExporting ? 'Generating Excel File...' : 'Download Excel (.xlsx)'}

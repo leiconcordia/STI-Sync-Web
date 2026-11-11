@@ -10,7 +10,7 @@ import { useAllEvents } from "../../modules/events/hooks/useEventStream";
 import { useAttendanceStream } from "../../modules/attendance/hooks/useAttendanceStream";
 import { useVenuesStream, useEventCategoriesStream } from "../../modules/events/hooks/useEventConfigStream";
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
-import { useDepartments, useCourses, useSections } from "../../modules/academic/hooks/useAcademicStream";
+import { useDepartments, useCourses, useSections, useSemesters } from "../../modules/academic/hooks/useAcademicStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
 import {
   isSessionCheckInPassed,
@@ -45,6 +45,8 @@ interface Event {
   org: string;
   orgInitials: string;
   category: string;
+  semesterId?: string;
+  semesterLabel?: string;
   registered: number;
   checkedIn: number;
   absent: number;
@@ -106,6 +108,89 @@ function EventDetail({
   } | null>(null);
 
   const allRecords = useMemo(() => event.records || event.sessions.flatMap((s) => s.records), [event]);
+
+  // 1. Participant-scoped Departments (ONLY departments of students in this attendance roster)
+  const participantDepartments = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; code: string }>();
+    allRecords.forEach((r) => {
+      const code = (r.departmentCode || r.departmentName || '').trim();
+      const id = r.departmentId || code;
+      const name = r.departmentName || code;
+      if (code && code !== 'N/A' && !map.has(id)) {
+        map.set(id, { id, name, code });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [allRecords]);
+
+  // 2. Participant-scoped Courses / Programs (cascades from selected department)
+  const participantCourses = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; code: string }>();
+    allRecords.forEach((r) => {
+      if (filterState.departmentId !== 'all') {
+        const matchDept =
+          r.departmentId === filterState.departmentId ||
+          r.departmentCode === filterState.departmentId;
+        if (!matchDept) return;
+      }
+      const code = (r.courseCode || r.courseName || '').trim();
+      const id = r.courseId || code;
+      const name = r.courseName || code;
+      if (code && code !== 'N/A' && !map.has(id)) {
+        map.set(id, { id, name, code });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code));
+  }, [allRecords, filterState.departmentId]);
+
+  // 3. Participant-scoped Sections (ONLY sections of actual participants in this attendance)
+  const participantSections = useMemo(() => {
+    const set = new Set<string>();
+    allRecords.forEach((r) => {
+      if (filterState.departmentId !== 'all') {
+        const matchDept =
+          r.departmentId === filterState.departmentId ||
+          r.departmentCode === filterState.departmentId;
+        if (!matchDept) return;
+      }
+      if (filterState.courseId !== 'all') {
+        const matchCourse =
+          r.courseId === filterState.courseId ||
+          r.courseCode === filterState.courseId;
+        if (!matchCourse) return;
+      }
+      const sec = (r.section || '').trim();
+      if (sec && sec !== 'N/A' && sec !== 'UNASSIGNED') {
+        set.add(sec);
+      }
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  }, [allRecords, filterState.departmentId, filterState.courseId]);
+
+  // 4. Participant-scoped Year Levels
+  const participantYearLevels = useMemo(() => {
+    const set = new Set<string>();
+    allRecords.forEach((r) => {
+      const yl = (r.yearLevel || '').trim();
+      if (yl && yl !== 'N/A') {
+        set.add(yl);
+      }
+    });
+    return Array.from(set).sort();
+  }, [allRecords]);
+
+  // Auto-reset dependent filters if they become invalid
+  useMemo(() => {
+    if (filterState.courseId !== 'all' && !participantCourses.some(c => c.id === filterState.courseId || c.code === filterState.courseId)) {
+      setFilterState(prev => ({ ...prev, courseId: 'all' }));
+    }
+  }, [participantCourses, filterState.courseId]);
+
+  useMemo(() => {
+    if (filterState.section !== 'all' && !participantSections.includes(filterState.section)) {
+      setFilterState(prev => ({ ...prev, section: 'all' }));
+    }
+  }, [participantSections, filterState.section]);
 
   const complete = allRecords.filter((r) => r.status === "Complete" || r.status === "Checked In").length;
   const absent = allRecords.filter((r) => r.status === "Absent").length;
@@ -182,8 +267,12 @@ function EventDetail({
   const activeFiltersSummary = useMemo(() => {
     const parts: string[] = [];
     if (filterState.departmentId !== 'all') {
-      const d = departments.find(dept => dept.id === filterState.departmentId || dept.code === filterState.departmentId);
+      const d = participantDepartments.find(dept => dept.id === filterState.departmentId || dept.code === filterState.departmentId);
       parts.push(`Dept: ${d?.code || filterState.departmentId}`);
+    }
+    if (filterState.courseId !== 'all') {
+      const c = participantCourses.find(course => course.id === filterState.courseId || course.code === filterState.courseId);
+      parts.push(`Course: ${c?.code || filterState.courseId}`);
     }
     if (filterState.section !== 'all') parts.push(`Section: ${filterState.section}`);
     if (filterState.yearLevel !== 'all') parts.push(`Year: ${filterState.yearLevel}`);
@@ -194,7 +283,7 @@ function EventDetail({
     if (filterState.status !== 'all') parts.push(`Status: ${filterState.status}`);
     if (filterState.searchQuery) parts.push(`Search: "${filterState.searchQuery}"`);
     return parts.length > 0 ? parts.join(' | ') : 'All Event Attendees';
-  }, [filterState, departments, event.sessions]);
+  }, [filterState, participantDepartments, participantCourses, event.sessions]);
 
   const handleFilterChange = (updates: Partial<AttendanceFilterState>) => {
     setFilterState(prev => ({ ...prev, ...updates }));
@@ -263,19 +352,20 @@ function EventDetail({
         </div>
       </div>
 
-      {/* Shared Filter Toolbar */}
-          <AttendanceFilterToolbar
-            filters={filterState}
-            onFilterChange={handleFilterChange}
-            onReset={handleResetFilters}
-            departments={departments.map(d => ({ id: d.id, name: d.name, code: d.code }))}
-            sections={sections}
-            courses={courses.map(c => ({ id: c.id, name: c.name, code: c.code }))}
-            sessions={sessionsList}
-            onExportClick={() => setIsExportModalOpen(true)}
-            totalCount={allRecords.length}
-            filteredCount={filteredRecords.length}
-          />
+      {/* Shared Filter Toolbar - Scoped strictly to actual participants in this attendance */}
+      <AttendanceFilterToolbar
+        filters={filterState}
+        onFilterChange={handleFilterChange}
+        onReset={handleResetFilters}
+        departments={participantDepartments}
+        sections={participantSections}
+        courses={participantCourses}
+        yearLevels={participantYearLevels}
+        sessions={sessionsList}
+        onExportClick={() => setIsExportModalOpen(true)}
+        totalCount={allRecords.length}
+        filteredCount={filteredRecords.length}
+      />
 
           {/* Main Attendance Table */}
           <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden shadow-sm">
@@ -401,15 +491,15 @@ export function AttendanceMonitoring() {
   const { data: departments } = useDepartments();
   const { data: courses } = useCourses();
   const { data: dbSections } = useSections();
+  const { data: dbSemesters = [], loading: semestersLoading } = useSemesters();
 
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [eventSearch, setEventSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [semesterFilter, setSemesterFilter] = useState("all");
   const [orgFilter, setOrgFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
   const [venueFilter, setVenueFilter] = useState("all");
 
-  const loading = eventsLoading || attendanceLoading || venuesLoading || categoriesLoading || studentsLoading || orgsLoading;
+  const loading = eventsLoading || attendanceLoading || venuesLoading || categoriesLoading || studentsLoading || orgsLoading || semestersLoading;
 
   // Student lookup map
   const studentMap = useMemo(() => {
@@ -569,6 +659,10 @@ export function AttendanceMonitoring() {
       const orgName = isInstitutional ? "Student Affairs and Services (SAS)" : (orgObj ? orgObj.name : (evt.hostingOrgId || "SAS"));
       const orgInitials = isInstitutional ? "SAS" : (orgObj ? (orgObj.acronym || orgObj.name.substring(0, 3).toUpperCase()) : (evt.hostingOrgId ? evt.hostingOrgId.substring(0, 3).toUpperCase() : "SAS"));
 
+      const semId = evt.semesterId || '';
+      const matchedSem = (dbSemesters || []).find(s => s.id === semId);
+      const semLabel = matchedSem?.label || matchedSem?.semester || evt.semester || (evt.schoolYear ? `${evt.schoolYear} Semester` : 'General Semester');
+
       return {
         id: evt.id,
         name: evt.title,
@@ -579,6 +673,8 @@ export function AttendanceMonitoring() {
         org: orgName,
         orgInitials: orgInitials,
         category: catName,
+        semesterId: semId,
+        semesterLabel: semLabel,
         registered,
         checkedIn,
         absent,
@@ -588,7 +684,7 @@ export function AttendanceMonitoring() {
         records: allEventRecords,
       };
     });
-  }, [dbEvents, dbAttendance, venues, dbCategories, studentMap, departments, courses, rawOrganizations, students]);
+  }, [dbEvents, dbAttendance, venues, dbCategories, studentMap, departments, courses, rawOrganizations, students, dbSemesters]);
 
   // Automatically sync missing absent records to Firestore in the background for eligible events
   useMemo(() => {
@@ -621,9 +717,25 @@ export function AttendanceMonitoring() {
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [rawOrganizations, mappedEvents]);
 
-  const availableCategories = useMemo(() => {
-    return Array.from(new Set(mappedEvents.map(e => e.category).filter(Boolean))).sort();
-  }, [mappedEvents]);
+  const availableSemesters = useMemo(() => {
+    const map = new Map<string, string>();
+    (dbSemesters || []).forEach(s => {
+      if (!s.archived) {
+        const label = s.label || [s.academicYear, s.semester].filter(Boolean).join(' ') || s.id;
+        map.set(s.id, label);
+      }
+    });
+    mappedEvents.forEach(e => {
+      if (e.semesterId && !map.has(e.semesterId)) {
+        map.set(e.semesterId, e.semesterLabel || e.semesterId);
+      } else if (e.semesterLabel && !Array.from(map.values()).includes(e.semesterLabel)) {
+        map.set(e.semesterLabel, e.semesterLabel);
+      }
+    });
+    return Array.from(map.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => b.label.localeCompare(a.label));
+  }, [dbSemesters, mappedEvents]);
 
   const availableVenues = useMemo(() => {
     return Array.from(new Set(mappedEvents.map(e => e.venue).filter(Boolean))).sort();
@@ -642,27 +754,27 @@ export function AttendanceMonitoring() {
         orgStr.includes(searchStr) ||
         venueStr.includes(searchStr);
 
-      const matchStatus = statusFilter === "all" || e.status === statusFilter;
       const matchOrg = orgFilter === "all" || e.hostingOrgId === orgFilter || e.org === orgFilter;
-      const matchCat = categoryFilter === "all" || e.category === categoryFilter;
       const matchVenue = venueFilter === "all" || e.venue === venueFilter;
+      const matchSemester =
+        semesterFilter === "all" ||
+        e.semesterId === semesterFilter ||
+        e.semesterLabel === semesterFilter;
 
-      return matchSearch && matchStatus && matchOrg && matchCat && matchVenue;
+      return matchSearch && matchOrg && matchVenue && matchSemester;
     });
-  }, [mappedEvents, eventSearch, statusFilter, orgFilter, categoryFilter, venueFilter]);
+  }, [mappedEvents, eventSearch, orgFilter, venueFilter, semesterFilter]);
 
   const hasActiveEventFilters =
     eventSearch !== "" ||
-    statusFilter !== "all" ||
+    semesterFilter !== "all" ||
     orgFilter !== "all" ||
-    categoryFilter !== "all" ||
     venueFilter !== "all";
 
   const handleResetEventFilters = () => {
     setEventSearch("");
-    setStatusFilter("all");
+    setSemesterFilter("all");
     setOrgFilter("all");
-    setCategoryFilter("all");
     setVenueFilter("all");
   };
 
@@ -740,7 +852,7 @@ export function AttendanceMonitoring() {
           )}
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
           {/* Search */}
           <div className="relative">
             <input
@@ -753,17 +865,17 @@ export function AttendanceMonitoring() {
             <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
           </div>
 
-          {/* Event Status Filter */}
+          {/* Semestral Filter */}
           <div>
             <select
-              value={statusFilter}
-              onChange={e => setStatusFilter(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none"
+              value={semesterFilter}
+              onChange={e => setSemesterFilter(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none cursor-pointer"
             >
-              <option value="all">All Event Statuses</option>
-              <option value="Ongoing">Ongoing</option>
-              <option value="Completed">Completed</option>
-              <option value="Upcoming">Upcoming</option>
+              <option value="all">All Semesters</option>
+              {availableSemesters.map(s => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
             </select>
           </div>
 
@@ -772,25 +884,11 @@ export function AttendanceMonitoring() {
             <select
               value={orgFilter}
               onChange={e => setOrgFilter(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none"
+              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none cursor-pointer"
             >
               <option value="all">All Organizations</option>
               {availableOrgs.map(org => (
                 <option key={org.id} value={org.id}>{org.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Category Filter */}
-          <div>
-            <select
-              value={categoryFilter}
-              onChange={e => setCategoryFilter(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none"
-            >
-              <option value="all">All Categories</option>
-              {availableCategories.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
           </div>
@@ -800,7 +898,7 @@ export function AttendanceMonitoring() {
             <select
               value={venueFilter}
               onChange={e => setVenueFilter(e.target.value)}
-              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none"
+              className="w-full px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-medium text-gray-700 focus:ring-2 focus:ring-[#0E4EBD] focus:bg-white outline-none cursor-pointer"
             >
               <option value="all">All Venues</option>
               {availableVenues.map(ven => (
