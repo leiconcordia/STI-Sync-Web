@@ -86,13 +86,114 @@ function newest<T>(records: T[]): T | undefined {
     || Number(b.revisionCount || b.version || 0) - Number(a.revisionCount || a.version || 0)
     || String(b.id || '').localeCompare(String(a.id || '')))[0];
 }
+
+/**
+ * Checks whether a document is currently and strictly in "returned for revision" status.
+ * If a proposal/report has been resubmitted and is now under review, pending, or approved,
+ * it is NOT returned and must be immediately removed from the returned list.
+ */
+export function isDocumentCurrentlyReturned(record: any): boolean {
+  if (!record) return false;
+  const status = normalized(record.status || record.reportStatus);
+  const pStatus = normalized(record.proposalStatus);
+  const lStatus = normalized(record.lifecycleStatus);
+
+  // If actively under review / pending or approved / completed, it is NOT currently returned!
+  if (
+    ['under_review', 'pending', 'pending_review', 'pending_adviser_review', 'submitted'].includes(status) ||
+    ['under_review', 'pending', 'pending_review'].includes(pStatus) ||
+    ['pending_review'].includes(lStatus)
+  ) {
+    return false;
+  }
+  if (
+    ['approved', 'approved_president', 'activated', 'completed', 'concluded'].includes(status) ||
+    ['approved', 'approved_president', 'activated', 'completed', 'concluded'].includes(pStatus)
+  ) {
+    return false;
+  }
+  if (['draft', 'voided', 'cancelled', 'canceled', 'deleted'].includes(status)) {
+    return false;
+  }
+
+  // Strictly returned
+  return (
+    ['returned', 'returned_for_revision', 'rejected'].includes(status) ||
+    ['returned', 'returned_for_revision'].includes(pStatus) ||
+    lStatus === 'returned' ||
+    (record.isReturned === true && status !== 'draft')
+  );
+}
+
+/**
+ * Checks whether the logged-in signatory personally signed an individual step.
+ * Strictly verifies identity (UID, email, or name with signature timestamp).
+ * Never matches by generic role or role title.
+ */
+export function hasSignatorySignedStep(step: any, session: any): boolean {
+  if (!step || !session) return false;
+
+  const isSignedStatus = step.status === 'endorsed' || step.status === 'approved';
+  const hasSigEvidence = Boolean(step.signedAt || step.signatureUrl);
+  if (!isSignedStatus && !hasSigEvidence) return false;
+
+  const userUid = session.id || session.uid;
+  const userEmail = (session.email || '').toLowerCase().trim();
+  const userName = (session.name || '').toLowerCase().trim();
+
+  // 1. Direct UID match
+  if (userUid) {
+    const stepSignerUid = step.signedByUid || step.signatoryUid;
+    if (stepSignerUid && stepSignerUid === userUid) return true;
+  }
+
+  // 2. Direct Email match
+  if (userEmail) {
+    const stepEmail = (step.signedByEmail || step.signatoryEmail || '').toLowerCase().trim();
+    if (stepEmail && stepEmail === userEmail) return true;
+  }
+
+  // Disqualification: if step clearly specifies another user's UID or Email, reject
+  const stepSignerUid = step.signedByUid || step.signatoryUid;
+  if (stepSignerUid && userUid && stepSignerUid !== userUid) return false;
+
+  const stepEmail = (step.signedByEmail || step.signatoryEmail || '').toLowerCase().trim();
+  if (stepEmail && userEmail && stepEmail !== userEmail) return false;
+
+  // 3. Fallback name match only if signature timestamp or signature URL is present
+  if (userName && hasSigEvidence) {
+    const stepName = (step.signedByName || step.signatoryName || '').toLowerCase().trim();
+    if (stepName && (stepName === userName || stepName.includes(userName) || userName.includes(stepName))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether the logged-in signatory personally signed anywhere on this document.
+ */
+export function hasSignatorySignedDocument(doc: any, session: any): boolean {
+  if (!doc || !session) return false;
+  const chain = doc.approvalChain || [];
+  if (chain.some((s: any) => hasSignatorySignedStep(s, session))) return true;
+
+  const userUid = session.id || session.uid;
+  const userEmail = (session.email || '').toLowerCase().trim();
+  if (userUid && (doc.approvedByUid === userUid || doc.endorsedByUid === userUid || doc.approvedBy === userUid)) return true;
+  if (userEmail && (doc.approvedByEmail?.toLowerCase().trim() === userEmail || doc.endorsedByEmail?.toLowerCase().trim() === userEmail)) return true;
+
+  return false;
+}
+
 export function documentStatus(record: any): DocumentStatus {
   if (!record) return 'missing';
-  const status = normalized(record.status || record.reportStatus);
-  if (['returned', 'returned_for_revision', 'rejected'].includes(status) || record.isReturned === true) return 'returned';
+  const status = normalized(record.status || record.reportStatus || record.proposalStatus);
   if (['approved', 'approved_president', 'activated', 'completed', 'concluded'].includes(status)) return 'approved';
-  if (status === 'archived') return record.approvedAt || record.archivedFromStatus === 'approved' ? 'approved' : 'archived';
   if (['under_review', 'pending', 'pending_review', 'pending_adviser_review', 'submitted'].includes(status)) return 'under_review';
+  if (status === 'archived') return record.approvedAt || record.archivedFromStatus === 'approved' ? 'approved' : 'archived';
+  if (isDocumentCurrentlyReturned(record)) return 'returned';
   return 'draft';
 }
 function proposalStatus(record: any): string {

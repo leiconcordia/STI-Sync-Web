@@ -605,9 +605,10 @@ export default function EventManagement() {
               setIsApModalOpen(true);
             }}
             className="flex items-center gap-2 px-4 py-2.5 bg-[#0E4EBD] hover:bg-[#0A3D96] text-white rounded-xl text-sm font-bold transition-colors shadow-xs cursor-pointer"
+            title="Prepare a new Activity Proposal draft for Adviser review and formal endorsement"
           >
             <FileText className="w-4 h-4 text-[#FFD41C]" />
-            New Activity Proposal
+            Draft Activity Proposal
           </button>
         </div>
       </div>
@@ -1178,10 +1179,10 @@ export default function EventManagement() {
                                         setIsApModalOpen(true);
                                       }}
                                       className="px-2.5 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
-                                      title="Revise and Resubmit Activity Proposal"
+                                      title="Revise Returned Proposal Draft for Adviser Re-Endorsement"
                                     >
                                       <Edit className="w-3.5 h-3.5" />
-                                      <span>Edit</span>
+                                      <span>Revise Draft</span>
                                     </button>
                                   )}
 
@@ -1202,7 +1203,7 @@ export default function EventManagement() {
                                         title="Edit Draft Proposal"
                                       >
                                         <Edit className="w-3.5 h-3.5" />
-                                        <span>Edit</span>
+                                        <span>Edit Draft</span>
                                       </button>
                                       <button
                                         onClick={() => handleDelete(event.id)}

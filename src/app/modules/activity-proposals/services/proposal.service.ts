@@ -137,6 +137,10 @@ export async function syncProposalToEventsCollection(
         : mappedStatus;
 
       const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+      const refId = (proposal.referenceNo || (proposal as any).referenceId || existingData.referenceId || existingData.referenceNo || '').toString().toUpperCase().trim();
+      const cRole = ((proposal.creatorRole || existingData.creatorRole || '') as string).toLowerCase().trim();
+      const cEmail = ((proposal.createdByEmail || existingData.createdByEmail || '') as string).toLowerCase().trim();
+
       const rawHostingOrg = String(
         (proposal as any).hostingOrgId ||
         (proposal as any).organizationId ||
@@ -146,34 +150,38 @@ export async function syncProposalToEventsCollection(
       ).trim();
       const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
 
-      const hasStudentOrgName = Boolean(
-        ((proposal as any).organizationName && stripSasPhrases((proposal as any).organizationName).length > 0) ||
-        (existingData.organizationName && stripSasPhrases(existingData.organizationName).length > 0)
-      );
+      const isExplicitSas =
+        refId.includes('-SAS-') ||
+        refId.startsWith('EVT-ADM-') ||
+        ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(cRole) ||
+        cEmail === 'sao@ormoc.sti.edu.ph' ||
+        cEmail.startsWith('sas@') ||
+        cEmail.startsWith('sao@') ||
+        (proposal as any).isSasDirect === true ||
+        existingData.isSasDirect === true ||
+        (proposal as any).isInstitutional === true ||
+        existingData.isInstitutional === true ||
+        (proposal as any).isOfficerProposal === false;
 
-      const hasStudentOrg = ((proposal as any).organizers || existingData.organizers || []).some(
-        (o: any) => typeof o === 'string' && stripSasPhrases(o).length > 0
-      );
-      const isOfficerProposalVal =
+      const isOfficerProposalVal = !isExplicitSas && (
         (proposal as any).isOfficerProposal !== undefined
           ? Boolean((proposal as any).isOfficerProposal)
           : existingData.isOfficerProposal !== undefined
           ? Boolean(existingData.isOfficerProposal)
-          : (hasStudentOrgId || hasStudentOrgName || hasStudentOrg)
-          ? true
-          : proposal.creatorRole === 'officer' || proposal.creatorRole === 'student_officer';
+          : cRole === 'officer' || cRole === 'student_officer' || cRole === 'adviser' || hasStudentOrgId
+      );
 
-      const resolvedOrgId =
-        (proposal as any).hostingOrgId ||
-        (proposal as any).organizationId ||
-        existingData.hostingOrgId ||
-        existingData.organizationId ||
-        (isOfficerProposalVal ? (proposal as any).orgId || 'student_org' : 'sas');
+      const resolvedOrgId = isExplicitSas
+        ? 'sas'
+        : ((proposal as any).hostingOrgId ||
+           (proposal as any).organizationId ||
+           existingData.hostingOrgId ||
+           existingData.organizationId ||
+           (isOfficerProposalVal ? (proposal as any).orgId || 'student_org' : 'sas'));
 
-      const resolvedCreatorRole =
-        proposal.creatorRole ||
-        existingData.creatorRole ||
-        (isOfficerProposalVal ? 'officer' : 'sas_admin');
+      const resolvedCreatorRole = isExplicitSas
+        ? (cRole && !['officer', 'student_officer', 'adviser'].includes(cRole) ? cRole : 'sas_admin')
+        : (cRole || (isOfficerProposalVal ? 'officer' : 'sas_admin'));
 
       const eventPayload: Record<string, any> = {
         id: proposal.id,
@@ -216,15 +224,16 @@ export async function syncProposalToEventsCollection(
         eventCategoryId: 'campus_activity',
         customEventCategoryName: 'Official Campus Activity',
         isOfficerProposal: isOfficerProposalVal,
-        isSasDirect: !isOfficerProposalVal && Boolean((proposal as any).isSasDirect),
+        isSasDirect: isExplicitSas || (!isOfficerProposalVal && Boolean((proposal as any).isSasDirect)),
         hostingOrgId: resolvedOrgId,
         organizationId: (proposal as any).organizationId || existingData.organizationId || resolvedOrgId,
-        organizationName:
-          (proposal as any).organizationName && stripSasPhrases((proposal as any).organizationName).length > 0
-            ? stripSasPhrases((proposal as any).organizationName)
-            : existingData.organizationName && stripSasPhrases(existingData.organizationName).length > 0
-            ? stripSasPhrases(existingData.organizationName)
-            : (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
+        organizationName: isExplicitSas
+          ? 'Student Affairs & Services (SAS)'
+          : (proposal as any).organizationName && stripSasPhrases((proposal as any).organizationName).length > 0
+          ? stripSasPhrases((proposal as any).organizationName)
+          : existingData.organizationName && stripSasPhrases(existingData.organizationName).length > 0
+          ? stripSasPhrases(existingData.organizationName)
+          : (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
         semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
         schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
         targetAcademicLevel,
@@ -322,6 +331,9 @@ export async function syncProposalToEventsCollection(
         currentStepIndex: (proposal as any).currentStepIndex ?? existingData.currentStepIndex ?? 0,
         currentStageIndex: (proposal as any).currentStageIndex ?? existingData.currentStageIndex ?? 1,
         submissionDate: (proposal as any).submissionDate || existingData.submissionDate || null,
+        isReturned: Boolean((proposal as any).isReturned),
+        stepRevisionRemarks: (proposal as any).stepRevisionRemarks || null,
+        returnFlags: (proposal as any).returnFlags || [],
         createdBy: proposal.createdByUid || 'creator',
         createdByName: proposal.createdByName || '',
         createdByEmail: proposal.createdByEmail || '',
@@ -381,22 +393,33 @@ export async function saveProposalDraft(
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
   const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+  const normUserRole = (user.role || '').toLowerCase().trim();
+  const normCreatorRole = ((formData.creatorRole || '') as string).toLowerCase().trim();
+  const userEmail = (user.email || '').toLowerCase().trim();
+  const refNo = (formData.referenceNo || '').toUpperCase().trim();
   const rawHostingOrg = String(formData.hostingOrgId || formData.organizationId || user.organizationId || '').trim();
   const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
-  const hasStudentOrgName = Boolean(formData.organizationName && stripSasPhrases(formData.organizationName).length > 0);
-  const hasStudentOrgInOrganizers = (formData.organizers || []).some(
-    (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
-  );
 
-  const isOfficer =
+  const isSasSubmitter =
+    ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(normUserRole) ||
+    ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(normCreatorRole) ||
+    userEmail === 'sao@ormoc.sti.edu.ph' ||
+    userEmail.startsWith('sas@') ||
+    userEmail.startsWith('sao@') ||
+    refNo.includes('-SAS-') ||
+    formData.isSasDirect === true ||
+    formData.isOfficerProposal === false;
+
+  const isOfficer = !isSasSubmitter && (
     formData.isOfficerProposal === true ||
     hasStudentOrgId ||
-    hasStudentOrgName ||
-    hasStudentOrgInOrganizers ||
-    user.role === 'officer' ||
-    user.role === 'student_officer' ||
-    formData.creatorRole === 'officer' ||
-    formData.creatorRole === 'student_officer';
+    normUserRole === 'officer' ||
+    normUserRole === 'student_officer' ||
+    normUserRole === 'adviser' ||
+    normCreatorRole === 'officer' ||
+    normCreatorRole === 'student_officer' ||
+    normCreatorRole === 'adviser'
+  );
 
   const referenceNo =
     formData.referenceNo ||
@@ -420,11 +443,11 @@ export async function saveProposalDraft(
     createdByUid: formData.createdByUid || user.uid,
     createdByName: formData.createdByName || user.name,
     createdByEmail: formData.createdByEmail || user.email,
-    creatorRole: formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin'),
+    creatorRole: isSasSubmitter ? 'sas_admin' : (formData.creatorRole || (user.role as any) || (isOfficer ? 'officer' : 'sas_admin')),
     isOfficerProposal: isOfficer,
-    isSasDirect: !isOfficer && ['sas_admin', 'admin', 'sao_admin', 'sas'].includes(((formData.creatorRole || user.role || '') as string).toLowerCase().trim()),
-    organizationId: formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || (isOfficer ? 'student_org' : 'sas'),
-    hostingOrgId: formData.hostingOrgId || formData.organizationId || (user as any).organizationId || (isOfficer ? 'student_org' : 'sas'),
+    isSasDirect: isSasSubmitter,
+    organizationId: isSasSubmitter ? 'sas' : (formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || 'student_org'),
+    hostingOrgId: isSasSubmitter ? 'sas' : (formData.hostingOrgId || formData.organizationId || (user as any).organizationId || 'student_org'),
     updatedAt: serverTimestamp(),
   };
 
@@ -460,24 +483,35 @@ export async function submitProposalForReview(
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
   const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
+  const normUserRole = (user.role || '').toLowerCase().trim();
+  const normCreatorRole = ((formData.creatorRole || '') as string).toLowerCase().trim();
+  const userEmail = (user.email || '').toLowerCase().trim();
+  const refNo = (formData.referenceNo || '').toUpperCase().trim();
   const rawHostingOrg = String(formData.hostingOrgId || formData.organizationId || user.organizationId || '').trim();
   const hasStudentOrgId = Boolean(rawHostingOrg && !SAS_ORGS.includes(rawHostingOrg.toLowerCase()));
-  const hasStudentOrgName = Boolean(formData.organizationName && stripSasPhrases(formData.organizationName).length > 0);
-  const hasStudentOrgInOrganizers = (formData.organizers || []).some(
-    (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
-  );
 
-  const isOfficer =
+  const isSasSubmitter =
+    ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(normUserRole) ||
+    ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(normCreatorRole) ||
+    userEmail === 'sao@ormoc.sti.edu.ph' ||
+    userEmail.startsWith('sas@') ||
+    userEmail.startsWith('sao@') ||
+    refNo.includes('-SAS-') ||
+    formData.isSasDirect === true ||
+    formData.isOfficerProposal === false;
+
+  const isOfficer = !isSasSubmitter && (
     formData.isOfficerProposal === true ||
     hasStudentOrgId ||
-    hasStudentOrgName ||
-    hasStudentOrgInOrganizers ||
-    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'officer' ||
-    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim() === 'student_officer';
-
-  const isSasAdmin = !isOfficer && ['sas_admin', 'admin', 'sao_admin', 'sas'].includes(
-    ((formData.creatorRole || user.role || '') as string).toLowerCase().trim()
+    normUserRole === 'officer' ||
+    normUserRole === 'student_officer' ||
+    normUserRole === 'adviser' ||
+    normCreatorRole === 'officer' ||
+    normCreatorRole === 'student_officer' ||
+    normCreatorRole === 'adviser'
   );
+
+  const isSasAdmin = isSasSubmitter;
 
   const referenceNo =
     formData.referenceNo ||
@@ -544,8 +578,8 @@ export async function submitProposalForReview(
     lifecycleStatus: 'pending_review',
     isOfficerProposal: isOfficer,
     isSasDirect: isSasAdmin,
-    organizationId: formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || (isOfficer ? 'student_org' : 'sas'),
-    hostingOrgId: formData.hostingOrgId || formData.organizationId || (user as any).organizationId || (isOfficer ? 'student_org' : 'sas'),
+    organizationId: isSasAdmin ? 'sas' : (formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || 'student_org'),
+    hostingOrgId: isSasAdmin ? 'sas' : (formData.hostingOrgId || formData.organizationId || (user as any).organizationId || 'student_org'),
     approvalChain: chain,
     currentStepIndex: 0,
     currentStageIndex: 1,
@@ -885,8 +919,12 @@ export async function endorseProposal(
   const updatedStep: Record<string, any> = {
     ...targetStep,
     status: newStatus,
+    signatoryUid: signerUid || targetStep.signatoryUid || '',
+    signedByUid: signerUid || targetStep.signatoryUid || '',
     signatoryName: signatory.name || targetStep.signatoryName || '',
+    signedByName: signatory.name || targetStep.signatoryName || '',
     signatoryEmail: signatory.email || targetStep.signatoryEmail || '',
+    signedByEmail: signerEmail || targetStep.signatoryEmail || '',
     signedAt,
   };
 

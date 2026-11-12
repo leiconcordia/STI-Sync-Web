@@ -12,15 +12,13 @@ import {
   Calendar,
   Plus,
   Trash2,
-  Sparkles,
   Info,
   Clock,
   AlertCircle,
   AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
-import { format, subDays, addDays, differenceInCalendarDays, parseISO, isValid } from 'date-fns';
-import { toast } from 'sonner';
+import { format, subDays, parseISO, isValid } from 'date-fns';
 import type { ProposalFormData, ProposalTask } from '../../types/proposal.types';
 
 interface Step5Props {
@@ -28,44 +26,6 @@ interface Step5Props {
   onChange: (updates: Partial<ProposalFormData>) => void;
   errors?: Record<string, string>;
 }
-
-const DEFAULT_STI_MILESTONES: Omit<ProposalTask, 'id'>[] = [
-  {
-    taskName: 'Drafting & Submission of Activity Proposal',
-    assignedPerson: 'Activity Proponent / Lead Officer',
-    completionDate: '',
-  },
-  {
-    taskName: 'Signatory Endorsements & Administration Approval',
-    assignedPerson: 'SAS Coordinator & Department Heads',
-    completionDate: '',
-  },
-  {
-    taskName: 'Venue Reservation & Audio-Visual / Tech Setup',
-    assignedPerson: 'Logistics & Technical Committee',
-    completionDate: '',
-  },
-  {
-    taskName: 'Speaker Coordination & Program Finalization',
-    assignedPerson: 'Program Committee Head',
-    completionDate: '',
-  },
-  {
-    taskName: 'Marketing, Promotional Materials & Registration Setup',
-    assignedPerson: 'Marketing & Secretariat Committee',
-    completionDate: '',
-  },
-  {
-    taskName: 'Working Committees Briefing & Logistics Rehearsal',
-    assignedPerson: 'All Working Committees',
-    completionDate: '',
-  },
-  {
-    taskName: 'Final Operational Readiness & Pre-Event Checklist',
-    assignedPerson: 'Event Head & Executive Board',
-    completionDate: '',
-  },
-];
 
 export default function Step5TaskAllocation({ formData, onChange, errors = {} }: Step5Props) {
   const eventDate = formData.date || formData.sessions?.[0]?.date || '';
@@ -117,48 +77,6 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
     onChange({ tasks: filtered });
   };
 
-  // Populate realistic chronological milestones leading up to (and strictly before) the event date
-  const loadStandardMilestones = () => {
-    if (!eventDate) {
-      toast.warning('Please specify the Target Implementation Date in Step 4 first.');
-      return;
-    }
-
-    const eventParsed = parseISO(eventDate);
-    if (!isValid(eventParsed)) {
-      toast.error('Invalid implementation date found in Step 4.');
-      return;
-    }
-
-    const todayDate = new Date();
-    const lastAllowedDate = subDays(eventParsed, 1);
-    const totalDaysAvailable = Math.max(1, differenceInCalendarDays(lastAllowedDate, todayDate));
-    const stepCount = DEFAULT_STI_MILESTONES.length;
-
-    const generated: ProposalTask[] = DEFAULT_STI_MILESTONES.map((m, idx) => {
-      // Interpolate dates smoothly between today and 1 day before the event
-      const fraction = idx / (stepCount - 1);
-      const offsetDays = Math.min(
-        totalDaysAvailable,
-        Math.max(0, Math.round(fraction * totalDaysAvailable))
-      );
-      const computedDate = addDays(todayDate, offsetDays);
-      // Ensure date never matches or exceeds eventDate
-      const finalDate = computedDate >= eventParsed ? lastAllowedDate : computedDate;
-      const dateString = format(finalDate, 'yyyy-MM-dd');
-
-      return {
-        id: `task-${Date.now()}-${idx}`,
-        taskName: m.taskName,
-        assignedPerson: m.assignedPerson,
-        completionDate: dateString,
-      };
-    });
-
-    onChange({ tasks: generated });
-    toast.success('Loaded standard STI milestone tasks, sequenced strictly prior to the implementation date.');
-  };
-
   return (
     <div className="space-y-6">
       {/* Header Info */}
@@ -167,30 +85,17 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
           <CheckSquare className="w-4 h-4" />
         </div>
         <div className="flex-1">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-900 flex items-center justify-center font-bold text-xs">
-                  13
-                </div>
-                <h4 className="text-xs font-bold text-indigo-900 uppercase tracking-wider">
-                  Task list & Milestones
-                </h4>
-              </div>
-              <p className="text-xs text-indigo-700/90 mt-0.5 leading-relaxed">
-                Itemize preparatory milestones, assigned committees, and completion dates. All tasks must occur <strong>strictly prior</strong> to the implementation date.
-              </p>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-900 flex items-center justify-center font-bold text-xs">
+              13
             </div>
-            <button
-              type="button"
-              onClick={loadStandardMilestones}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex-shrink-0 self-start sm:self-center cursor-pointer"
-              title="Populate standard STI activity milestones sequenced prior to the event"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Load STI Standard Tasks</span>
-            </button>
+            <h4 className="text-xs font-bold text-indigo-900 uppercase tracking-wider">
+              Task list & Milestones
+            </h4>
           </div>
+          <p className="text-xs text-indigo-700/90 mt-0.5 leading-relaxed">
+            Itemize preparatory milestones, assigned committees, and completion dates. All tasks must occur <strong>strictly prior</strong> to the implementation date.
+          </p>
         </div>
       </div>
 

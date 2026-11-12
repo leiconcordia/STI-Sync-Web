@@ -743,6 +743,12 @@ export async function endorsePARStep(
   chain[targetStepIdx] = {
     ...chain[targetStepIdx],
     status: newStatus,
+    signatoryUid: signerUid || chain[targetStepIdx].signatoryUid || '',
+    signedByUid: signerUid || chain[targetStepIdx].signatoryUid || '',
+    signatoryName: signatory.name || chain[targetStepIdx].signatoryName || '',
+    signedByName: signatory.name || chain[targetStepIdx].signatoryName || '',
+    signatoryEmail: signatory.email || chain[targetStepIdx].signatoryEmail || '',
+    signedByEmail: signerEmail || chain[targetStepIdx].signatoryEmail || '',
     signatureUrl: signatory.signatureUrl || chain[targetStepIdx].signatureUrl,
     signedAt: new Date().toISOString(),
     remarks: remarks || chain[targetStepIdx].remarks,

@@ -54,17 +54,47 @@ export const SAS_ORGS = [
 export function isOfficerProposal(event?: Partial<EventDocument> | any | null): boolean {
   if (!event) return false;
 
-  // 1. Explicit SAS direct / internal institutional flags
+  // 1. Reference number / ID prefix check (Primary ground truth: AP-YYYY-SAS-xxx or EVT-ADM-xxx vs AP-YYYY-ORG-xxx)
+  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) {
+    return false;
+  }
+  if (ref.includes('-ORG-') || (ref.startsWith('AP-') && !ref.includes('-SAS-') && !ref.startsWith('AP-SAS-'))) {
+    return true;
+  }
+
+  // 2. Creator Role Check (WHO SUBMITTED IT)
+  const role = (event.creatorRole || event.createdByRole || '').toString().toLowerCase().trim();
+  if (['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(role)) {
+    return false;
+  }
+  if (role === 'officer' || role === 'student_officer') {
+    return true;
+  }
+
+  // 3. Creator Email Check (Official SAS Administration Accounts)
+  const email = (event.createdByEmail || '').toLowerCase().trim();
+  if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) {
+    return false;
+  }
+
+  // 4. Explicit SAS direct / internal institutional flags
   if (
     event.isInstitutional === true ||
     event.isSasInternal === true ||
     event.isSasDirect === true ||
-    event.isDirectPublished === true
+    event.isDirectPublished === true ||
+    event.isSas === true ||
+    event.isSasInstitutional === true
   ) {
     return false;
   }
 
-  // 2. Hosting organization ID or organizationId (Primary ground truth)
+  // 5. Explicit boolean flag
+  if (event.isOfficerProposal === false) return false;
+  if (event.isOfficerProposal === true) return true;
+
+  // 6. Hosting organization ID or organizationId
   const orgId = (
     event.organizationId ||
     event.hostingOrgId ||
@@ -74,14 +104,14 @@ export function isOfficerProposal(event?: Partial<EventDocument> | any | null): 
     ''
   ).toString().toLowerCase().trim();
 
-  if (orgId && !SAS_ORGS.includes(orgId)) {
-    return true; // Belongs to a student organization (e.g. 'jpcs', 'ssc', 'org_123', 'student_org')
-  }
   if (orgId && SAS_ORGS.includes(orgId)) {
     return false; // Belongs to institutional SAS
   }
+  if (orgId && !SAS_ORGS.includes(orgId)) {
+    return true; // Belongs to a student organization
+  }
 
-  // 3. Organization Name check
+  // 7. Organization Name check
   const orgName = (
     event.hostingOrgName ||
     event.organizationName ||
@@ -97,34 +127,12 @@ export function isOfficerProposal(event?: Partial<EventDocument> | any | null): 
   ) {
     return false;
   }
-  if (orgName && !orgName.includes('student affairs') && orgName !== 'sas' && orgName !== 'sao') {
+  if (orgName) {
     return true;
   }
 
-  // 4. Reference number / ID prefix check (e.g. AP-2026-SAS-001 vs AP-2026-JPCS-001 or AP-2026-ORG-001)
-  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
-  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) return false;
-  if (ref.includes('-ORG-') || (ref.startsWith('AP-') && !ref.includes('-SAS-'))) return true;
-
-  // 5. Explicit boolean flag
-  if (event.isOfficerProposal === true) return true;
-  if (event.isOfficerProposal === false) return false;
-
-  // 6. Creator role
-  const role = (event.creatorRole || event.createdByRole || '').toString().toLowerCase().trim();
-  if (role === 'officer' || role === 'student_officer') return true;
-  if (['admin', 'sas_admin', 'sao_admin', 'sas'].includes(role)) return false;
-
-  // 7. Creator email or name fallback
-  const email = (event.createdByEmail || '').toLowerCase().trim();
-  if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) return false;
-
   const createdByName = (event.createdByName || '').toLowerCase().trim();
-  if (createdByName.includes('student affairs') || createdByName === 'sao admin' || createdByName === 'sas admin') return false;
-
-  // 8. Organizers check
-  const organizers = Array.isArray(event.organizers) ? event.organizers : [];
-  if (organizers.some((o: string) => typeof o === 'string' && o.toLowerCase().includes('student affairs'))) {
+  if (createdByName.includes('student affairs') || createdByName === 'sao admin' || createdByName === 'sas admin') {
     return false;
   }
 
@@ -200,6 +208,15 @@ export function isEventArchived(event?: Partial<EventDocument> | null): boolean 
   return Boolean(event?.isArchived);
 }
 
+export function isMatchingOrganization(userOrgId?: string | null, eventOrgId?: string | null): boolean {
+  if (!userOrgId || !eventOrgId) return false;
+  let u = userOrgId.toLowerCase().trim();
+  let e = eventOrgId.toLowerCase().trim();
+  if (u.startsWith('org_')) u = u.substring(4);
+  if (e.startsWith('org_')) e = e.substring(4);
+  return u === e || e.includes(u) || u.includes(e);
+}
+
 /**
  * Determines the editability and lock level of an event based on its lifecycle status and the user's role.
  *
@@ -271,13 +288,16 @@ export function isEventEditable(
       allowedFieldTypes: 'none',
     };
   }
-  if (userRole === 'officer' && userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
-    return {
-      editable: false,
-      lockLevel: 'locked',
-      reason: "Officers can only edit their own organization's proposals.",
-      allowedFieldTypes: 'none',
-    };
+  if (userRole === 'officer' && userOrgId) {
+    const eventOrg = (event.hostingOrgId || event.organizationId || (event as any).createdByOrgId || '').toString();
+    if (eventOrg && !isMatchingOrganization(userOrgId, eventOrg)) {
+      return {
+        editable: false,
+        lockLevel: 'locked',
+        reason: "Officers can only edit their own organization's proposals.",
+        allowedFieldTypes: 'none',
+      };
+    }
   }
 
   // 3. Drafts are always fully editable by their owner
@@ -700,7 +720,8 @@ export function canCancelEvent(
       };
     }
 
-    if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+    const eventOrg = (event.hostingOrgId || event.organizationId || (event as any).createdByOrgId || '').toString();
+    if (userOrgId && eventOrg && !isMatchingOrganization(userOrgId, eventOrg)) {
       return {
         canCancel: false,
         reason: "Officers can only cancel their own organization's events.",
@@ -779,7 +800,8 @@ export function canWithdrawProposal(
       };
     }
 
-    if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+    const eventOrg = (event.hostingOrgId || event.organizationId || (event as any).createdByOrgId || '').toString();
+    if (userOrgId && eventOrg && !isMatchingOrganization(userOrgId, eventOrg)) {
       return {
         canWithdraw: false,
         reason: "Officers and advisers can only withdraw their own organization's proposals.",
@@ -827,12 +849,6 @@ export function canEditProposal(
     };
   }
 
-  // Direct creator/maker can always edit their own draft or returned proposal
-  const creatorUid = (event as any).createdByUid || (event as any).createdById;
-  if (userId && creatorUid && userId === creatorUid) {
-    return { canEdit: true, isOwner: true };
-  }
-
   const officerProp = isOfficerProposal(event);
 
   const normRole = (userRole || '').toLowerCase().trim();
@@ -871,11 +887,26 @@ export function canEditProposal(
       };
     }
 
-    if (userOrgId && event.hostingOrgId && event.hostingOrgId !== userOrgId) {
+    const eventOrg = (
+      event.hostingOrgId ||
+      event.organizationId ||
+      (event as any).createdByOrgId ||
+      ''
+    ).toString().trim();
+
+    if (userOrgId && eventOrg && !isMatchingOrganization(userOrgId, eventOrg)) {
       return {
         canEdit: false,
         isOwner: false,
         reason: "You can only edit proposals submitted by your organization.",
+      };
+    }
+
+    if (!userOrgId && eventOrg) {
+      return {
+        canEdit: false,
+        isOwner: false,
+        reason: "You must be signed in with an active organization to edit this proposal.",
       };
     }
 

@@ -418,7 +418,7 @@ export default function OfficerPostActivityReports() {
                     onClick={() => handleCreateForEvent(ev.id)}
                     className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
                   >
-                    File PAR <ArrowRight className="w-3.5 h-3.5 text-[#FFD41C]" />
+                    Draft PAR <ArrowRight className="w-3.5 h-3.5 text-[#FFD41C]" />
                   </button>
                 </div>
               </div>
@@ -636,7 +636,7 @@ export default function OfficerPostActivityReports() {
                           {(r.status === 'draft' || r.status === 'returned') && (
                             <button
                               onClick={() => handleEditReport(r)}
-                              title={r.status === 'returned' ? 'Revise Returned Report' : 'Edit Draft Report'}
+                              title={r.status === 'returned' ? 'Revise Returned Report Draft' : 'Edit Draft Report'}
                               className="p-1.5 rounded-lg text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
                             >
                               <Edit3 className="w-4 h-4" />

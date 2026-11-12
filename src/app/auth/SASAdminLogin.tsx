@@ -219,7 +219,7 @@ export default function SASAdminLogin() {
           <div className="mt-4 bg-gradient-to-r from-blue-50/80 to-slate-50 border border-blue-200/70 rounded-xl p-3.5 flex items-start gap-3 shadow-xs">
             <ShieldCheck className="w-4 h-4 text-[#0E4EBD] flex-shrink-0 mt-0.5" />
             <p className="text-[#374151] text-[12px] leading-relaxed font-medium">
-              Authorized SAO Adviser access only. All system sessions and administrative activities are secured and monitored.
+              Authorized SAO Adviser access only.
             </p>
           </div>
 

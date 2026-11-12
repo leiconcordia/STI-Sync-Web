@@ -133,35 +133,31 @@ export function StudentRegistry() {
         <div className="flex flex-wrap items-center gap-1.5">
           <button
             onClick={() => handleNavigate('active')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
-              activeView === 'active'
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'active'
                 ? 'bg-[#001A4D] text-white shadow-sm'
                 : 'text-gray-700 hover:bg-gray-100'
-            }`}
+              }`}
           >
             <UserCheck className="w-4 h-4 text-emerald-400" />
             <span>Active Students</span>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
-              activeView === 'active' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
-            }`}>
+            <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${activeView === 'active' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+              }`}>
               {active.length}
             </span>
           </button>
 
           <button
             onClick={() => handleNavigate('inactive')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
-              activeView === 'inactive'
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'inactive'
                 ? 'bg-[#001A4D] text-white shadow-sm'
                 : 'text-gray-700 hover:bg-gray-100'
-            }`}
+              }`}
           >
             <UserX className="w-4 h-4 text-amber-400" />
             <span>Inactive / Dropped</span>
             {inactive.length > 0 && (
-              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
-                activeView === 'inactive' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
-              }`}>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${activeView === 'inactive' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                }`}>
                 {inactive.length}
               </span>
             )}
@@ -169,18 +165,16 @@ export function StudentRegistry() {
 
           <button
             onClick={() => handleNavigate('archived')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${
-              activeView === 'archived'
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'archived'
                 ? 'bg-[#001A4D] text-white shadow-sm'
                 : 'text-gray-700 hover:bg-gray-100'
-            }`}
+              }`}
           >
             <Archive className="w-4 h-4 text-purple-400" />
-            <span>Archived Graduates</span>
+            <span>Archives</span>
             {archived.length > 0 && (
-              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${
-                activeView === 'archived' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
-              }`}>
+              <span className={`px-2 py-0.5 rounded-full text-xs font-mono font-bold ${activeView === 'archived' ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                }`}>
                 {archived.length}
               </span>
             )}
@@ -189,11 +183,10 @@ export function StudentRegistry() {
 
         <button
           onClick={() => handleNavigate('dashboard')}
-          className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-            activeView === 'dashboard'
+          className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${activeView === 'dashboard'
               ? 'bg-blue-50 text-[#001A4D] font-bold border border-blue-200'
               : 'text-gray-500 hover:bg-gray-50'
-          }`}
+            }`}
         >
           <LayoutDashboard className="w-4 h-4" />
           <span>Analytics Overview</span>

@@ -18,7 +18,6 @@ import {
   DollarSign,
   Plus,
   Trash2,
-  Sparkles,
   TrendingUp,
   TrendingDown,
   AlertCircle,
@@ -49,70 +48,33 @@ interface Step6Props {
   errors?: Record<string, string>;
 }
 
-const DEFAULT_REVENUE_PRESETS = [
-  {
-    description: 'School Budget Allocation',
-    lastYearActual: 0,
-    thisYearProposed: 5000,
-    adjustment: 0,
-    remarks: 'Approved institutional department allocation',
-  },
-];
-
-const DEFAULT_EXPENSE_PRESETS = [
-  {
-    description: 'Meals & Refreshments (Speakers, Guests & Working Committee)',
-    lastYearActual: 0,
-    thisYearProposed: 2500,
-    adjustment: 0,
-    remarks: 'Approved baseline allocation for catering and lunch packs',
-  },
-  {
-    description: 'Guest Speaker Honorarium / Token of Appreciation',
-    lastYearActual: 0,
-    thisYearProposed: 2000,
-    adjustment: 0,
-    remarks: 'Approved baseline honorarium for resource speaker',
-  },
-  {
-    description: 'Materials, Printing & Promotional Tarpaulin',
-    lastYearActual: 0,
-    thisYearProposed: 1200,
-    adjustment: 0,
-    remarks: 'Certificates, specialty paper, and event tarpaulin banner',
-  },
-  {
-    description: 'Transportation & Travel Allowance',
-    lastYearActual: 0,
-    thisYearProposed: 800,
-    adjustment: 0,
-    remarks: 'Fares and transit allowances for organizers/guests',
-  },
-  {
-    description: 'Contingency / Buffer Fund',
-    lastYearActual: 0,
-    thisYearProposed: 1000,
-    adjustment: 0,
-    remarks: 'Operational buffer fund for unexpected event requirements',
-  },
-];
-
 export default function Step6FinancialProjections({ formData, onChange, errors = {} }: Step6Props) {
-  const isOfficerProposal = Boolean(
-    formData.isOfficerProposal ||
-    formData.creatorRole === 'officer' ||
-    formData.creatorRole === 'student_officer' ||
-    (formData.organizationId && formData.organizationId !== 'sas') ||
-    (formData.hostingOrgId && formData.hostingOrgId !== 'sas') ||
-    (formData.organizers && formData.organizers.some((o: string) => typeof o === 'string' && stripSasPhrases(o).length > 0)) ||
-    (formData.organizationName && stripSasPhrases(formData.organizationName).length > 0)
+  const isSasProposal = Boolean(
+    formData.creatorRole === 'sas_admin' ||
+    formData.creatorRole === 'admin' ||
+    (formData.referenceNo && formData.referenceNo.includes('-SAS-')) ||
+    formData.organizationId === 'sas' ||
+    formData.hostingOrgId === 'sas' ||
+    formData.isOfficerProposal === false
   );
 
+  const isOfficerProposal = !isSasProposal && Boolean(
+    formData.isOfficerProposal === true ||
+    formData.creatorRole === 'officer' ||
+    formData.creatorRole === 'student_officer' ||
+    (formData.organizationId && !['sas', 'sas_admin', 'sao', 'admin'].includes(formData.organizationId.toLowerCase())) ||
+    (formData.hostingOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(formData.hostingOrgId.toLowerCase()))
+  );
+
+  const isNonMonetary = formData.fundingSource === 'zero_budget';
+
   React.useEffect(() => {
-    if (!formData.fundingSource) {
+    if (!isOfficerProposal && formData.fundingSource === 'organization_funds') {
+      onChange({ fundingSource: 'school_budget' });
+    } else if (!formData.fundingSource) {
       onChange({ fundingSource: isOfficerProposal ? 'organization_funds' : 'school_budget' });
     }
-  }, [isOfficerProposal, formData.fundingSource]);
+  }, [isOfficerProposal, formData.fundingSource, onChange]);
 
   const rawProjections = formData.financialProjections;
   const currentProjections: FinancialProjections = useMemo(() => {
@@ -287,23 +249,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     onChange({ financialProjections: recalculated });
   };
 
-  const loadPresets = () => {
-    const revs: FinancialLineItem[] = DEFAULT_REVENUE_PRESETS.map((r, i) => ({
-      ...r,
-      id: `rev-p-${Date.now()}-${i}`,
-      totalAmount: r.thisYearProposed + r.adjustment,
-    }));
-
-    const exps: FinancialLineItem[] = DEFAULT_EXPENSE_PRESETS.map((e, i) => ({
-      ...e,
-      id: `exp-p-${Date.now()}-${i}`,
-      totalAmount: e.thisYearProposed + e.adjustment,
-    }));
-
-    const recalculated = calculateFinancialTotals(revs, exps);
-    onChange({ financialProjections: recalculated });
-  };
-
   const isBalanced = currentProjections.balance >= 0;
 
   return (
@@ -314,29 +259,17 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
           <DollarSign className="w-4 h-4" />
         </div>
         <div className="flex-1">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-900 flex items-center justify-center font-bold text-xs">
-                  14
-                </div>
-                <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-wider">
-                  Financial projections
-                </h4>
-              </div>
-              <p className="text-xs text-emerald-700/90 mt-0.5 leading-relaxed">
-                Itemize proposed revenues and expenditures. Formula: <code>Total Amount = Proposed + Adjustment</code>.
-              </p>
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-lg bg-emerald-100 text-emerald-900 flex items-center justify-center font-bold text-xs">
+              14
             </div>
-            <button
-              type="button"
-              onClick={loadPresets}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors flex-shrink-0 self-start sm:self-center"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Load STI Defaults</span>
-            </button>
+            <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-wider">
+              Financial projections
+            </h4>
           </div>
+          <p className="text-xs text-emerald-700/90 mt-0.5 leading-relaxed">
+            Itemize proposed revenues and expenditures. Formula: <code>Total Amount = Proposed + Adjustment</code>.
+          </p>
         </div>
       </div>
 
@@ -348,30 +281,21 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             const updates: Partial<ProposalFormData> = { fundingSource: source };
             if (source === 'zero_budget') {
               const zeroed = calculateFinancialTotals(
-                [
-                  {
-                    id: 'rev-zero',
-                    description: 'Non-Monetary Activity (₱0)',
-                    lastYearActual: 0,
-                    thisYearProposed: 0,
-                    totalAmount: 0,
-                    adjustment: 0,
-                    remarks: 'Non-monetary event',
-                  },
-                ],
+                [],
                 [
                   {
                     id: 'exp-zero',
-                    description: 'Zero Budget Repertoire',
+                    description: 'Zero Budget Activity (₱0)',
                     lastYearActual: 0,
                     thisYearProposed: 0,
                     totalAmount: 0,
                     adjustment: 0,
-                    remarks: 'No financial disbursement required',
+                    remarks: 'Non-monetary activity',
                   },
                 ]
               );
               updates.financialProjections = zeroed;
+              updates.historicalReference = null;
             } else if (source === 'organization_funds') {
               const orgLabel = formData.organizationName ? `${formData.organizationName} Treasury` : 'Organization Treasury';
               if (
@@ -401,24 +325,28 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
           }}
           organizationId={formData.organizationId || (formData as any).hostingOrgId}
           organizationName={formData.organizationName}
+          isOfficer={isOfficerProposal}
           proposedBudget={currentProjections.totalExpenses}
         />
       </div>
 
-      {/* Historical Budget Reference & Auto-Populate */}
-      <HistoricalBudgetPicker
-        currentTitle={formData.title}
-        excludeEventId={formData.id}
-        historicalReference={formData.historicalReference}
-        onSelectHistorical={handleSelectHistorical}
-        onToggleLock={handleToggleHistoricalLock}
-        onClearReference={handleClearHistoricalReference}
-        isManuallyEdited={isManuallyEditedOverall}
-      />
+      {/* Historical Budget Reference & Auto-Populate (Hidden if Non-Monetary) */}
+      {!isNonMonetary && (
+        <HistoricalBudgetPicker
+          currentTitle={formData.title}
+          excludeEventId={formData.id}
+          historicalReference={formData.historicalReference}
+          onSelectHistorical={handleSelectHistorical}
+          onToggleLock={handleToggleHistoricalLock}
+          onClearReference={handleClearHistoricalReference}
+          isManuallyEdited={isManuallyEditedOverall}
+        />
+      )}
 
-      {/* ── SECTION A: REVENUES ── */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+      {/* ── SECTION A: REVENUES (Hidden if Non-Monetary) ── */}
+      {!isNonMonetary && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
             <h3 className="text-sm font-bold text-slate-800">
@@ -575,6 +503,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
           </table>
         </div>
       </div>
+      )}
 
       {/* ── SECTION B: EXPENSES (Form LF-01 Baseline Categories) ── */}
       <div className="space-y-3 pt-2">
@@ -583,11 +512,15 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
               <h3 className="text-sm font-bold text-slate-800">
-                B. Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+                {isNonMonetary
+                  ? 'Proposed Budget Baseline Categories (Non-Monetary ₱0)'
+                  : 'B. Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)'}
               </h3>
             </div>
             <p className="text-[11px] text-slate-500 pl-4.5 mt-0.5">
-              These general baseline categories establish the spending guide for post-event Form LF-01 Financial Liquidation, where actual store receipts will be attached.
+              {isNonMonetary
+                ? 'This activity operates on a non-monetary ₱0 budget and is automatically exempt from Form FL-01 financial liquidation.'
+                : 'These general baseline categories establish the spending guide for post-event Form LF-01 Financial Liquidation, where actual store receipts will be attached.'}
             </p>
           </div>
           <button
@@ -760,15 +693,19 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                   Projected Net Balance: {formatPHP(currentProjections.balance)}
                 </h4>
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                  isBalanced
+                  isNonMonetary
+                    ? 'bg-blue-100 text-blue-800'
+                    : isBalanced
                     ? 'bg-emerald-100 text-emerald-800'
                     : 'bg-amber-100 text-amber-800'
                 }`}>
-                  {isBalanced ? 'BALANCED / SURPLUS' : 'DEFICIT ALERT'}
+                  {isNonMonetary ? 'NON-MONETARY (₱0)' : isBalanced ? 'BALANCED / SURPLUS' : 'DEFICIT ALERT'}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                {isBalanced
+                {isNonMonetary
+                  ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from Form FL-01 financial liquidation.'
+                  : isBalanced
                   ? 'Revenues cover all projected line items. Ready for institutional budget endorsement.'
                   : 'Total proposed expenses exceed revenues. Please request additional allocation or reduce line items.'}
               </p>
@@ -776,11 +713,15 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
           </div>
 
           <div className="flex items-center gap-4 text-xs font-semibold self-end sm:self-center">
-            <div className="text-right">
-              <span className="text-slate-400 block text-[10px]">TOTAL REVENUES</span>
-              <span className="text-emerald-700 font-bold">{formatPHP(currentProjections.totalRevenue)}</span>
-            </div>
-            <div className="text-slate-300">|</div>
+            {!isNonMonetary && (
+              <>
+                <div className="text-right">
+                  <span className="text-slate-400 block text-[10px]">TOTAL REVENUES</span>
+                  <span className="text-emerald-700 font-bold">{formatPHP(currentProjections.totalRevenue)}</span>
+                </div>
+                <div className="text-slate-300">|</div>
+              </>
+            )}
             <div className="text-right">
               <span className="text-slate-400 block text-[10px]">TOTAL EXPENSES</span>
               <span className="text-rose-700 font-bold">{formatPHP(currentProjections.totalExpenses)}</span>

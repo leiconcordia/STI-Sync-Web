@@ -85,6 +85,9 @@ function matchOrgAgainstKnownOrMap(
 /**
  * Returns true if an event was created directly by SAS as an Institutional Activity,
  * false if it belongs to or was authored for a Student Organization.
+ * 
+ * Ownership is determined primarily by WHO SUBMITTED IT (creator identity, reference prefix, roles)
+ * rather than arbitrary text entered in organizers or host fields.
  */
 export function isSasCreatedEvent(
   event: any,
@@ -94,7 +97,42 @@ export function isSasCreatedEvent(
 
   const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
 
-  // 1. Explicit officer proposal flags take highest precedence
+  // 1. Reference number check (Primary ground truth: AP-YYYY-SAS-xxx or EVT-ADM-xxx vs AP-YYYY-ORG-xxx)
+  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) {
+    return true;
+  }
+  if (ref.includes('-ORG-') || ref.includes('-IT-') || ref.includes('-PAO-') || ref.includes('-PMO-') || ref.includes('-RCY-') || ref.includes('-SAG-')) {
+    return false;
+  }
+
+  // 2. Creator / Submitter Role check (WHO SUBMITTED IT)
+  const cRole = ((event.createdByRole || event.creatorRole || '') as string).toLowerCase().trim();
+  if (['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(cRole)) {
+    return true;
+  }
+  if (cRole === 'officer' || cRole === 'student_officer') {
+    return false;
+  }
+
+  // 3. Creator email check (SAS official accounts)
+  const createdByEmail = (event.createdByEmail || '').toLowerCase().trim();
+  if (createdByEmail === 'sao@ormoc.sti.edu.ph' || createdByEmail.startsWith('sas@') || createdByEmail.startsWith('sao@')) {
+    return true;
+  }
+
+  // 4. Direct SAS markers
+  if (
+    event.isDirectPublished === true ||
+    event.isSasDirect === true ||
+    event.isSas === true ||
+    event.isSasInstitutional === true ||
+    event.isInstitutional === true
+  ) {
+    return true;
+  }
+
+  // 5. Explicit officer proposal flag (only if not already proven SAS above)
   if (
     event.isOfficerProposal === true ||
     (event as any).isOfficer === true ||
@@ -102,8 +140,11 @@ export function isSasCreatedEvent(
   ) {
     return false;
   }
+  if (event.isOfficerProposal === false) {
+    return true;
+  }
 
-  // 2. Hosting organization ID check (Primary ground truth)
+  // 6. Hosting organization ID check
   const hOrg = (
     event.hostingOrgId ||
     event.organizationId ||
@@ -113,12 +154,14 @@ export function isSasCreatedEvent(
     ''
   ).toString().toLowerCase().trim();
 
-  // If hostingOrgId is explicitly set to a student organization, it is strictly an Org event!
+  if (SAS_ORGS.includes(hOrg)) {
+    return true;
+  }
   if (hOrg && !SAS_ORGS.includes(hOrg)) {
     return false;
   }
 
-  // 3. Organization Name check: If organization name is a student club (not SAS), it is strictly an Org event!
+  // 7. Organization Name check: If organization name is explicitly SAS
   const explicitOrgName = (
     event.organizationName ||
     event.orgName ||
@@ -130,45 +173,17 @@ export function isSasCreatedEvent(
 
   if (explicitOrgName) {
     const stripped = stripSasPhrases(explicitOrgName);
-    if (stripped.length > 0) {
-      return false;
+    if (stripped.length === 0) {
+      return true;
     }
   }
 
-  // 4. Organizers check: Check if organizers specify a student club
-  const organizers: string[] = Array.isArray(event.organizers)
-    ? event.organizers
-    : typeof event.organizers === 'string' && event.organizers.trim()
-    ? [event.organizers.trim()]
-    : [];
-
-  const hasStudentOrgOrganizer = organizers.some((orgStr) => {
-    if (typeof orgStr !== 'string') return false;
-    const stripped = stripSasPhrases(orgStr);
-    return stripped.length > 0;
-  });
-
-  if (hasStudentOrgOrganizer) {
-    return false;
-  }
-
-  // 5. Reference number check (e.g. AP-2026-IT-001 or AP-2026-ORG-001 vs AP-2026-SAS-001)
-  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase();
-  if (ref && !ref.includes('-SAS-') && (ref.includes('-ORG-') || ref.includes('-IT-') || ref.includes('-PAO-') || ref.includes('-PMO-') || ref.includes('-RCY-') || ref.includes('-SAG-') || ref.startsWith('AP-'))) {
-    return false;
-  }
-
-  // 6. Club treasury funding strictly denotes an organization activity
+  // 8. Club treasury funding strictly denotes an organization activity
   if (event.fundingSource === 'organization_funds') {
     return false;
   }
 
-  const cRole = ((event.createdByRole || event.creatorRole || '') as string).toLowerCase().trim();
-  if (cRole === 'officer' || cRole === 'student_officer') {
-    return false;
-  }
-
-  // 7. Check all candidate text fields that could specify a student club
+  // 9. Department/title fallback
   const candidateTexts: string[] = [
     event.department,
     event.title,
@@ -181,31 +196,6 @@ export function isSasCreatedEvent(
     const matched = matchOrgAgainstKnownOrMap(stripped, orgMap);
     if (matched && !matched.name.toLowerCase().includes('student affairs')) {
       return false;
-    }
-  }
-
-  // 8. Direct SAS markers: Only institutional if hosting organization is not a student club
-  if (
-    event.isDirectPublished === true ||
-    event.isSasDirect === true ||
-    event.isSas === true ||
-    event.isSasInstitutional === true ||
-    SAS_ORGS.includes(hOrg)
-  ) {
-    return true;
-  }
-
-  const createdByEmail = (event.createdByEmail || '').toLowerCase().trim();
-  if (createdByEmail === 'sao@ormoc.sti.edu.ph' || createdByEmail.startsWith('sas@') || createdByEmail.startsWith('sao@')) {
-    // Only SAS if hosting organization was not a student club
-    if (!hOrg || SAS_ORGS.includes(hOrg)) {
-      return true;
-    }
-  }
-
-  if (['admin', 'sas_admin', 'sao_admin', 'sas'].includes(cRole)) {
-    if (!hOrg || SAS_ORGS.includes(hOrg)) {
-      return true;
     }
   }
 

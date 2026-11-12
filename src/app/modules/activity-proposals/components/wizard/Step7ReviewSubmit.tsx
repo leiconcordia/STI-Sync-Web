@@ -749,32 +749,34 @@ export default function Step7ReviewSubmit({
                     </span>
                   </div>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-                  <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] uppercase font-bold text-emerald-800 block">
-                        {isInstitutionalAllocation ? 'Funding Allocation (Revenues)' : 'Total Proposed Revenues'}
-                      </span>
-                      {isInstitutionalAllocation && (
-                        <span className="text-[9px] font-bold text-[#001A4D] bg-blue-100 px-1.5 py-0.5 rounded">
-                          {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
+                <div className={`grid grid-cols-1 ${formData.fundingSource === 'zero_budget' ? '' : 'sm:grid-cols-2'} gap-4 text-xs`}>
+                  {formData.fundingSource !== 'zero_budget' && (
+                    <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] uppercase font-bold text-emerald-800 block">
+                          {isInstitutionalAllocation ? 'Funding Allocation (Revenues)' : 'Total Proposed Revenues'}
                         </span>
-                      )}
+                        {isInstitutionalAllocation && (
+                          <span className="text-[9px] font-bold text-[#001A4D] bg-blue-100 px-1.5 py-0.5 rounded">
+                            {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-base font-bold text-emerald-900 font-mono">
+                        {formatPHP(displayRevenue)}
+                      </span>
+                      <span className="text-[11px] text-emerald-700 block mt-0.5">
+                        {isInstitutionalAllocation ? 'Institutional allocation covering proposed expenses' : `${revItems.length} line item(s)`}
+                      </span>
                     </div>
-                    <span className="text-base font-bold text-emerald-900 font-mono">
-                      {formatPHP(displayRevenue)}
-                    </span>
-                    <span className="text-[11px] text-emerald-700 block mt-0.5">
-                      {isInstitutionalAllocation ? 'Institutional allocation covering proposed expenses' : `${revItems.length} line item(s)`}
-                    </span>
-                  </div>
+                  )}
                   <div className="p-3 bg-rose-50/60 border border-rose-200/80 rounded-xl">
                     <span className="text-[10px] uppercase font-bold text-rose-800 block">Total Proposed Expenses</span>
                     <span className="text-base font-bold text-rose-900 font-mono">
                       {formatPHP(calculatedTotalExpenses)}
                     </span>
                     <span className="text-[11px] text-rose-700 block mt-0.5">
-                      {expItems.length} line item(s)
+                      {formData.fundingSource === 'zero_budget' ? 'Non-monetary activity (₱0 funds required)' : `${expItems.length} line item(s)`}
                     </span>
                   </div>
                 </div>

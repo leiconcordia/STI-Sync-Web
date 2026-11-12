@@ -29,6 +29,8 @@ import {
   Tag,
   Award,
   Ban,
+  Lock,
+  Loader2,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -38,6 +40,14 @@ import {
   updateSignatoryDetails,
   generateTemporaryPassword,
 } from '../../../modules/signatories/services/signatory.service';
+import {
+  checkSignatoryDeactivationEligibility,
+  checkDocumentAuthorityChangeEligibility,
+  type AssignedPipelineInfo,
+  type PendingDocumentInfo,
+} from '../../../modules/signatories/services/signatory-validation.service';
+import { DeactivationBlockModal } from './signatories/DeactivationBlockModal';
+import { AuthorityConflictModal } from './signatories/AuthorityConflictModal';
 import {
   SIGNATORY_ROLES,
   type InstitutionalSignatory,
@@ -157,6 +167,21 @@ export default function InstitutionalSignatoryManagement() {
     email: string;
     roleTitle: string;
     temporaryPassword: string;
+  } | null>(null);
+
+  // Validation & Reassignment Modals State
+  const [isCheckingEligibility, setIsCheckingEligibility] = useState(false);
+  const [deactivationBlock, setDeactivationBlock] = useState<{
+    signatory: InstitutionalSignatory;
+    flowAssignments: AssignedPipelineInfo[];
+    pendingDocuments: PendingDocumentInfo[];
+  } | null>(null);
+  const [authorityConflict, setAuthorityConflict] = useState<{
+    signatory: InstitutionalSignatory;
+    docType: WorkflowDocumentType;
+    targetLevel: DocumentAuthorityLevel;
+    templateAssignments: AssignedPipelineInfo[];
+    pendingDocuments: PendingDocumentInfo[];
   } | null>(null);
 
   // Form state for Add/Edit Signatory
@@ -528,12 +553,41 @@ export default function InstitutionalSignatoryManagement() {
     });
   };
 
-  const handleEditDocAuthorityChange = (
+  const handleEditDocAuthorityChange = async (
     doc: WorkflowDocumentType,
     level: DocumentAuthorityLevel
   ) => {
     if (!editingSignatory) return;
     const curWorkflows = editingSignatory.applicableWorkflows || [];
+
+    // If changing to cannot_sign from an active authority:
+    if (level === 'cannot_sign' && curWorkflows.includes(doc)) {
+      const loadingToast = toast.loading('Validating active workflow dependencies...');
+      try {
+        const check = await checkDocumentAuthorityChangeEligibility(
+          editingSignatory.id,
+          editingSignatory.email,
+          doc,
+          'cannot_sign'
+        );
+        toast.dismiss(loadingToast);
+
+        if (!check.canProceed) {
+          setAuthorityConflict({
+            signatory: editingSignatory,
+            docType: doc,
+            targetLevel: 'cannot_sign',
+            templateAssignments: check.templateAssignments,
+            pendingDocuments: check.pendingDocuments,
+          });
+          return; // Block change until resolved via wizard
+        }
+      } catch (err: any) {
+        toast.dismiss(loadingToast);
+        console.warn('[AuthorityCheck] Error validating dependencies:', err);
+      }
+    }
+
     let nextWorkflows: WorkflowDocumentType[];
     if (level === 'cannot_sign') {
       nextWorkflows = curWorkflows.filter((w) => w !== doc);
@@ -677,6 +731,30 @@ export default function InstitutionalSignatoryManagement() {
       return;
     }
 
+    // Validate if any existing workflow authority was removed while active dependencies exist
+    const originalSig = signatories.find((s) => s.id === editingSignatory.id);
+    const originalWorkflows = originalSig?.applicableWorkflows || [];
+    const removedWorkflows = originalWorkflows.filter((w) => !finalWorkflows.includes(w));
+    for (const remDoc of removedWorkflows) {
+      const check = await checkDocumentAuthorityChangeEligibility(
+        editingSignatory.id,
+        editingSignatory.email,
+        remDoc,
+        'cannot_sign'
+      );
+      if (!check.canProceed) {
+        setAuthorityConflict({
+          signatory: editingSignatory,
+          docType: remDoc,
+          targetLevel: 'cannot_sign',
+          templateAssignments: check.templateAssignments,
+          pendingDocuments: check.pendingDocuments,
+        });
+        toast.error(`Cannot save: ${editingSignatory.name} has active dependencies for ${remDoc.toUpperCase()}.`);
+        return;
+      }
+    }
+
     const canApproveProp = finalWorkflows.includes('proposal') && Boolean(editingSignatory.canApproveProposal);
     const canApproveLiq = finalWorkflows.includes('liquidation') && Boolean(editingSignatory.canApproveLiquidation);
     const canApprovePar = finalWorkflows.includes('par') && Boolean(editingSignatory.canApprovePar);
@@ -732,13 +810,46 @@ export default function InstitutionalSignatoryManagement() {
   };
 
   const handleToggleStatus = async (signatory: InstitutionalSignatory) => {
+    // If activating, proceed directly
+    if (!signatory.isActive) {
+      try {
+        await toggleSignatoryStatus(signatory.id, true);
+        toast.success(`Signatory ${signatory.name} has been activated.`);
+      } catch (err: any) {
+        toast.error('Failed to activate signatory: ' + err.message);
+      }
+      return;
+    }
+
+    // If deactivating, validate workflow & in-flight assignments
+    setIsCheckingEligibility(true);
+    const loadingToast = toast.loading('Checking workflow assignments & pending documents...');
     try {
-      await toggleSignatoryStatus(signatory.id, !signatory.isActive);
-      toast.success(
-        `Signatory ${signatory.name} has been ${signatory.isActive ? 'deactivated' : 'activated'}.`
+      const eligibility = await checkSignatoryDeactivationEligibility(
+        signatory.id,
+        signatory.email
       );
+      toast.dismiss(loadingToast);
+
+      if (!eligibility.canDeactivate) {
+        setDeactivationBlock({
+          signatory,
+          flowAssignments: eligibility.flowAssignments,
+          pendingDocuments: eligibility.pendingDocuments,
+        });
+        toast.error(
+          `Cannot deactivate: ${signatory.name} is assigned to active workflows or pending documents.`
+        );
+        return;
+      }
+
+      await toggleSignatoryStatus(signatory.id, false);
+      toast.success(`Signatory ${signatory.name} has been deactivated.`);
     } catch (err: any) {
-      toast.error('Failed to toggle status: ' + err.message);
+      toast.dismiss(loadingToast);
+      toast.error('Failed to update signatory status: ' + err.message);
+    } finally {
+      setIsCheckingEligibility(false);
     }
   };
 
@@ -1182,8 +1293,9 @@ export default function InstitutionalSignatoryManagement() {
                         {/* Toggle Active */}
                         <button
                           onClick={() => handleToggleStatus(sig)}
+                          disabled={isCheckingEligibility}
                           title={sig.isActive ? 'Deactivate Account' : 'Activate Account'}
-                          className={`px-2 py-1 text-xs font-medium rounded-lg transition-colors ${
+                          className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer disabled:opacity-50 ${
                             sig.isActive
                               ? 'text-red-600 hover:bg-red-50'
                               : 'text-green-600 hover:bg-green-50'
@@ -1666,61 +1778,58 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleEditSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
               {/* Scrollable Form Body */}
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {/* Structured Signatory Name: First Name, Middle Name, Last Name */}
-              <div className="space-y-1.5">
+              {/* Structured Signatory Name: First Name, Middle Name, Last Name (Locked for Audit Integrity) */}
+              <div className="space-y-2">
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-start gap-2.5 text-xs text-slate-700">
+                  <Lock className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold text-slate-900">Legal Identity Locked</span>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      Signatory legal names cannot be modified after registration to protect institutional audit trails and document integrity. If personnel changed for this role, register the incoming official as a new signatory.
+                    </p>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
                   <div className="sm:col-span-4">
-                    <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                      First Name <span className="text-red-500">*</span>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
+                      <span>First Name</span>
+                      <Lock className="w-3 h-3 text-gray-400" />
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="e.g. Rona Mira"
+                      readOnly
+                      disabled
                       value={editingSignatory.firstName || ''}
-                      onChange={(e) => {
-                        const firstName = e.target.value;
-                        const name = formatStructuredFullName(firstName, editingSignatory.lastName, editingSignatory.middleName);
-                        setEditingSignatory({ ...editingSignatory, firstName, name });
-                      }}
-                      className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                      className="w-full px-3.5 py-2 border border-gray-200 rounded-lg text-sm bg-gray-100 text-gray-600 font-medium cursor-not-allowed select-none outline-none"
                     />
                   </div>
 
                   <div className="sm:col-span-4">
-                    <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1 text-center">
-                      Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1 flex items-center justify-center gap-1">
+                      <span>Middle Name</span>
+                      <Lock className="w-3 h-3 text-gray-400" />
                     </label>
                     <input
                       type="text"
-                      autoComplete="additional-name"
-                      placeholder="e.g. Sigmund"
-                      aria-label="Middle name"
+                      readOnly
+                      disabled
                       value={editingSignatory.middleName || ''}
-                      onChange={(e) => {
-                        const middleName = e.target.value;
-                        const name = formatStructuredFullName(editingSignatory.firstName, editingSignatory.lastName, middleName);
-                        setEditingSignatory({ ...editingSignatory, middleName, name });
-                      }}
-                      className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                      className="w-full px-2 py-2 border border-gray-200 rounded-lg text-sm bg-gray-100 text-gray-600 font-medium cursor-not-allowed select-none outline-none text-center"
                     />
                   </div>
 
                   <div className="sm:col-span-4">
-                    <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                      Last Name <span className="text-red-500">*</span>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-1">
+                      <span>Last Name</span>
+                      <Lock className="w-3 h-3 text-gray-400" />
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="e.g. Lucañas"
+                      readOnly
+                      disabled
                       value={editingSignatory.lastName || ''}
-                      onChange={(e) => {
-                        const lastName = e.target.value;
-                        const name = formatStructuredFullName(editingSignatory.firstName, lastName, editingSignatory.middleName);
-                        setEditingSignatory({ ...editingSignatory, lastName, name });
-                      }}
-                      className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                      className="w-full px-3.5 py-2 border border-gray-200 rounded-lg text-sm bg-gray-100 text-gray-600 font-medium cursor-not-allowed select-none outline-none"
                     />
                   </div>
                 </div>
@@ -2211,6 +2320,28 @@ export default function InstitutionalSignatoryManagement() {
           </div>
         </div>
       )}
+      {/* ── MODAL: Deactivation Block Guard ── */}
+      {deactivationBlock && (
+        <DeactivationBlockModal
+          signatory={deactivationBlock.signatory}
+          flowAssignments={deactivationBlock.flowAssignments}
+          pendingDocuments={deactivationBlock.pendingDocuments}
+          onClose={() => setDeactivationBlock(null)}
+        />
+      )}
+
+      {/* ── MODAL: Authority Conflict Guard ── */}
+      {authorityConflict && (
+        <AuthorityConflictModal
+          signatory={authorityConflict.signatory}
+          docType={authorityConflict.docType}
+          targetLevel={authorityConflict.targetLevel}
+          templateAssignments={authorityConflict.templateAssignments}
+          pendingDocuments={authorityConflict.pendingDocuments}
+          onClose={() => setAuthorityConflict(null)}
+        />
+      )}
+
       {resetTarget && <ResetPasswordModal kind="signatories" account={resetTarget} onClose={() => setResetTarget(null)} onCompleted={(result) => {
         if (result.delivery === 'accepted') toast.success('Password reset completed; email accepted by the provider.');
         else toast.warning('Password reset completed, but email failed. Copy the active temporary password in the reset window.');

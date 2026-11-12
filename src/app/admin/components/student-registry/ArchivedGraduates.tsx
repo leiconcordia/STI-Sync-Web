@@ -73,7 +73,7 @@ export default function ArchivedGraduates({ students: archivedStudents }: Archiv
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-[#001A4D]">Archived & Graduates</h2>
+          <h2 className="text-2xl font-bold text-[#001A4D]">Archives</h2>
           <p className="text-sm text-gray-500">View past students and archived records</p>
         </div>
         <button

@@ -4,6 +4,7 @@ export * from './services/signatory.service';
 export * from './services/signatory-role.service';
 export * from './services/sas-signatory.service';
 export * from './services/signatory-label.service';
+export * from './services/signatory-validation.service';
 export * from './hooks/useSignatoryLabelsStream';
 export * from './utils/signatory-label.utils';
 

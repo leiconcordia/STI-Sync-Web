@@ -14,7 +14,13 @@ import { subscribeToProposals } from '../../modules/activity-proposals/services/
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
-import { documentStatus, isCurrentDocument } from '../utils/campus-activity-report';
+import {
+  documentStatus,
+  isCurrentDocument,
+  isDocumentCurrentlyReturned,
+  hasSignatorySignedStep,
+  hasSignatorySignedDocument,
+} from '../utils/campus-activity-report';
 
 export function useSignatoryDocuments(session: any) {
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
@@ -25,14 +31,22 @@ export function useSignatoryDocuments(session: any) {
   const { pars: allPARs, loading: parsLoading, error: parsError } = useAllPARsForSignatories();
 
   const userUid = session?.id || session?.uid;
-  const userEmail = (session?.email || '').toLowerCase();
+  const userEmail = (session?.email || '').toLowerCase().trim();
   const userRole = session?.role || '';
-  const userRoleTitle = (session?.roleTitle || '').toLowerCase();
+  const userRoleTitle = (session?.roleTitle || '').toLowerCase().trim();
 
   const matchesSignatory = (step: any) => {
     if (!step) return false;
-    if (step.signatoryUid && (step.signatoryUid === userUid || step.signatoryUid === session?.uid || step.signatoryUid === session?.id)) return true;
-    if (step.signatoryEmail && userEmail && step.signatoryEmail.toLowerCase() === userEmail) return true;
+    const stepUid = step.signatoryUid || step.signedByUid;
+    const stepEmail = (step.signatoryEmail || step.signedByEmail || '').toLowerCase().trim();
+
+    if (stepUid) {
+      return Boolean(userUid && stepUid === userUid);
+    }
+    if (stepEmail) {
+      return Boolean(userEmail && stepEmail === userEmail);
+    }
+
     if (step.role && userRole && step.role.toLowerCase() === userRole.toLowerCase()) return true;
     if (step.roleTitle && userRoleTitle) {
       const sTitle = step.roleTitle.toLowerCase();
@@ -70,14 +84,7 @@ export function useSignatoryDocuments(session: any) {
       const currentIdx = p.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
-      const isReturnedStatus =
-        p.status === 'returned_for_revision' ||
-        p.status === 'returned' ||
-        (p as any).proposalStatus === 'returned' ||
-        (p as any).proposalStatus === 'returned_for_revision' ||
-        (p as any).lifecycleStatus === 'returned' ||
-        Boolean(p.isReturned) ||
-        Boolean((p as any).stepRevisionRemarks && Object.keys((p as any).stepRevisionRemarks).length > 0);
+      const isReturnedStatus = isDocumentCurrentlyReturned(p);
 
       const isUnderReview =
         !isReturnedStatus &&
@@ -107,13 +114,17 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = !isReturnedStatus && chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
+      // Signed History & Archive: Strictly per-signatory!
+      // Must NOT be returned, AND this signatory must have personally signed it.
+      const hasPersonallySigned = !isReturnedStatus && (
+        chain.some((s) => hasSignatorySignedStep(s, session)) ||
+        hasSignatorySignedDocument(p, session)
       );
-      if (hasEndorsedStep) {
+      if (hasPersonallySigned) {
         endorsed.push(p);
       }
 
+      // Returned for Revision: Strictly documents currently in returned status!
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
           (s) => (s.status === 'returned' || s.status === 'returned_for_revision') && matchesSignatory(s)
@@ -130,7 +141,7 @@ export function useSignatoryDocuments(session: any) {
       endorsedProposals: endorsed,
       returnedProposals: returned,
     };
-  }, [allProposals, session]);
+  }, [allProposals, session, canAccessProposal]);
 
   // Filter Financial Liquidations
   const { pendingLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
@@ -147,7 +158,8 @@ export function useSignatoryDocuments(session: any) {
       const currentIdx = l.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
-      const isUnderReview = l.status === 'under_review' || l.status === 'pending';
+      const isReturnedStatus = isDocumentCurrentlyReturned(l);
+      const isUnderReview = !isReturnedStatus && (l.status === 'under_review' || l.status === 'pending');
 
       if (isUnderReview) {
         const currentStage = l.currentStageIndex ?? 1;
@@ -170,19 +182,22 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = documentStatus(l) !== 'returned' && chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
+      // Signed History & Archive: Strictly per-signatory!
+      const hasPersonallySigned = !isReturnedStatus && (
+        chain.some((s) => hasSignatorySignedStep(s, session)) ||
+        hasSignatorySignedDocument(l, session)
       );
-      if (hasEndorsedStep) {
+      if (hasPersonallySigned) {
         endorsed.push(l);
       }
 
-      const isReturnedStatus = documentStatus(l) === 'returned';
+      // Returned for Revision: Strictly documents currently in returned status!
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
           (s) => ['returned', 'returned_for_revision', 'rejected'].includes(s.status) && matchesSignatory(s)
         );
-        if (hasReturnedStep) {
+        const isInvolvedInChain = chain.some(matchesSignatory);
+        if (hasReturnedStep || isInvolvedInChain) {
           returned.push(l);
         }
       }
@@ -193,7 +208,7 @@ export function useSignatoryDocuments(session: any) {
       endorsedLiquidations: endorsed,
       returnedLiquidations: returned,
     };
-  }, [allLiquidations, session]);
+  }, [allLiquidations, session, canAccessLiquidation]);
 
   // Filter Post-Activity Reports
   const { pendingPARs, endorsedPARs, returnedPARs } = useMemo(() => {
@@ -210,10 +225,12 @@ export function useSignatoryDocuments(session: any) {
       const currentIdx = par.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
+      const isReturnedStatus = isDocumentCurrentlyReturned(par);
       const isUnderReview =
-        par.status === 'under_review' ||
+        !isReturnedStatus &&
+        (par.status === 'under_review' ||
         par.status === 'pending' ||
-        (par as any).reportStatus === 'submitted';
+        (par as any).reportStatus === 'submitted');
 
       if (isUnderReview) {
         const currentStage = par.currentStageIndex ?? 1;
@@ -235,19 +252,22 @@ export function useSignatoryDocuments(session: any) {
         }
       }
 
-      const hasEndorsedStep = documentStatus(par) !== 'returned' && chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
+      // Signed History & Archive: Strictly per-signatory!
+      const hasPersonallySigned = !isReturnedStatus && (
+        chain.some((s) => hasSignatorySignedStep(s, session)) ||
+        hasSignatorySignedDocument(par, session)
       );
-      if (hasEndorsedStep) {
+      if (hasPersonallySigned) {
         endorsed.push(par);
       }
 
-      const isReturnedStatus = documentStatus(par) === 'returned';
+      // Returned for Revision: Strictly documents currently in returned status!
       if (isReturnedStatus) {
         const hasReturnedStep = chain.some(
-          (s) => s.status === 'returned' && matchesSignatory(s)
+          (s) => ['returned', 'returned_for_revision', 'rejected'].includes(s.status) && matchesSignatory(s)
         );
-        if (hasReturnedStep) {
+        const isInvolvedInChain = chain.some(matchesSignatory);
+        if (hasReturnedStep || isInvolvedInChain) {
           returned.push(par);
         }
       }
@@ -258,7 +278,7 @@ export function useSignatoryDocuments(session: any) {
       endorsedPARs: endorsed,
       returnedPARs: returned,
     };
-  }, [allPARs, session]);
+  }, [allPARs, session, canAccessPAR]);
 
   const totalPending = pendingProposals.length + pendingLiquidations.length + pendingPARs.length;
   const totalSigned = endorsedProposals.length + endorsedLiquidations.length + endorsedPARs.length;

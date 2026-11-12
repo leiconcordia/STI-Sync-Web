@@ -39,9 +39,7 @@ import { toast } from 'sonner';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
 import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
-import { subscribeToProposals } from '../../modules/activity-proposals/services/proposal.service';
-import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
-import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
+import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatStageTitle } from '../../modules/workflow/utils/stage-normalization.utils';
@@ -62,8 +60,6 @@ export default function SignatoryEndorsementsPage() {
   const [documentCategory, setDocumentCategory] = useState<'proposals' | 'liquidations' | 'pars'>('proposals');
   const [activeTab, setActiveTab] = useState<'pending' | 'endorsed' | 'returned'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
-  const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
-  const [proposalsLoading, setProposalsLoading] = useState(true);
   const [selectedProposal, setSelectedProposal] = useState<ActivityProposal | null>(null);
   const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
   const [selectedPAR, setSelectedPAR] = useState<PostActivityReportDocument | null>(null);
@@ -78,28 +74,28 @@ export default function SignatoryEndorsementsPage() {
     }
   }, [window.location.search]);
 
-  const { liquidations: allLiquidations, loading: liquidationsLoading } = useAllLiquidations();
-  const { pars: allPARs, loading: parsLoading } = useAllPARsForSignatories();
+  // Centralized hook enforcing stage locks, strict per-signatory signed history, and active-only returned documents
+  const documents = useSignatoryDocuments(session);
+  const {
+    pendingProposals,
+    endorsedProposals,
+    returnedProposals,
+    pendingLiquidations,
+    endorsedLiquidations,
+    returnedLiquidations,
+    pendingPARs,
+    endorsedPARs,
+    returnedPARs,
+    loading,
+    matchesSignatory,
+  } = documents;
+
+  const pipelineProposals: ActivityProposal[] = [];
+  const pipelineLiquidations: LiquidationDocument[] = [];
+  const pipelinePARs: PostActivityReportDocument[] = [];
 
   const hasSignature = Boolean(session?.signatureUrl);
   const isTempPassActive = Boolean(session?.requiresPasswordChange);
-
-  const userUid = session?.id || session?.uid;
-  const userEmail = (session?.email || '').toLowerCase();
-  const userRole = session?.role || '';
-  const userRoleTitle = (session?.roleTitle || '').toLowerCase();
-
-  const matchesSignatory = (step: any) => {
-    if (!step) return false;
-    if (step.signatoryUid && (step.signatoryUid === userUid || step.signatoryUid === session?.uid || step.signatoryUid === session?.id)) return true;
-    if (step.signatoryEmail && userEmail && step.signatoryEmail.toLowerCase() === userEmail) return true;
-    if (step.role && userRole && step.role.toLowerCase() === userRole.toLowerCase()) return true;
-    if (step.roleTitle && userRoleTitle) {
-      const sTitle = step.roleTitle.toLowerCase();
-      if (sTitle === userRoleTitle || sTitle.includes(userRoleTitle) || userRoleTitle.includes(sTitle)) return true;
-    }
-    return false;
-  };
 
   const handleDownloadPdf = async (e: React.MouseEvent, prop: ActivityProposal) => {
     e.stopPropagation();
@@ -113,215 +109,6 @@ export default function SignatoryEndorsementsPage() {
       setDownloadingId(null);
     }
   };
-
-  // Subscribe to all proposals from Firestore
-  useEffect(() => {
-    const unsubscribe = subscribeToProposals((list) => {
-      setAllProposals(list);
-      setProposalsLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Filter proposals according to this signatory's role and status
-  const { pendingProposals, pipelineProposals, endorsedProposals, returnedProposals } = useMemo(() => {
-    const pending: ActivityProposal[] = [];
-    const pipeline: ActivityProposal[] = [];
-    const endorsed: ActivityProposal[] = [];
-    const returned: ActivityProposal[] = [];
-
-    allProposals.forEach((p) => {
-      const chain = p.approvalChain || [];
-      const currentIdx = p.currentStepIndex ?? 0;
-      const currentStep = chain[currentIdx];
-
-      const isReturnedStatus =
-        p.status === 'returned_for_revision' ||
-        p.status === 'returned' ||
-        (p as any).proposalStatus === 'returned' ||
-        (p as any).proposalStatus === 'returned_for_revision' ||
-        (p as any).lifecycleStatus === 'returned' ||
-        Boolean(p.isReturned) ||
-        Boolean((p as any).stepRevisionRemarks && Object.keys((p as any).stepRevisionRemarks).length > 0);
-
-      const isUnderReview =
-        !isReturnedStatus &&
-        (p.status === 'under_review' ||
-        (p as any).proposalStatus === 'pending' ||
-        (p as any).proposalStatus === 'pending_review');
-
-      if (isUnderReview) {
-        const currentStage = p.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
-
-        if (hasStages) {
-          // Strictly show only when it is my stage and my turn right now
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
-
-          // Future stage signatories (e.g. stage 3 while document is at stage 1 or 2) CANNOT see the proposal
-          if (isMyTurnInStage) {
-            pending.push(p);
-          }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(p);
-        }
-      }
-
-      const hasEndorsedStep = !isReturnedStatus && chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
-      );
-      if (hasEndorsedStep) {
-        endorsed.push(p);
-      }
-
-      if (isReturnedStatus) {
-        const hasReturnedStep = chain.some(
-          (s) => (s.status === 'returned' || s.status === 'returned_for_revision') && matchesSignatory(s)
-        );
-        const isInvolvedInChain = chain.some(matchesSignatory);
-        if (hasReturnedStep || isInvolvedInChain) {
-          returned.push(p);
-        }
-      }
-    });
-
-    return {
-      pendingProposals: pending,
-      pipelineProposals: [],
-      endorsedProposals: endorsed,
-      returnedProposals: returned,
-    };
-  }, [allProposals, session]);
-
-  // Filter liquidations according to this signatory's role and status (Strict stage-lock)
-  const { pendingLiquidations, pipelineLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
-    const pending: LiquidationDocument[] = [];
-    const endorsed: LiquidationDocument[] = [];
-    const returned: LiquidationDocument[] = [];
-
-    allLiquidations.forEach((l) => {
-      const chain = l.approvalChain || [];
-      const currentIdx = l.currentStepIndex ?? 0;
-      const currentStep = chain[currentIdx];
-
-      const isUnderReview = l.status === 'under_review' || l.status === 'pending';
-
-      if (isUnderReview) {
-        const currentStage = l.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
-
-        if (hasStages) {
-          // Strictly show only when it is my stage and my turn right now
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
-
-          // Future stage signatories CANNOT see the liquidation
-          if (isMyTurnInStage) {
-            pending.push(l);
-          }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(l);
-        }
-      }
-
-      const hasEndorsedStep = chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
-      );
-      if (hasEndorsedStep) {
-        endorsed.push(l);
-      }
-
-      if (l.status === 'returned') {
-        const hasReturnedStep = chain.some(
-          (s) => s.status === 'returned' && matchesSignatory(s)
-        );
-        if (hasReturnedStep) {
-          returned.push(l);
-        }
-      }
-    });
-
-    return {
-      pendingLiquidations: pending,
-      pipelineLiquidations: [],
-      endorsedLiquidations: endorsed,
-      returnedLiquidations: returned,
-    };
-  }, [allLiquidations, session]);
-
-  // Filter PARs according to this signatory's role and status (Strict stage-lock)
-  const {
-    pendingPARs,
-    pipelinePARs,
-    endorsedPARs,
-    returnedPARs,
-  } = useMemo(() => {
-    const pending: PostActivityReportDocument[] = [];
-    const endorsed: PostActivityReportDocument[] = [];
-    const returned: PostActivityReportDocument[] = [];
-
-    allPARs.forEach((p) => {
-      const chain = p.approvalChain || [];
-      const currentIdx = p.currentStepIndex ?? 0;
-      const currentStep = chain[currentIdx];
-
-      const isUnderReview = p.status === 'under_review';
-
-      if (isUnderReview) {
-        const currentStage = p.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
-
-        if (hasStages) {
-          // Strictly show only when it is my stage and my turn right now
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
-
-          // Future stage signatories CANNOT see the post-activity report
-          if (isMyTurnInStage) {
-            pending.push(p);
-          }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(p);
-        }
-      }
-
-      const hasEndorsedStep = chain.some(
-        (s) => (s.status === 'endorsed' || s.status === 'approved') && matchesSignatory(s)
-      );
-      if (hasEndorsedStep) {
-        endorsed.push(p);
-      }
-
-      if (p.status === 'returned') {
-        const hasReturnedStep = chain.some(
-          (s) => s.status === 'returned' && matchesSignatory(s)
-        );
-        if (hasReturnedStep) {
-          returned.push(p);
-        }
-      }
-    });
-
-    return {
-      pendingPARs: pending,
-      pipelinePARs: [],
-      endorsedPARs: endorsed,
-      returnedPARs: returned,
-    };
-  }, [allPARs, session]);
 
   const activeProposalsList = useMemo(() => {
     let list: ActivityProposal[] = [];
@@ -393,13 +180,6 @@ export default function SignatoryEndorsementsPage() {
       : documentCategory === 'liquidations'
       ? returnedLiquidations.length
       : returnedPARs.length;
-
-  const loading =
-    documentCategory === 'proposals'
-      ? proposalsLoading
-      : documentCategory === 'liquidations'
-      ? liquidationsLoading
-      : parsLoading;
 
   return (
     <div className="space-y-6">

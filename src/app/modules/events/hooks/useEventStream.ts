@@ -341,7 +341,16 @@ export function useOrgEvents(orgId: string | null | undefined) {
 
       if (orgId && orgId.trim()) {
         const cleanOrgId = orgId.trim().toLowerCase();
+        const isQueryingSas = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(cleanOrgId);
+
         fetched = fetched.filter((e: any) => {
+          const ref = (e.referenceId || e.referenceNo || '').toString().toUpperCase();
+          const isSasEvent = ref.includes('-SAS-') || ref.startsWith('EVT-ADM-') || e.isSasDirect === true || e.creatorRole === 'sas_admin';
+
+          if (!isQueryingSas && isSasEvent) {
+            return false;
+          }
+
           const orgFields = [
             e.hostingOrgId,
             e.organizationId,

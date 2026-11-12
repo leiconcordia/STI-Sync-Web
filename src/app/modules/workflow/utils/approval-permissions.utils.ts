@@ -27,8 +27,9 @@ export interface UserContext {
  * Checks whether an approvable document was created directly by SAS / SAO Admin internally.
  */
 export function isDocumentSasCreated(doc: Partial<ApprovableDocument>): boolean {
-  if (doc.isOfficerProposal === true || doc.isOfficerPar === true) {
-    return false;
+  const ref = (doc.referenceNo || doc.referenceId || '').toString().toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) {
+    return true;
   }
   if (doc.isSasDirect === true || doc.isSasInternal === true) {
     return true;
@@ -38,11 +39,18 @@ export function isDocumentSasCreated(doc: Partial<ApprovableDocument>): boolean 
     doc.creatorRole ||
     ''
   ).toLowerCase().trim();
+  if (['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(role)) {
+    return true;
+  }
   if (role === 'officer' || role === 'student_officer' || role === 'adviser') {
     return false;
   }
-  if (['admin', 'sas_admin', 'sao_admin', 'sas'].includes(role)) {
+  const email = ((doc as any).createdByEmail || '').toLowerCase().trim();
+  if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) {
     return true;
+  }
+  if (doc.isOfficerProposal === true || doc.isOfficerPar === true) {
+    return false;
   }
   const orgId = (doc.organizationId || doc.hostingOrgId || '').toLowerCase().trim();
   if (orgId === 'sas' || orgId === 'sao_admin' || orgId === 'sao') {
@@ -76,8 +84,14 @@ export function isDocumentOwner(
   if (!isSas && (userRole === 'officer' || userRole === 'adviser' || userRole.includes('officer'))) {
     const userOrg = user.organizationId;
     const docOrg = doc.organizationId || doc.hostingOrgId;
-    if (userOrg && docOrg && userOrg === docOrg) {
-      return true;
+    if (userOrg && docOrg) {
+      let u = userOrg.toLowerCase().trim();
+      let d = docOrg.toLowerCase().trim();
+      if (u.startsWith('org_')) u = u.substring(4);
+      if (d.startsWith('org_')) d = d.substring(4);
+      if (u === d || d.includes(u) || u.includes(d)) {
+        return true;
+      }
     }
   }
 

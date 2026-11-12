@@ -467,6 +467,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
   // Combine proposal and event payload so organization and authoring data is completely resolved
   const unifiedEventEntity = useMemo(() => {
+    const rawRef = (fullProposal.referenceNo || activeEvent.referenceId || (event as any).referenceNo || (event as any).referenceId || '').toString().toUpperCase().trim();
+    const isSasRef = rawRef.includes('-SAS-') || rawRef.startsWith('EVT-ADM-');
+    const cRole = ((activeEvent as any).createdByRole || (activeEvent as any).creatorRole || fullProposal.creatorRole || (event as any).creatorRole || (event as any).createdByRole || '').toString().toLowerCase().trim();
+    const isSasRole = ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(cRole);
+    const cEmail = ((fullProposal as any).createdByEmail || (activeEvent as any).createdByEmail || (event as any).createdByEmail || '').toString().toLowerCase().trim();
+    const isSasEmail = cEmail === 'sao@ormoc.sti.edu.ph' || cEmail.startsWith('sas@') || cEmail.startsWith('sao@');
+    const isSas = isSasRef || isSasRole || isSasEmail;
+
     return {
       ...event,
       ...activeEvent,
@@ -478,12 +486,19 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         : (activeEvent.organizers && activeEvent.organizers.length > 0)
         ? activeEvent.organizers
         : (event as any).organizers || [],
-      organizationName: fullProposal.organizationName || activeEvent.organizationName || (event as any).organizationName,
-      hostingOrgId: activeEvent.hostingOrgId || (event as any).hostingOrgId || (fullProposal as any).hostingOrgId,
-      organizationId: activeEvent.organizationId || (event as any).organizationId || (fullProposal as any).organizationId,
+      organizationName: isSas
+        ? 'Student Affairs & Services (SAS)'
+        : (fullProposal.organizationName || activeEvent.organizationName || (event as any).organizationName),
+      hostingOrgId: isSas
+        ? 'sas'
+        : (activeEvent.hostingOrgId || (event as any).hostingOrgId || (fullProposal as any).hostingOrgId),
+      organizationId: isSas
+        ? 'sas'
+        : (activeEvent.organizationId || (event as any).organizationId || (fullProposal as any).organizationId),
       fundingSource: fullProposal.fundingSource || activeEvent.fundingSource || (event as any).fundingSource,
-      isOfficerProposal: activeEvent.isOfficerProposal ?? (event as any).isOfficerProposal ?? fullProposal.isOfficerProposal,
-      creatorRole: (activeEvent as any).createdByRole || (activeEvent as any).creatorRole || fullProposal.creatorRole || (event as any).creatorRole || (event as any).createdByRole,
+      isOfficerProposal: isSas ? false : (activeEvent.isOfficerProposal ?? (event as any).isOfficerProposal ?? fullProposal.isOfficerProposal),
+      creatorRole: isSas ? (isSasRole ? cRole : 'sas_admin') : (cRole || 'officer'),
+      isSasDirect: isSas ? true : Boolean((activeEvent as any).isSasDirect || (event as any).isSasDirect),
     };
   }, [event, activeEvent, fullProposal]);
 
@@ -2873,8 +2888,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 );
               })()}
 
-              {/* Revenues Table (if present) */}
-              {financialProjections.revenues && financialProjections.revenues.length > 0 && (
+              {/* Revenues Table (if present and not non-monetary) */}
+              {financialProjections.revenues && financialProjections.revenues.length > 0 && !isZeroBudget && (
                 <div>
                   <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -4072,7 +4087,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         <PublishStudentFeedModal
           isOpen={isPublishModalOpen}
           onClose={() => setIsPublishModalOpen(false)}
-          activity={event}
+          activity={unifiedEventEntity as any}
           readOnly={isOrgManagedEvent}
         />
       )}
@@ -4082,7 +4097,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         <AttendanceScannersModal
           isOpen={isAttendanceModalOpen}
           onClose={() => setIsAttendanceModalOpen(false)}
-          activity={event}
+          activity={unifiedEventEntity as any}
           readOnly={isOrgManagedEvent}
         />
       )}

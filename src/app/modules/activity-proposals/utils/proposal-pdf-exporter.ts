@@ -603,8 +603,9 @@ export async function exportActivityProposalPDF(
 
     drawFinHeader();
 
-    // A. Revenue Items (if any)
-    if (fin.revenues && fin.revenues.length > 0) {
+    // A. Revenue Items (if any, omit for non-monetary / zero_budget activities)
+    const isZeroBudget = proposal.fundingSource === 'zero_budget';
+    if (!isZeroBudget && fin.revenues && fin.revenues.length > 0) {
       fin.revenues.forEach((rev) => {
         const descText = rev.description || 'Revenue source';
         const descLines = doc.splitTextToSize(descText, fDescW - 3);

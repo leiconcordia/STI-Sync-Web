@@ -185,7 +185,7 @@ export function mapHistoricalLineItems(
       thisYearProposed: Number(b.approvedAmount || b.unitCost || b.amount || 0),
       totalAmount: Number(b.approvedAmount || b.unitCost || b.amount || 0),
       adjustment: 0,
-      remarks: b.description || '',
+      remarks: '',
     }));
   }
 
@@ -219,7 +219,7 @@ export function mapHistoricalLineItems(
         thisYearProposed: pastAmt, // default proposed to last year's as starting point
         totalAmount: pastAmt,
         adjustment: 0,
-        remarks: past.remarks ? `Based on ${historical.title}: ${past.remarks}` : `Historical baseline from ${historical.title}`,
+        remarks: past.remarks || '',
       };
     });
   } else {
@@ -265,7 +265,7 @@ export function mapHistoricalLineItems(
         thisYearProposed: pastAmt,
         totalAmount: pastAmt,
         adjustment: 0,
-        remarks: past.remarks || `Historical baseline from ${historical.title}`,
+        remarks: past.remarks || '',
       };
     });
   } else {

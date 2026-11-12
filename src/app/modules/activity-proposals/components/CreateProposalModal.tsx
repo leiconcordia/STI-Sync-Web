@@ -233,6 +233,12 @@ export default function CreateProposalModal({
 
   const defaultOrgId = currentUser.organizationId || (isOfficerProp ? 'student_org' : 'sas');
 
+  const resolvedAdviserName = useMemo(() => {
+    if (matchedOrg?.adviser?.name) return matchedOrg.adviser.name;
+    if ((matchedOrg as any)?.adviserName) return (matchedOrg as any).adviserName;
+    return '';
+  }, [matchedOrg]);
+
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<ProposalFormData>(() => ({
     title: '',
@@ -246,6 +252,9 @@ export default function CreateProposalModal({
     createdByName: currentUser.name || '',
     createdByEmail: currentUser.email || '',
     fundingSource: isOfficerProp ? 'organization_funds' : 'school_budget',
+    proponents: isOfficerProp
+      ? [resolvedAdviserName || 'Organization Adviser']
+      : [currentUser.name || 'Student Affairs & Services'],
     objectives: [''],
     successIndicators: [''],
     mechanics: [''],
@@ -364,19 +373,22 @@ export default function CreateProposalModal({
           ''
         ).trim();
         const hasOrgInInitial = Boolean(rawInitHostingOrg && !SAS_ORGS.includes(rawInitHostingOrg.toLowerCase()));
-        const hasOrgNameInInitial = Boolean(
-          initialData.organizationName && stripSasPhrases(initialData.organizationName).length > 0
-        );
-        const hasOrgInOrganizers = (initialData.organizers || []).some(
-          (o) => typeof o === 'string' && stripSasPhrases(o).length > 0
+
+        const isSasProposal = Boolean(
+          (initialData.referenceNo && initialData.referenceNo.includes('-SAS-')) ||
+          initialData.creatorRole === 'sas_admin' ||
+          initialData.creatorRole === 'admin' ||
+          currentUser.role === 'sas_admin' ||
+          currentUser.role === 'admin' ||
+          (rawInitHostingOrg && SAS_ORGS.includes(rawInitHostingOrg.toLowerCase())) ||
+          (initialData as any).isOfficerProposal === false
         );
 
-        const isOfficerInitial =
+        const isOfficerInitial = !isSasProposal && (
           (initialData as any).isOfficerProposal !== undefined
             ? Boolean((initialData as any).isOfficerProposal)
-            : hasOrgInInitial || hasOrgNameInInitial || hasOrgInOrganizers || isOfficer
-            ? true
-            : initialData.creatorRole === 'officer' || initialData.creatorRole === 'student_officer';
+            : hasOrgInInitial || isOfficerProp || initialData.creatorRole === 'officer' || initialData.creatorRole === 'student_officer'
+        );
 
         setFormData((prev) => ({
           ...prev,
@@ -385,9 +397,12 @@ export default function CreateProposalModal({
           createdByEmail: initialData.createdByEmail || currentUser.email,
           creatorRole: initialData.creatorRole || (isOfficerInitial ? 'officer' : currentUser.role),
           isOfficerProposal: isOfficerInitial,
-          organizationId: initialData.organizationId || (isOfficerInitial ? (initialData as any).hostingOrgId : currentUser.organizationId),
-          hostingOrgId: (initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId,
-          organizationName: initialData.organizationName || (isOfficerInitial ? resolvedOrgName : ''),
+          fundingSource: isOfficerInitial
+            ? (initialData.fundingSource || 'organization_funds')
+            : (initialData.fundingSource === 'zero_budget' ? 'zero_budget' : 'school_budget'),
+          organizationId: isSasProposal ? 'sas' : (initialData.organizationId || (isOfficerInitial ? (initialData as any).hostingOrgId : currentUser.organizationId)),
+          hostingOrgId: isSasProposal ? 'sas' : ((initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId),
+          organizationName: isSasProposal ? '' : (initialData.organizationName || (isOfficerInitial ? resolvedOrgName : '')),
           organizers: (() => {
             const raw = initialData.organizers && initialData.organizers.length > 0 ? initialData.organizers : [];
             if (isOfficerInitial) {
@@ -397,7 +412,20 @@ export default function CreateProposalModal({
             }
             return raw;
           })(),
-          proponents: initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [currentUser.name || (isOfficerInitial ? 'Student Officer' : 'Student Affairs & Services')],
+          proponents: (() => {
+            const raw = initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [];
+            if (isOfficerInitial) {
+              const adviser = resolvedAdviserName || 'Organization Adviser';
+              const drafter = (initialData.createdByName || currentUser.name || '').trim();
+              const cleanWithoutDrafter = raw.filter((p) => p && p.trim() !== drafter);
+              if (cleanWithoutDrafter.length === 0) return [adviser];
+              if (cleanWithoutDrafter[0] !== adviser && resolvedAdviserName) {
+                return [adviser, ...cleanWithoutDrafter.filter((p) => p !== adviser)];
+              }
+              return cleanWithoutDrafter;
+            }
+            return raw.length > 0 ? raw : [currentUser.name || 'Student Affairs & Services'];
+          })(),
           approvalChain:
             initialData.approvalChain && initialData.approvalChain.length > 0
               ? initialData.approvalChain
@@ -413,16 +441,19 @@ export default function CreateProposalModal({
             createdByEmail: currentUser.email,
             creatorRole: currentUser.role,
             isOfficerProposal: isOfficer,
+            fundingSource: isOfficer ? 'organization_funds' : 'school_budget',
             organizationId: currentUser.organizationId || (isOfficer ? 'student_org' : 'sas'),
             hostingOrgId: currentUser.organizationId || (isOfficer ? 'student_org' : 'sas'),
             organizationName: isOfficer ? resolvedOrgName : '',
             organizers: isOfficer && resolvedOrgName ? [resolvedOrgName] : [],
-            proponents: [currentUser.name || (isOfficer ? 'Student Officer' : 'Student Affairs & Services')],
+            proponents: isOfficer
+              ? [resolvedAdviserName || 'Organization Adviser']
+              : [currentUser.name || 'Student Affairs & Services'],
             approvalChain: defaultChain,
           }));
         });
       }
-  }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName, resolvedOrgName]);
+  }, [initialData, currentUser.name, currentUser.email, currentUser.role, currentUser.organizationId, currentUser.organizationName, resolvedOrgName, resolvedAdviserName]);
 
   // Auto-populate organization name in organizers if creating as an organization
   useEffect(() => {
@@ -735,6 +766,29 @@ export default function CreateProposalModal({
       }
     }
 
+    if (stepNumber === 6) {
+      if (!data.fundingSource) {
+        errs.fundingSource = 'Please select a funding source.';
+      }
+      if (data.fundingSource !== 'zero_budget' && data.financialProjections) {
+        const { revenues = [], expenditures = [] } = data.financialProjections;
+        for (let i = 0; i < expenditures.length; i++) {
+          const exp = expenditures[i];
+          if ((exp.totalAmount > 0 || exp.thisYearProposed > 0) && !exp.description?.trim()) {
+            errs.expenditures = `Expenditure #${i + 1} has an amount but is missing an item description.`;
+            break;
+          }
+        }
+        for (let i = 0; i < revenues.length; i++) {
+          const rev = revenues[i];
+          if ((rev.totalAmount > 0 || rev.thisYearProposed > 0) && !rev.description?.trim()) {
+            errs.revenues = `Revenue #${i + 1} has an amount but is missing an item description.`;
+            break;
+          }
+        }
+      }
+    }
+
     if (stepNumber === 7) {
       if (data.isUrgent && !data.urgentJustification?.trim()) {
         errs.urgentJustification = 'An urgent submission justification is required.';
@@ -746,9 +800,16 @@ export default function CreateProposalModal({
 
   // Check if a step has all required information filled out and is valid
   const isStepComplete = (stepNumber: number, data: ProposalFormData): boolean => {
-    if (stepNumber === 6) return true; // Step 6 (Financials) has valid system defaults
     const errs = getStepValidationErrors(stepNumber, data);
     return Object.keys(errs).length === 0;
+  };
+
+  // Check if all steps strictly prior to stepNumber are valid
+  const arePriorStepsComplete = (stepNumber: number, data: ProposalFormData): boolean => {
+    for (let s = 1; s < stepNumber; s++) {
+      if (!isStepComplete(s, data)) return false;
+    }
+    return true;
   };
 
   // Step validation with error state mutation (for user interactions)
@@ -850,6 +911,7 @@ export default function CreateProposalModal({
         (isReturnedProposal ? initialData : null);
 
       const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
+      const drafterName = (formData.createdByName || currentUser.name || '').trim();
       const sanitizedDraftOrganizers = isOfficerForm
         ? (formData.organizers || []).filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0)
         : (formData.organizers || []);
@@ -857,10 +919,18 @@ export default function CreateProposalModal({
         ? sanitizedDraftOrganizers
         : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
 
+      const sanitizedDraftProponents = isOfficerForm
+        ? (formData.proponents || []).filter((p) => p && p.trim() !== drafterName)
+        : (formData.proponents || []);
+      const finalDraftProponents = sanitizedDraftProponents.length > 0
+        ? sanitizedDraftProponents
+        : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
+
       const result = await saveProposalDraft(
         {
           ...formData,
           organizers: finalDraftOrganizers,
+          proponents: finalDraftProponents,
           status: 'draft',
           ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
         },
@@ -934,6 +1004,7 @@ export default function CreateProposalModal({
     setIsSubmitting(true);
     try {
       const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
+      const drafterName = (formData.createdByName || currentUser.name || '').trim();
       const sanitizedSubmitOrganizers = isOfficerForm
         ? (formData.organizers || []).filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0)
         : (formData.organizers || []);
@@ -941,10 +1012,18 @@ export default function CreateProposalModal({
         ? sanitizedSubmitOrganizers
         : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
 
+      const sanitizedSubmitProponents = isOfficerForm
+        ? (formData.proponents || []).filter((p) => p && p.trim() !== drafterName)
+        : (formData.proponents || []);
+      const finalSubmitProponents = sanitizedSubmitProponents.length > 0
+        ? sanitizedSubmitProponents
+        : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
+
       const result = await submitProposalForReview(
         {
           ...formData,
           organizers: finalSubmitOrganizers,
+          proponents: finalSubmitProponents,
           submittedBySignatureUrl: effectiveSignature,
         },
         {
@@ -1047,13 +1126,21 @@ export default function CreateProposalModal({
             <div className="flex items-center justify-between min-w-[700px]">
               {STEPS.map((s, idx) => {
                 const isActive = s.id === currentStep;
-                const isOk = isStepComplete(s.id, formData);
+                const stepValid = isStepComplete(s.id, formData);
+                const priorsValid = arePriorStepsComplete(s.id, formData);
+                const reached = s.id < currentStep || (s.id <= maxStepReached && maxStepReached > 1) || isReturnedProposal;
+                // A step shows as OK / completed only if:
+                // 1. It is valid
+                // 2. All previous prerequisite steps are valid
+                // 3. It was actually reached (user has progressed to or past this step)
+                // 4. Step 7 is the final review & submit step and does not show as a finished checkmark beforehand
+                const isOk = stepValid && priorsValid && reached && s.id < 7;
+
                 const isAccessible =
                   s.id <= currentStep ||
-                  isOk ||
                   isReturnedProposal ||
-                  s.id <= maxStepReached ||
-                  (s.id > 1 && isStepComplete(s.id - 1, formData));
+                  (s.id <= maxStepReached && priorsValid) ||
+                  (s.id === currentStep + 1 && priorsValid && isStepComplete(currentStep, formData));
 
                 return (
                   <div key={s.id} className="flex items-center flex-1 last:flex-none">

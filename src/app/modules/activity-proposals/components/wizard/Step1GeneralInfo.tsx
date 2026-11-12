@@ -84,11 +84,22 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     onChange({ title: newTitle });
   };
 
-  const isOfficerProp =
+  const isSasProposal = Boolean(
+    (formData.referenceNo && formData.referenceNo.includes('-SAS-')) ||
+    formData.creatorRole === 'sas_admin' ||
+    formData.creatorRole === 'admin' ||
+    formData.organizationId === 'sas' ||
+    formData.hostingOrgId === 'sas' ||
+    formData.isOfficerProposal === false
+  );
+
+  const isOfficerProp = !isSasProposal && (
     formData.isOfficerProposal === true ||
-    (Boolean(formData.hostingOrgId) && formData.hostingOrgId !== 'sas') ||
-    (Boolean(formData.organizationId) && formData.organizationId !== 'sas') ||
-    (Boolean(formData.organizationName) && stripSasPhrases(formData.organizationName).length > 0);
+    formData.creatorRole === 'officer' ||
+    formData.creatorRole === 'student_officer' ||
+    (Boolean(formData.hostingOrgId) && !['sas', 'sas_admin', 'admin'].includes(formData.hostingOrgId.toLowerCase())) ||
+    (Boolean(formData.organizationId) && !['sas', 'sas_admin', 'admin'].includes(formData.organizationId.toLowerCase()))
+  );
 
   // For organization proposals: resolve the clean organization name to auto-populate
   const resolvedOfficerOrgName = useMemo(() => {
@@ -154,9 +165,54 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     return list;
   }, [formData.organizers, isOfficerProp, resolvedOfficerOrgName]);
 
-  const proponents = formData.proponents && formData.proponents.length > 0
-    ? formData.proponents
-    : [formData.createdByName || (isOfficerProp ? 'Student Officer' : 'Student Affairs & Services')];
+  const matchedOrgDoc = useMemo(() => {
+    const targetId = formData.hostingOrgId || formData.organizationId;
+    if (!targetId || targetId === 'sas') return null;
+    return organizations.find((o: any) => o.id === targetId || o.name === targetId);
+  }, [organizations, formData.hostingOrgId, formData.organizationId]);
+
+  const resolvedAdviserName = useMemo(() => {
+    if (matchedOrgDoc?.adviser?.name) return matchedOrgDoc.adviser.name;
+    if ((matchedOrgDoc as any)?.adviserName) return (matchedOrgDoc as any).adviserName;
+    return '';
+  }, [matchedOrgDoc]);
+
+  const drafterName = useMemo(() => {
+    return (formData.createdByName || '').trim();
+  }, [formData.createdByName]);
+
+  // Clean DB proponents: contains Adviser at index 0 and any extra co-proponents.
+  // The drafter is NEVER included in formData.proponents in the database!
+  const dbProponents = useMemo(() => {
+    const raw = formData.proponents && formData.proponents.length > 0 ? formData.proponents : [];
+    if (isOfficerProp) {
+      const adviser = resolvedAdviserName || 'Organization Adviser';
+      const cleanWithoutDrafter = raw.filter((p) => p && p.trim() !== drafterName);
+      if (cleanWithoutDrafter.length === 0) {
+        return [adviser];
+      }
+      if (cleanWithoutDrafter[0] !== adviser && resolvedAdviserName) {
+        return [adviser, ...cleanWithoutDrafter.filter((p) => p !== adviser)];
+      }
+      return cleanWithoutDrafter;
+    }
+    return raw.length > 0 ? raw : [formData.createdByName || 'Student Affairs & Services'];
+  }, [formData.proponents, isOfficerProp, resolvedAdviserName, drafterName, formData.createdByName]);
+
+  // Synchronize formData.proponents to ensure drafter is NEVER stored in proponents array
+  useEffect(() => {
+    if (isOfficerProp) {
+      const currentList = formData.proponents || [];
+      const adviser = resolvedAdviserName || (currentList[0] && currentList[0] !== drafterName ? currentList[0] : 'Organization Adviser');
+      const cleanWithoutDrafter = currentList.filter((p) => p && p.trim() !== drafterName);
+      const isClean = cleanWithoutDrafter.length > 0 && cleanWithoutDrafter[0] === adviser && !currentList.includes(drafterName);
+
+      if (!isClean) {
+        const others = cleanWithoutDrafter.filter((p) => p !== adviser);
+        onChange({ proponents: [adviser, ...others] });
+      }
+    }
+  }, [isOfficerProp, resolvedAdviserName, drafterName, formData.proponents, onChange]);
 
   const addOrganizer = (org: string) => {
     const trimmed = org.trim();
@@ -184,15 +240,38 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
 
   const addProponent = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || proponents.includes(trimmed)) return;
-    onChange({ proponents: [...proponents, trimmed] });
+    if (!trimmed) return;
+    if (trimmed === drafterName) {
+      toast.info('You are already recorded as the Student Drafter on this proposal.');
+      setProponentInput('');
+      return;
+    }
+    if (dbProponents.includes(trimmed)) {
+      toast.info('This person is already listed as a proponent.');
+      setProponentInput('');
+      return;
+    }
+    onChange({ proponents: [...dbProponents, trimmed] });
     setProponentInput('');
   };
 
+  const removeAdditionalProponent = (nameToRemove: string) => {
+    const updated = dbProponents.filter((p) => p !== nameToRemove);
+    onChange({ proponents: updated });
+  };
+
   const removeProponent = (indexToRemove: number) => {
-    if (proponents.length <= 1) return;
+    if (isOfficerProp && indexToRemove === 0) {
+      toast.info('The Organization Adviser is the designated official maker and cannot be removed.');
+      return;
+    }
+    if (!isOfficerProp && indexToRemove === 0) {
+      toast.info('Primary maker cannot be removed.');
+      return;
+    }
+    if (dbProponents.length <= 1) return;
     onChange({
-      proponents: proponents.filter((_, idx) => idx !== indexToRemove),
+      proponents: dbProponents.filter((_, idx) => idx !== indexToRemove),
     });
   };
 
@@ -547,38 +626,86 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
       <div>
         <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
           <span>Proposed / Submitted By (Proponent/s) <span className="text-red-500">*</span></span>
-          <span className="text-[10px] text-gray-400 font-normal">(maker defaults automatically • can add co-proponents)</span>
+          <span className="text-[10px] text-gray-400 font-normal">
+            {isOfficerProp
+              ? '(Adviser is official maker • officers draft and co-propose)'
+              : '(maker defaults automatically • can add co-proponents)'}
+          </span>
         </label>
         
         {/* Active Proponents Badges */}
         <div className="flex flex-wrap gap-2 mb-2.5">
-          {proponents.map((prop, index) => (
-            <span
-              key={index}
-              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold shadow-2xs ${
-                index === 0
-                  ? 'bg-blue-50 border border-blue-200 text-[#001A4D]'
-                  : 'bg-slate-100 border border-slate-200 text-slate-800'
-              }`}
-            >
-              <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
-              <span>{prop}</span>
-              {index === 0 ? (
+          {isOfficerProp ? (
+            <>
+              {/* 1. Official Adviser Maker (UI + DB) - NO REMOVE BUTTON */}
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-blue-50 border border-blue-200 text-[#001A4D] shadow-2xs">
+                <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>{resolvedAdviserName || (dbProponents && dbProponents[0]) || 'Organization Adviser'}</span>
                 <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
-                  Maker
+                  Adviser / Maker
                 </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => removeProponent(index)}
-                  className="hover:text-red-600 transition-colors ml-0.5"
-                  title="Remove co-proponent"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+              </span>
+
+              {/* 2. Student Drafter (UI ONLY • NEVER SENT TO DB • NO REMOVE BUTTON) */}
+              {drafterName && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-950 shadow-2xs ring-1 ring-amber-300/60">
+                  <UserCheck className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{drafterName}</span>
+                  <span className="text-[9px] uppercase tracking-wider font-bold bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded ml-0.5">
+                    Student Drafter
+                  </span>
+                </span>
               )}
-            </span>
-          ))}
+
+              {/* 3. Additional Co-Proponents (UI + DB) - Has remove button */}
+              {dbProponents.slice(1).map((prop, idx) => (
+                <span
+                  key={`co-prop-${idx}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-slate-100 border border-slate-200 text-slate-800 shadow-2xs"
+                >
+                  <UserCheck className="w-3.5 h-3.5 text-slate-500" />
+                  <span>{prop}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeAdditionalProponent(prop)}
+                    className="hover:text-red-600 transition-colors ml-0.5 cursor-pointer"
+                    title="Remove co-proponent"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </span>
+              ))}
+            </>
+          ) : (
+            /* Institutional / SAS Admin Mode */
+            dbProponents.map((prop, index) => (
+              <span
+                key={index}
+                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold shadow-2xs ${
+                  index === 0
+                    ? 'bg-blue-50 border border-blue-200 text-[#001A4D]'
+                    : 'bg-slate-100 border border-slate-200 text-slate-800'
+                }`}
+              >
+                <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>{prop}</span>
+                {index === 0 ? (
+                  <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
+                    Maker
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => removeAdditionalProponent(prop)}
+                    className="hover:text-red-600 transition-colors ml-0.5 cursor-pointer"
+                    title="Remove co-proponent"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </span>
+            ))
+          )}
         </div>
 
         {/* Proponent Input */}

@@ -668,20 +668,24 @@ export default function ProposalEndorsementModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  <tr className="bg-emerald-50/40 font-bold text-emerald-900">
-                    <td colSpan={5} className="p-2 text-[11px] uppercase tracking-wider">
-                      Sources of Funds / Revenues
-                    </td>
-                  </tr>
-                  {proposal.financialProjections?.revenues?.map((r, i) => (
-                    <tr key={i} className="hover:bg-slate-50">
-                      <td className="p-2.5 font-medium">{r.description}</td>
-                      <td className="p-2.5 text-right text-emerald-700">{formatPHP(r.thisYearProposed)}</td>
-                      <td className="p-2.5 text-right">{formatPHP(r.adjustment)}</td>
-                      <td className="p-2.5 text-right font-bold">{formatPHP(r.totalAmount)}</td>
-                      <td className="p-2.5 text-slate-500">{r.remarks || '—'}</td>
-                    </tr>
-                  ))}
+                  {proposal.fundingSource !== 'zero_budget' && (
+                    <>
+                      <tr className="bg-emerald-50/40 font-bold text-emerald-900">
+                        <td colSpan={5} className="p-2 text-[11px] uppercase tracking-wider">
+                          Sources of Funds / Revenues
+                        </td>
+                      </tr>
+                      {proposal.financialProjections?.revenues?.map((r, i) => (
+                        <tr key={i} className="hover:bg-slate-50">
+                          <td className="p-2.5 font-medium">{r.description}</td>
+                          <td className="p-2.5 text-right text-emerald-700">{formatPHP(r.thisYearProposed)}</td>
+                          <td className="p-2.5 text-right">{formatPHP(r.adjustment)}</td>
+                          <td className="p-2.5 text-right font-bold">{formatPHP(r.totalAmount)}</td>
+                          <td className="p-2.5 text-slate-500">{r.remarks || '—'}</td>
+                        </tr>
+                      ))}
+                    </>
+                  )}
                   <tr className="bg-rose-50/40 font-bold text-rose-900">
                     <td colSpan={5} className="p-2 text-[11px] uppercase tracking-wider">
                       Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)

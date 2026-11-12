@@ -1119,8 +1119,12 @@ export async function endorseLiquidationStep(
   const updatedStep: Record<string, any> = {
     ...targetStep,
     status: newStatus,
+    signatoryUid: signerUid || targetStep.signatoryUid || '',
+    signedByUid: signerUid || targetStep.signatoryUid || '',
     signatoryName: signatory.name || targetStep.signatoryName || '',
+    signedByName: signatory.name || targetStep.signatoryName || '',
     signatoryEmail: signatory.email || targetStep.signatoryEmail || '',
+    signedByEmail: signerEmail || targetStep.signatoryEmail || '',
     signedAt,
   };
 

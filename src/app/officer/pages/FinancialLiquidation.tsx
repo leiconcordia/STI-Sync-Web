@@ -693,10 +693,10 @@ export default function FinancialLiquidation() {
                               <button
                                 onClick={() => handleOpenEdit(report)}
                                 className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title={isReturned ? 'Edit & Resubmit' : 'Edit Draft'}
+                                title={isReturned ? 'Revise Returned Liquidation Draft' : 'Edit Draft'}
                               >
                                 <Edit3 className="w-3 h-3" />
-                                <span>{isReturned ? 'Resubmit' : 'Edit'}</span>
+                                <span>{isReturned ? 'Revise Draft' : 'Edit Draft'}</span>
                               </button>
 
                               <button
