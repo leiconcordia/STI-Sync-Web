@@ -741,6 +741,7 @@ export default function FinancialLiquidation() {
           userUid={userUid}
           userName={userName}
           userRole="officer"
+          userSignatureUrl={profile?.signatureUrl || null}
           isAdviser={profile?.isAdviser}
           editingReport={editingReport}
           existingLiquidations={liquidations}

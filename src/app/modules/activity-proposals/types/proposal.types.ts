@@ -64,6 +64,12 @@ export interface ProposalSession {
   venueId?: string;
 }
 
+export interface CustomTargetMarketItem {
+  id: string;
+  name: string;
+  count: number;
+}
+
 export interface ProposalTargetAudience {
   scope?: 'all' | 'specific';
   academicLevels: ('SHS' | 'College')[];
@@ -76,6 +82,9 @@ export interface ProposalTargetAudience {
   allStudents?: boolean;
   includeFaculty?: boolean;
   facultyCount?: number;
+  customTargetMarkets?: CustomTargetMarketItem[];
+  targetMarketSummary?: string; // Text summary e.g. "All STI Students and Faculty & Staff"
+  actualEligibleReach?: number;
   expectedReachPercentage?: number;
   demographicBreakdown?: {
     shsTotal: number;
@@ -158,6 +167,7 @@ export interface ActivityProposal extends SoftDeletable, Archivable {
 
   // 8. Target market
   targetAudience: ProposalTargetAudience;
+  targetMarket?: string; // Text summary e.g. "All STI Students and Faculty & Staff"
 
   // 9. Est. attendance
   estimatedAttendance: string; // e.g. "120 Participants" or "150 BSIT 3rd year"

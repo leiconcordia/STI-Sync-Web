@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, addDays, differenceInCalendarDays, parseISO, isValid } from 'date-fns';
+import { formatDateLong } from '../../utils/proposal-calculations';
 import { useVenuesStream } from '../../../events/hooks/useEventConfigStream';
 import { createVenue } from '../../../events/services/event-config.service';
 import type { ProposalFormData, ProposalSession } from '../../types/proposal.types';
@@ -178,7 +179,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
       const nextDate = willBeInvalid ? '' : date;
       if (willBeInvalid) {
         setDate('');
-        toast.info(`Urgent mode disabled. Please pick a date at least 15 days in advance (${standardMinDate} or later).`);
+        toast.info(`Urgent mode disabled. Please pick a date at least 15 days in advance (${formatDateLong(standardMinDate)} or later).`);
       }
       syncToFormData(nextDate, includeTime ? startTime : '', includeTime ? endTime : '', venueId, venueName, venueType, false);
     } else {
@@ -309,12 +310,12 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
                 {isUrgent ? (
                   <span className="text-amber-700 font-semibold flex items-center gap-1">
                     <Unlock className="w-3.5 h-3.5 text-amber-600" />
-                    Urgent Mode: Selectable from Today ({todayStr}) onwards
+                    Urgent Mode: Selectable from Today ({formatDateLong(todayStr)}) onwards
                   </span>
                 ) : (
                   <span className="text-slate-600 flex items-center gap-1">
                     <Lock className="w-3.5 h-3.5 text-slate-400" />
-                    Standard Mode: Earliest allowed date is <strong>{standardMinDate}</strong> (15+ days)
+                    Standard Mode: Earliest allowed date is <strong>{formatDateLong(standardMinDate)}</strong> (15+ days)
                   </span>
                 )}
               </span>
@@ -400,7 +401,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
                       )}
                     </div>
                     <p className="text-[11px] text-slate-600 mt-0.5 leading-relaxed">
-                      Toggle this slider to unlock dates from today ({todayStr}) up to {standardMinDate}. Enabling requires an administrative justification for executive approvers.
+                      Toggle this slider to unlock dates from today ({formatDateLong(todayStr)}) up to {formatDateLong(standardMinDate)}. Enabling requires an administrative justification for executive approvers.
                     </p>
                   </div>
                 </div>

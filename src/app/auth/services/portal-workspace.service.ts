@@ -29,7 +29,10 @@ export function buildPortalWorkspaces(data: { signatories: any[]; advisers: any[
       const organization = data.organizations.find((org) => org.id === record.organizationId);
       if (!organization || !active(organization)) return;
       workspaces.push({ id: `${kind}:${record.id}`, kind, label: kind === 'adviser' ? 'Club Adviser' : 'Organization Officer', organizationName: organization.name, path: '/officer/dashboard', session: {
-        authUid: identity.uid, studentId: record.studentId || record.employeeId || record.email,
+        uid: identity.uid,
+        authUid: identity.uid,
+        role: kind === 'adviser' ? 'adviser' : 'officer',
+        studentId: record.studentId || record.employeeId || record.email,
         studentName: formatPersonName(kind === 'officer' && student ? student : record), email: identity.email,
         activeOrganizationId: record.organizationId, activeRoleId: kind === 'adviser' ? 'adviser' : record.roleId,
         isAdviser: kind === 'adviser', isSignatory: false, signatureUrl: record.signatureUrl || null, requiresPasswordChange: Boolean(needsPasswordChange),

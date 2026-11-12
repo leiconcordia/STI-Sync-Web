@@ -15,7 +15,7 @@ import type { EventDocument } from '../../modules/events/types/event.types';
 import type { FinancialLineItem, ProposalApprovalStep } from '../../modules/activity-proposals/types/proposal.types';
 import { approveEvent, rejectEvent, returnEvent, updateAdviserRemarks, withdrawProposal } from '../../modules/events/services/event.service';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
-import { getProposalById, endorseProposal } from '../../modules/activity-proposals/services/proposal.service';
+import { getProposalById, endorseProposal, releaseProposalToSignatories } from '../../modules/activity-proposals/services/proposal.service';
 import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
 import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
 import { diffActivityProposal } from '../../modules/workflow/utils/document-diff-engine';
@@ -466,46 +466,61 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   }, [orgs]);
 
   // Combine proposal and event payload so organization and authoring data is completely resolved
-  const unifiedEventEntity = useMemo(() => {
-    const rawRef = (fullProposal.referenceNo || activeEvent.referenceId || (event as any).referenceNo || (event as any).referenceId || '').toString().toUpperCase().trim();
-    const isSasRef = rawRef.includes('-SAS-') || rawRef.startsWith('EVT-ADM-');
-    const cRole = ((activeEvent as any).createdByRole || (activeEvent as any).creatorRole || fullProposal.creatorRole || (event as any).creatorRole || (event as any).createdByRole || '').toString().toLowerCase().trim();
-    const isSasRole = ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(cRole);
-    const cEmail = ((fullProposal as any).createdByEmail || (activeEvent as any).createdByEmail || (event as any).createdByEmail || '').toString().toLowerCase().trim();
-    const isSasEmail = cEmail === 'sao@ormoc.sti.edu.ph' || cEmail.startsWith('sas@') || cEmail.startsWith('sao@');
-    const isSas = isSasRef || isSasRole || isSasEmail;
+  const rawRef = (
+    fullProposal.referenceNo ||
+    activeEvent.referenceId ||
+    activeEvent.referenceNo ||
+    (event as any).referenceNo ||
+    (event as any).referenceId ||
+    (typeof activeEvent.id === 'string' && activeEvent.id.startsWith('AP-') ? activeEvent.id : '') ||
+    (typeof event.id === 'string' && event.id.startsWith('AP-') ? event.id : '') ||
+    ''
+  ).toString().toUpperCase().trim();
+  const isSasRef = rawRef.includes('-SAS-') || rawRef.startsWith('EVT-ADM-') || rawRef.includes('-ADM-');
+  const cRole = ((activeEvent as any).createdByRole || (activeEvent as any).creatorRole || fullProposal.creatorRole || (event as any).creatorRole || (event as any).createdByRole || '').toString().toLowerCase().trim();
+  const isSasRole = ['admin', 'sas_admin', 'sao_admin', 'sas', 'sao', 'sao_head', 'super_admin'].includes(cRole);
+  const cEmail = ((fullProposal as any).createdByEmail || (activeEvent as any).createdByEmail || (event as any).createdByEmail || '').toString().toLowerCase().trim();
+  const isSasEmail = cEmail === 'sao@ormoc.sti.edu.ph' || cEmail.startsWith('sas@') || cEmail.startsWith('sao@');
+  const cName = ((fullProposal as any).createdByName || (activeEvent as any).createdByName || (event as any).createdByName || '').toString().toLowerCase().trim();
+  const isSasName = cName.includes('riselle') || cName.includes('lucanas') || cName.includes('student affairs') || cName.includes('sas');
+  const isPropSchoolBudget = fullProposal.fundingSource === 'school_budget' || activeEvent.fundingSource === 'school_budget' || (event as any).fundingSource === 'school_budget';
+  const isSasAuthority = isSasRef || isSasRole || isSasEmail || (isSasName && isPropSchoolBudget);
 
+  const unifiedEventEntity = useMemo(() => {
     return {
       ...event,
       ...activeEvent,
       ...fullProposal,
       id: activeEvent.id || event.id,
+      referenceId: rawRef,
+      referenceNo: rawRef,
       title: fullProposal.title || activeEvent.title || event.title,
       organizers: (fullProposal.organizers && fullProposal.organizers.length > 0)
         ? fullProposal.organizers
         : (activeEvent.organizers && activeEvent.organizers.length > 0)
         ? activeEvent.organizers
         : (event as any).organizers || [],
-      organizationName: isSas
+      organizationName: isSasAuthority
         ? 'Student Affairs & Services (SAS)'
         : (fullProposal.organizationName || activeEvent.organizationName || (event as any).organizationName),
-      hostingOrgId: isSas
+      hostingOrgId: isSasAuthority
         ? 'sas'
         : (activeEvent.hostingOrgId || (event as any).hostingOrgId || (fullProposal as any).hostingOrgId),
-      organizationId: isSas
+      organizationId: isSasAuthority
         ? 'sas'
         : (activeEvent.organizationId || (event as any).organizationId || (fullProposal as any).organizationId),
       fundingSource: fullProposal.fundingSource || activeEvent.fundingSource || (event as any).fundingSource,
-      isOfficerProposal: isSas ? false : (activeEvent.isOfficerProposal ?? (event as any).isOfficerProposal ?? fullProposal.isOfficerProposal),
-      creatorRole: isSas ? (isSasRole ? cRole : 'sas_admin') : (cRole || 'officer'),
-      isSasDirect: isSas ? true : Boolean((activeEvent as any).isSasDirect || (event as any).isSasDirect),
+      isOfficerProposal: isSasAuthority ? false : (activeEvent.isOfficerProposal ?? (event as any).isOfficerProposal ?? fullProposal.isOfficerProposal),
+      creatorRole: isSasAuthority ? (isSasRole ? cRole : 'sas_admin') : (cRole || 'officer'),
+      isSasDirect: isSasAuthority ? true : Boolean((activeEvent as any).isSasDirect || (event as any).isSasDirect),
     };
-  }, [event, activeEvent, fullProposal]);
+  }, [event, activeEvent, fullProposal, rawRef, isSasAuthority, isSasRole, cRole]);
 
   // Determine if this activity was created directly by SAS as an Institutional Activity vs proposed by/for an Organization
   const isSasCreated = useMemo(() => {
+    if (isSasAuthority) return true;
     return isSasCreatedEvent(unifiedEventEntity, orgMap);
-  }, [unifiedEventEntity, orgMap]);
+  }, [isSasAuthority, unifiedEventEntity, orgMap]);
 
   const isDirectSasEvent = isSasCreated;
 
@@ -963,6 +978,43 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     } catch (e: any) {
       console.error(e);
       toast.error(e?.message || 'Failed to approve proposal.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReleaseToSignatories = async () => {
+    if (!profile?.uid) {
+      toast.error('Authentication required to release proposals.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await releaseProposalToSignatories(activeEvent.id, profile.uid, remarks || '');
+      setDecision('approved');
+      setLiveEvent((prev: any) => ({
+        ...prev,
+        proposalStatus: 'under_review',
+        status: 'pending',
+        lifecycleStatus: 'pending_review',
+        isApproved: false,
+        isReturned: false,
+        currentStageIndex: 1,
+      }));
+      setFullProposal((prev: any) => ({
+        ...prev,
+        proposalStatus: 'under_review',
+        status: 'under_review',
+        lifecycleStatus: 'pending_review',
+        isApproved: false,
+        isReturned: false,
+        currentStageIndex: 1,
+      }));
+      toast.success('Proposal vetted by SAS and released to Stage 1 Signatories! Institutional signers can now review and sign.');
+      if (onClose) onClose();
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err?.message || 'Failed to release proposal to signatories.');
     } finally {
       setSubmitting(false);
     }
@@ -3377,8 +3429,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               <div className="flex items-center gap-2">
                 <Gavel className="w-5 h-5 text-[#001A4D]" />
                 <div>
-                  <p className="text-[#001A4D] font-bold text-base">Adviser Decision</p>
-                  <p className="text-gray-500 text-xs">Review sections & manage status.</p>
+                  <p className="text-[#001A4D] font-bold text-base">SAS Review & Clearance</p>
+                  <p className="text-gray-500 text-xs">Review proposal sections, financial baseline, and release status.</p>
                 </div>
               </div>
 
@@ -3405,25 +3457,33 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   {decision !== 'none' ? 'Change Decision' : 'Select Decision'}
                 </p>
                 <div>
-                  <button
-                    onClick={() => handleDecision('approve')}
-                    className={`w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer ${hasSubsequentStages && isSasStepPending
-                        ? 'bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D]'
-                        : 'bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#22C55E]'
-                      }`}
-                  >
-                    {hasSubsequentStages && isSasStepPending ? (
-                      <>
-                        <PenTool className="w-4 h-4 text-[#FFD41C]" />
-                        <span>Endorse & Sign as SAS (Stage 1)</span>
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle className="w-4 h-4" />
-                        <span>Approve Activity Proposal</span>
-                      </>
-                    )}
-                  </button>
+                  {effectiveFundingSource === 'organization_funds' ? (
+                    <button
+                      onClick={() => handleDecision('approve')}
+                      className="w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#22C55E]"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>Approve & Sign as SAS</span>
+                    </button>
+                  ) : displayApprovalChain && displayApprovalChain.length > 0 ? (
+                    <button
+                      onClick={handleReleaseToSignatories}
+                      disabled={submitting}
+                      className="w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D] disabled:opacity-50"
+                      title="Clear proposal from SAS Vetting and unlock Stage 1 in Signatory Portal (No SAS signature required)"
+                    >
+                      <Send className="w-4 h-4 text-[#FFD41C]" />
+                      <span>Approve & Release to Signatories</span>
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => handleDecision('approve')}
+                      className="w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#22C55E]"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      <span>Approve Activity Proposal</span>
+                    </button>
+                  )}
                 </div>
                 <div>
                   <button
@@ -4131,6 +4191,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           userUid={profile?.uid || 'admin'}
           userName={profile?.displayName || 'SAS Administrator'}
           userRole="admin"
+          userSignatureUrl={profile?.signatureUrl || (profile as any)?.signatureDataUrl || null}
           isAdviser={true}
           readOnly={isOrgManagedEvent}
           initialEventId={event.id}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { collectionGroup, onSnapshot, collection } from 'firebase/firestore';
+import { collectionGroup, onSnapshot, collection, query, limit } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { AttendanceRecord } from '../types/attendance.types';
 import { formatAppTime } from '../../../utils/date';
@@ -80,9 +80,9 @@ export function useAttendanceStream() {
       };
     };
 
-    // 1. Listen to all /attendance subcollections
+    // 1. Listen to recent /attendance subcollections (limited to 150 to prevent unbounded database reads)
     const unsubAttendanceGroup = onSnapshot(
-      collectionGroup(db, 'attendance'),
+      query(collectionGroup(db, 'attendance'), limit(150)),
       (snapshot) => {
         groupNormalRecords = snapshot.docs.map(parseNormalDoc);
         updateCombinedRecords();
@@ -93,9 +93,9 @@ export function useAttendanceStream() {
       }
     );
 
-    // 2. Listen to top-level /attendance collection
+    // 2. Listen to top-level /attendance collection (limited to 100)
     const unsubTopAttendance = onSnapshot(
-      collection(db, 'attendance'),
+      query(collection(db, 'attendance'), limit(100)),
       (snapshot) => {
         topNormalRecords = snapshot.docs.map(parseNormalDoc);
         updateCombinedRecords();
@@ -105,9 +105,9 @@ export function useAttendanceStream() {
       }
     );
 
-    // 3. Listen to all /flagged_attendance subcollections
+    // 3. Listen to recent /flagged_attendance subcollections (limited to 100)
     const unsubFlaggedGroup = onSnapshot(
-      collectionGroup(db, 'flagged_attendance'),
+      query(collectionGroup(db, 'flagged_attendance'), limit(100)),
       (snapshot) => {
         groupFlaggedRecords = snapshot.docs.map(parseFlaggedDoc);
         updateCombinedRecords();
@@ -118,9 +118,9 @@ export function useAttendanceStream() {
       }
     );
 
-    // 4. Listen to top-level /flagged_attendance collection
+    // 4. Listen to top-level /flagged_attendance collection (limited to 100)
     const unsubTopFlagged = onSnapshot(
-      collection(db, 'flagged_attendance'),
+      query(collection(db, 'flagged_attendance'), limit(100)),
       (snapshot) => {
         topFlaggedRecords = snapshot.docs.map(parseFlaggedDoc);
         updateCombinedRecords();

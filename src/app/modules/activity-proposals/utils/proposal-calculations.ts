@@ -4,7 +4,7 @@
  * Automated calculation engines for financial projections and STI 15-day policy verification.
  */
 
-import { differenceInCalendarDays, parseISO, isValid } from 'date-fns';
+import { differenceInCalendarDays, parseISO, isValid, format } from 'date-fns';
 import type {
   FinancialLineItem,
   FinancialProjections,
@@ -21,20 +21,24 @@ export function calculateFinancialTotals(
 ): FinancialProjections {
   const cleanRevenues = revenues.map((item) => {
     const proposed = Number(item.thisYearProposed) || 0;
-    const adjustment = Number(item.adjustment) || 0;
-    const totalAmount = proposed + adjustment;
+    const lastYear = Number(item.lastYearActual) || 0;
+    const adjustment = proposed - lastYear;
+    const totalAmount = proposed;
     return {
       ...item,
+      adjustment,
       totalAmount,
     };
   });
 
   const cleanExpenses = expenses.map((item) => {
     const proposed = Number(item.thisYearProposed) || 0;
-    const adjustment = Number(item.adjustment) || 0;
-    const totalAmount = proposed + adjustment;
+    const lastYear = Number(item.lastYearActual) || 0;
+    const adjustment = proposed - lastYear;
+    const totalAmount = proposed;
     return {
       ...item,
+      adjustment,
       totalAmount,
     };
   });
@@ -137,4 +141,37 @@ export function formatPHP(amount: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(amount || 0);
+}
+
+/**
+ * Format a date string (YYYY-MM-DD, ISO, etc.) to long format e.g. "November 12, 2026"
+ */
+export function formatDateLong(dateInput?: string | Date | null): string {
+  if (!dateInput) return '';
+  try {
+    if (typeof dateInput === 'string') {
+      const trimmed = dateInput.trim();
+      if (!trimmed) return '';
+      if (/^[A-Za-z]+ \d{1,2}, \d{4}$/.test(trimmed)) {
+        return trimmed;
+      }
+      const parsed = parseISO(trimmed);
+      if (isValid(parsed)) {
+        return format(parsed, 'MMMM d, yyyy');
+      }
+      const fallback = new Date(trimmed);
+      if (!isNaN(fallback.getTime())) {
+        return new Intl.DateTimeFormat('en-US', {
+          month: 'long',
+          day: 'numeric',
+          year: 'numeric',
+        }).format(fallback);
+      }
+    } else if (dateInput instanceof Date && !isNaN(dateInput.getTime())) {
+      return format(dateInput, 'MMMM d, yyyy');
+    }
+  } catch {
+    // fallback
+  }
+  return String(dateInput);
 }

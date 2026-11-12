@@ -8,9 +8,13 @@ import { toast } from 'sonner';
 import { formatStructuredFullName } from '../../../utils/name.utils';
 import { useAdviserProfile, updateAdviserProfile } from '../../../modules/auth';
 import {
-  getSasSignatoryConfig,
   saveSasSignatoryConfig,
 } from '../../../modules/signatories/services/sas-signatory.service';
+import {
+  resolveUserSignature,
+  getFastCachedSignature,
+  syncUserSignatureAcrossProfiles,
+} from '../../../modules/signatories';
 
 interface AdviserProfileProps {
   onUnsavedChange: () => void;
@@ -27,7 +31,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
   const [position, setPosition] = useState('');
 
   // Official Signatory & Digital Signature state
-  const [signatureUrl, setSignatureUrl] = useState<string>('');
+  const [signatureUrl, setSignatureUrl] = useState<string>(() => getFastCachedSignature(profile));
   const [isRedrawing, setIsRedrawing] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasDrawn, setHasDrawn] = useState(false);
@@ -48,15 +52,34 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
       setDepartment(profile.department || '');
       setPosition(profile.position || '');
 
-      const initialSig =
-        profile.signatureUrl ||
-        profile.signatureDataUrl ||
-        getSasSignatoryConfig().signatureUrl ||
-        '';
-      setSignatureUrl(initialSig);
-      if (!initialSig) {
-        setIsRedrawing(true);
+      // Multi-source signature resolution (profile -> sas_signatory -> institutional_signatories -> sessions)
+      let isCancelled = false;
+      const cached = getFastCachedSignature(profile);
+      if (cached) {
+        setSignatureUrl(cached);
+        setIsRedrawing(false);
       }
+
+      resolveUserSignature({
+        uid: profile.uid,
+        email: profile.email,
+        role: 'sas_admin',
+        profile,
+      }).then((resolvedSig) => {
+        if (!isCancelled) {
+          if (resolvedSig) {
+            setSignatureUrl(resolvedSig);
+            setIsRedrawing(false);
+          } else if (!cached) {
+            setSignatureUrl('');
+            setIsRedrawing(true);
+          }
+        }
+      });
+
+      return () => {
+        isCancelled = true;
+      };
     }
   }, [profile]);
 
@@ -252,7 +275,20 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
         signatureUrl: finalSig || undefined,
         signatureDataUrl: finalSig || undefined,
       });
+
+      // 3. Centralized multi-collection sync (institutional_signatories, localStorage sessions, audit)
+      if (finalSig) {
+        await syncUserSignatureAcrossProfiles({
+          uid: profile.uid,
+          email: profile.email,
+          name: displayName,
+          roleTitle: resolvedPosition,
+          signatureUrl: finalSig,
+          role: 'sas_admin',
+        });
+      }
       
+      setIsRedrawing(false);
       setSaveStatus('success');
       toast.success('Adviser profile and official signatory updated successfully!');
       setTimeout(() => setSaveStatus('idle'), 4000);
@@ -527,15 +563,15 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
                 <button
                   type="button"
                   onClick={() => setIsRedrawing(true)}
-                  className="px-3 py-1 bg-blue-50 text-[#0E4EBD] hover:bg-blue-100 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  className="px-3.5 py-1.5 bg-[#001A4D] text-[#FFD41C] hover:bg-[#0A2E6D] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                 >
-                  <PenTool className="w-3.5 h-3.5" />
-                  Redraw
+                  <PenTool className="w-3.5 h-3.5 text-[#FFD41C]" />
+                  Update Signature
                 </button>
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="px-3 py-1 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  className="px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
                 >
                   <Upload className="w-3.5 h-3.5" />
                   Upload Image
@@ -543,7 +579,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
                 <button
                   type="button"
                   onClick={handleRemoveSignature}
-                  className="px-3 py-1 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  className="px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Remove

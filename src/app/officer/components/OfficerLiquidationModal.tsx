@@ -27,6 +27,7 @@ import {
   Save,
   Undo2,
   Download,
+  Coins,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { doc, getDoc } from 'firebase/firestore';
@@ -65,6 +66,11 @@ import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConf
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import DigitalSignatureModal from '../../signatory/components/DigitalSignatureModal';
+import {
+  resolveUserSignature,
+  getFastCachedSignature,
+  syncUserSignatureAcrossProfiles,
+} from '../../modules/signatories';
 import { toast } from 'sonner';
 
 interface OfficerLiquidationModalProps {
@@ -75,6 +81,7 @@ interface OfficerLiquidationModalProps {
   userUid: string;
   userName: string;
   userRole: 'admin' | 'officer';
+  userSignatureUrl?: string;
   isAdviser?: boolean;
   editingReport?: LiquidationDocument | null;
   existingLiquidations?: LiquidationDocument[];
@@ -197,6 +204,7 @@ export default function OfficerLiquidationModal({
   userUid,
   userName,
   userRole,
+  userSignatureUrl,
   isAdviser,
   editingReport,
   existingLiquidations,
@@ -214,28 +222,33 @@ export default function OfficerLiquidationModal({
       (orgId || '').toString().trim().toLowerCase()
     );
 
-  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(
-    officerProfile?.signatureUrl || null
-  );
+  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(() => {
+    return userSignatureUrl || getFastCachedSignature(officerProfile) || null;
+  });
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
 
   useEffect(() => {
-    if (!makerSignatureUrl && officerProfile?.signatureUrl) {
-      setMakerSignatureUrl(officerProfile.signatureUrl);
-    } else if (!makerSignatureUrl) {
-      try {
-        const raw = localStorage.getItem('sti_sync_officer_session');
-        if (raw) {
-          const sess = JSON.parse(raw);
-          if (sess?.signatureUrl) {
-            setMakerSignatureUrl(sess.signatureUrl);
-          }
-        }
-      } catch {
-        // ignore
-      }
+    let isCancelled = false;
+    const fastSig = userSignatureUrl || getFastCachedSignature(officerProfile);
+    if (fastSig && !makerSignatureUrl) {
+      setMakerSignatureUrl(fastSig);
     }
-  }, [makerSignatureUrl, officerProfile?.signatureUrl]);
+
+    resolveUserSignature({
+      uid: userUid || officerProfile?.studentId,
+      email: officerProfile?.email,
+      role: userRole,
+      profile: officerProfile,
+    }).then((sig) => {
+      if (!isCancelled && sig) {
+        setMakerSignatureUrl(sig);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [makerSignatureUrl, officerProfile?.signatureUrl, userSignatureUrl, userUid, userRole]);
 
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
@@ -569,6 +582,10 @@ export default function OfficerLiquidationModal({
   const isSelectedEventExempt = useMemo(() => {
     return isEventLiquidationExempt(selectedEvent);
   }, [selectedEvent]);
+
+  const isOrgFunds = useMemo(() => {
+    return (selectedEvent as any)?.fundingSource === 'organization_funds' || effectiveReport?.fundingSource === 'organization_funds';
+  }, [selectedEvent, effectiveReport]);
 
   // Form LF-01 Official Header Information
   const [employeeName, setEmployeeName] = useState<string>('');
@@ -1322,20 +1339,23 @@ export default function OfficerLiquidationModal({
         showValidationError('Please attach at least one valid receipt or proof document for every expense receipt before submitting.');
         return;
       }
-      if (approvalChain.length === 0) {
+      const isOrgFunds = (selectedEvent as any)?.fundingSource === 'organization_funds' || effectiveReport?.fundingSource === 'organization_funds';
+      if (!isOrgFunds && approvalChain.length === 0) {
         showValidationError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
         return;
       }
-      const hasApprover = approvalChain.some(
-        (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
-      );
-      if (!hasApprover) {
-        showValidationError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
-        return;
+      if (!isOrgFunds) {
+        const hasApprover = approvalChain.some(
+          (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
+        );
+        if (!hasApprover) {
+          showValidationError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
+          return;
+        }
       }
 
       // Mandatory Maker Signature Check for formal submission
-      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl;
+      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl;
       if (!effectiveSignature) {
         toast.error('Electronic Signature Required', {
           description: 'As the document maker, you must register your official signature before submitting this financial liquidation.',
@@ -1350,14 +1370,31 @@ export default function OfficerLiquidationModal({
 
     try {
       const nextStatus = shouldSubmit ? 'under_review' : 'draft';
-      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || '';
+      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl || '';
       const submitterRole = isSasCreator ? 'sas_admin' : effectiveIsAdviser ? 'adviser' : userRole;
       const submitterTitle = isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Organization Adviser' : 'Student Officer';
       const submitterName = userName || (isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Club Adviser' : 'Officer');
 
       // Ensure approval chain statuses are set appropriately on submit
       let finalizedChain = approvalChain;
-      if (shouldSubmit) {
+      if (isOrgFunds) {
+        finalizedChain = [
+          {
+            id: 'step_sas_approval',
+            step: 1,
+            stageIndex: 1,
+            stageName: 'SAS Approval',
+            role: 'sas_head' as const,
+            roleTitle: 'Student Affairs & Services Head',
+            actionType: 'approve' as const,
+            signatoryUid: 'sas_admin',
+            signatoryName: 'Riselle Mae B. Lucanas',
+            signatoryEmail: 'sao@ormoc.sti.edu.ph',
+            department: 'Student Affairs & Services',
+            status: 'current' as const,
+          },
+        ];
+      } else if (shouldSubmit) {
         finalizedChain = approvalChain.map((step) => {
           if ((step.stageIndex ?? 1) === 1) {
             return { ...step, status: 'current' as const };
@@ -2518,15 +2555,31 @@ export default function OfficerLiquidationModal({
                   </div>
                 </div>
 
-                <LiquidationFlowBuilder
-                  approvalChain={approvalChain}
-                  onChange={setApprovalChain}
-                  activeSignatories={activeSignatories}
-                  orgId={orgId}
-                  orgName={orgName}
-                  allocatedBudget={allocatedBudget}
-                  isSasCreator={isSasCreator}
-                />
+                {isOrgFunds ? (
+                  <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex items-start gap-3.5 shadow-xs">
+                    <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800 shrink-0">
+                      <Coins className="w-5 h-5 text-emerald-700" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                        Organization Internal Funds — Direct SAS Approval
+                      </h4>
+                      <p className="text-xs text-emerald-900/90 leading-relaxed">
+                        This liquidation is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <LiquidationFlowBuilder
+                    approvalChain={approvalChain}
+                    onChange={setApprovalChain}
+                    activeSignatories={activeSignatories}
+                    orgId={orgId}
+                    orgName={orgName}
+                    allocatedBudget={allocatedBudget}
+                    isSasCreator={isSasCreator}
+                  />
+                )}
               </div>
 
               {/* If report is already in review or concluded, show visual tracker */}
@@ -2771,6 +2824,13 @@ export default function OfficerLiquidationModal({
           currentSignatureUrl={makerSignatureUrl}
           onSignatureSaved={(newUrl) => {
             setMakerSignatureUrl(newUrl);
+            syncUserSignatureAcrossProfiles({
+              uid: userUid,
+              email: officerProfile?.email,
+              name: userName,
+              signatureUrl: newUrl,
+              role: userRole,
+            });
             const raw = localStorage.getItem('sti_sync_officer_session');
             if (raw) {
               try {

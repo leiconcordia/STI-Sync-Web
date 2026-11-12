@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { ChevronDown, Settings, LogOut, Zap } from 'lucide-react';
+import { ChevronDown, Settings, LogOut } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
-import { DevDataSeederModal } from '../../../dev/components/DevDataSeederModal';
 import { NotificationDropdown } from '../../modules/notifications';
 import { WorkspaceSwitcher } from '../../auth/components/WorkspaceSwitcher';
 
@@ -13,7 +12,6 @@ interface OfficerTopNavProps {
 export function OfficerTopNav({ title }: OfficerTopNavProps) {
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showSeederModal, setShowSeederModal] = useState(false);
 
   const { profile, logout } = useOfficerProfile();
 
@@ -43,17 +41,6 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
       {/* Right Side */}
       <div className="flex items-center gap-3">
         <WorkspaceSwitcher />
-        {/* Quick Dev Data Seeder Trigger */}
-        <button
-          type="button"
-          onClick={() => setShowSeederModal(true)}
-          title="Open Dev Lifecycle Simulator & Signatory Seeder"
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600/10 to-indigo-600/10 hover:from-blue-600/20 hover:to-indigo-600/20 border border-blue-500/30 hover:border-blue-500/50 rounded-xl text-blue-700 font-bold text-xs transition-all cursor-pointer shadow-2xs active:scale-95"
-        >
-          <Zap className="w-3.5 h-3.5 fill-blue-600 text-blue-600" />
-          <span className="hidden sm:inline">Dev Seeder</span>
-        </button>
-
         {/* Real-time Notifications */}
         <NotificationDropdown
           role="officer"
@@ -111,11 +98,6 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
           )}
         </div>
       </div>
-
-      {/* Dev Test Data Seeder Modal */}
-      {showSeederModal && (
-        <DevDataSeederModal isOpen={showSeederModal} onClose={() => setShowSeederModal(false)} />
-      )}
     </header>
   );
 }

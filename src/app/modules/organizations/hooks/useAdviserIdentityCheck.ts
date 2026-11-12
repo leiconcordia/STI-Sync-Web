@@ -21,10 +21,11 @@ export function useAdviserIdentityCheck(candidate: AdviserIdentity, organization
     setLoading(true);
     const loaded = new Set<string>();
     const failures = new Map<string, Error>();
-    const unsubscribes = ADVISER_IDENTITY_SOURCES.map(([name, sourceType]) => onSnapshot(collection(db, name), (snapshot) => {
+    const liveSources = ADVISER_IDENTITY_SOURCES.filter(([name]) => name !== 'students');
+    const unsubscribes = liveSources.map(([name, sourceType]) => onSnapshot(collection(db, name), (snapshot) => {
       setRecords((previous) => [...previous.filter((record) => record.sourceType !== sourceType), ...snapshot.docs.map((record) => ({ ...record.data(), ...(sourceType === 'student' ? { employeeId: record.data().studentId } : {}), id: record.id, sourceType }))]);
-      loaded.add(name); failures.delete(name); setLoading(loaded.size !== ADVISER_IDENTITY_SOURCES.length); setError(failures.values().next().value || null);
-    }, (failure) => { loaded.add(name); failures.set(name, failure); setLoading(loaded.size !== ADVISER_IDENTITY_SOURCES.length); setError(failure); }));
+      loaded.add(name); failures.delete(name); setLoading(loaded.size !== liveSources.length); setError(failures.values().next().value || null);
+    }, (failure) => { loaded.add(name); failures.set(name, failure); setLoading(loaded.size !== liveSources.length); setError(failure); }));
     return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
   }, [enabled]);
   const existing = useMemo(() => collectAdviserIdentities(records, organizations, excludeOrgId), [records, organizations, excludeOrgId]);

@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { ChevronDown, LogOut, Settings, Zap } from "lucide-react";
+import { ChevronDown, LogOut, Settings } from "lucide-react";
 import { useAdviserProfile, signOutAdviser } from '../../../modules/auth';
-import { DevDataSeederModal } from '../../../../dev/components/DevDataSeederModal';
 import { NotificationDropdown } from '../../../modules/notifications';
 
 interface TopNavProps {
@@ -14,7 +13,6 @@ interface TopNavProps {
 
 export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const [showSeederModal, setShowSeederModal] = useState(false);
   const { profile } = useAdviserProfile();
 
   // Initials derived from live profile
@@ -41,17 +39,6 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
 
       {/* Right Side */}
       <div className="flex items-center gap-3">
-        {/* Quick Dev Data Seeder Trigger */}
-        <button
-          type="button"
-          onClick={() => setShowSeederModal(true)}
-          title="Open Dev Lifecycle Simulator & Signatory Seeder"
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-blue-600/10 to-indigo-600/10 hover:from-blue-600/20 hover:to-indigo-600/20 border border-blue-500/30 hover:border-blue-500/50 rounded-xl text-blue-700 font-bold text-xs transition-all cursor-pointer shadow-2xs active:scale-95"
-        >
-          <Zap className="w-3.5 h-3.5 fill-blue-600 text-blue-600" />
-          <span className="hidden sm:inline">Dev Seeder</span>
-        </button>
-
         {/* Real-time Notifications */}
         <NotificationDropdown role="admin" userId={profile?.id} />
 
@@ -117,11 +104,6 @@ export function TopNav({ title, onLogout, onNavigateSettings }: TopNavProps) {
           )}
         </div>
       </div>
-
-      {/* Dev Test Data Seeder Modal */}
-      {showSeederModal && (
-        <DevDataSeederModal isOpen={showSeederModal} onClose={() => setShowSeederModal(false)} />
-      )}
     </header>
   );
 }

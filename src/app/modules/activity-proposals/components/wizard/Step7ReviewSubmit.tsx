@@ -31,12 +31,16 @@ import {
   GraduationCap,
   Briefcase,
   Lock,
+  Coins,
+  FileSignature,
+  PenTool,
+  AlertCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ProposalFormData, ProposalApprovalStep } from '../../types/proposal.types';
 import type { InstitutionalSignatory } from '../../../signatories/types/signatory.types';
 import { subscribeToSignatories } from '../../../signatories/services/signatory.service';
-import { check15DayRule, formatPHP } from '../../utils/proposal-calculations';
+import { check15DayRule, formatPHP, formatDateLong } from '../../utils/proposal-calculations';
 import { exportActivityProposalPDF } from '../../utils/proposal-pdf-exporter';
 import ProposalFlowBuilder from '../workflow/ProposalFlowBuilder';
 
@@ -49,6 +53,8 @@ interface Step7Props {
   isSavingDraft?: boolean;
   isOfficerOnly?: boolean;
   errors?: Record<string, string>;
+  makerSignatureUrl?: string;
+  onOpenSignatureModal?: () => void;
 }
 
 export default function Step7ReviewSubmit({
@@ -60,10 +66,11 @@ export default function Step7ReviewSubmit({
   isSavingDraft = false,
   isOfficerOnly = false,
   errors = {},
+  makerSignatureUrl,
+  onOpenSignatureModal,
 }: Step7Props) {
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
   const [loadingSignatories, setLoadingSignatories] = useState(true);
-  const [coProponentInput, setCoProponentInput] = useState('');
 
   // Subscribe to institutional signatories from registry
   useEffect(() => {
@@ -92,27 +99,35 @@ export default function Step7ReviewSubmit({
     return [formData.createdByName || 'Student Affairs & Services'];
   }, [formData.proponents, formData.createdByName]);
 
-  const handleAddProponent = (nameToAdd: string) => {
-    const trimmed = nameToAdd.trim();
-    if (!trimmed || proponents.includes(trimmed)) return;
-    const updated = [...proponents, trimmed];
-    onChange({ proponents: updated });
-    setCoProponentInput('');
-  };
-
-  const handleRemoveProponent = (indexToRemove: number) => {
-    if (proponents.length <= 1) return; // Keep at least one proponent
-    const updated = proponents.filter((_, idx) => idx !== indexToRemove);
-    onChange({ proponents: updated });
-  };
-
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const handleExportPdf = async () => {
     setIsExportingPdf(true);
     try {
-      await exportActivityProposalPDF(formData);
-      toast.success('Official Activity Proposal PDF generated successfully!');
+      const effectiveSig =
+        formData.submittedBySignatureUrl ||
+        formData.preparedBy?.signatureUrl ||
+        makerSignatureUrl ||
+        '';
+
+      const exportData: ProposalFormData = {
+        ...formData,
+        submittedBySignatureUrl: effectiveSig,
+        preparedBy: {
+          ...formData.preparedBy,
+          name: formData.preparedBy?.name || formData.createdByName || 'Organization Adviser',
+          roleTitle: formData.preparedBy?.roleTitle || (formData.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+          signatureUrl: effectiveSig,
+          signedAt: formData.preparedBy?.signedAt || new Date().toISOString(),
+        },
+      };
+
+      await exportActivityProposalPDF(exportData);
+      toast.success(
+        effectiveSig
+          ? 'Official Activity Proposal PDF generated with registered signature!'
+          : 'Official Activity Proposal PDF generated successfully!'
+      );
     } catch (err: any) {
       console.error('PDF export error:', err);
       toast.error('Failed to generate PDF: ' + (err?.message || 'Please try again.'));
@@ -178,7 +193,7 @@ export default function Step7ReviewSubmit({
             </h4>
             <p className="text-xs text-emerald-700 mt-0.5 leading-relaxed">
               This proposal is scheduled <strong>{ruleCheck.daysDiff} calendar days</strong> before the initial task/session 
-              {ruleCheck.earliestDate && ` (${ruleCheck.earliestDate})`}, satisfying the required 15-day advance notice for institutional review.
+              {ruleCheck.earliestDate && ` (${formatDateLong(ruleCheck.earliestDate)})`}, satisfying the required 15-day advance notice for institutional review.
             </p>
           </div>
         </div>
@@ -199,7 +214,7 @@ export default function Step7ReviewSubmit({
               </div>
               <p className="text-xs text-amber-800 mt-1 leading-relaxed">
                 Official STI policy requires proposals to be submitted at least <strong>15 calendar days</strong> before the start of the initial task/event.
-                Because the earliest activity date is on <strong>{ruleCheck.earliestDate || 'soon'}</strong>, an administrative justification was provided in Step 4 for the School President and Academic Head.
+                Because the earliest activity date is on <strong>{formatDateLong(ruleCheck.earliestDate) || 'soon'}</strong>, an administrative justification was provided in Step 4 for the School President and Academic Head.
               </p>
 
               {formData.urgentJustification?.trim() ? (
@@ -221,83 +236,6 @@ export default function Step7ReviewSubmit({
           </div>
         </div>
       )}
-
-      {/* ── PROPOSED BY / PROPONENTS (MAKERS) SECTION ── */}
-      <div className="bg-gradient-to-r from-blue-900 to-[#001A4D] text-white p-5 rounded-2xl shadow-sm border border-blue-800 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-blue-500/20 text-[#FFD41C] flex items-center justify-center font-bold">
-              <UserCheck className="w-4 h-4" />
-            </div>
-            <div>
-              <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                Proposed By (Activity Maker & Co-Proponents)
-              </h4>
-              <p className="text-[11px] text-blue-200">
-                Defaults to your account as the primary maker. You can add fellow organizers or co-proponents below.
-              </p>
-            </div>
-          </div>
-          <span className="text-[11px] font-semibold text-blue-300">
-            {proponents.length} {proponents.length === 1 ? 'Proponent' : 'Proponents'}
-          </span>
-        </div>
-
-        {/* Proponents Badges */}
-        <div className="flex flex-wrap gap-2 pt-1">
-          {proponents.map((prop, idx) => (
-            <span
-              key={idx}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-xs ${
-                idx === 0
-                  ? 'bg-blue-800/80 text-white border border-blue-400/40'
-                  : 'bg-white/10 text-blue-100 border border-white/20'
-              }`}
-            >
-              <span>{prop}</span>
-              {idx === 0 ? (
-                <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded">
-                  Maker
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => handleRemoveProponent(idx)}
-                  className="text-blue-300 hover:text-rose-400 transition-colors"
-                  title="Remove co-proponent"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-
-        {/* Add Co-Proponent Input */}
-        <div className="flex gap-2 pt-1">
-          <input
-            type="text"
-            value={coProponentInput}
-            onChange={(e) => setCoProponentInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleAddProponent(coProponentInput);
-              }
-            }}
-            placeholder="Type name of co-proponent (e.g. Juan Dela Cruz, SSC Officer)..."
-            className="flex-1 px-3.5 py-2 bg-slate-900/80 border border-blue-700/60 rounded-xl text-xs text-white placeholder:text-blue-300/50 focus:outline-none focus:ring-2 focus:ring-[#FFD41C]/30 focus:border-[#FFD41C]"
-          />
-          <button
-            type="button"
-            onClick={() => handleAddProponent(coProponentInput)}
-            className="px-4 py-2 bg-[#FFD41C] hover:bg-[#ffe054] text-[#001A4D] text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Proponent</span>
-          </button>
-        </div>
-      </div>
 
       {/* ── OFFICIAL STI DOCUMENT PREVIEW SHEET ── */}
       <div className="bg-white border border-slate-200 rounded-3xl shadow-sm overflow-hidden">
@@ -327,12 +265,7 @@ export default function Step7ReviewSubmit({
                   Submission Date
                 </span>
                 <span className="text-sm font-semibold text-white">
-                  {formData.submissionDate ||
-                    new Intl.DateTimeFormat('en-US', {
-                      month: 'long',
-                      day: 'numeric',
-                      year: 'numeric',
-                    }).format(new Date())}
+                  {formatDateLong(formData.submissionDate || new Date())}
                 </span>
               </div>
 
@@ -359,12 +292,7 @@ export default function Step7ReviewSubmit({
                 Date (Submission Date)
               </span>
               <span className="font-semibold text-slate-800 text-sm mt-0.5 block">
-                {formData.submissionDate ||
-                  new Intl.DateTimeFormat('en-US', {
-                    month: 'long',
-                    day: 'numeric',
-                    year: 'numeric',
-                  }).format(new Date())}
+                {formatDateLong(formData.submissionDate || new Date())}
               </span>
             </div>
             <div>
@@ -659,7 +587,7 @@ export default function Step7ReviewSubmit({
               <div>
                 <span className="text-slate-400 block text-[10px] uppercase font-bold">Event Date</span>
                 <span className="font-semibold text-slate-800">
-                  {formData.date || formData.sessions?.[0]?.date || 'Date TBD'}
+                  {formatDateLong(formData.date || formData.sessions?.[0]?.date) || 'Date TBD'}
                 </span>
               </div>
               <div>
@@ -697,7 +625,7 @@ export default function Step7ReviewSubmit({
                     <tr key={idx} className="hover:bg-slate-50">
                       <td className="p-2.5 font-medium">{t.taskName}</td>
                       <td className="p-2.5 text-slate-600">{t.assignedPerson}</td>
-                      <td className="p-2.5 text-slate-600">{t.completionDate || '—'}</td>
+                      <td className="p-2.5 text-slate-600">{formatDateLong(t.completionDate) || '—'}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -710,9 +638,9 @@ export default function Step7ReviewSubmit({
             const revItems = formData.financialProjections?.revenues || [];
             const expItems = formData.financialProjections?.expenses || [];
             const calculatedTotalRevenue = Number(formData.financialProjections?.totalRevenue) ||
-              revItems.reduce((s, r) => s + (Number(r.totalAmount) || (Number(r.thisYearProposed) || 0) + (Number(r.adjustment) || 0)), 0);
+              revItems.reduce((s, r) => s + (Number(r.totalAmount) || Number(r.thisYearProposed) || 0), 0);
             const calculatedTotalExpenses = Number(formData.financialProjections?.totalExpenses) ||
-              expItems.reduce((s, e) => s + (Number(e.totalAmount) || (Number(e.thisYearProposed) || 0) + (Number(e.adjustment) || 0)), 0);
+              expItems.reduce((s, e) => s + (Number(e.totalAmount) || Number(e.thisYearProposed) || 0), 0);
 
             const isInstitutionalAllocation =
               (formData.fundingSource === 'school_budget' || formData.fundingSource === 'organization_funds') &&
@@ -724,6 +652,9 @@ export default function Step7ReviewSubmit({
               ? Number(formData.financialProjections.balance)
               : (displayRevenue - calculatedTotalExpenses);
 
+            const isNonMonetary = formData.fundingSource === 'zero_budget';
+            const hasCommercialRevenues = !isInstitutionalAllocation && !isNonMonetary && calculatedTotalRevenue > 0;
+
             return (
               <div className="space-y-3 pb-6 border-b border-slate-100">
                 <div className="flex items-center justify-between flex-wrap gap-2">
@@ -732,54 +663,88 @@ export default function Step7ReviewSubmit({
                   </h3>
                   <div className="flex items-center gap-2.5 text-xs font-bold flex-wrap">
                     <span className="text-slate-600">
-                      Total Proposed Budget: <strong className="text-rose-700 font-mono">{formatPHP(calculatedTotalExpenses)}</strong>
+                      Total Asking Budget: <strong className="text-[#001A4D] font-mono">{formatPHP(calculatedTotalExpenses)}</strong>
                     </span>
-                    <span className="text-slate-300">|</span>
-                    <span className="text-slate-600">
-                      Projected Balance: <strong className={`font-mono ${rawBalance >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>{formatPHP(rawBalance)}</strong>
-                    </span>
-                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                      rawBalance === 0
-                        ? 'bg-blue-100 text-blue-800'
-                        : rawBalance > 0
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : 'bg-amber-100 text-amber-800'
-                    }`}>
-                      {rawBalance === 0 ? '✓ Balanced' : rawBalance > 0 ? '↑ Surplus' : '⚠ Deficit'}
-                    </span>
+                    {hasCommercialRevenues && (
+                      <>
+                        <span className="text-slate-300">|</span>
+                        <span className="text-slate-600">
+                          Projected Balance: <strong className={`font-mono ${rawBalance >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>{formatPHP(rawBalance)}</strong>
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          rawBalance === 0
+                            ? 'bg-blue-100 text-blue-800'
+                            : rawBalance > 0
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {rawBalance === 0 ? '✓ Balanced' : rawBalance > 0 ? '↑ Surplus' : '⚠ Deficit'}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
-                <div className={`grid grid-cols-1 ${formData.fundingSource === 'zero_budget' ? '' : 'sm:grid-cols-2'} gap-4 text-xs`}>
-                  {formData.fundingSource !== 'zero_budget' && (
-                    <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] uppercase font-bold text-emerald-800 block">
-                          {isInstitutionalAllocation ? 'Funding Allocation (Revenues)' : 'Total Proposed Revenues'}
+
+                {isNonMonetary ? (
+                  <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Funding Source</span>
+                      <span className="font-bold text-slate-800 text-sm">Non-Monetary Activity</span>
+                      <span className="text-slate-500 block text-[11px] mt-0.5">Zero budget baseline (₱0.00) required</span>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-100 text-[#001A4D]">
+                      ₱0.00 Non-Monetary
+                    </span>
+                  </div>
+                ) : isInstitutionalAllocation ? (
+                  <div className="p-4 bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-white border border-blue-200 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-900">
+                          Total Asking Budget
                         </span>
-                        {isInstitutionalAllocation && (
-                          <span className="text-[9px] font-bold text-[#001A4D] bg-blue-100 px-1.5 py-0.5 rounded">
-                            {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
-                          </span>
-                        )}
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-[#001A4D]">
+                          {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
+                        </span>
                       </div>
+                      <span className="text-xl font-black text-[#001A4D] font-mono block mt-1">
+                        {formatPHP(calculatedTotalExpenses)}
+                      </span>
+                      <span className="text-slate-500 block text-[11px] mt-0.5">
+                        {expItems.length} baseline category spending item(s) allocated from institutional funds
+                      </span>
+                    </div>
+                    <div className="text-left sm:text-right sm:border-l sm:border-blue-200/60 sm:pl-4">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                        Funding Allocation
+                      </span>
+                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block mt-1">
+                        ✓ 100% Covered
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
+                      <span className="text-[10px] uppercase font-bold text-emerald-800 block">Total Proposed Revenues</span>
                       <span className="text-base font-bold text-emerald-900 font-mono">
                         {formatPHP(displayRevenue)}
                       </span>
                       <span className="text-[11px] text-emerald-700 block mt-0.5">
-                        {isInstitutionalAllocation ? 'Institutional allocation covering proposed expenses' : `${revItems.length} line item(s)`}
+                        {revItems.length} revenue line item(s)
                       </span>
                     </div>
-                  )}
-                  <div className="p-3 bg-rose-50/60 border border-rose-200/80 rounded-xl">
-                    <span className="text-[10px] uppercase font-bold text-rose-800 block">Total Proposed Expenses</span>
-                    <span className="text-base font-bold text-rose-900 font-mono">
-                      {formatPHP(calculatedTotalExpenses)}
-                    </span>
-                    <span className="text-[11px] text-rose-700 block mt-0.5">
-                      {formData.fundingSource === 'zero_budget' ? 'Non-monetary activity (₱0 funds required)' : `${expItems.length} line item(s)`}
-                    </span>
+                    <div className="p-3 bg-rose-50/60 border border-rose-200/80 rounded-xl">
+                      <span className="text-[10px] uppercase font-bold text-rose-800 block">Total Proposed Expenses</span>
+                      <span className="text-base font-bold text-rose-900 font-mono">
+                        {formatPHP(calculatedTotalExpenses)}
+                      </span>
+                      <span className="text-[11px] text-rose-700 block mt-0.5">
+                        {expItems.length} expense line item(s)
+                      </span>
+                    </div>
                   </div>
-                </div>
+                )}
 
             {/* Historical Budget Reference Status Badge */}
             {formData.historicalReference && (
@@ -813,27 +778,118 @@ export default function Step7ReviewSubmit({
         );
       })()}
 
-          {/* 15. Signatories & Dynamic Multi-Stage Approval Flow */}
+          {/* 15. Prepared By / Maker Electronic Signature Verification */}
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                15. Prepared By (Official E-Signature Verification)
+              </h3>
+              {makerSignatureUrl ? (
+                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  Official Signature Attached
+                </span>
+              ) : (
+                <span className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                  Signature Required
+                </span>
+              )}
+            </div>
+
+            <div
+              className={`p-4 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all ${
+                makerSignatureUrl
+                  ? 'bg-emerald-50/60 border-emerald-200 shadow-2xs'
+                  : 'bg-amber-50/80 border-amber-300 shadow-xs'
+              }`}
+            >
+              <div className="space-y-1 max-w-xl">
+                <div className="text-xs font-bold text-slate-800 flex items-center gap-2 flex-wrap">
+                  <FileSignature className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>{formData.preparedBy?.name || proponents[0] || 'Official Proponent'}</span>
+                  <span className="text-[10px] font-medium text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                    {formData.preparedBy?.roleTitle || (formData.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser')}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-relaxed">
+                  {makerSignatureUrl
+                    ? 'Official signature is verified and will be stamped onto Form AP-01 upon submission and publication-quality PDF export.'
+                    : 'A verified digital signature is required before submitting this Activity Proposal. Please register your signature below.'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 shrink-0">
+                {makerSignatureUrl && (
+                  <div className="bg-white p-1.5 rounded-xl border border-emerald-200 shadow-2xs">
+                    <img
+                      src={makerSignatureUrl}
+                      alt="Verified Official Signature"
+                      className="h-10 max-w-[140px] object-contain"
+                    />
+                  </div>
+                )}
+                {onOpenSignatureModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenSignatureModal}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      makerSignatureUrl
+                        ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 shadow-2xs'
+                        : 'bg-amber-600 hover:bg-amber-700 text-white shadow-sm shadow-amber-600/20'
+                    }`}
+                  >
+                    <PenTool className="w-3.5 h-3.5" />
+                    <span>{makerSignatureUrl ? 'Update Signature' : 'Upload / Draw Signature Now'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 16. Signatories & Dynamic Multi-Stage Approval Flow */}
           <div className="space-y-4 pt-2">
             <div className="flex items-center justify-between pb-2 border-b border-slate-100">
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                15. Institutional Signatory & Approval Pipeline
+                16. Signatory & Approval Pipeline
               </h3>
-              <span className="text-[11px] text-slate-500 font-medium">
-                {approvalChain.length} Designated Signatories
-              </span>
+              {formData.fundingSource === 'organization_funds' ? (
+                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                  Direct SAS Approval
+                </span>
+              ) : (
+                <span className="text-[11px] text-slate-500 font-medium">
+                  {approvalChain.length} Designated Signatories
+                </span>
+              )}
             </div>
 
-            <ProposalFlowBuilder
-              approvalChain={approvalChain}
-              onChange={(newChain) => onChange({ approvalChain: newChain })}
-              activeSignatories={signatories}
-              targetAudience={formData.targetAudience}
-              creatorName={formData.createdByName}
-              creatorEmail={formData.createdByEmail}
-              creatorRole={formData.creatorRole}
-              fundingSource={formData.fundingSource}
-            />
+            {formData.fundingSource === 'organization_funds' ? (
+              <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex items-start gap-3.5 shadow-xs">
+                <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800 shrink-0">
+                  <Coins className="w-5 h-5 text-emerald-700" />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                    Organization Internal Funds — Direct SAS Approval
+                  </h4>
+                  <p className="text-xs text-emerald-900/90 leading-relaxed">
+                    This activity is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <ProposalFlowBuilder
+                approvalChain={approvalChain}
+                onChange={(newChain) => onChange({ approvalChain: newChain })}
+                activeSignatories={signatories}
+                targetAudience={formData.targetAudience}
+                creatorName={formData.createdByName}
+                creatorEmail={formData.createdByEmail}
+                creatorRole={formData.creatorRole}
+                fundingSource={formData.fundingSource}
+              />
+            )}
           </div>
         </div>
       </div>

@@ -297,6 +297,10 @@ export default function ApprovalWorkflowSettings() {
       if (step.id === stepId) {
         return { ...step, ...updates };
       }
+      // If setting this step to 'approve', demote any other existing approver in the pipeline to 'endorse'
+      if (updates.actionType === 'approve' && step.actionType === 'approve') {
+        return { ...step, actionType: 'endorse' as const };
+      }
       return step;
     });
     handleUpdateSteps(updated);
@@ -340,7 +344,8 @@ export default function ApprovalWorkflowSettings() {
           : sig.canApprovePar
     ) || sig.role === 'school_president' || sig.role === 'school_administrator';
 
-    const validAction: 'endorse' | 'approve' = canApprove ? 'approve' : 'endorse';
+    const existingApprover = currentSteps.find((s) => s.id !== stepId && s.actionType === 'approve');
+    const validAction: 'endorse' | 'approve' = (canApprove && !existingApprover) ? 'approve' : 'endorse';
 
     handleUpdateStep(stepId, {
       signatoryUid: sig.id,
@@ -358,9 +363,16 @@ export default function ApprovalWorkflowSettings() {
 
   const handleSave = async () => {
     if (!settings) return;
-    if (!hasApprover) {
+    const approverCount = currentSteps.filter((s) => s.actionType === 'approve').length;
+    if (approverCount === 0) {
       toast.error(
-        `Validation Error: Cannot save ${activeMeta.label}. Every workflow MUST include at least one executive Approver ("Approve" action). Please designate an approver first.`
+        `Validation Error: Cannot save ${activeMeta.label}. Every workflow MUST include exactly one executive Approver ("Approve" action). Please designate an approver first.`
+      );
+      return;
+    }
+    if (approverCount > 1) {
+      toast.error(
+        `Validation Error: Cannot save ${activeMeta.label}. Every workflow pipeline must have strictly ONE executive Approver. Current workflow has ${approverCount} approvers.`
       );
       return;
     }
@@ -615,13 +627,19 @@ export default function ApprovalWorkflowSettings() {
                       const selectedSig = signatories.find(
                         (s) => s.id === step.signatoryUid || (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
                       );
-                      const canSignerApprove = selectedSig ? Boolean(
+                      const hasDocApprovalAuthority = selectedSig ? Boolean(
                         activeDoc === 'proposal'
                           ? selectedSig.canApproveProposal
                           : activeDoc === 'liquidation'
                             ? selectedSig.canApproveLiquidation
                             : selectedSig.canApprovePar
                       ) || selectedSig.role === 'school_president' || selectedSig.role === 'school_administrator' : false;
+
+                      const existingApproverInSettings = currentSteps.find((s) => s.actionType === 'approve');
+                      const pipelineAlreadyHasApproverInSettings = Boolean(
+                        existingApproverInSettings && existingApproverInSettings.id !== step.id
+                      );
+                      const canSignerApprove = hasDocApprovalAuthority && !pipelineAlreadyHasApproverInSettings;
 
                       // Find other signatories already assigned in this pipeline so they are excluded from this step's dropdown
                       const otherAssignedIds = new Set(
@@ -713,7 +731,13 @@ export default function ApprovalWorkflowSettings() {
                                     ? 'bg-emerald-700 text-white shadow-xs'
                                     : 'text-gray-600 hover:text-gray-900'
                                   }`}
-                                title={!canSignerApprove ? 'This signatory does not have approval authority for this document type' : 'Designate as executive Approver'}
+                                title={
+                                  !hasDocApprovalAuthority
+                                    ? 'This signatory does not have approval authority for this document type (Endorser Only in directory)'
+                                    : pipelineAlreadyHasApproverInSettings
+                                    ? `Only 1 approver is allowed per pipeline. ${existingApproverInSettings?.signatoryName || 'Another signer'} is already the designated Approver.`
+                                    : 'Designate as executive Approver'
+                                }
                               >
                                 Approve
                               </button>

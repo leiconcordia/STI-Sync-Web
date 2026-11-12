@@ -440,9 +440,9 @@ export default function InstitutionalSignatoryManagement() {
     try {
       await createSignatoryLabel({
         label: validation.formatted,
-        isApproverLabel: labelFormData.isApproverLabel,
-        actionType: labelFormData.isApproverLabel ? 'approve' : 'endorse',
-        description: labelFormData.isApproverLabel ? 'Executive document approval' : 'Institutional endorsement and review',
+        isApproverLabel: false,
+        actionType: 'endorse',
+        description: 'Institutional endorsement and review',
         orderIndex: signatoryLabels.length + 1,
         isActive: true,
       });
@@ -482,9 +482,9 @@ export default function InstitutionalSignatoryManagement() {
     try {
       await updateSignatoryLabel(editingLabel.id, {
         label: validation.formatted,
-        isApproverLabel: editingLabel.isApproverLabel,
-        actionType: editingLabel.isApproverLabel ? 'approve' : 'endorse',
-        description: editingLabel.isApproverLabel ? 'Executive document approval' : 'Institutional endorsement and review',
+        isApproverLabel: false,
+        actionType: 'endorse',
+        description: 'Institutional endorsement and review',
         isActive: editingLabel.isActive,
       });
       toast.success(`Label "${validation.formatted}" updated successfully.`);
@@ -1354,7 +1354,6 @@ export default function InstitutionalSignatoryManagement() {
                 <thead className="bg-gray-50/80 border-b border-gray-200 text-gray-700 uppercase tracking-wider text-[11px] font-bold">
                   <tr>
                     <th className="py-3.5 px-6">Label Type</th>
-                    <th className="py-3.5 px-6">Authority Classification</th>
                     <th className="py-3.5 px-6 text-center">Status</th>
                     <th className="py-3.5 px-6 text-right">Actions</th>
                   </tr>
@@ -1362,13 +1361,13 @@ export default function InstitutionalSignatoryManagement() {
                 <tbody className="divide-y divide-gray-100">
                   {labelsLoading ? (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-gray-400 font-medium">
+                      <td colSpan={3} className="py-8 text-center text-gray-400 font-medium">
                         Loading signatory labels...
                       </td>
                     </tr>
                   ) : filteredLabels.length === 0 ? (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-gray-400 font-medium">
+                      <td colSpan={3} className="py-8 text-center text-gray-400 font-medium">
                         No signatory labels match your search.
                       </td>
                     </tr>
@@ -1380,19 +1379,6 @@ export default function InstitutionalSignatoryManagement() {
                             <Tag className="w-3.5 h-3.5 text-blue-600" />
                             <span>{lbl.label}</span>
                           </span>
-                        </td>
-                        <td className="py-3.5 px-6">
-                          {lbl.isApproverLabel ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold text-[11px] uppercase tracking-wider shadow-2xs">
-                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                              Approver
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-50 text-sky-800 border border-sky-300 font-bold text-[11px] uppercase tracking-wider shadow-2xs">
-                              <FileSignature className="w-3.5 h-3.5 text-sky-600" />
-                              Endorser
-                            </span>
-                          )}
                         </td>
                         <td className="py-3.5 px-6 text-center">
                           <button
@@ -2152,51 +2138,7 @@ export default function InstitutionalSignatoryManagement() {
                 </p>
               </div>
 
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Authority Classification *
-                </label>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setLabelFormData({
-                        ...labelFormData,
-                        isApproverLabel: false,
-                        actionType: 'endorse',
-                      })
-                    }
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
-                      !labelFormData.isApproverLabel
-                        ? 'bg-sky-50 border-sky-400 text-sky-900 ring-2 ring-sky-200 shadow-2xs'
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <FileSignature className="w-4 h-4 text-sky-600" />
-                    <span>Endorser</span>
-                    <span className="text-[10px] font-normal text-gray-500">Vet & Endorse</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setLabelFormData({
-                        ...labelFormData,
-                        isApproverLabel: true,
-                        actionType: 'approve',
-                      })
-                    }
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
-                      labelFormData.isApproverLabel
-                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-2 ring-emerald-200 shadow-2xs'
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>Approver</span>
-                    <span className="text-[10px] font-normal text-gray-500">Executive Approval</span>
-                  </button>
-                </div>
-              </div>
+
 
               <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
                 <button
@@ -2254,51 +2196,7 @@ export default function InstitutionalSignatoryManagement() {
                 </p>
               </div>
 
-              <div>
-                <label className="block font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                  Authority Classification *
-                </label>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setEditingLabel({
-                        ...editingLabel,
-                        isApproverLabel: false,
-                        actionType: 'endorse',
-                      })
-                    }
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
-                      !editingLabel.isApproverLabel
-                        ? 'bg-sky-50 border-sky-400 text-sky-900 ring-2 ring-sky-200 shadow-2xs'
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <FileSignature className="w-4 h-4 text-sky-600" />
-                    <span>Endorser</span>
-                    <span className="text-[10px] font-normal text-gray-500">Vet & Endorse</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setEditingLabel({
-                        ...editingLabel,
-                        isApproverLabel: true,
-                        actionType: 'approve',
-                      })
-                    }
-                    className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex flex-col items-center gap-1 ${
-                      editingLabel.isApproverLabel
-                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900 ring-2 ring-emerald-200 shadow-2xs'
-                        : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
-                    }`}
-                  >
-                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>Approver</span>
-                    <span className="text-[10px] font-normal text-gray-500">Executive Approval</span>
-                  </button>
-                </div>
-              </div>
+
 
               <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
                 <button

@@ -33,6 +33,7 @@ import {
 } from '../../services/historical-budget.service';
 import { getProposalById } from '../../services/proposal.service';
 import type { ProposalFormData } from '../../types/proposal.types';
+import { formatDateLong } from '../../utils/proposal-calculations';
 import {
   AIAssistButton,
   AISuggestionModal,
@@ -48,12 +49,21 @@ interface Step1Props {
   formData: ProposalFormData;
   onChange: (updates: Partial<ProposalFormData>) => void;
   errors?: Record<string, string>;
+  currentUser?: {
+    uid?: string;
+    name?: string;
+    email?: string;
+    role?: string;
+    isAdviser?: boolean;
+    organizationId?: string | null;
+    organizationName?: string | null;
+    signatureUrl?: string | null;
+  };
 }
 
-export default function Step1GeneralInfo({ formData, onChange, errors = {} }: Step1Props) {
+export default function Step1GeneralInfo({ formData, onChange, errors = {}, currentUser = {} }: Step1Props) {
   const { data: organizations = [] } = useOrganizationStream();
   const [organizerInput, setOrganizerInput] = useState('');
-  const [proponentInput, setProponentInput] = useState('');
 
   // AI Assistant Modal State
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -172,47 +182,73 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
   }, [organizations, formData.hostingOrgId, formData.organizationId]);
 
   const resolvedAdviserName = useMemo(() => {
-    if (matchedOrgDoc?.adviser?.name) return matchedOrgDoc.adviser.name;
-    if ((matchedOrgDoc as any)?.adviserName) return (matchedOrgDoc as any).adviserName;
+    // 1. If currentUser is adviser or creator role is adviser, use their name
+    if (currentUser?.isAdviser || currentUser?.role === 'adviser' || formData.creatorRole === 'adviser') {
+      return (currentUser?.name || formData.createdByName || matchedOrgDoc?.adviser?.name || (matchedOrgDoc as any)?.adviserName || '').trim();
+    }
+    // 2. Matched Org document adviser
+    if (matchedOrgDoc?.adviser?.name) return matchedOrgDoc.adviser.name.trim();
+    if ((matchedOrgDoc as any)?.adviserName) return (matchedOrgDoc as any).adviserName.trim();
+    // 3. Fallback to existing proponent if it's already a non-generic name
+    if (formData.proponents && formData.proponents.length > 0 && formData.proponents[0] !== 'Organization Adviser') {
+      return formData.proponents[0].trim();
+    }
     return '';
-  }, [matchedOrgDoc]);
+  }, [matchedOrgDoc, currentUser, formData.creatorRole, formData.createdByName, formData.proponents]);
 
   const drafterName = useMemo(() => {
     return (formData.createdByName || '').trim();
   }, [formData.createdByName]);
 
-  // Clean DB proponents: contains Adviser at index 0 and any extra co-proponents.
-  // The drafter is NEVER included in formData.proponents in the database!
+  const isDrafterSameAsAdviser = useMemo(() => {
+    if (!drafterName) return false;
+    const adviser = (resolvedAdviserName || (currentUser?.isAdviser ? currentUser?.name : '') || (formData.proponents && formData.proponents[0]) || '').trim();
+    if (!adviser) return false;
+    return drafterName.toLowerCase() === adviser.toLowerCase();
+  }, [drafterName, resolvedAdviserName, currentUser, formData.proponents]);
+
+  const isAdviserCreator = Boolean(
+    currentUser?.isAdviser ||
+    currentUser?.role === 'adviser' ||
+    formData.creatorRole === 'adviser' ||
+    isDrafterSameAsAdviser
+  );
+
+  const showStudentDrafter = Boolean(
+    drafterName &&
+    !isDrafterSameAsAdviser &&
+    !isAdviserCreator
+  );
+
+  // Clean DB proponents: strictly locked to official Maker (Adviser for Org, SAS Admin for SAS)
+  // Drafter is shown in UI only and NEVER stored in proponents array!
   const dbProponents = useMemo(() => {
-    const raw = formData.proponents && formData.proponents.length > 0 ? formData.proponents : [];
     if (isOfficerProp) {
       const adviser = resolvedAdviserName || 'Organization Adviser';
-      const cleanWithoutDrafter = raw.filter((p) => p && p.trim() !== drafterName);
-      if (cleanWithoutDrafter.length === 0) {
-        return [adviser];
-      }
-      if (cleanWithoutDrafter[0] !== adviser && resolvedAdviserName) {
-        return [adviser, ...cleanWithoutDrafter.filter((p) => p !== adviser)];
-      }
-      return cleanWithoutDrafter;
+      return [adviser];
     }
-    return raw.length > 0 ? raw : [formData.createdByName || 'Student Affairs & Services'];
-  }, [formData.proponents, isOfficerProp, resolvedAdviserName, drafterName, formData.createdByName]);
+    const raw = formData.proponents && formData.proponents.length > 0 ? formData.proponents : [];
+    return raw.length > 0 ? [raw[0]] : [formData.createdByName || 'Student Affairs & Services'];
+  }, [formData.proponents, isOfficerProp, resolvedAdviserName, formData.createdByName]);
 
-  // Synchronize formData.proponents to ensure drafter is NEVER stored in proponents array
+  // Synchronize formData.proponents to ensure exactly the designated maker is stored
   useEffect(() => {
     if (isOfficerProp) {
+      const adviser = resolvedAdviserName || (currentUser?.isAdviser ? currentUser?.name : null) || 'Organization Adviser';
       const currentList = formData.proponents || [];
-      const adviser = resolvedAdviserName || (currentList[0] && currentList[0] !== drafterName ? currentList[0] : 'Organization Adviser');
-      const cleanWithoutDrafter = currentList.filter((p) => p && p.trim() !== drafterName);
-      const isClean = cleanWithoutDrafter.length > 0 && cleanWithoutDrafter[0] === adviser && !currentList.includes(drafterName);
+      const isClean = currentList.length === 1 && currentList[0] === adviser;
 
-      if (!isClean) {
-        const others = cleanWithoutDrafter.filter((p) => p !== adviser);
-        onChange({ proponents: [adviser, ...others] });
+      if (!isClean && adviser !== 'Organization Adviser') {
+        onChange({ proponents: [adviser] });
+      }
+    } else {
+      const currentList = formData.proponents || [];
+      const defaultMaker = formData.createdByName || 'Student Affairs & Services';
+      if (currentList.length === 0 || (currentList.length > 1 && currentList[0] === defaultMaker)) {
+        onChange({ proponents: [defaultMaker] });
       }
     }
-  }, [isOfficerProp, resolvedAdviserName, drafterName, formData.proponents, onChange]);
+  }, [isOfficerProp, resolvedAdviserName, currentUser, formData.createdByName, formData.proponents, onChange]);
 
   const addOrganizer = (org: string) => {
     const trimmed = org.trim();
@@ -235,43 +271,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     const nextList = organizers.filter((_, idx) => idx !== indexToRemove);
     onChange({
       organizers: nextList,
-    });
-  };
-
-  const addProponent = (name: string) => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    if (trimmed === drafterName) {
-      toast.info('You are already recorded as the Student Drafter on this proposal.');
-      setProponentInput('');
-      return;
-    }
-    if (dbProponents.includes(trimmed)) {
-      toast.info('This person is already listed as a proponent.');
-      setProponentInput('');
-      return;
-    }
-    onChange({ proponents: [...dbProponents, trimmed] });
-    setProponentInput('');
-  };
-
-  const removeAdditionalProponent = (nameToRemove: string) => {
-    const updated = dbProponents.filter((p) => p !== nameToRemove);
-    onChange({ proponents: updated });
-  };
-
-  const removeProponent = (indexToRemove: number) => {
-    if (isOfficerProp && indexToRemove === 0) {
-      toast.info('The Organization Adviser is the designated official maker and cannot be removed.');
-      return;
-    }
-    if (!isOfficerProp && indexToRemove === 0) {
-      toast.info('Primary maker cannot be removed.');
-      return;
-    }
-    if (dbProponents.length <= 1) return;
-    onChange({
-      proponents: dbProponents.filter((_, idx) => idx !== indexToRemove),
     });
   };
 
@@ -499,10 +498,47 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
     await action();
   };
 
+  const handleEnhanceDescriptionWithAI = async () => {
+    if (activeGeneratingField) return;
+    const raw = formData.description?.trim() || '';
+    if (!raw) {
+      handleCreateDescriptionWithAI();
+      return;
+    }
+    setAiTargetField('description');
+    setAiModalTitle('Enhance Description with AI');
+    setAiModalDesc('Review your current description and type refinement instructions below (or click Generate to polish):');
+    setAiOriginalText(raw);
+    setAiSuggestionText('');
+    setAiModalMode('text');
+    setAiModalOpen(true);
+
+    try {
+      setActiveGeneratingField('description');
+      const polished = await polishGrammar(raw);
+      if (polished) {
+        setAiSuggestionText(polished);
+      }
+    } catch (err) {
+      console.warn('Initial polish error:', err);
+    } finally {
+      setActiveGeneratingField(null);
+    }
+  };
+
+  const handleDescriptionAIClick = () => {
+    if (activeGeneratingField) return;
+    if (formData.description?.trim()) {
+      handleEnhanceDescriptionWithAI();
+    } else {
+      handleCreateDescriptionWithAI();
+    }
+  };
+
   const handleCreateDescriptionWithAI = () => {
     if (activeGeneratingField) return;
     setAiTargetField('description');
-    setAiModalTitle('Generate Description from Prompt');
+    setAiModalTitle('Generate Description with AI');
     setAiModalDesc('Prompt what this activity is about, and AI will generate 1 concise rationale (60–90 words):');
     setAiOriginalText(formData.description || '');
     setAiSuggestionText('');
@@ -529,9 +565,13 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
           toast.info('No titles could be generated from that prompt. Please try different keywords.');
         }
       } else if (aiTargetField === 'description') {
+        const currentDesc = formData.description?.trim();
+        const effectivePrompt = currentDesc
+          ? `Original Description:\n"${currentDesc}"\n\nEnhancement / Custom Instructions:\n${prompt}`
+          : prompt;
         const desc = await createDescriptionFromPrompt(
           formData.title || '',
-          prompt,
+          effectivePrompt,
           formData.organizers,
           formData.targetAudience?.academicLevels?.join(', ')
         );
@@ -567,21 +607,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
 
   return (
     <div className="space-y-6">
-      {/* 15-Day Policy Rule Reminder Banner */}
-      <div className="bg-amber-50/80 border border-amber-200/90 rounded-2xl p-4 flex items-start gap-3 shadow-xs">
-        <div className="w-8 h-8 rounded-xl bg-amber-400/20 text-amber-800 flex items-center justify-center flex-shrink-0 mt-0.5">
-          <AlertTriangle className="w-4 h-4" />
-        </div>
-        <div>
-          <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
-            Notice: 15-Day Policy Requirement
-          </h4>
-          <p className="text-xs text-amber-800 mt-0.5 leading-relaxed font-medium italic">
-            "Note: This proposal must be submitted to the Administrator at least 15 calendar days before the start of the initial task."
-          </p>
-        </div>
-      </div>
-
       {/* Meta Grid: Reference & Submission Date */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
@@ -606,7 +631,7 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
             <input
               type="text"
               value={
-                formData.submissionDate ||
+                formatDateLong(formData.submissionDate) ||
                 new Intl.DateTimeFormat('en-US', {
                   month: 'long',
                   day: 'numeric',
@@ -622,115 +647,36 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
         </div>
       </div>
 
-      {/* Proposed / Submitted By (Proponent/s) */}
+      {/* Proposed / Submitted By (Proponent/s) - Strictly Read-Only Single Maker */}
       <div>
         <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
-          <span>Proposed / Submitted By (Proponent/s) <span className="text-red-500">*</span></span>
+          <span>Proposed / Submitted By (Proponent/s)</span>
           <span className="text-[10px] text-gray-400 font-normal">
-            {isOfficerProp
-              ? '(Adviser is official maker • officers draft and co-propose)'
-              : '(maker defaults automatically • can add co-proponents)'}
+            (read-only • automatically assigned maker)
           </span>
         </label>
         
-        {/* Active Proponents Badges */}
-        <div className="flex flex-wrap gap-2 mb-2.5">
+        {/* Active Proponent Badges (Read-Only) */}
+        <div className="flex flex-wrap gap-2">
           {isOfficerProp ? (
-            <>
-              {/* 1. Official Adviser Maker (UI + DB) - NO REMOVE BUTTON */}
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-blue-50 border border-blue-200 text-[#001A4D] shadow-2xs">
-                <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                <span>{resolvedAdviserName || (dbProponents && dbProponents[0]) || 'Organization Adviser'}</span>
-                <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
-                  Adviser / Maker
-                </span>
+            /* Official Adviser Maker (UI + DB) - Read-Only */
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-blue-50 border border-blue-200 text-[#001A4D] shadow-2xs">
+              <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              <span>{resolvedAdviserName || (currentUser?.isAdviser ? currentUser?.name : null) || (dbProponents && dbProponents[0]) || 'Organization Adviser'}</span>
+              <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
+                Adviser / Maker
               </span>
-
-              {/* 2. Student Drafter (UI ONLY • NEVER SENT TO DB • NO REMOVE BUTTON) */}
-              {drafterName && (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-950 shadow-2xs ring-1 ring-amber-300/60">
-                  <UserCheck className="w-3.5 h-3.5 text-amber-600" />
-                  <span>{drafterName}</span>
-                  <span className="text-[9px] uppercase tracking-wider font-bold bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded ml-0.5">
-                    Student Drafter
-                  </span>
-                </span>
-              )}
-
-              {/* 3. Additional Co-Proponents (UI + DB) - Has remove button */}
-              {dbProponents.slice(1).map((prop, idx) => (
-                <span
-                  key={`co-prop-${idx}`}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-slate-100 border border-slate-200 text-slate-800 shadow-2xs"
-                >
-                  <UserCheck className="w-3.5 h-3.5 text-slate-500" />
-                  <span>{prop}</span>
-                  <button
-                    type="button"
-                    onClick={() => removeAdditionalProponent(prop)}
-                    className="hover:text-red-600 transition-colors ml-0.5 cursor-pointer"
-                    title="Remove co-proponent"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </span>
-              ))}
-            </>
+            </span>
           ) : (
-            /* Institutional / SAS Admin Mode */
-            dbProponents.map((prop, index) => (
-              <span
-                key={index}
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold shadow-2xs ${
-                  index === 0
-                    ? 'bg-blue-50 border border-blue-200 text-[#001A4D]'
-                    : 'bg-slate-100 border border-slate-200 text-slate-800'
-                }`}
-              >
-                <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                <span>{prop}</span>
-                {index === 0 ? (
-                  <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
-                    Maker
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => removeAdditionalProponent(prop)}
-                    className="hover:text-red-600 transition-colors ml-0.5 cursor-pointer"
-                    title="Remove co-proponent"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
+            /* Institutional / SAS Admin Mode - Read-Only */
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-blue-50 border border-blue-200 text-[#001A4D] shadow-2xs">
+              <UserCheck className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              <span>{dbProponents[0] || formData.createdByName || 'Student Affairs & Services'}</span>
+              <span className="text-[9px] uppercase tracking-wider font-bold bg-[#FFD41C] text-[#001A4D] px-1.5 py-0.5 rounded ml-0.5">
+                Maker
               </span>
-            ))
+            </span>
           )}
-        </div>
-
-        {/* Proponent Input */}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={proponentInput}
-            onChange={(e) => setProponentInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addProponent(proponentInput);
-              }
-            }}
-            placeholder="Add fellow co-proponent or student officer name..."
-            className="flex-1 px-3.5 py-2 bg-white border border-gray-300 rounded-xl text-xs text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
-          />
-          <button
-            type="button"
-            onClick={() => addProponent(proponentInput)}
-            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add
-          </button>
         </div>
       </div>
 
@@ -950,36 +896,9 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {} }: St
           </label>
           <AIAssistButton
             label={hasDescInput ? 'Enhance Description' : 'Generate with AI'}
+            onClick={handleDescriptionAIClick}
             isLoading={activeGeneratingField === 'description'}
             disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'description')}
-            options={
-              hasDescInput
-                ? [
-                    {
-                      id: 'polish-desc',
-                      label: 'Enhance & Polish Grammar',
-                      description: 'Proofread and elevate vocabulary to STI standard without changing meaning',
-                      icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                      onClick: handlePolishDescriptionAction,
-                    },
-                    {
-                      id: 'expand-desc',
-                      label: 'Expand Notes (1 Compact Paragraph)',
-                      description: 'Flesh out rough notes into a concise 60-90 word rationale',
-                      icon: <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                      onClick: handleExpandDescriptionAction,
-                    },
-                  ]
-                : [
-                    {
-                      id: 'generate-desc',
-                      label: 'Generate Description from Prompt',
-                      description: 'Prompt what the event is about first to generate a concise rationale',
-                      icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                      onClick: handleCreateDescriptionWithAI,
-                    },
-                  ]
-            }
           />
         </div>
         <textarea

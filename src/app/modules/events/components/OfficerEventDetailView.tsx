@@ -2638,6 +2638,7 @@ export default function OfficerEventDetailView({
           userUid={profile?.uid || 'user'}
           userName={profile?.studentName || profile?.displayName || 'Officer'}
           userRole="officer"
+          userSignatureUrl={profile?.signatureUrl || null}
           isAdviser={Boolean(profile?.isAdviser)}
           initialEventId={event.id}
           initialEvent={event}

@@ -5,7 +5,7 @@
  * and Club Officers to compare revised documents (AP, FL, and PAR) side-by-side.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   GitCompare,
@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import type { RevisionHistoryEntry, FieldDiffEntry } from '../types/approval.types';
 import { diffAnyDocument } from '../utils/document-diff-engine';
+import { fetchDocumentRevisions } from '../services/revision-history.service';
 
 interface RevisionDiffViewerModalProps {
   isOpen: boolean;
@@ -51,12 +52,49 @@ export default function RevisionDiffViewerModal({
   const [selectedSnapshotIdx, setSelectedSnapshotIdx] = useState<number>(0);
   const [activeSectionFilter, setActiveSectionFilter] = useState<string>('all');
   const [showOnlyChanges, setShowOnlyChanges] = useState<boolean>(true);
+  const [subcollectionRevisions, setSubcollectionRevisions] = useState<RevisionHistoryEntry[]>([]);
 
-  // Normalize historical snapshot list
+  // Fetch revisions from dedicated subcollection when modal opens
+  useEffect(() => {
+    if (!isOpen || !currentDocument?.id) return;
+    const colName =
+      documentType === 'PAR'
+        ? 'post_activity_reports'
+        : documentType === 'FL'
+        ? 'liquidations'
+        : 'activities';
+
+    fetchDocumentRevisions(colName, currentDocument.id)
+      .then((revs) => {
+        if (revs && revs.length > 0) {
+          const mapped: RevisionHistoryEntry[] = revs.map((r) => ({
+            version: r.version,
+            versionLabel: r.versionLabel || `v${r.version}.0`,
+            submittedAt: r.resubmittedAt || r.archivedAt,
+            submittedBy: r.resubmittedBy || 'Submitter',
+            returnedAt: r.returnedAt,
+            returnedBy: r.returnedByName || r.returnedBy || 'Reviewer',
+            returnRemarks: r.returnRemarks || r.adviserRemarks || 'Revision requested.',
+            dataSnapshot: r.dataSnapshot,
+          }));
+          setSubcollectionRevisions(mapped);
+        }
+      })
+      .catch((e) => console.warn('[RevisionDiffViewerModal] Error loading subcollection revisions:', e));
+  }, [isOpen, currentDocument?.id, documentType]);
+
+  // Normalize historical snapshot list (combining subcollections and embedded fallback)
   const historyEntries: RevisionHistoryEntry[] = useMemo(() => {
     const list: RevisionHistoryEntry[] = [];
     const rawVersions = Array.isArray(versionHistory) ? versionHistory : [];
     const rawRevisions = Array.isArray(revisionHistory) ? revisionHistory : [];
+
+    // 1. Add subcollection revisions first (highest fidelity)
+    subcollectionRevisions.forEach((subRev) => {
+      if (!list.some((item) => item.version === subRev.version)) {
+        list.push(subRev);
+      }
+    });
 
     rawVersions.forEach((v: any, idx: number) => {
       const snap =

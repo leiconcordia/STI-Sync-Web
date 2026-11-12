@@ -272,8 +272,9 @@ export function buildDynamicApprovalChain(
     return 0;
   });
 
-  executiveApprovers.forEach((sig) => {
+  executiveApprovers.forEach((sig, idx) => {
     usedSignatoryIds.add(sig.id);
+    const isFinalApprover = idx === executiveApprovers.length - 1;
     chain.push({
       id: `step_${stepIndex}`,
       step: stepIndex++,
@@ -281,8 +282,8 @@ export function buildDynamicApprovalChain(
       stageName: execStageName,
       role: sig.role,
       roleTitle: sig.roleTitle || (sig.role === 'school_president' ? 'School President' : 'School Administrator'),
-      actionType: sig.role === 'school_president' ? 'approve' : resolveActionType(sig.actionType, 'approve'),
-      signatoryLabel: sig.defaultSignatoryLabel || resolveSignatoryLabel(sig as any, 'proposal', true),
+      actionType: isFinalApprover ? 'approve' : 'endorse',
+      signatoryLabel: isFinalApprover ? 'Approved by:' : (sig.defaultSignatoryLabel || resolveSignatoryLabel(sig as any, 'proposal', false)),
       signatoryUid: sig.id,
       signatoryName: sig.name,
       signatoryEmail: sig.email,

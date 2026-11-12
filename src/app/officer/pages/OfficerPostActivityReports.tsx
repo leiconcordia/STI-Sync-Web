@@ -695,6 +695,7 @@ export default function OfficerPostActivityReports() {
           isAdviser: Boolean(profile?.isAdviser),
           organizationId: orgId,
           organizationName: orgName,
+          signatureUrl: profile?.signatureUrl || null,
         }}
         isSasAdmin={false}
       />

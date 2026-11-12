@@ -29,6 +29,7 @@ import {
   Award,
   Check,
   Lock,
+  Coins,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
@@ -40,6 +41,11 @@ import {
   saveOrSubmitPAR,
   generateDefaultPARSignatoryChain,
 } from '../services/par.service';
+import {
+  resolveUserSignature,
+  getFastCachedSignature,
+  syncUserSignatureAcrossProfiles,
+} from '../../signatories';
 import { computeEventAttendanceSummary } from '../services/par-attendance-bridge.service';
 import PARProposalGuidanceDrawer from './PARProposalGuidanceDrawer';
 import type {
@@ -223,27 +229,34 @@ export default function PostActivityReportWizardModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingEventData, setIsLoadingEventData] = useState(false);
   const [resubmissionNote, setResubmissionNote] = useState('');
-  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(
-    (currentUser as any)?.signatureUrl || null
-  );
+  const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(() => {
+    return getFastCachedSignature(currentUser) || null;
+  });
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
 
-  // Sync maker signature from session if not directly passed
+  // Sync maker signature from all profile sources if not directly passed
   useEffect(() => {
-    if (!makerSignatureUrl) {
-      try {
-        const raw = localStorage.getItem('sti_sync_officer_session');
-        if (raw) {
-          const sess = JSON.parse(raw);
-          if (sess?.signatureUrl) {
-            setMakerSignatureUrl(sess.signatureUrl);
-          }
-        }
-      } catch {
-        // ignore
-      }
+    let isCancelled = false;
+    const fastSig = getFastCachedSignature(currentUser);
+    if (fastSig && !makerSignatureUrl) {
+      setMakerSignatureUrl(fastSig);
     }
-  }, [makerSignatureUrl]);
+
+    resolveUserSignature({
+      uid: currentUser?.uid,
+      email: currentUser?.email,
+      role: currentUser?.role,
+      profile: currentUser,
+    }).then((sig) => {
+      if (!isCancelled && sig) {
+        setMakerSignatureUrl(sig);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser?.uid, currentUser?.email, currentUser?.role, (currentUser as any)?.signatureUrl]);
 
   const isReturnedReport = Boolean(
     initialReport?.status === 'returned' ||
@@ -1009,7 +1022,8 @@ Output ONLY the paragraph text.
       toast.error('Photo Documentation: Please attach at least 1 event documentation photo.');
       return false;
     }
-    if (!approvalChain || approvalChain.length === 0) {
+    const isOrgFunds = (selectedEvent as any)?.fundingSource === 'organization_funds';
+    if (!isOrgFunds && (!approvalChain || approvalChain.length === 0)) {
       setValidationErrors(errors);
       setActiveTab('photos_signatories');
       toast.error('Please ensure the institutional signatory pipeline is configured.');
@@ -1148,7 +1162,24 @@ Output ONLY the paragraph text.
         },
 
         photos,
-        approvalChain,
+        approvalChain: isOrgFunds
+          ? [
+              {
+                id: 'step_sas_approval',
+                step: 1,
+                stageIndex: 1,
+                stageName: 'SAS Approval',
+                role: 'sas_head' as const,
+                roleTitle: 'Student Affairs & Services Head',
+                actionType: 'approve' as const,
+                signatoryUid: 'sas_admin',
+                signatoryName: 'Riselle Mae B. Lucanas',
+                signatoryEmail: 'sao@ormoc.sti.edu.ph',
+                department: 'Student Affairs & Services',
+                status: 'current' as const,
+              },
+            ]
+          : approvalChain,
         preparedBy: {
           name: currentUser.name,
           roleTitle: isSasAdmin ? 'SAS Administrator' : 'Organization Adviser',
@@ -2074,14 +2105,30 @@ Output ONLY the paragraph text.
               </div>
 
               {/* Dynamic Institutional Signatory Pipeline Builder */}
-              <PARFlowBuilder
-                approvalChain={approvalChain}
-                onChange={setApprovalChain}
-                activeSignatories={activeSignatories}
-                orgId={selectedEvent?.hostingOrgId || currentUser.organizationId}
-                orgName={selectedEvent?.hostingOrgName || (isSasAdmin ? 'Student Affairs Services' : undefined)}
-                isSasCreator={isSasAdmin || (selectedEvent ? isSasInstitutionalActivity(selectedEvent) : false)}
-              />
+              {isOrgFunds ? (
+                <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex items-start gap-3.5 shadow-xs">
+                  <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800 shrink-0">
+                    <Coins className="w-5 h-5 text-emerald-700" />
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                      Organization Internal Funds — Direct SAS Approval
+                    </h4>
+                    <p className="text-xs text-emerald-900/90 leading-relaxed">
+                      This activity is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This report routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <PARFlowBuilder
+                  approvalChain={approvalChain}
+                  onChange={setApprovalChain}
+                  activeSignatories={activeSignatories}
+                  orgId={selectedEvent?.hostingOrgId || currentUser.organizationId}
+                  orgName={selectedEvent?.hostingOrgName || (isSasAdmin ? 'Student Affairs Services' : undefined)}
+                  isSasCreator={isSasAdmin || (selectedEvent ? isSasInstitutionalActivity(selectedEvent) : false)}
+                />
+              )}
 
               {/* Officer Revision Summary Card (Mandatory on Resubmission) */}
               {isReturnedReport && (
@@ -2218,6 +2265,13 @@ Output ONLY the paragraph text.
           currentSignatureUrl={makerSignatureUrl}
           onSignatureSaved={(newUrl) => {
             setMakerSignatureUrl(newUrl);
+            syncUserSignatureAcrossProfiles({
+              uid: currentUser?.uid,
+              email: currentUser?.email,
+              name: currentUser?.name,
+              signatureUrl: newUrl,
+              role: currentUser?.role,
+            });
             const raw = localStorage.getItem('sti_sync_officer_session');
             if (raw) {
               try {

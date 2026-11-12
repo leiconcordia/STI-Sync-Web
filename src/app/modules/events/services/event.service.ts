@@ -13,6 +13,7 @@ import {
   writeBatch,
   Timestamp,
   arrayUnion,
+  deleteField,
 } from 'firebase/firestore';
 
 import { db } from '../../../../services/firebase';
@@ -32,7 +33,9 @@ import {
 } from '../../finance/services/finance.service';
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
+import { archiveDocumentRevision } from '../../workflow/services/revision-history.service';
 import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
+import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
@@ -702,7 +705,7 @@ export const rejectEvent = async (
     }
   }
 
-  const returnedSnapshot = buildEventSnapshot(currentData);
+  const returnedSnapshot = sanitizeCleanDocumentSnapshot(buildEventSnapshot(currentData));
 
   const historyEntry: EventProposalHistoryLog = cleanUndefined({
     id: `log-${Date.now()}`,
@@ -772,7 +775,7 @@ export const returnEvent = async (
     }
   }
 
-  const returnedSnapshot = buildEventSnapshot(currentData);
+  const returnedSnapshot = sanitizeCleanDocumentSnapshot(buildEventSnapshot(currentData));
 
   // Canonicalize step revision remarks to prevent duplicate aliases ('2', 'step-2', etc.)
   const canonicalStepRemarks: Record<string, string> = {};
@@ -836,12 +839,33 @@ export const returnEvent = async (
     adviserRemarks: remarks?.trim() || null,
     stepRevisionRemarks: canonicalStepRemarks,
     returnedSnapshot,
-    previousSnapshot: returnedSnapshot,
-    dataSnapshot: returnedSnapshot,
+    previousSnapshot: deleteField(),
+    dataSnapshot: deleteField(),
+    versionHistory: deleteField(),
     approvalChain: updatedChain || undefined,
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
   });
+
+  // Archive snapshot to subcollection (unlimited revisions without 1MB limit)
+  try {
+    const revPayload = {
+      version: Number(currentData?.version || 1),
+      versionLabel: `v${Number(currentData?.version || 1)}.0`,
+      dataSnapshot: returnedSnapshot,
+      returnFlags: flags || [],
+      stepRevisionRemarks: canonicalStepRemarks,
+      returnRemarks: remarks?.trim() || 'Returned for revision.',
+      returnedBy: adminUserId,
+      returnedByName: adminUserName || 'Adviser Reviewer',
+      returnedAt: new Date().toISOString(),
+      archivedAt: new Date().toISOString(),
+    };
+    await archiveDocumentRevision('activities', eventId, revPayload);
+    await archiveDocumentRevision('events', eventId, revPayload);
+  } catch (archErr) {
+    console.warn('[returnEvent] Subcollection archival warning:', archErr);
+  }
 
   if (!snap.exists() && currentData) {
     await setDoc(ref, { ...currentData, ...updatePayload }, { merge: true });

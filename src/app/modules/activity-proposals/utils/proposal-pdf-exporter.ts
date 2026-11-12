@@ -27,6 +27,7 @@ import { jsPDF } from 'jspdf';
 import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import type { ActivityProposal, ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import { STI_LOGO_BASE64 } from './sti-logo-asset';
+import { formatDateLong } from './proposal-calculations';
 
 export interface ExportProposalPdfOptions {
   watermarkStatus?: boolean;
@@ -104,14 +105,14 @@ function formatDateAndTime(proposal: Partial<ActivityProposal>): string {
   if (proposal.sessions && proposal.sessions.length > 0) {
     return proposal.sessions
       .map((s) => {
-        const d = s.date || '';
+        const d = s.date ? formatDateLong(s.date) : '';
         const t = s.startTime && s.endTime ? ` (${formatTime12(s.startTime)} – ${formatTime12(s.endTime)})` : '';
         return `${d}${t}`.trim();
       })
       .filter(Boolean)
       .join('\n');
   }
-  const d = proposal.date || '';
+  const d = proposal.date ? formatDateLong(proposal.date) : '';
   const t = proposal.startTime && proposal.endTime ? ` (${formatTime12(proposal.startTime)} – ${formatTime12(proposal.endTime)})` : '';
   return `${d}${t}`.trim() || 'To be announced';
 }
@@ -168,13 +169,7 @@ export async function exportActivityProposalPDF(
     let y = marginT;
 
     // Formatting date
-    const submissionDate =
-      proposal.submissionDate ||
-      new Intl.DateTimeFormat('en-US', {
-        month: 'long',
-        day: 'numeric',
-        year: 'numeric',
-      }).format(new Date());
+    const submissionDate = formatDateLong(proposal.submissionDate || new Date());
 
     const referenceNo = proposal.referenceNo || 'AP-2026-PENDING';
 
@@ -460,7 +455,7 @@ export async function exportActivityProposalPDF(
       tasks.forEach((t) => {
         const taskName = (t.taskName || '').trim();
         const person = (t.assignedPerson || '').trim();
-        const date = (t.completionDate || '').trim();
+        const date = t.completionDate ? formatDateLong(t.completionDate) : '—';
 
         const tLines = doc.splitTextToSize(taskName || '—', colTaskW - 4);
         const pLines = doc.splitTextToSize(person || '—', colPersonW - 4);

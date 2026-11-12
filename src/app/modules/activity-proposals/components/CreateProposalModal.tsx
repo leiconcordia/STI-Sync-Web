@@ -31,6 +31,8 @@ import {
 import { toast } from 'sonner';
 import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
 import { format, addDays } from 'date-fns';
+import { formatDateLong } from '../utils/proposal-calculations';
+import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
 import type {
   ProposalFormData,
@@ -42,6 +44,11 @@ import {
   generateProposalReferenceNumber,
 } from '../services/proposal.service';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import {
+  resolveUserSignature,
+  getFastCachedSignature,
+  syncUserSignatureAcrossProfiles,
+} from '../../signatories';
 import { canEditProposal } from '../../events/utils/event-lifecycle.utils';
 import { stripSasPhrases } from '../../events/utils/organization-display.utils';
 import { useOrganizationStream } from '../../organizations/hooks/useOrganizationStream';
@@ -233,11 +240,27 @@ export default function CreateProposalModal({
 
   const defaultOrgId = currentUser.organizationId || (isOfficerProp ? 'student_org' : 'sas');
 
+  const isAdviserMaker = Boolean(
+    currentUser.isAdviser ||
+    currentUser.role === 'adviser' ||
+    (matchedOrg?.adviser?.email && currentUser.email && matchedOrg.adviser.email.trim().toLowerCase() === currentUser.email.trim().toLowerCase()) ||
+    (matchedOrg?.adviser?.name && currentUser.name && matchedOrg.adviser.name.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === currentUser.name.trim().toLowerCase().replace(/[^a-z0-9]/g, '')) ||
+    (currentUser.email && allOrgs.some((o: any) => o.adviser?.email && o.adviser.email.trim().toLowerCase() === currentUser.email.trim().toLowerCase())) ||
+    (currentUser.name && allOrgs.some((o: any) => {
+      const advName = (o.adviser?.name || (o as any).adviserName || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      const curName = (currentUser.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      return advName && curName && (advName === curName || advName.includes(curName) || curName.includes(advName));
+    }))
+  );
+
   const resolvedAdviserName = useMemo(() => {
-    if (matchedOrg?.adviser?.name) return matchedOrg.adviser.name;
-    if ((matchedOrg as any)?.adviserName) return (matchedOrg as any).adviserName;
+    if (isAdviserMaker) {
+      return (currentUser.name || matchedOrg?.adviser?.name || (matchedOrg as any)?.adviserName || '').trim();
+    }
+    if (matchedOrg?.adviser?.name) return matchedOrg.adviser.name.trim();
+    if ((matchedOrg as any)?.adviserName) return (matchedOrg as any).adviserName.trim();
     return '';
-  }, [matchedOrg]);
+  }, [matchedOrg, isAdviserMaker, currentUser.name]);
 
   const [currentStep, setCurrentStep] = useState(1);
   const [formData, setFormData] = useState<ProposalFormData>(() => ({
@@ -248,12 +271,14 @@ export default function CreateProposalModal({
     hostingOrgId: defaultOrgId,
     organizationName: isOfficerProp ? resolvedOrgName : '',
     isOfficerProposal: isOfficerProp,
-    creatorRole: currentUser.role || (isOfficerProp ? 'officer' : 'sas_admin'),
+    creatorRole: isAdviserMaker
+      ? 'adviser'
+      : (currentUser.role || (isOfficerProp ? 'officer' : 'sas_admin')),
     createdByName: currentUser.name || '',
     createdByEmail: currentUser.email || '',
     fundingSource: isOfficerProp ? 'organization_funds' : 'school_budget',
     proponents: isOfficerProp
-      ? [resolvedAdviserName || 'Organization Adviser']
+      ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : null) || 'Organization Adviser']
       : [currentUser.name || 'Student Affairs & Services'],
     objectives: [''],
     successIndicators: [''],
@@ -318,23 +343,55 @@ export default function CreateProposalModal({
 
   // Maker Signature State (Adviser / Submitter)
   const [makerSignatureUrl, setMakerSignatureUrl] = useState<string>(() => {
-    if (currentUser?.signatureUrl) return currentUser.signatureUrl;
-    try {
-      const raw = localStorage.getItem('sti_sync_officer_session');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed.signatureUrl) return parsed.signatureUrl;
-      }
-    } catch {}
-    return '';
+    return getFastCachedSignature(currentUser);
   });
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
+  const [isSubmitConfirmOpen, setIsSubmitConfirmOpen] = useState(false);
 
   useEffect(() => {
-    if (currentUser?.signatureUrl && !makerSignatureUrl) {
-      setMakerSignatureUrl(currentUser.signatureUrl);
+    let isCancelled = false;
+    const fastSig = getFastCachedSignature(currentUser);
+    if (fastSig && !makerSignatureUrl) {
+      setMakerSignatureUrl(fastSig);
     }
-  }, [currentUser?.signatureUrl]);
+
+    resolveUserSignature({
+      uid: currentUser?.uid,
+      email: currentUser?.email,
+      role: currentUser?.role,
+      profile: currentUser,
+    }).then((sig) => {
+      if (!isCancelled && sig) {
+        setMakerSignatureUrl(sig);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentUser?.uid, currentUser?.email, currentUser?.role, currentUser?.signatureUrl]);
+
+  // Keep formData's maker signature synchronized with makerSignatureUrl
+  useEffect(() => {
+    if (makerSignatureUrl) {
+      setFormData((prev) => {
+        if (prev.submittedBySignatureUrl === makerSignatureUrl && prev.preparedBy?.signatureUrl === makerSignatureUrl) {
+          return prev;
+        }
+        return {
+          ...prev,
+          submittedBySignatureUrl: makerSignatureUrl,
+          preparedBy: {
+            ...prev.preparedBy,
+            name: prev.preparedBy?.name || currentUser.name || prev.createdByName || '',
+            roleTitle: prev.preparedBy?.roleTitle || (currentUser.role === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+            signatureUrl: makerSignatureUrl,
+            signedAt: prev.preparedBy?.signedAt || new Date().toISOString(),
+          },
+        };
+      });
+    }
+  }, [makerSignatureUrl, currentUser.name, currentUser.role]);
 
   // Sync initial data or set default reference number
   useEffect(() => {
@@ -439,7 +496,7 @@ export default function CreateProposalModal({
             referenceNo: ref,
             createdByName: currentUser.name,
             createdByEmail: currentUser.email,
-            creatorRole: currentUser.role,
+            creatorRole: isAdviserMaker ? 'adviser' : currentUser.role,
             isOfficerProposal: isOfficer,
             fundingSource: isOfficer ? 'organization_funds' : 'school_budget',
             organizationId: currentUser.organizationId || (isOfficer ? 'student_org' : 'sas'),
@@ -447,7 +504,7 @@ export default function CreateProposalModal({
             organizationName: isOfficer ? resolvedOrgName : '',
             organizers: isOfficer && resolvedOrgName ? [resolvedOrgName] : [],
             proponents: isOfficer
-              ? [resolvedAdviserName || 'Organization Adviser']
+              ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : null) || 'Organization Adviser']
               : [currentUser.name || 'Student Affairs & Services'],
             approvalChain: defaultChain,
           }));
@@ -703,6 +760,11 @@ export default function CreateProposalModal({
       if (!data.estimatedAttendance?.toString().trim() && !data.estAttendanceCount) {
         errs.estimatedAttendance = 'Estimated attendance is required.';
       }
+      const actualEligibleReach = Number(data.targetAudience?.actualEligibleReach) || 0;
+      const estCount = Number(data.estAttendanceCount) || (parseInt(String(data.estimatedAttendance || '0').replace(/\D/g, ''), 10) || 0);
+      if (actualEligibleReach > 0 && estCount > actualEligibleReach) {
+        errs.estimatedAttendance = `Estimated attendance (${estCount.toLocaleString()}) cannot exceed the actual eligible reach (${actualEligibleReach.toLocaleString()}).`;
+      }
     }
 
     if (stepNumber === 4) {
@@ -718,8 +780,8 @@ export default function CreateProposalModal({
           errs.date = 'Implementation date cannot be in the past.';
           errs.sessions = 'Implementation date cannot be in the past.';
         } else if (!data.isUrgent && selectedDate < standardMinDate) {
-          errs.date = `Standard policy requires at least 15 calendar days advance notice (${standardMinDate} or later). Enable the Urgent Proposal toggle if filing expedited.`;
-          errs.sessions = `Standard policy requires at least 15 days advance notice (${standardMinDate} or later).`;
+          errs.date = `Standard policy requires at least 15 calendar days advance notice (${formatDateLong(standardMinDate)} or later). Enable the Urgent Proposal toggle if filing expedited.`;
+          errs.sessions = `Standard policy requires at least 15 days advance notice (${formatDateLong(standardMinDate)} or later).`;
         }
       }
 
@@ -770,10 +832,20 @@ export default function CreateProposalModal({
       if (!data.fundingSource) {
         errs.fundingSource = 'Please select a funding source.';
       }
+      if (data.fundingSource === 'organization_funds') {
+        const treasuryBalance = Number(data.organizationLedgerBalanceAtSubmission) || 0;
+        const totalExpenses = Number(data.financialProjections?.totalExpenses) || 0;
+        if (treasuryBalance <= 0) {
+          errs.fundingSource = 'Organization treasury has no available funds (₱0.00). You cannot allocate budget from an empty ledger.';
+        } else if (totalExpenses > treasuryBalance) {
+          errs.fundingSource = `Total asking budget (${formatPHP(totalExpenses)}) exceeds available organization treasury (${formatPHP(treasuryBalance)}).`;
+        }
+      }
       if (data.fundingSource !== 'zero_budget' && data.financialProjections) {
-        const { revenues = [], expenditures = [] } = data.financialProjections;
-        for (let i = 0; i < expenditures.length; i++) {
-          const exp = expenditures[i];
+        const expenses = data.financialProjections.expenses || (data.financialProjections as any).expenditures || [];
+        const revenues = data.financialProjections.revenues || [];
+        for (let i = 0; i < expenses.length; i++) {
+          const exp = expenses[i];
           if ((exp.totalAmount > 0 || exp.thisYearProposed > 0) && !exp.description?.trim()) {
             errs.expenditures = `Expenditure #${i + 1} has an amount but is missing an item description.`;
             break;
@@ -903,12 +975,15 @@ export default function CreateProposalModal({
 
     setIsSavingDraft(true);
     try {
-      // Ensure the returned baseline snapshot is preserved across draft iterations
-      const effectiveReturnedSnapshot =
+      // Ensure the returned baseline snapshot is preserved across draft iterations without nested recursive bloating
+      const rawReturnedSnapshot =
         (initialData as any)?.returnedSnapshot ||
         baselineSnapshot ||
         (formData as any)?.returnedSnapshot ||
         (isReturnedProposal ? initialData : null);
+      const effectiveReturnedSnapshot = rawReturnedSnapshot
+        ? sanitizeCleanDocumentSnapshot(rawReturnedSnapshot)
+        : null;
 
       const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
       const drafterName = (formData.createdByName || currentUser.name || '').trim();
@@ -926,9 +1001,30 @@ export default function CreateProposalModal({
         ? sanitizedDraftProponents
         : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
+      const isOrgFunds = formData.fundingSource === 'organization_funds';
+      const effectiveDraftChain = isOrgFunds
+        ? [
+            {
+              id: 'step_sas_approval',
+              step: 1,
+              stageIndex: 1,
+              stageName: 'SAS Approval',
+              role: 'sas_head' as const,
+              roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+              actionType: 'approve' as const,
+              signatoryUid: sasCfg.employeeId || 'sas_admin',
+              signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+              signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+              department: sasCfg.department || 'Student Affairs & Services',
+              status: 'current' as const,
+            },
+          ]
+        : formData.approvalChain;
+
       const result = await saveProposalDraft(
         {
           ...formData,
+          approvalChain: effectiveDraftChain,
           organizers: finalDraftOrganizers,
           proponents: finalDraftProponents,
           status: 'draft',
@@ -991,16 +1087,29 @@ export default function CreateProposalModal({
       }
     }
 
-    // Mandatory Maker Signature Check
-    const effectiveSignature = makerSignatureUrl || currentUser?.signatureUrl;
+    // Strict Verification: The Maker or Organization Adviser MUST have a registered e-signature
+    const effectiveSignature = (
+      (makerSignatureUrl && makerSignatureUrl.trim().length > 0 && !makerSignatureUrl.includes('[base64-'))
+        ? makerSignatureUrl.trim()
+        : (currentUser?.signatureUrl && currentUser.signatureUrl.trim().length > 0 && !currentUser.signatureUrl.includes('[base64-'))
+        ? currentUser.signatureUrl.trim()
+        : ''
+    );
+
     if (!effectiveSignature) {
-      toast.error('Electronic Signature Required', {
-        description: 'As the document maker, you must register your official signature before submitting this activity proposal.',
+      const signerTitle = isAdviserMaker || isOfficerProp ? 'Organization Adviser' : 'Proposal Maker';
+      toast.error('Signature Required: No Registered Signature Found', {
+        description: `Your ${signerTitle} signature is required before submitting this activity proposal so it is attached upon export. Please register your signature now.`,
       });
       setIsSignatureModalOpen(true);
       return;
     }
 
+    // Open confirmation dialog before submission ONLY when all step validations and signature checks pass
+    setIsSubmitConfirmOpen(true);
+  };
+
+  const executeSubmission = async () => {
     setIsSubmitting(true);
     try {
       const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
@@ -1019,9 +1128,32 @@ export default function CreateProposalModal({
         ? sanitizedSubmitProponents
         : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
+      const isOrgFunds = formData.fundingSource === 'organization_funds';
+      const effectiveApprovalChain = isOrgFunds
+        ? [
+            {
+              id: 'step_sas_approval',
+              step: 1,
+              stageIndex: 1,
+              stageName: 'SAS Approval',
+              role: 'sas_head' as const,
+              roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+              actionType: 'approve' as const,
+              signatoryUid: sasCfg.employeeId || 'sas_admin',
+              signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+              signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+              department: sasCfg.department || 'Student Affairs & Services',
+              status: 'current' as const,
+            },
+          ]
+        : formData.approvalChain;
+
+      const effectiveSignature = makerSignatureUrl || currentUser?.signatureUrl || formData.submittedBySignatureUrl || '';
+
       const result = await submitProposalForReview(
         {
           ...formData,
+          approvalChain: effectiveApprovalChain,
           organizers: finalSubmitOrganizers,
           proponents: finalSubmitProponents,
           submittedBySignatureUrl: effectiveSignature,
@@ -1052,13 +1184,15 @@ export default function CreateProposalModal({
     if (!formData.title?.trim() || !formData.description?.trim()) {
       return false;
     }
-    const chain = formData.approvalChain || [];
-    if (chain.length === 0) {
-      return false;
-    }
-    const hasApprover = chain.some((s) => s.actionType === 'approve' || s.role === 'school_president');
-    if (!hasApprover) {
-      return false;
+    if (formData.fundingSource !== 'organization_funds') {
+      const chain = formData.approvalChain || [];
+      if (chain.length === 0) {
+        return false;
+      }
+      const hasApprover = chain.some((s) => s.actionType === 'approve' || s.role === 'school_president');
+      if (!hasApprover) {
+        return false;
+      }
     }
     if (isReturnedProposal && !(formData.resubmissionNote || '').trim()) {
       return false;
@@ -1395,6 +1529,7 @@ export default function CreateProposalModal({
                   formData={formData}
                   onChange={updateFormData}
                   errors={errors}
+                  currentUser={currentUser}
                 />
               )}
               {currentStep === 2 && (
@@ -1442,6 +1577,8 @@ export default function CreateProposalModal({
                   isSavingDraft={isSavingDraft}
                   isOfficerOnly={isOfficerOnly}
                   errors={errors}
+                  makerSignatureUrl={makerSignatureUrl}
+                  onOpenSignatureModal={() => setIsSignatureModalOpen(true)}
                 />
               )}
             </>
@@ -1543,6 +1680,24 @@ export default function CreateProposalModal({
           currentSignatureUrl={makerSignatureUrl}
           onSignatureSaved={(newUrl) => {
             setMakerSignatureUrl(newUrl);
+            setFormData((prev) => ({
+              ...prev,
+              submittedBySignatureUrl: newUrl,
+              preparedBy: {
+                ...prev.preparedBy,
+                name: prev.preparedBy?.name || currentUser.name || prev.createdByName || '',
+                roleTitle: prev.preparedBy?.roleTitle || (currentUser.role === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+                signatureUrl: newUrl,
+                signedAt: prev.preparedBy?.signedAt || new Date().toISOString(),
+              },
+            }));
+            syncUserSignatureAcrossProfiles({
+              uid: currentUser?.uid,
+              email: currentUser?.email,
+              name: currentUser?.name,
+              signatureUrl: newUrl,
+              role: currentUser?.role,
+            });
             const raw = localStorage.getItem('sti_sync_officer_session');
             if (raw) {
               try {
@@ -1553,6 +1708,91 @@ export default function CreateProposalModal({
             }
           }}
         />
+      )}
+
+      {/* Proposal Submission Confirmation Modal */}
+      {isSubmitConfirmOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-6 bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] text-white flex items-center gap-4">
+              <div className="p-3 bg-white/10 rounded-2xl text-[#FFD41C] flex-shrink-0">
+                <Send className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base">
+                  {isReturnedProposal ? 'Confirm Proposal Resubmission' : 'Confirm Proposal Submission'}
+                </h3>
+                <p className="text-xs text-blue-200 mt-0.5 truncate max-w-sm">
+                  {formData.title || 'Official STI Activity Proposal'}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                Are you sure you want to formally submit this activity proposal for review?
+              </p>
+
+              {/* Routing Notice */}
+              <div className="p-4 rounded-2xl border text-xs leading-relaxed space-y-2 bg-slate-50 border-slate-200 text-slate-700">
+                <div className="font-bold text-[11px] uppercase tracking-wider text-slate-500 flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                  What happens upon submission:
+                </div>
+                {formData.fundingSource === 'organization_funds' ? (
+                  <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
+                    <li>This activity is funded from <strong>Organization Internal Funds</strong>.</li>
+                    <li>The proposal routes directly to <strong>Student Affairs & Services (SAS)</strong> for official review, approval, and digital signature.</li>
+                    <li>Your registered electronic signature is affixed to Form AP-01.</li>
+                  </ul>
+                ) : (
+                  <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
+                    <li>This activity is funded from <strong>School Budget</strong>.</li>
+                    <li>The proposal routes first to <strong>Student Affairs & Services (SAS)</strong> for preliminary clearance.</li>
+                    <li>Upon clearance, it will advance to your designated <strong>institutional signatories</strong>.</li>
+                    <li>Your registered electronic signature is affixed to Form AP-01.</li>
+                  </ul>
+                )}
+              </div>
+
+              {formData.isUrgent && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>This proposal has an urgent justification exemption under the 15-day policy.</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsSubmitConfirmOpen(false)}
+                disabled={isSubmitting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Back to Editing
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSubmitConfirmOpen(false);
+                  executeSubmission();
+                }}
+                disabled={isSubmitting}
+                className="px-6 py-2.5 text-xs font-bold rounded-xl text-white bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#22C55E] shadow-sm flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+              >
+                {isSubmitting ? (
+                  <>Submitting...</>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Confirm & Submit Proposal</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -21,6 +21,7 @@ import {
   serverTimestamp,
   onSnapshot,
   arrayUnion,
+  deleteField,
 } from 'firebase/firestore';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import type {
@@ -36,6 +37,11 @@ import {
 import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { createNotification } from '../../notifications';
+import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
+import {
+  archiveDocumentRevision,
+  migrateLegacyVersionHistory,
+} from '../../workflow/services/revision-history.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -630,7 +636,7 @@ export async function submitProposalForReview(
       }
     } catch (_) {}
 
-    const cleanSnap = existingSnapshotData ? sanitizeFirestorePayload(existingSnapshotData) : sanitizeFirestorePayload({
+    const rawSnapData = existingSnapshotData || {
       title: formData.title || '',
       description: formData.description || '',
       targetAudience: formData.targetAudience || null,
@@ -649,7 +655,8 @@ export async function submitProposalForReview(
       objectives: formData.objectives || [],
       venueName: (formData as any).venueName || '',
       date: (formData as any).date || '',
-    });
+    };
+    const cleanSnap = sanitizeCleanDocumentSnapshot(rawSnapData);
 
     const versionSnapshot = sanitizeFirestorePayload({
       version: currentVersion - 1,
@@ -665,8 +672,6 @@ export async function submitProposalForReview(
       resubmittedBy: user.name || 'User',
       resubmittedByUid: user.uid || 'user',
       dataSnapshot: cleanSnap,
-      snapshot: cleanSnap,
-      previousSnapshot: cleanSnap,
     });
 
     const resubmissionNote = (formData as any).resubmissionNote || '';
@@ -683,8 +688,24 @@ export async function submitProposalForReview(
         : `Proposal revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`,
     });
 
-    payload.previousSnapshot = cleanSnap;
-    payload.versionHistory = arrayUnion(versionSnapshot);
+    // 1. Archive revision snapshot into subcollection (unlimited revisions without 1MB limit)
+    try {
+      await archiveDocumentRevision('activities', effectiveId, versionSnapshot);
+      await archiveDocumentRevision('events', effectiveId, versionSnapshot);
+    } catch (archErr) {
+      console.warn('[submitProposalForReview] Subcollection revision archival warning:', archErr);
+    }
+
+    // 2. Keep parent document lightweight (prune duplicate embedded snapshots)
+    payload.version = currentVersion;
+    payload.previousSnapshot = deleteField();
+    payload.dataSnapshot = deleteField();
+    payload.versionHistory = deleteField();
+    payload.versionSummary = {
+      version: currentVersion,
+      latestResubmissionAt: new Date().toISOString(),
+      resubmissionNote: resubmissionNote || '',
+    };
     payload.stepRevisionRemarks = null;
     payload.returnFlags = [];
     payload.isReturned = false;
@@ -744,7 +765,22 @@ export async function getProposalById(id: string): Promise<ActivityProposal | nu
   const docRef = doc(db, ACTIVITIES_COLLECTION, id);
   const snap = await getDoc(docRef);
   if (snap.exists()) {
-    return { id: snap.id, ...snap.data() } as ActivityProposal;
+    const data = snap.data();
+
+    // Non-blocking self-healing: migrate legacy bloated arrays to subcollection
+    if (Array.isArray(data.versionHistory) && data.versionHistory.length > 0) {
+      migrateLegacyVersionHistory(ACTIVITIES_COLLECTION, id, data.versionHistory)
+        .then(() => {
+          updateDoc(docRef, {
+            versionHistory: deleteField(),
+            previousSnapshot: deleteField(),
+            dataSnapshot: deleteField(),
+          }).catch(() => {});
+        })
+        .catch(() => {});
+    }
+
+    return { id: snap.id, ...data } as ActivityProposal;
   }
   try {
     const legacySnap = await getDoc(doc(db, 'activity_proposals', id));
@@ -1150,6 +1186,110 @@ export async function endorseProposal(
 }
 
 /**
+ * Release an Activity Proposal from SAS Pre-Approval Vetting Gate to Institutional Signatory Pipeline.
+ * - Crucial: NO SAS ink signature required.
+ * - Activates Stage 1 signatories and sets proposal status to 'under_review'.
+ */
+export async function releaseProposalToSignatories(
+  proposalId: string,
+  sasAdminUid: string,
+  remarks = ''
+): Promise<{ success: boolean }> {
+  const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Proposal not found');
+
+  const data = snap.data() as ActivityProposal;
+  const chain = normalizeApprovalStages(data.approvalChain || []);
+
+  // Activate Stage 1 signers
+  chain.forEach((s, idx) => {
+    if ((s.stageIndex ?? 1) === 1) {
+      chain[idx] = { ...s, status: 'current' };
+    } else {
+      chain[idx] = { ...s, status: 'waiting' };
+    }
+  });
+
+  const clearanceEntry = {
+    id: `hist_sas_release_${Date.now()}`,
+    action: 'sas_vetted_and_released',
+    performedBy: sasAdminUid,
+    performedByName: 'Student Affairs & Services',
+    performedAt: new Date().toISOString(),
+    remarks: remarks || 'Cleared and released by SAS Admin to Institutional Signatory Pipeline.',
+  };
+
+  const updatePayload: any = {
+    approvalChain: chain,
+    currentStageIndex: 1,
+    status: 'under_review' as ProposalStatus,
+    proposalStatus: 'under_review',
+    lifecycleStatus: 'under_review',
+    isPendingSasVetting: false,
+    sasVettedAt: new Date().toISOString(),
+    sasVettedBy: sasAdminUid,
+    updatedAt: serverTimestamp(),
+    proposalHistory: arrayUnion(clearanceEntry),
+  };
+
+  await updateDoc(docRef, sanitizeFirestorePayload(updatePayload));
+
+  // Sync to activities/events collection
+  try {
+    const actRef = doc(db, ACTIVITIES_COLLECTION, proposalId);
+    await updateDoc(actRef, sanitizeFirestorePayload({
+      approvalChain: chain,
+      currentStageIndex: 1,
+      status: 'pending',
+      proposalStatus: 'under_review',
+      lifecycleStatus: 'pending_review',
+      isPendingSasVetting: false,
+      sasVettedAt: new Date().toISOString(),
+      sasVettedBy: sasAdminUid,
+      updatedAt: serverTimestamp(),
+    }));
+  } catch (_) {}
+
+  try {
+    const evRef = doc(db, 'events', proposalId);
+    await updateDoc(evRef, sanitizeFirestorePayload({
+      approvalChain: chain,
+      currentStageIndex: 1,
+      status: 'pending',
+      proposalStatus: 'under_review',
+      lifecycleStatus: 'pending_review',
+      isPendingSasVetting: false,
+      sasVettedAt: new Date().toISOString(),
+      sasVettedBy: sasAdminUid,
+      updatedAt: serverTimestamp(),
+    }));
+  } catch (_) {}
+
+  // Dispatch notifications to Stage 1 signers
+  const stage1Signers = chain.filter((s) => (s.stageIndex ?? 1) === 1);
+  for (const signer of stage1Signers) {
+    if (signer.signatoryUid || signer.signatoryEmail) {
+      try {
+        await createNotification({
+          userId: signer.signatoryUid || signer.signatoryEmail,
+          title: `Proposal Released: ${data.title}`,
+          message: `Activity proposal "${data.title}" has been cleared by SAS and is now awaiting your review in Stage 1.`,
+          type: 'action_required',
+          category: 'activity_proposal',
+          link: '/signatory/portal',
+          senderRoleTitle: 'Student Affairs & Services',
+        });
+      } catch (notifErr) {
+        console.warn('[releaseProposalToSignatories] Signer notification error:', notifErr);
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+/**
  * Return an Activity Proposal for revision
  */
 export async function returnProposalForRevision(
@@ -1260,6 +1400,29 @@ export async function returnProposalForRevision(
     returnFlags: returnFlags || [],
   });
 
+  const cleanSnap = sanitizeCleanDocumentSnapshot(data);
+
+  // 1. Archive revision snapshot to subcollection (unlimited revisions without 1MB limit)
+  try {
+    const revPayload = {
+      version: Number(data.version || 1),
+      versionLabel: `v${Number(data.version || 1)}.0`,
+      dataSnapshot: cleanSnap,
+      returnFlags: returnFlags || [],
+      stepRevisionRemarks: canonicalStepRemarks,
+      returnRemarks: remarks || 'Returned for revision.',
+      returnedBy: signerUid || 'signatory',
+      returnedByName: signerName,
+      returnedByRoleTitle: signerRoleTitle,
+      returnedAt: returnedAtStr,
+      archivedAt: new Date().toISOString(),
+    };
+    await archiveDocumentRevision('activities', proposalId, revPayload);
+    await archiveDocumentRevision('events', proposalId, revPayload);
+  } catch (archErr) {
+    console.warn('[returnProposalForRevision] Subcollection archival warning:', archErr);
+  }
+
   const rawUpdates = {
     status: 'returned' as ProposalStatus,
     proposalStatus: 'returned',
@@ -1279,8 +1442,10 @@ export async function returnProposalForRevision(
     returnedAt: returnedAtStr,
     approvalChain: sanitizedChain,
     proposalHistory: arrayUnion(returnHistoryEntry),
-    returnedSnapshot: sanitizeFirestorePayload({ ...data }),
-    previousSnapshot: sanitizeFirestorePayload({ ...data }),
+    returnedSnapshot: cleanSnap,
+    previousSnapshot: deleteField(),
+    dataSnapshot: deleteField(),
+    versionHistory: deleteField(),
     updatedAt: serverTimestamp(),
   };
 

@@ -53,6 +53,7 @@ import {
   isStepConfiguredPermanent,
   type DefaultWorkflowSettings,
 } from '../../../workflow/services/approval-workflow.service';
+import { AddCustomLabelModal } from '../../../signatories';
 
 interface ProposalFlowBuilderProps {
   approvalChain: ProposalApprovalStep[];
@@ -96,19 +97,11 @@ export default function ProposalFlowBuilder({
     return INITIAL_STAGE_CONFIGS;
   });
 
-  // Custom signatory inline creation state per stage
-  const [addingCustomToStage, setAddingCustomToStage] = useState<number | null>(null);
-  const [customSignatory, setCustomSignatory] = useState({
-    name: '',
-    roleTitle: '',
-    email: '',
-    department: '',
-    actionType: 'endorse' as SignatoryActionType,
-  });
-
   const [sasConfig, setSasConfig] = useState<SasSignatoryConfig>(DEFAULT_SAS_SIGNATORY_CONFIG);
   const [workflowSettings, setWorkflowSettings] = useState<DefaultWorkflowSettings | null>(() => getCachedWorkflowSettings());
   const { activeLabels } = useSignatoryLabelsStream();
+  const [isCustomLabelModalOpen, setIsCustomLabelModalOpen] = useState(false);
+  const [pendingCustomLabelStepId, setPendingCustomLabelStepId] = useState<string | number | null>(null);
 
   const availableLabelOptions = useMemo(() => {
     const proposalLabels = activeLabels.filter(
@@ -724,10 +717,11 @@ export default function ProposalFlowBuilder({
     const canApprove = Boolean(
       signatory.canApproveProposal ||
       signatory.role === 'school_president' ||
-      signatory.role === 'school_administrator' ||
-      signatory.actionType === 'approver'
+      signatory.role === 'school_administrator'
     );
-    const actionType: SignatoryActionType = canApprove ? 'approve' : 'endorse';
+    const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
+    const actionType: SignatoryActionType = (canApprove && !existingApprover) ? 'approve' : 'endorse';
+    const signatoryLabel = actionType === 'approve' ? 'Approved by:' : (signatory.defaultSignatoryLabel || resolveSignatoryLabel(signatory as any, 'proposal', false));
 
     const newStep: ProposalApprovalStep = {
       id: `prop_step_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
@@ -737,6 +731,7 @@ export default function ProposalFlowBuilder({
       role: signatory.role || '',
       roleTitle: signatory.roleTitle || 'Institutional Signatory',
       actionType,
+      signatoryLabel,
       signatoryUid: signatory.id || (signatory as any).uid || '',
       signatoryName: signatory.name || '',
       signatoryEmail: signatory.email || '',
@@ -758,58 +753,7 @@ export default function ProposalFlowBuilder({
     setSelectedSignatoryIdPerStage((prev) => ({ ...prev, [stageIndex]: '' }));
   };
 
-  // 8. Add Custom Signatory from Scratch to Stage
-  const handleAddCustomSignatory = (stageIndex: number) => {
-    if (!customSignatory.name.trim()) {
-      alert("Please enter the signatory's full name.");
-      return;
-    }
-    if (!customSignatory.roleTitle.trim()) {
-      alert("Please enter the position / role title.");
-      return;
-    }
-    if (!customSignatory.email.trim()) {
-      alert("Please enter a valid email address.");
-      return;
-    }
-
-    const newStep: ProposalApprovalStep = {
-      id: `custom_sig_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      step: approvalChain.length + 1,
-      stageIndex,
-      stageName: stages.find((s) => s.stageIndex === stageIndex)?.stageName || `Stage ${stageIndex}`,
-      role: 'custom_signatory',
-      roleTitle: customSignatory.roleTitle.trim(),
-      actionType: customSignatory.actionType,
-      signatoryUid: '',
-      signatoryName: customSignatory.name.trim(),
-      signatoryEmail: customSignatory.email.trim(),
-      department: customSignatory.department.trim(),
-      status: stageIndex === 1 ? 'current' : 'waiting',
-      isMandatory: false,
-      isPermanent: false,
-      isUserAdded: true,
-    };
-
-    const updatedStages = stages.map((stg) => {
-      if (stg.stageIndex === stageIndex) {
-        return { ...stg, steps: [...stg.steps, newStep] };
-      }
-      return stg;
-    });
-
-    reindexChain(updatedStages);
-    setAddingCustomToStage(null);
-    setCustomSignatory({
-      name: '',
-      roleTitle: '',
-      email: '',
-      department: '',
-      actionType: 'endorse',
-    });
-  };
-
-  // 9. Remove Signatory from Stage
+  // 8. Remove Signatory from Stage
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
     const stepToRemove = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
     const isUserAddedStep = Boolean(
@@ -867,18 +811,14 @@ export default function ProposalFlowBuilder({
 
   // Update Signatory Formal Label
   const handleUpdateStepLabel = (stepIdOrIndex: string | number, newLabel: string) => {
-    const labelDoc = activeLabels.find((l) => l.label === newLabel);
-    const resolvedAction = labelDoc
-      ? labelDoc.actionType
-      : (resolveActionTypeFromLabel(newLabel) as SignatoryActionType);
-
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
         return {
           ...s,
           signatoryLabel: newLabel,
-          actionType: resolvedAction,
+          // Preserving actionType: Endorsers always remain 'endorse' so the Endorse button never unselects
+          actionType: s.actionType === 'approve' ? 'approve' : 'endorse',
         };
       }
       return s;
@@ -886,29 +826,38 @@ export default function ProposalFlowBuilder({
     onChange(updated);
   };
 
-  // 11. Set Action Type for a specific Step
+  // 10. Set Action Type for a specific Step (Enforcing Single-Approver Mutex)
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: SignatoryActionType) => {
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
-        return { ...s, actionType: newAction };
+        return {
+          ...s,
+          actionType: newAction,
+          signatoryLabel: newAction === 'approve' ? 'Approved by:' : (s.signatoryLabel || resolveSignatoryLabel(s, 'proposal', false)),
+        };
+      }
+      // If setting this step to 'approve', demote any other existing approver in the pipeline to 'endorse'
+      if (newAction === 'approve' && s.actionType === 'approve') {
+        return {
+          ...s,
+          actionType: 'endorse' as const,
+          signatoryLabel: s.signatoryLabel && s.signatoryLabel.toLowerCase().includes('approved')
+            ? resolveSignatoryLabel(s, 'proposal', false)
+            : s.signatoryLabel,
+        };
       }
       return s;
     });
     onChange(updated);
   };
 
-  // 12. Toggle Action Type for a specific Step
+  // 11. Toggle Action Type for a specific Step
   const handleToggleActionType = (stepIdOrIndex: string | number) => {
-    const updated = approvalChain.map((s) => {
-      const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
-      if (match) {
-        const nextAction: SignatoryActionType = s.actionType === 'approve' ? 'endorse' : 'approve';
-        return { ...s, actionType: nextAction };
-      }
-      return s;
-    });
-    onChange(updated);
+    const target = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (!target) return;
+    const nextAction: SignatoryActionType = target.actionType === 'approve' ? 'endorse' : 'approve';
+    handleSetActionType(stepIdOrIndex, nextAction);
   };
 
   return (
@@ -1146,16 +1095,18 @@ export default function ProposalFlowBuilder({
                       );
                       const isLockedSigner = isBuiltinFixedSasSigner || isPermanentSigner;
 
-                      const canSignerApprove = Boolean(
+                      const hasDocumentApprovalAuthority = Boolean(
                         matchedSig?.canApproveProposal ||
                         matchedSig?.role === 'school_president' ||
                         matchedSig?.role === 'school_administrator' ||
                         step.role === 'school_president' ||
-                        step.role === 'school_administrator' ||
-                        step.actionType === 'approve' ||
-                        isUserAddedStep ||
-                        stage.stageIndex === 4
+                        step.role === 'school_administrator'
                       );
+                      const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
+                      const pipelineAlreadyHasApprover = Boolean(
+                        existingApprover && (step.id ? existingApprover.id !== step.id : existingApprover.step !== step.step)
+                      );
+                      const canSignerApprove = hasDocumentApprovalAuthority && !pipelineAlreadyHasApprover;
 
                       return (
                         <div
@@ -1211,7 +1162,7 @@ export default function ProposalFlowBuilder({
                                 type="button"
                                 onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
                                 className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
-                                  step.actionType === 'endorse'
+                                  step.actionType !== 'approve'
                                     ? 'bg-sky-600 text-white shadow-xs'
                                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                                 }`}
@@ -1229,44 +1180,62 @@ export default function ProposalFlowBuilder({
                                     ? 'bg-emerald-600 text-white shadow-xs'
                                     : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                                 }`}
-                                title={!canSignerApprove ? 'This signatory does not have approval authority for Activity Proposals' : 'Designate as executive Approver'}
+                                title={
+                                  !hasDocumentApprovalAuthority
+                                    ? 'This signatory is an Endorser Only in institutional settings and cannot be designated as Approver.'
+                                    : pipelineAlreadyHasApprover
+                                    ? `Only 1 approver is allowed per pipeline. ${existingApprover?.signatoryName || 'Another signer'} is already the designated Approver.`
+                                    : 'Designate as executive Approver'
+                                }
                               >
                                 Approve
                               </button>
                             </div>
 
-                            {/* Dynamic Formal Document Label Selector */}
-                            <div className="flex items-center gap-1.5 flex-shrink-0">
-                              <select
-                                value={step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1)}
-                                onChange={(e) => handleUpdateStepLabel(step.id || step.step, e.target.value)}
-                                className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
-                                title="Formal Signatory Document Label"
-                              >
-                                {(() => {
-                                  const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1);
-                                  const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
-                                  return (
-                                    <>
-                                      {!hasCurrent && currentVal && (
-                                        <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
-                                          {currentVal}
-                                        </option>
-                                      )}
-                                      {availableLabelOptions.map((opt) => {
-                                        const val = typeof opt === 'string' ? opt : opt.value;
-                                        const lbl = typeof opt === 'string' ? opt : opt.label;
-                                        return (
-                                          <option key={val} value={val} className="text-xs font-medium py-1">
-                                            {lbl}
+                            {/* Dynamic Formal Document Label Selector - Strictly for Endorsers only */}
+                            {step.actionType !== 'approve' && (
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <select
+                                  value={step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1)}
+                                  onChange={(e) => {
+                                    if (e.target.value === '__add_custom_label__') {
+                                      setPendingCustomLabelStepId(step.id || step.step);
+                                      setIsCustomLabelModalOpen(true);
+                                    } else {
+                                      handleUpdateStepLabel(step.id || step.step, e.target.value);
+                                    }
+                                  }}
+                                  className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
+                                  title="Formal Signatory Document Label"
+                                >
+                                  {(() => {
+                                    const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'proposal', stepIdx === stage.steps.length - 1);
+                                    const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
+                                    return (
+                                      <>
+                                        {!hasCurrent && currentVal && (
+                                          <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
+                                            {currentVal}
                                           </option>
-                                        );
-                                      })}
-                                    </>
-                                  );
-                                })()}
-                              </select>
-                            </div>
+                                        )}
+                                        {availableLabelOptions.map((opt) => {
+                                          const val = typeof opt === 'string' ? opt : opt.value;
+                                          const lbl = typeof opt === 'string' ? opt : opt.label;
+                                          return (
+                                            <option key={val} value={val} className="text-xs font-medium py-1">
+                                              {lbl}
+                                            </option>
+                                          );
+                                        })}
+                                        <option value="__add_custom_label__" className="font-bold text-blue-600 bg-blue-50 py-1.5">
+                                          + Add Custom Label...
+                                        </option>
+                                      </>
+                                    );
+                                  })()}
+                                </select>
+                              </div>
+                            )}
 
                             {/* Signatory Order Controls */}
                             <div className="flex items-center gap-0.5">
@@ -1313,200 +1282,80 @@ export default function ProposalFlowBuilder({
                     })
                   )}
 
-                  {/* Add Signatory Controls */}
-                  {addingCustomToStage === stage.stageIndex ? (
-                    <div className="p-4 rounded-xl border border-blue-200 bg-blue-50/40 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                          <UserPlus className="w-3.5 h-3.5 text-blue-600" />
-                          <span>Add Custom Signatory to Stage {stage.stageIndex}</span>
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setAddingCustomToStage(null)}
-                          className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                  {/* Add Signatory from Registered Directory Only */}
+                  <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <div className="relative flex-1">
+                      <select
+                        value={selectedSigId}
+                        onChange={(e) =>
+                          setSelectedSignatoryIdPerStage((prev) => ({
+                            ...prev,
+                            [stage.stageIndex]: e.target.value,
+                          }))
+                        }
+                        className="w-full pl-3 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 outline-none"
+                      >
+                        <option value="">+ Choose Registered Signatory from Directory...</option>
+                        {activeSignatories
+                          .filter((sig) => {
+                            if (sig.isActive === false) return false;
+                            if (!isSignatoryApplicableTo(sig, 'proposal')) return false;
+                            // Exclude if already assigned to any stage in this approval workflow
+                            const isAlreadyAssigned = approvalChain.some(
+                              (s) => s.signatoryUid === sig.id || (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
+                            );
+                            return !isAlreadyAssigned;
+                          })
+                          .map((sig) => {
+                            const canApprove = Boolean(
+                              sig.canApproveProposal ||
+                              sig.role === 'school_president' ||
+                              sig.role === 'school_administrator'
+                            );
+                            const capLabel = canApprove ? 'Approver' : 'Endorser Only';
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                            Full Name <span className="text-red-500">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={customSignatory.name}
-                            onChange={(e) => setCustomSignatory((prev) => ({ ...prev, name: e.target.value }))}
-                            placeholder="e.g. Dr. Jane Doe"
-                            className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                            Position / Role Title <span className="text-red-500">*</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={customSignatory.roleTitle}
-                            onChange={(e) => setCustomSignatory((prev) => ({ ...prev, roleTitle: e.target.value }))}
-                            placeholder="e.g. Organization Adviser, Dean"
-                            className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                            Email Address <span className="text-red-500">*</span>
-                          </label>
-                          <input
-                            type="email"
-                            value={customSignatory.email}
-                            onChange={(e) => setCustomSignatory((prev) => ({ ...prev, email: e.target.value }))}
-                            placeholder="e.g. jane.doe@ormoc.sti.edu.ph"
-                            className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-700 mb-1">
-                            Department / Office (Optional)
-                          </label>
-                          <input
-                            type="text"
-                            value={customSignatory.department}
-                            onChange={(e) => setCustomSignatory((prev) => ({ ...prev, department: e.target.value }))}
-                            placeholder="e.g. Information Technology"
-                            className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-between pt-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-bold text-slate-700">Authority:</span>
-                          <button
-                            type="button"
-                            onClick={() => setCustomSignatory((prev) => ({ ...prev, actionType: 'endorse' }))}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                              customSignatory.actionType === 'endorse'
-                                ? 'bg-sky-600 text-white shadow-xs'
-                                : 'bg-white border border-slate-300 text-slate-600'
-                            }`}
-                          >
-                            Endorser
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setCustomSignatory((prev) => ({ ...prev, actionType: 'approve' }))}
-                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                              customSignatory.actionType === 'approve'
-                                ? 'bg-emerald-600 text-white shadow-xs'
-                                : 'bg-white border border-slate-300 text-slate-600'
-                            }`}
-                          >
-                            Approver
-                          </button>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setAddingCustomToStage(null)}
-                            className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-100 text-xs font-semibold cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleAddCustomSignatory(stage.stageIndex)}
-                            className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-xs cursor-pointer"
-                          >
-                            Add Signatory
-                          </button>
-                        </div>
-                      </div>
+                            return (
+                              <option key={sig.id} value={sig.id}>
+                                {sig.name} — {sig.roleTitle} [{capLabel}]
+                              </option>
+                            );
+                          })}
+                      </select>
                     </div>
-                  ) : (
-                    <div className="pt-2 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                      <div className="relative flex-1">
-                        <select
-                          value={selectedSigId}
-                          onChange={(e) =>
-                            setSelectedSignatoryIdPerStage((prev) => ({
-                              ...prev,
-                              [stage.stageIndex]: e.target.value,
-                            }))
-                          }
-                          className="w-full pl-3 pr-8 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-700 focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 outline-none"
-                        >
-                          <option value="">+ Choose Registered Signatory from Directory...</option>
-                          {activeSignatories
-                            .filter((sig) => {
-                              if (sig.isActive === false) return false;
-                              if (!isSignatoryApplicableTo(sig, 'proposal')) return false;
-                              // Exclude if already assigned to any stage in this approval workflow
-                              const isAlreadyAssigned = approvalChain.some(
-                                (s) => s.signatoryUid === sig.id || (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
-                              );
-                              return !isAlreadyAssigned;
-                            })
-                            .map((sig) => {
-                              const canApprove = Boolean(
-                                sig.canApproveProposal ||
-                                sig.role === 'school_president' ||
-                                sig.role === 'school_administrator'
-                              );
-                              const capLabel = canApprove ? 'Approver' : 'Endorser Only';
 
-                              return (
-                                <option key={sig.id} value={sig.id}>
-                                  {sig.name} — {sig.roleTitle} [{capLabel}]
-                                </option>
-                              );
-                            })}
-                        </select>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          disabled={!selectedSigId}
-                          onClick={() => handleAddSignatoryToStage(stage.stageIndex)}
-                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Add</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAddingCustomToStage(stage.stageIndex);
-                            setCustomSignatory({
-                              name: '',
-                              roleTitle: '',
-                              email: '',
-                              department: '',
-                              actionType: 'endorse',
-                            });
-                          }}
-                          className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all border border-slate-300 whitespace-nowrap cursor-pointer"
-                        >
-                          <UserPlus className="w-3.5 h-3.5 text-blue-600" />
-                          <span>+ Custom Person</span>
-                        </button>
-                      </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!selectedSigId}
+                        onClick={() => handleAddSignatoryToStage(stage.stageIndex)}
+                        className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add</span>
+                      </button>
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Add Custom Signatory Label Modal */}
+      <AddCustomLabelModal
+        isOpen={isCustomLabelModalOpen}
+        onClose={() => {
+          setIsCustomLabelModalOpen(false);
+          setPendingCustomLabelStepId(null);
+        }}
+        onLabelCreated={(newLabel) => {
+          if (pendingCustomLabelStepId !== null) {
+            handleUpdateStepLabel(pendingCustomLabelStepId, newLabel);
+          }
+        }}
+        existingLabels={availableLabelOptions.map((opt) => (typeof opt === 'string' ? opt : opt.value))}
+      />
     </div>
   );
 }

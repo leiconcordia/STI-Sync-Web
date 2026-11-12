@@ -592,6 +592,7 @@ export function Dashboard() {
           name: adviserDisplayName || 'Student Affairs & Services',
           email: profile?.email || 'sao@ormoc.sti.edu.ph',
           role: 'sas_admin',
+          signatureUrl: profile?.signatureUrl || (profile as any)?.signatureDataUrl || null,
         }}
       />
 

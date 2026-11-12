@@ -205,6 +205,36 @@ export default function EventManagement() {
   const activeOrgAcronym = activeOrg ? activeOrg.acronym || activeOrg.name.slice(0, 4).toUpperCase() : 'ORG';
   const activeOrgLogo = activeOrg?.logoUrl || (activeOrg as any)?.logo || null;
 
+  const isAdviser = useMemo(() => {
+    if (
+      profile?.isAdviser ||
+      profile?.activeRoleId?.toLowerCase() === 'adviser' ||
+      profile?.role?.toLowerCase() === 'adviser'
+    ) {
+      return true;
+    }
+
+    const cleanEmail = (profile?.email || '').trim().toLowerCase();
+    const cleanUid = profile?.authUid || profile?.uid || '';
+    const cleanName = (profile?.studentName || (profile as any)?.name || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const checkMatch = (adv: any) => {
+      if (!adv) return false;
+      const advEmail = (adv.email || '').trim().toLowerCase();
+      if (cleanEmail && advEmail && cleanEmail === advEmail) return true;
+      const advUid = adv.authUid || adv.uid || '';
+      if (cleanUid && advUid && cleanUid === advUid) return true;
+      const advName = (adv.name || adv.adviserName || '').trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (cleanName && advName && (cleanName === advName || cleanName.includes(advName) || advName.includes(cleanName))) return true;
+      return false;
+    };
+
+    if (activeOrg && checkMatch(activeOrg.adviser)) return true;
+    if (orgs && orgs.some((o: any) => checkMatch(o.adviser) || checkMatch({ name: o.adviserName, email: o.adviserEmail }))) return true;
+
+    return false;
+  }, [profile, activeOrg, orgs]);
+
   const { events, loading } = useOrgEvents(activeOrgId);
 
   const categoryMap = useMemo(() => {
@@ -605,10 +635,10 @@ export default function EventManagement() {
               setIsApModalOpen(true);
             }}
             className="flex items-center gap-2 px-4 py-2.5 bg-[#0E4EBD] hover:bg-[#0A3D96] text-white rounded-xl text-sm font-bold transition-colors shadow-xs cursor-pointer"
-            title="Prepare a new Activity Proposal draft for Adviser review and formal endorsement"
+            title={isAdviser ? "Create an official Activity Proposal as Organization Adviser" : "Prepare a new Activity Proposal draft for Adviser review and formal endorsement"}
           >
             <FileText className="w-4 h-4 text-[#FFD41C]" />
-            Draft Activity Proposal
+            {isAdviser ? 'Create Activity Proposal' : 'Draft Activity Proposal'}
           </button>
         </div>
       </div>
@@ -1285,11 +1315,11 @@ export default function EventManagement() {
           }}
           initialData={apInitialData ?? undefined}
           currentUser={{
-            uid: profile?.uid || 'officer-user',
-            name: profile?.studentName || (profile?.isAdviser ? 'Club Adviser' : 'Student Officer'),
+            uid: profile?.uid || profile?.authUid || 'officer-user',
+            name: profile?.studentName || (isAdviser ? 'Club Adviser' : 'Student Officer'),
             email: profile?.email || '',
-            role: profile?.isAdviser ? 'adviser' : 'officer',
-            isAdviser: Boolean(profile?.isAdviser),
+            role: isAdviser ? 'adviser' : 'officer',
+            isAdviser: isAdviser,
             organizationId: activeOrgId,
             organizationName: activeOrgName,
             signatureUrl: profile?.signatureUrl || null,

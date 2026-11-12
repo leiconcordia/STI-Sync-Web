@@ -10,7 +10,13 @@
  */
 
 import { initializeApp, getApps, getApp, deleteApp } from "firebase/app";
-import { getFirestore, connectFirestoreEmulator } from "firebase/firestore";
+import {
+  getFirestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  connectFirestoreEmulator,
+} from "firebase/firestore";
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, signOut, connectAuthEmulator } from "firebase/auth";
 import { getStorage, connectStorageEmulator } from "firebase/storage";
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
@@ -33,8 +39,24 @@ const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 // ─── Service Instances ─────────────────────────────────────────────────────────
 
-/** Firestore database — use in all module hooks and services */
-export const db = getFirestore(app);
+/**
+ * Firestore database with IndexedDB Multi-Tab Persistent Local Caching.
+ * Automatically serves repeat reads from browser cache to protect daily quota and provide instant load speeds.
+ */
+export const db = (() => {
+  if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') {
+    return getFirestore(app);
+  }
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
+    });
+  } catch {
+    return getFirestore(app);
+  }
+})();
 
 /** Firebase Authentication */
 export const auth = getAuth(app);

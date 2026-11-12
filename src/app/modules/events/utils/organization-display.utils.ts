@@ -98,8 +98,15 @@ export function isSasCreatedEvent(
   const SAS_ORGS = ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'sao_office', 'institutional'];
 
   // 1. Reference number check (Primary ground truth: AP-YYYY-SAS-xxx or EVT-ADM-xxx vs AP-YYYY-ORG-xxx)
-  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
-  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) {
+  const ref = (
+    event.referenceId ||
+    event.referenceNo ||
+    (typeof event.id === 'string' && (event.id.startsWith('AP-') || event.id.startsWith('EVT-')) ? event.id : '') ||
+    event.reference ||
+    event.refNo ||
+    ''
+  ).toString().toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-') || ref.includes('-ADM-')) {
     return true;
   }
   if (ref.includes('-ORG-') || ref.includes('-IT-') || ref.includes('-PAO-') || ref.includes('-PMO-') || ref.includes('-RCY-') || ref.includes('-SAG-')) {
@@ -115,9 +122,13 @@ export function isSasCreatedEvent(
     return false;
   }
 
-  // 3. Creator email check (SAS official accounts)
+  // 3. Creator email & name check (SAS official accounts)
   const createdByEmail = (event.createdByEmail || '').toLowerCase().trim();
   if (createdByEmail === 'sao@ormoc.sti.edu.ph' || createdByEmail.startsWith('sas@') || createdByEmail.startsWith('sao@')) {
+    return true;
+  }
+  const createdByName = (event.createdByName || event.creatorName || '').toLowerCase().trim();
+  if (createdByName.includes('riselle') || createdByName.includes('lucanas')) {
     return true;
   }
 

@@ -655,6 +655,7 @@ export default function AdminPostActivityReports() {
           role: 'admin',
           organizationId: 'sao_admin',
           organizationName: 'Student Affairs Services (SAS)',
+          signatureUrl: session?.signatureUrl || session?.signatureDataUrl || null,
         }}
         isSasAdmin={true}
       />

@@ -115,7 +115,7 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
     };
 
     const unsubActivities = onSnapshot(
-      collection(db, 'activities'),
+      query(collection(db, 'activities'), limit(100)),
       (snap) => {
         evMapActivities = new Map<string, any>();
         snap.docs.forEach((doc) => {
@@ -128,7 +128,7 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
     unsubs.push(unsubActivities);
 
     const unsubEvents = onSnapshot(
-      collection(db, 'events'),
+      query(collection(db, 'events'), limit(100)),
       (snap) => {
         evMapLegacy = new Map<string, any>();
         snap.docs.forEach((doc) => {
@@ -140,9 +140,13 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
     );
     unsubs.push(unsubEvents);
 
-    // 3. Subscribe to Organization Memberships (get all memberships and filter in memory by id, schoolId, or email)
+    // 3. Subscribe to Organization Memberships (Targeted query with limit)
+    const membersQuery = studentId || schoolId
+      ? query(collection(db, 'organization_members'), where('studentId', '==', studentId || schoolId))
+      : query(collection(db, 'organization_members'), limit(100));
+
     const unsubMembers = onSnapshot(
-      collection(db, 'organization_members'),
+      membersQuery,
       (snap) => {
         const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as OrganizationMemberDocument));
         setAllRawMemberships(docs);
@@ -151,29 +155,32 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
     );
     unsubs.push(unsubMembers);
 
-    // 4. Subscribe to Payables (listen to all payables and filter by id / schoolId)
+    // 4. Subscribe to Payables (Targeted query with limit)
+    const payablesQuery = studentId || schoolId
+      ? query(collection(db, 'payables'), where('studentId', '==', studentId || schoolId))
+      : query(collection(db, 'payables'), limit(100));
+
     const unsubPayables = onSnapshot(
-      collection(db, 'payables'),
+      payablesQuery,
       (snap) => {
         const allDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as PayableDocument));
-        const matched = allDocs.filter((p) => {
-          const matchId = studentId && p.studentId === studentId;
-          const matchSchoolId = schoolId && (p.studentSchoolId === schoolId || p.studentId === schoolId);
-          return matchId || matchSchoolId;
-        });
-        setPayables(matched);
+        setPayables(allDocs);
       },
       (err) => console.warn('Error streaming student payables:', err)
     );
     unsubs.push(unsubPayables);
 
-    // 5. Subscribe to Attendance Records across collection group 'attendance' and top-level 'attendance'
+    // 5. Subscribe to Attendance Records (bounded to prevent unbounded database reads)
     const formatTime = (timestamp: any): string => {
       return formatAppTime(timestamp, '—');
     };
 
+    const attendanceQuery = studentId || schoolId
+      ? query(collectionGroup(db, 'attendance'), where('studentId', '==', studentId || schoolId), limit(50))
+      : query(collectionGroup(db, 'attendance'), limit(100));
+
     const unsubAttendance = onSnapshot(
-      collectionGroup(db, 'attendance'),
+      attendanceQuery,
       (snap) => {
         const matchedAttendances: AttendanceRecord[] = [];
         snap.docs.forEach((d) => {

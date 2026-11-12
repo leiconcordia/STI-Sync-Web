@@ -47,6 +47,7 @@ import {
   type DefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
 import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
+import { AddCustomLabelModal } from '../../signatories';
 
 interface LiquidationFlowBuilderProps {
   approvalChain: LiquidationApprovalStep[];
@@ -79,6 +80,8 @@ export default function LiquidationFlowBuilder({
 
   const pipelineKey = isSasCreator ? 'admin_fl' : 'adviser_fl';
   const { activeLabels } = useSignatoryLabelsStream();
+  const [isCustomLabelModalOpen, setIsCustomLabelModalOpen] = useState(false);
+  const [pendingCustomLabelStepId, setPendingCustomLabelStepId] = useState<string | number | null>(null);
 
   const availableLabelOptions = useMemo(() => {
     const flLabels = activeLabels.filter(
@@ -450,18 +453,14 @@ export default function LiquidationFlowBuilder({
 
   // Update Signatory Formal Label
   const handleUpdateStepLabel = (stepIdOrIndex: string | number, newLabel: string) => {
-    const labelDoc = activeLabels.find((l) => l.label === newLabel);
-    const resolvedAction = labelDoc
-      ? labelDoc.actionType
-      : resolveActionTypeFromLabel(newLabel);
-
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
         return {
           ...s,
           signatoryLabel: newLabel,
-          actionType: resolvedAction,
+          // Preserving actionType: Endorsers always remain 'endorse' so the Endorse button never unselects
+          actionType: s.actionType === 'approve' ? 'approve' : 'endorse',
         };
       }
       return s;
@@ -475,7 +474,7 @@ export default function LiquidationFlowBuilder({
     onChange([]);
   };
 
-  // Set Action Type (endorse vs approve) for a specific step
+  // Set Action Type (endorse vs approve) for a specific step (Enforcing Single Approver Mutex)
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: 'endorse' | 'approve') => {
     const updatedStages = stages.map((stg) => ({
       ...stg,
@@ -483,6 +482,10 @@ export default function LiquidationFlowBuilder({
         const matches = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
         if (matches) {
           return { ...s, actionType: newAction };
+        }
+        // If setting this step to approve, demote any other existing approver in the pipeline
+        if (newAction === 'approve' && s.actionType === 'approve') {
+          return { ...s, actionType: 'endorse' as const };
         }
         return s;
       }),
@@ -719,7 +722,7 @@ export default function LiquidationFlowBuilder({
                         );
                         const isUserAddedStep = Boolean(step.isUserAdded || step.id?.startsWith('liq_step_'));
                         const isStepPermanent = !isUserAddedStep && isStepConfiguredPermanent(step, pipelineKey, workflowSettings, false);
-                        const canSignerApprove = Boolean(
+                        const hasApprovalAuth = Boolean(
                           matchedSig?.canApproveLiquidation ||
                           matchedSig?.role === 'school_president' ||
                           matchedSig?.role === 'school_administrator' ||
@@ -727,6 +730,11 @@ export default function LiquidationFlowBuilder({
                           step.role === 'school_administrator' ||
                           (matchedSig?.actionType === 'approver' && matchedSig?.canApproveLiquidation !== false)
                         );
+                        const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
+                        const pipelineHasOtherApprover = Boolean(
+                          existingApprover && (step.id ? existingApprover.id !== step.id : existingApprover.step !== step.step)
+                        );
+                        const canSignerApprove = hasApprovalAuth && !pipelineHasOtherApprover;
 
                         return (
                           <div
@@ -777,7 +785,7 @@ export default function LiquidationFlowBuilder({
                                   type="button"
                                   onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
                                   className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
-                                    step.actionType === 'endorse' || step.actionType === 'check' || !step.actionType
+                                    step.actionType !== 'approve'
                                       ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs'
                                       : 'text-slate-600 hover:text-slate-900'
                                   }`}
@@ -789,8 +797,10 @@ export default function LiquidationFlowBuilder({
                                   disabled={!canSignerApprove}
                                   onClick={() => handleSetActionType(step.id || step.step, 'approve')}
                                   title={
-                                    !canSignerApprove
+                                    !hasApprovalAuth
                                       ? 'This signatory is an Endorser Only for Financial Liquidations and cannot be set as Approver.'
+                                      : pipelineHasOtherApprover
+                                      ? `Only 1 approver is allowed per pipeline. ${existingApprover?.signatoryName || 'Another signer'} is already the designated Approver.`
                                       : 'Set as Approver'
                                   }
                                   className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
@@ -805,38 +815,50 @@ export default function LiquidationFlowBuilder({
                                 </button>
                               </div>
 
-                              {/* Dynamic Formal Document Label Selector */}
-                              <div className="flex items-center gap-1.5 flex-shrink-0">
-                                <select
-                                  value={step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1)}
-                                  onChange={(e) => handleUpdateStepLabel(step.id || step.step, e.target.value)}
-                                  className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
-                                  title="Formal Signatory Document Label"
-                                >
-                                  {(() => {
-                                    const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1);
-                                    const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
-                                    return (
-                                      <>
-                                        {!hasCurrent && currentVal && (
-                                          <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
-                                            {currentVal}
-                                          </option>
-                                        )}
-                                        {availableLabelOptions.map((opt) => {
-                                          const val = typeof opt === 'string' ? opt : opt.value;
-                                          const lbl = typeof opt === 'string' ? opt : opt.label;
-                                          return (
-                                            <option key={val} value={val} className="text-xs font-medium py-1">
-                                              {lbl}
+                              {/* Dynamic Formal Document Label Selector - Strictly for Endorsers only */}
+                              {step.actionType !== 'approve' && (
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  <select
+                                    value={step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1)}
+                                    onChange={(e) => {
+                                      if (e.target.value === '__add_custom_label__') {
+                                        setPendingCustomLabelStepId(step.id || step.step);
+                                        setIsCustomLabelModalOpen(true);
+                                      } else {
+                                        handleUpdateStepLabel(step.id || step.step, e.target.value);
+                                      }
+                                    }}
+                                    className="min-w-[170px] sm:min-w-[190px] text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-800 shadow-2xs hover:border-slate-400 focus:ring-2 focus:ring-[#0E4EBD] focus:border-[#0E4EBD] focus:outline-none cursor-pointer flex-shrink-0 transition-colors"
+                                    title="Formal Signatory Document Label"
+                                  >
+                                    {(() => {
+                                      const currentVal = step.signatoryLabel || resolveSignatoryLabel(step, 'liquidation', stepIdx === stage.steps.length - 1);
+                                      const hasCurrent = availableLabelOptions.some((opt) => opt.value === currentVal);
+                                      return (
+                                        <>
+                                          {!hasCurrent && currentVal && (
+                                            <option key={currentVal} value={currentVal} className="text-xs font-medium py-1">
+                                              {currentVal}
                                             </option>
-                                          );
-                                        })}
-                                      </>
-                                    );
-                                  })()}
-                                </select>
-                              </div>
+                                          )}
+                                          {availableLabelOptions.map((opt) => {
+                                            const val = typeof opt === 'string' ? opt : opt.value;
+                                            const lbl = typeof opt === 'string' ? opt : opt.label;
+                                            return (
+                                              <option key={val} value={val} className="text-xs font-medium py-1">
+                                                {lbl}
+                                              </option>
+                                            );
+                                          })}
+                                          <option value="__add_custom_label__" className="font-bold text-blue-600 bg-blue-50 py-1.5">
+                                            + Add Custom Label...
+                                          </option>
+                                        </>
+                                      );
+                                    })()}
+                                  </select>
+                                </div>
+                              )}
 
                               {/* Remove Signatory Button or Lock Indicator */}
                               {isStepPermanent ? (
@@ -913,6 +935,21 @@ export default function LiquidationFlowBuilder({
           })
         )}
       </div>
+
+      {/* Add Custom Signatory Label Modal */}
+      <AddCustomLabelModal
+        isOpen={isCustomLabelModalOpen}
+        onClose={() => {
+          setIsCustomLabelModalOpen(false);
+          setPendingCustomLabelStepId(null);
+        }}
+        onLabelCreated={(newLabel) => {
+          if (pendingCustomLabelStepId !== null) {
+            handleUpdateStepLabel(pendingCustomLabelStepId, newLabel);
+          }
+        }}
+        existingLabels={availableLabelOptions.map((opt) => (typeof opt === 'string' ? opt : opt.value))}
+      />
     </div>
   );
 }

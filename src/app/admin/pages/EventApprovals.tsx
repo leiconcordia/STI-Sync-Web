@@ -1644,6 +1644,7 @@ export function EventApprovals() {
             name: adviserProfile?.displayName || 'SAS Admin',
             email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
             role: 'sas_admin',
+            signatureUrl: adviserProfile?.signatureUrl || (adviserProfile as any)?.signatureDataUrl || null,
           }}
         />
       )}

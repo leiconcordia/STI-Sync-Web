@@ -54,6 +54,7 @@ export default function PAREndorsementModal({
   const [showReturnDialog, setShowReturnDialog] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
+  const [pendingConfirmType, setPendingConfirmType] = useState<'approve' | 'endorse' | null>(null);
 
   // Compute latest snapshot and differences if report was revised
   const latestSnapshot = useMemo(() => {
@@ -590,33 +591,21 @@ export default function PAREndorsementModal({
               <RotateCcw className="w-4 h-4" /> Return for Revision
             </button>
             {canApprove ? (
-              <>
-                <button
-                  type="button"
-                  disabled={isSubmitting || !hasSignature}
-                  onClick={() => handleEndorse('forward')}
-                  className="px-4 py-2 text-xs font-bold text-white bg-[#0E4EBD] hover:bg-blue-700 rounded-lg shadow-sm flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
-                  title="Digitally sign and forward to other approvers"
-                >
-                  <Send className="w-4 h-4 text-[#FFD41C]" />
-                  <span>{isSubmitting ? 'Recording...' : 'Sign & Forward'}</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={isSubmitting || !hasSignature}
-                  onClick={() => handleEndorse('approve')}
-                  className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
-                  title="Grant executive clearance and fully approve PAR"
-                >
-                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                  <span>{isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
-                </button>
-              </>
+              <button
+                type="button"
+                disabled={isSubmitting || !hasSignature}
+                onClick={() => setPendingConfirmType('approve')}
+                className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                title="Grant executive clearance and fully approve PAR"
+              >
+                <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                <span>{isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
+              </button>
             ) : (
               <button
                 type="button"
                 disabled={isSubmitting || !hasSignature}
-                onClick={() => handleEndorse('forward')}
+                onClick={() => setPendingConfirmType('endorse')}
                 className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
               >
                 {isSubmitting ? (
@@ -634,6 +623,102 @@ export default function PAREndorsementModal({
           </div>
         </div>
       </div>
+
+      {/* Confirmation Dialog for Digital Signing / Approval */}
+      {pendingConfirmType && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className={`p-5 flex items-center gap-3.5 border-b ${
+              pendingConfirmType === 'approve'
+                ? 'bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] text-white'
+                : 'bg-emerald-50 border-emerald-200 text-emerald-950'
+            }`}>
+              <div className={`p-2.5 rounded-2xl ${
+                pendingConfirmType === 'approve' ? 'bg-white/10 text-[#FFD41C]' : 'bg-emerald-100 text-emerald-700'
+              }`}>
+                {pendingConfirmType === 'approve' ? <ShieldCheck className="w-6 h-6" /> : <Send className="w-6 h-6" />}
+              </div>
+              <div>
+                <h3 className="font-bold text-sm">
+                  {pendingConfirmType === 'approve' ? 'Confirm Final Executive Approval' : 'Confirm Digital Endorsement'}
+                </h3>
+                <p className={`text-xs mt-0.5 truncate max-w-xs ${pendingConfirmType === 'approve' ? 'text-white/80' : 'text-emerald-800'}`}>
+                  {report.eventTitle}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-3.5">
+              <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                {pendingConfirmType === 'approve'
+                  ? 'Are you sure you want to digitally sign and fully approve this Post-Activity Report?'
+                  : 'Are you sure you want to digitally sign and endorse this Post-Activity Report?'}
+              </p>
+
+              <div className={`p-3.5 rounded-2xl border text-xs leading-relaxed space-y-2 ${
+                pendingConfirmType === 'approve'
+                  ? 'bg-amber-50/70 border-amber-200 text-amber-900'
+                  : 'bg-slate-50 border-slate-200 text-slate-700'
+              }`}>
+                <div className="font-bold text-[11px] uppercase tracking-wider text-slate-500">
+                  What happens next:
+                </div>
+                {pendingConfirmType === 'approve' ? (
+                  <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                    <li>Your official digital signature will be sealed onto Form PAR-01.</li>
+                    <li>The report status transitions to <strong>Approved & Cleared</strong>.</li>
+                    <li>The report is archived into the Institutional EDMS.</li>
+                    <li>The student organization and all stakeholders will be notified.</li>
+                  </ul>
+                ) : (
+                  <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                    <li>Your official digital signature will be sealed on Stage {currentStage}.</li>
+                    <li>The report will advance to the next signatory stage in the pipeline.</li>
+                    <li>Next-stage signers will be notified automatically.</li>
+                  </ul>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setPendingConfirmType(null)}
+                disabled={isSubmitting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const type = pendingConfirmType;
+                  setPendingConfirmType(null);
+                  handleEndorse(type === 'approve' ? 'approve' : 'forward');
+                }}
+                disabled={isSubmitting}
+                className={`px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 ${
+                  pendingConfirmType === 'approve'
+                    ? 'bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                {pendingConfirmType === 'approve' ? (
+                  <>
+                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                    <span>Confirm & Fully Approve</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Confirm & Endorse</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Step/Section-Level Return for Revision Modal */}
       <StepReturnRevisionModal

@@ -55,8 +55,15 @@ export function isOfficerProposal(event?: Partial<EventDocument> | any | null): 
   if (!event) return false;
 
   // 1. Reference number / ID prefix check (Primary ground truth: AP-YYYY-SAS-xxx or EVT-ADM-xxx vs AP-YYYY-ORG-xxx)
-  const ref = (event.referenceId || event.referenceNo || '').toString().toUpperCase().trim();
-  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-')) {
+  const ref = (
+    event.referenceId ||
+    event.referenceNo ||
+    (typeof event.id === 'string' && (event.id.startsWith('AP-') || event.id.startsWith('EVT-')) ? event.id : '') ||
+    event.reference ||
+    event.refNo ||
+    ''
+  ).toString().toUpperCase().trim();
+  if (ref.includes('-SAS-') || ref.startsWith('EVT-ADM-') || ref.includes('-ADM-')) {
     return false;
   }
   if (ref.includes('-ORG-') || (ref.startsWith('AP-') && !ref.includes('-SAS-') && !ref.startsWith('AP-SAS-'))) {
@@ -72,9 +79,13 @@ export function isOfficerProposal(event?: Partial<EventDocument> | any | null): 
     return true;
   }
 
-  // 3. Creator Email Check (Official SAS Administration Accounts)
+  // 3. Creator Email & Name Check (Official SAS Administration Accounts)
   const email = (event.createdByEmail || '').toLowerCase().trim();
   if (email === 'sao@ormoc.sti.edu.ph' || email.startsWith('sas@') || email.startsWith('sao@')) {
+    return false;
+  }
+  const name = (event.createdByName || event.creatorName || '').toLowerCase().trim();
+  if (name.includes('riselle') || name.includes('lucanas')) {
     return false;
   }
 

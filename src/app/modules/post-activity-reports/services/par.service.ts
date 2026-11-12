@@ -12,9 +12,11 @@ import {
   limit,
   serverTimestamp,
   arrayUnion,
+  deleteField,
   Timestamp,
 } from 'firebase/firestore';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
+import { archiveDocumentRevision } from '../../workflow/services/revision-history.service';
 import { SIGNATORIES_COLLECTION } from '../../signatories/services/signatory.service';
 import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signatories/utils/signatory-label.utils';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
@@ -40,6 +42,7 @@ import type {
 import { autoArchiveApprovedPAR } from '../../reports/services/report-archive.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
+import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
 export const PAR_COLLECTION = 'post_activity_reports';
 
@@ -562,8 +565,10 @@ export async function saveOrSubmitPAR(
 
   if (isResubmission && submit && existingParData) {
     const existingParClean = sanitizeFirestorePayload(existingParData);
-    payload.previousSnapshot = existingParData.previousSnapshot || existingParData.returnedSnapshot || existingParClean;
     payload.returnedSnapshot = existingParData.returnedSnapshot || existingParData.previousSnapshot || existingParClean;
+    payload.previousSnapshot = deleteField();
+    payload.dataSnapshot = deleteField();
+    payload.revisionHistory = deleteField();
     payload.returnRemarks = null;
     payload.stepRevisionRemarks = null;
     payload.returnFlags = [];
@@ -591,9 +596,13 @@ export async function saveOrSubmitPAR(
       resubmittedAt: new Date().toISOString(),
       resubmissionNote: resubmissionNote || `Resubmitted as v${currentVersion}.0`,
       dataSnapshot: existingParClean,
-      previousSnapshot: existingParClean,
     });
-    payload.revisionHistory = arrayUnion(revisionEntry);
+
+    try {
+      archiveDocumentRevision('post_activity_reports', docId, revisionEntry).catch((e) =>
+        console.warn('[submitPostActivityReport] Subcollection archival warning:', e)
+      );
+    } catch {}
   }
 
   if (!formData.id) {
@@ -881,10 +890,8 @@ export async function returnPAR(
   const effectiveDeadline =
     returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-  // Capture full deep snapshot of the PAR before returning so diff comparisons have complete fidelity
-  const fullSnapshot = sanitizeFirestorePayload({
-    ...data,
-  });
+  // Capture clean snapshot of the PAR without recursive history to prevent 1MB limit errors
+  const fullSnapshot = sanitizeFirestorePayload(sanitizeCleanDocumentSnapshot(data));
 
   const currentVer = Number((data as any).version || 1);
   const revisionEntry = sanitizeFirestorePayload({
@@ -901,7 +908,6 @@ export async function returnPAR(
     stepRevisionRemarks: stepRevisionRemarks || {},
     returnFlags: returnFlags || [],
     returnDeadline: effectiveDeadline,
-    dataSnapshot: fullSnapshot,
     previousSnapshot: fullSnapshot,
   });
 
@@ -919,7 +925,6 @@ export async function returnPAR(
     returnedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     previousSnapshot: fullSnapshot,
-    returnedSnapshot: fullSnapshot,
     remarksHistory: arrayUnion(sanitizeFirestorePayload(returnRemark)),
     revisionHistory: arrayUnion(revisionEntry),
   }));

@@ -91,8 +91,9 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
       setLoading(false);
     };
 
+    const qAct = query(collection(db, 'activities'), where('isDeleted', '==', true));
     const unsubAct = onSnapshot(
-      collection(db, 'activities'),
+      qAct,
       (snap) => {
         actDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         updateCombined();
@@ -100,8 +101,9 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
       () => setLoading(false)
     );
 
+    const qLeg = query(collection(db, 'events'), where('isDeleted', '==', true));
     const unsubLeg = onSnapshot(
-      collection(db, 'events'),
+      qLeg,
       (snap) => {
         legDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         updateCombined();
@@ -115,14 +117,13 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
     };
   }, []);
 
-  // 2. Stream Archived Students
+  // 2. Stream Archived Students (Server-side filtered to avoid full database table scan)
   useEffect(() => {
+    const qStudents = query(collection(db, 'students'), where('isDeleted', '==', true));
     const unsubStudents = onSnapshot(
-      collection(db, 'students'),
+      qStudents,
       (snap) => {
-        const archivedStudents = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((s: any) => s.status === 'ARCHIVED' || s.isDeleted === true);
+        const archivedStudents = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         setStudents(archivedStudents);
       },
       (err) => console.warn('[ArchiveCenter] Error streaming students:', err)
@@ -130,14 +131,13 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
     return () => unsubStudents();
   }, []);
 
-  // 3. Stream Soft-Deleted Announcements
+  // 3. Stream Soft-Deleted Announcements (Server-side filtered)
   useEffect(() => {
+    const qAnnounce = query(collection(db, 'announcements'), where('isDeleted', '==', true));
     const unsubAnnouncements = onSnapshot(
-      collection(db, 'announcements'),
+      qAnnounce,
       (snap) => {
-        const archivedAnnouncements = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((a: any) => a.isDeleted === true || a.isArchived === true || a.status === 'archived');
+        const archivedAnnouncements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         setAnnouncements(archivedAnnouncements);
       },
       (err) => console.warn('[ArchiveCenter] Error streaming announcements:', err)
@@ -145,14 +145,13 @@ export default function ArchiveCenter({ onUnsavedChange }: ArchiveCenterProps) {
     return () => unsubAnnouncements();
   }, []);
 
-  // 4. Stream Soft-Deleted Documents
+  // 4. Stream Soft-Deleted Documents (Server-side filtered)
   useEffect(() => {
+    const qDocs = query(collection(db, 'documents'), where('isDeleted', '==', true));
     const unsubDocs = onSnapshot(
-      collection(db, 'documents'),
+      qDocs,
       (snap) => {
-        const archivedDocs = snap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((docItem: any) => docItem.isDeleted === true || docItem.status === 'archived');
+        const archivedDocs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         setDocuments(archivedDocs);
       },
       (err) => console.warn('[ArchiveCenter] Error streaming documents:', err)
