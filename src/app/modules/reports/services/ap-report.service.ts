@@ -69,7 +69,8 @@ export function calculateEventLeadTimeDays(event: EventDocument): number | null 
  */
 export function filterEventsByUniversalFilters(
   events: EventDocument[],
-  filters: UniversalFilterState
+  filters: UniversalFilterState,
+  orgsMap?: Map<string, OrganizationDocument>
 ): EventDocument[] {
   return events.filter((evt) => {
     // Exclude soft-deleted items
@@ -97,13 +98,37 @@ export function filterEventsByUniversalFilters(
       }
     }
 
+    // Club Adviser filter
+    const orgDoc = orgsMap?.get(evt.hostingOrgId);
+    const adviserName = orgDoc?.adviser?.name || (evt as any).adviserName || (evt.hostingOrgId === 'sas' ? 'SAS Office' : '');
+    if (filters.adviserName && filters.adviserName !== 'ALL') {
+      if (adviserName !== filters.adviserName) return false;
+    }
+
+    // Status filter
+    if (filters.statusFilter && filters.statusFilter !== 'ALL') {
+      const st = (evt.proposalStatus || evt.status || 'pending').toLowerCase();
+      if (filters.statusFilter === 'approved' && st !== 'approved' && st !== 'completed') return false;
+      if (filters.statusFilter === 'pending' && st !== 'pending' && st !== 'pending_review' && st !== 'under_review' && st !== 'draft') return false;
+      if (filters.statusFilter === 'returned' && st !== 'returned') return false;
+      if (filters.statusFilter === 'completed' && st !== 'completed' && evt.status !== 'COMPLETED') return false;
+      if (filters.statusFilter === 'cancelled' && st !== 'cancelled' && evt.status !== 'CANCELLED') return false;
+    }
+
+    // Funding source filter
+    if (filters.fundingSource && filters.fundingSource !== 'ALL') {
+      const fs = (evt as any).fundingSource || 'school_budget';
+      if (fs !== filters.fundingSource) return false;
+    }
+
     // Search query filter
     if (filters.searchQuery.trim()) {
       const q = filters.searchQuery.toLowerCase().trim();
       const ref = (evt.referenceId || (evt as any).referenceNo || '').toLowerCase();
       const title = (evt.title || '').toLowerCase();
-      const org = (evt.hostingOrgId || '').toLowerCase();
-      if (!ref.includes(q) && !title.includes(q) && !org.includes(q)) {
+      const org = (evt.hostingOrgId || orgDoc?.name || orgDoc?.acronym || '').toLowerCase();
+      const adv = adviserName.toLowerCase();
+      if (!ref.includes(q) && !title.includes(q) && !org.includes(q) && !adv.includes(q)) {
         return false;
       }
     }
@@ -121,7 +146,7 @@ export function computeAPAnalytics(
   organizations: OrganizationDocument[]
 ): APAnalyticsSummary {
   const orgsMap = new Map<string, OrganizationDocument>(organizations.map((o) => [o.id, o]));
-  const filteredEvents = filterEventsByUniversalFilters(events, filters);
+  const filteredEvents = filterEventsByUniversalFilters(events, filters, orgsMap);
 
   let totalProposedBudget = 0;
   let totalApprovedBudget = 0;
@@ -236,12 +261,22 @@ export function computeAPAnalytics(
         : new Date(evt.createdAt as any).toLocaleDateString('en-US')
       : 'N/A';
 
+    const orgDoc = orgsMap.get(evt.hostingOrgId);
+    const adviserName =
+      orgDoc?.adviser?.name ||
+      (evt as any).adviserName ||
+      (evt.hostingOrgId === 'sas' || evt.hostingOrgId === 'institutional' ? 'SAS Office' : 'Unassigned');
+    const fundingSource =
+      (evt as any).fundingSource === 'organization_funds' ? 'Org Internal Funds' : 'School Budget';
+
     return {
       id: evt.id,
       referenceNo: evt.referenceId || (evt as any).referenceNo || `AP-${evt.id.slice(0, 6)}`,
       title: evt.title || 'Untitled Activity',
       organizer: resolveEventOrganizer(evt, orgsMap),
       organizationId: evt.hostingOrgId,
+      adviserName,
+      fundingSource,
       targetDateVenue: resolveEventDateVenue(evt),
       proposedBudget: proposed,
       approvedBudget: approved,

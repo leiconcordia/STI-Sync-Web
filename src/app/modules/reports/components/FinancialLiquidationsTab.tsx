@@ -1,302 +1,251 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
-  Receipt,
-  DollarSign,
-  TrendingDown,
-  TrendingUp,
-  AlertTriangle,
-  Download,
-  Eye,
-  FileSpreadsheet,
+  Wallet,
   CheckCircle2,
   Clock,
-  Sparkles,
+  TrendingDown,
+  TrendingUp,
+  Eye,
+  Download,
+  FileSpreadsheet,
+  Receipt,
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
-import { Button } from '../../../components/ui/button';
-import { TablePagination } from '../../../components/common/TablePagination';
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
-import type { FLAnalyticsSummary, FLReportRow } from '../types/report.types';
-import type { LiquidationDocument } from '../../finance/types/liquidation.types';
-import { formatCurrency } from '../../../utils/currency';
+import { FLAnalyticsSummary, FLReportRow } from '../types/report.types';
+import { TablePagination, usePagination } from '../../../components/ui/table-pagination';
 
 interface FinancialLiquidationsTabProps {
   summary: FLAnalyticsSummary;
-  onInspectLiquidation: (liq: LiquidationDocument) => void;
+  onSelectLiquidation: (row: FLReportRow) => void;
   onExport: () => void;
+  onExportCSV?: () => void;
 }
-
-const ITEMS_PER_PAGE = 8;
-const DONUT_COLORS = ['#001A4D', '#0E4EBD', '#22C55E', '#FFD41C', '#8B5CF6'];
 
 export const FinancialLiquidationsTab: React.FC<FinancialLiquidationsTabProps> = ({
   summary,
-  onInspectLiquidation,
+  onSelectLiquidation,
   onExport,
+  onExportCSV,
 }) => {
-  const { kpis, charts, rows } = summary;
-  const [currentPage, setCurrentPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'pending' | 'returned'>('all');
+  const rows = summary?.rows || [];
+  const kpis = summary?.kpis || {
+    totalDisbursedAdvances: 0,
+    totalLiquidatedExpenses: 0,
+    surplusReturned: 0,
+    budgetVarianceRate: 0,
+    unliquidatedAgingCount: 0,
+  };
 
-  const filteredRows = rows.filter((r) => {
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'approved') return r.auditStatus === 'approved';
-    if (statusFilter === 'returned') return r.auditStatus === 'returned';
-    if (statusFilter === 'pending') {
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    paginatedItems,
+    setCurrentPage,
+    setPageSize,
+    totalItems,
+  } = usePagination(rows, 10);
+
+  const formatPHP = (val?: number | null) =>
+    `₱${(Number(val) || 0).toLocaleString('en-PH', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+  const statusBadge = (status: string) => {
+    const lower = (status || '').toLowerCase();
+    if (lower === 'approved' || lower === 'completed' || lower === 'liquidated') {
       return (
-        r.auditStatus === 'pending' ||
-        r.auditStatus === 'under_review' ||
-        r.auditStatus === 'draft'
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <CheckCircle2 className="w-3 h-3" /> LIQUIDATED
+        </span>
       );
     }
-    return true;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / ITEMS_PER_PAGE));
-  const paginatedRows = filteredRows.slice(
-    (currentPage - 1) * ITEMS_PER_PAGE,
-    currentPage * ITEMS_PER_PAGE
-  );
+    if (lower === 'pending' || lower === 'under_review' || lower === 'submitted') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+          <Clock className="w-3 h-3" /> UNDER AUDIT
+        </span>
+      );
+    }
+    if (lower === 'returned') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">
+          RETURNED
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-600 border border-gray-200">
+        {(status || 'PENDING').toUpperCase()}
+      </span>
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* ── KPI Summary Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Disbursed Advances</span>
-            <DollarSign className="w-4 h-4 text-[#0E4EBD]" />
+      {/* Financial KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-gray-500 uppercase mb-1">
+            <span>Disbursed Advances</span>
+            <Wallet className="w-4 h-4 text-[#003B73]" />
           </div>
-          <h3 className="text-xl font-black text-[#001A4D]">{formatCurrency(kpis.totalDisbursedAdvances)}</h3>
-          <p className="text-[11px] text-gray-400 mt-1">Cash released to clubs</p>
+          <div className="text-xl font-black text-gray-900 truncate">
+            {formatPHP(kpis.totalDisbursedAdvances)}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Across {rows.length} liquidation reports
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Liquidated Expenses</span>
-            <Receipt className="w-4 h-4 text-purple-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-emerald-600 uppercase mb-1">
+            <span>Total Liquidated Spend</span>
+            <Receipt className="w-4 h-4" />
           </div>
-          <h3 className="text-xl font-black text-purple-600">{formatCurrency(kpis.totalLiquidatedExpenses)}</h3>
-          <p className="text-[11px] text-purple-700 font-semibold mt-1">Verified with receipts</p>
+          <div className="text-xl font-black text-emerald-700 truncate">
+            {formatPHP(kpis.totalLiquidatedExpenses)}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Variance Rate: {kpis.budgetVarianceRate || 0}%
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Surplus Returned</span>
-            <TrendingUp className="w-4 h-4 text-emerald-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-blue-600 uppercase mb-1">
+            <span>Surplus Returned</span>
+            {(kpis.surplusReturned || 0) >= 0 ? (
+              <TrendingDown className="w-4 h-4 text-emerald-600" />
+            ) : (
+              <TrendingUp className="w-4 h-4 text-red-600" />
+            )}
           </div>
-          <h3 className="text-xl font-black text-emerald-600">{formatCurrency(kpis.surplusReturned)}</h3>
-          <p className="text-[11px] text-emerald-700 font-medium mt-1">Unspent balance surrendered</p>
+          <div className="text-xl font-black text-emerald-700 truncate">
+            {formatPHP(kpis.surplusReturned)}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Unspent cash advances returned
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Budget Variance</span>
-            <TrendingDown className="w-4 h-4 text-blue-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-amber-600 uppercase mb-1">
+            <span>Aging Overdue (&gt;15d)</span>
+            <Clock className="w-4 h-4" />
           </div>
-          <h3 className="text-xl font-black text-[#001A4D]">
-            {kpis.budgetVarianceRate > 0 ? `+${kpis.budgetVarianceRate}%` : `${kpis.budgetVarianceRate}%`}
-          </h3>
-          <p className="text-[11px] text-blue-600 font-semibold mt-1">Spend vs Disbursed</p>
-        </div>
-
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Overdue Aging (7d+)</span>
-            <AlertTriangle className="w-4 h-4 text-amber-500" />
+          <div className="text-2xl font-black text-gray-900">
+            {(kpis.unliquidatedAgingCount || 0).toLocaleString()}
           </div>
-          <h3 className="text-2xl font-black text-amber-600">{kpis.unliquidatedAgingCount}</h3>
-          <p className="text-[11px] text-amber-700 font-medium mt-1">Awaiting liquidation submission</p>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Concluded events awaiting clearance
+          </div>
         </div>
       </div>
 
-      {/* ── Visual Analytics: Spend vs Allocation & Category Breakdown ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Disbursed vs Actual Spend per Club */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Disbursed vs Actual Spend per Club</span>
-              <span className="text-xs font-normal text-gray-500">Clustered Comparison</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={charts.disbursedVsActual}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="org" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip formatter={(val: number) => `₱${val.toLocaleString()}`} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="allocated" fill="#001A4D" name="Disbursed Advance (₱)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="spent" fill="#22C55E" name="Actual Liquidated (₱)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Expense Categories Breakdown */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Audited Expense Categories</span>
-              <span className="text-xs font-normal text-gray-500">By Expenditure Type</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <PieChart>
-                <Pie
-                  data={charts.expenseCategories}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={50}
-                  outerRadius={80}
-                  paddingAngle={3}
-                  dataKey="amount"
-                  nameKey="category"
-                >
-                  {charts.expenseCategories.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={DONUT_COLORS[index % DONUT_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={(val: number) => `₱${val.toLocaleString()}`} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Sub-Directory Table & Export ── */}
-      <Card className="border-gray-200 rounded-2xl shadow-xs overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50/50">
+      {/* Detailed Ledger Table */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="font-bold text-base text-[#001A4D]">Financial Liquidations (FL) Ledger</h3>
-            <p className="text-xs text-gray-500">
-              Showing {filteredRows.length} official Form LF-01 liquidation records
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-extrabold text-gray-900">
+                Financial Liquidation & Audit Ledger (LF-01)
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                {rows.length} Reports
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Complete financial accountability ledger showing disbursed budgets, actual expenses, variances, Club Advisers, and receipt counts.
             </p>
           </div>
-
-          <div className="flex items-center gap-2.5">
-            <select
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as any);
-                setCurrentPage(1);
-              }}
-              className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 outline-none focus:border-[#001A4D]"
-            >
-              <option value="all">All Audit Statuses</option>
-              <option value="approved">Approved & Cleared</option>
-              <option value="pending">Under Verification</option>
-              <option value="returned">Returned for Rectification</option>
-            </select>
-
-            <Button
+          <div className="flex items-center gap-2">
+            {onExportCSV && (
+              <button
+                onClick={onExportCSV}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-sm"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                Export CSV
+              </button>
+            )}
+            <button
               onClick={onExport}
-              className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#003B73] text-white hover:bg-[#002855] transition-colors shadow-sm"
             >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Export Liquidation Ledger
-            </Button>
+              <Download className="w-3.5 h-3.5" />
+              Export PDF / CSV
+            </button>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-[#001A4D] text-white font-bold uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-3 whitespace-nowrap">Liquidation ID</th>
-                <th className="px-4 py-3 whitespace-nowrap">Activity Title</th>
-                <th className="px-4 py-3 whitespace-nowrap">Club / Org</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Disbursed Advance</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Actual Expense</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Surplus / (Deficit)</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">OR & Files</th>
-                <th className="px-4 py-3 whitespace-nowrap">Audit Status</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Action</th>
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-gray-200 text-[11px] font-extrabold uppercase tracking-wider text-gray-500">
+                <th className="py-3.5 px-4">Ref Code</th>
+                <th className="py-3.5 px-4">Activity Title</th>
+                <th className="py-3.5 px-4">Organization</th>
+                <th className="py-3.5 px-4">Club Adviser</th>
+                <th className="py-3.5 px-4 text-right">Disbursed</th>
+                <th className="py-3.5 px-4 text-right">Actual Spend</th>
+                <th className="py-3.5 px-4 text-right">Surplus / Deficit</th>
+                <th className="py-3.5 px-4 text-center">Receipts</th>
+                <th className="py-3.5 px-4">Status</th>
+                <th className="py-3.5 px-4 text-center">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
-              {paginatedRows.map((row) => {
-                const isApproved = row.auditStatus === 'approved';
-                const isReturned = row.auditStatus === 'returned';
-                const isSurplus = row.surplusDeficit >= 0;
-
-                return (
-                  <tr key={row.id} className="hover:bg-blue-50/40 transition-colors">
-                    <td className="px-4 py-3 font-mono font-bold text-[#0E4EBD] whitespace-nowrap">
+            <tbody className="divide-y divide-gray-100 text-xs">
+              {paginatedItems.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="py-12 text-center text-gray-400 font-medium">
+                    No Financial Liquidation reports match the current filters.
+                  </td>
+                </tr>
+              ) : (
+                paginatedItems.map((row) => (
+                  <tr key={row.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="py-3.5 px-4 font-mono font-bold text-[#003B73] whitespace-nowrap">
                       {row.liquidationId}
                     </td>
-                    <td className="px-4 py-3 font-bold text-gray-900 max-w-xs truncate">
-                      {row.eventTitle}
+                    <td className="py-3.5 px-4">
+                      <div className="font-bold text-gray-900">{row.eventTitle}</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        {row.dateSubmitted || 'Submitted'}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap font-medium">
-                      {row.organization}
+                    <td className="py-3.5 px-4 font-semibold text-gray-800">{row.organization}</td>
+                    <td className="py-3.5 px-4 font-semibold text-gray-700">
+                      {row.adviserName || 'SAS Office'}
                     </td>
-                    <td className="px-4 py-3 text-right font-medium text-gray-600 whitespace-nowrap">
-                      {formatCurrency(row.disbursedAmount)}
+                    <td className="py-3.5 px-4 text-right font-semibold text-gray-700 whitespace-nowrap">
+                      {formatPHP(row.disbursedAmount)}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold text-purple-600 whitespace-nowrap">
-                      {formatCurrency(row.totalActualExpense)}
+                    <td className="py-3.5 px-4 text-right font-extrabold text-gray-900 whitespace-nowrap">
+                      {formatPHP(row.totalActualExpense)}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold whitespace-nowrap">
-                      <span className={isSurplus ? 'text-emerald-600' : 'text-red-600'}>
-                        {isSurplus ? `+${formatCurrency(row.surplusDeficit)}` : `(${formatCurrency(Math.abs(row.surplusDeficit))})`}
-                      </span>
+                    <td
+                      className={`py-3.5 px-4 text-right font-bold whitespace-nowrap ${
+                        (row.surplusDeficit || 0) >= 0 ? 'text-emerald-700' : 'text-red-600'
+                      }`}
+                    >
+                      {(row.surplusDeficit || 0) >= 0 ? '+' : ''}
+                      {formatPHP(row.surplusDeficit)}
                     </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-gray-100 text-gray-700 font-bold text-[10px]">
-                        <Receipt className="w-3 h-3 text-[#0E4EBD]" />
-                        {row.orCount} ORs ({row.attachmentsCount} files)
-                      </span>
+                    <td className="py-3.5 px-4 text-center font-bold text-gray-700">
+                      {row.orCount || 0} ORs ({row.attachmentsCount || 0} files)
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          isApproved
-                            ? 'bg-green-100 text-green-700'
-                            : isReturned
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {isApproved ? 'Audited & Cleared' : isReturned ? 'Returned' : 'In Review'}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                    <td className="py-3.5 px-4 whitespace-nowrap">{statusBadge(row.auditStatus)}</td>
+                    <td className="py-3.5 px-4 text-center">
                       <button
-                        onClick={() => onInspectLiquidation(row.rawLiquidation)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#0E4EBD] hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                        title="Inspect Form LF-01 & Receipts"
+                        onClick={() => onSelectLiquidation(row)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-[#003B73] bg-blue-50 hover:bg-[#003B73] hover:text-white transition-colors"
                       >
                         <Eye className="w-3.5 h-3.5" />
                         Inspect
                       </button>
                     </td>
                   </tr>
-                );
-              })}
-
-              {paginatedRows.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="text-center py-12 text-gray-400">
-                    No financial liquidations found matching the selected filters.
-                  </td>
-                </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -305,13 +254,12 @@ export const FinancialLiquidationsTab: React.FC<FinancialLiquidationsTabProps> =
         <TablePagination
           currentPage={currentPage}
           totalPages={totalPages}
-          totalItems={filteredRows.length}
-          itemsPerPage={ITEMS_PER_PAGE}
+          pageSize={pageSize}
+          totalItems={totalItems}
           onPageChange={setCurrentPage}
-          itemName="liquidations"
+          onPageSizeChange={setPageSize}
         />
-      </Card>
+      </div>
     </div>
   );
 };
-

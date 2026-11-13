@@ -1,55 +1,54 @@
-import { ApprovedReportStorage } from '../../modules/reports/components/ApprovedReportStorage';
-import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router';
+import React, { useState } from 'react';
 import {
-  BarChart3,
-  FileText,
-  Receipt,
-  FileCheck2,
-  Building2,
-  Printer,
-  Download,
-  Sparkles,
+  FileSpreadsheet,
   LayoutDashboard,
-  Filter,
+  FileText,
+  Wallet,
+  ClipboardCheck,
+  Building2,
+  Download,
+  ShieldCheck,
 } from 'lucide-react';
-import { Button } from '../../components/ui/button';
+import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import { useReportsAnalyticsData } from '../../modules/reports/hooks/useReportsAnalyticsData';
 import { UniversalReportFilterBar } from '../../modules/reports/components/UniversalReportFilterBar';
 import { OverviewAnalyticsTab } from '../../modules/reports/components/OverviewAnalyticsTab';
 import { ActivityProposalsTab } from '../../modules/reports/components/ActivityProposalsTab';
 import { FinancialLiquidationsTab } from '../../modules/reports/components/FinancialLiquidationsTab';
 import { PostActivityReportsTab } from '../../modules/reports/components/PostActivityReportsTab';
-import { ClubsAndOfficersTab } from '../../modules/reports/components/ClubsAndOfficersTab';
+import { ClubsAndOfficersTab, ClubsSubView } from '../../modules/reports/components/ClubsAndOfficersTab';
 import { ReportExportModal } from '../../modules/reports/components/ReportExportModal';
-
-import EventProposalReview from '../components/EventProposalReview';
-import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
-import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
-import PostActivityReportDetailModal from '../../modules/post-activity-reports/components/PostActivityReportDetailModal';
-import { OrganizationDetailModal } from '../components/OrganizationDetailModal';
-
-import { useReportsAnalyticsData } from '../../modules/reports/hooks/useReportsAnalyticsData';
-import type {
-  ReportTabId,
-  GeneratedReportData,
-} from '../../modules/reports/types/report.types';
-import type { EventDocument } from '../../modules/events/types/event.types';
-import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
-import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
-import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
-
 import {
+  ReportDetailDrawer,
+  ReportDrawerSelection,
+} from '../../modules/reports/components/ReportDetailDrawer';
+import {
+  generateMasterSystemLedgerReport,
   generateAPSummaryReport,
   generateFLLedgerReport,
   generatePARPortfolioReport,
   generateOfficerMasterRosterReport,
   generateOrgDirectoryReport,
+  generateClubAdvisersDirectoryReport,
 } from '../../modules/reports/services/report-generator.service';
+import { exportReportToCSV } from '../../modules/reports/utils/csv-report-builder';
+import {
+  GeneratedReportData,
+  APReportRow,
+  FLReportRow,
+  PARReportRow,
+  OrgDirectoryRow,
+  OfficerRosterRow,
+} from '../../modules/reports/types/report.types';
 
-export function ReportsAnalytics() {
+type ActiveReportTab = 'overview' | 'ap' | 'fl' | 'par' | 'clubs';
+
+export const ReportsAnalytics: React.FC = () => {
+  const { profile } = useAdviserProfile();
+  const adminName = profile?.fullName || 'SAS Administrator';
+
   const {
-    activeTab,
-    setActiveTab,
+    loading,
     filterState,
     updateFilters,
     resetFilters,
@@ -61,133 +60,192 @@ export function ReportsAnalytics() {
     parSummary,
     rosterSummary,
     overviewSummary,
-    loading,
   } = useReportsAnalyticsData();
-  const [reportParams, setReportParams] = useSearchParams();
-  const requestedKind = reportParams.get('reportStorage') || ['activity_proposal', 'financial_liquidation', 'post_activity_report'].find((kind) => reportParams.get('reportId')?.startsWith(`${kind}_`));
-  useEffect(() => {
-    const tab = { activity_proposal: 'ACTIVITY_PROPOSALS', financial_liquidation: 'FINANCIAL_LIQUIDATIONS', post_activity_report: 'POST_ACTIVITY_REPORTS' }[requestedKind || ''];
-    if (tab) setActiveTab(tab as ReportTabId);
-  }, [requestedKind, setActiveTab]);
 
-  // Admin session
-  const [session] = useState(() => {
-    try {
-      const raw = localStorage.getItem('sti_sync_admin_session');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
+  const [activeTab, setActiveTab] = useState<ActiveReportTab>('overview');
+  const [previewReport, setPreviewReport] = useState<GeneratedReportData | null>(null);
+  const [drawerSelection, setDrawerSelection] = useState<ReportDrawerSelection>(null);
 
-  const adminUid = session?.uid || 'sas_admin_user';
-  const adminName = session?.name || 'Student Affairs & Services';
-
-  // Preview & Drill-down Modal States
-  const [inspectingEvent, setInspectingEvent] = useState<EventDocument | null>(null);
-  const [inspectingLiquidation, setInspectingLiquidation] = useState<LiquidationDocument | null>(null);
-  const [lightboxData, setLightboxData] = useState<{ url: string; title?: string; vendor?: string } | null>(null);
-  const [inspectingPAR, setInspectingPAR] = useState<PostActivityReportDocument | null>(null);
-  const [inspectingOrg, setInspectingOrg] = useState<OrganizationDocument | null>(null);
-
-  // Unified PDF / CSV Export Preview Modal State
-  const [exportReportData, setExportReportData] = useState<GeneratedReportData | null>(null);
-
-  // Export handlers for each sub-directory
-  const handleExportAP = () => {
-    const report = generateAPSummaryReport(apSummary, filterState, adminName);
-    setExportReportData(report);
-  };
-
-  const handleExportFL = () => {
-    const report = generateFLLedgerReport(flSummary, filterState, adminName);
-    setExportReportData(report);
-  };
-
-  const handleExportPAR = () => {
-    const report = generatePARPortfolioReport(parSummary, filterState, adminName);
-    setExportReportData(report);
-  };
-
-  const handleExportRoster = () => {
-    const report = generateOfficerMasterRosterReport(rosterSummary, filterState, adminName);
-    setExportReportData(report);
-  };
-
-  const handleOpenQuickReport = (type: 'ap' | 'fl' | 'par' | 'roster') => {
-    switch (type) {
+  const buildReportForTab = (tab: ActiveReportTab): GeneratedReportData => {
+    switch (tab) {
+      case 'overview':
+        return generateMasterSystemLedgerReport(overviewSummary, filterState, adminName);
       case 'ap':
-        handleExportAP();
-        break;
+        return generateAPSummaryReport(apSummary, filterState, adminName);
       case 'fl':
-        handleExportFL();
-        break;
+        return generateFLLedgerReport(flSummary, filterState, adminName);
       case 'par':
-        handleExportPAR();
-        break;
-      case 'roster':
-        handleExportRoster();
-        break;
+        return generatePARPortfolioReport(parSummary, filterState, adminName);
+      case 'clubs':
+        return generateOrgDirectoryReport(rosterSummary, filterState, adminName);
     }
   };
 
-  const tabs: Array<{ id: ReportTabId; label: string; icon: React.ElementType; badge?: number | string }> = [
-    { id: 'OVERVIEW', label: 'Executive Overview', icon: LayoutDashboard },
+  // Trigger PDF/CSV Preview Modal based on current tab
+  const handleExportCurrentTab = () => {
+    setPreviewReport(buildReportForTab(activeTab));
+  };
+
+  // Direct 1-click CSV download for current tab
+  const handleQuickExportCSV = () => {
+    exportReportToCSV(buildReportForTab(activeTab));
+  };
+
+  const handleExportClubsSubView = (subView: ClubsSubView) => {
+    if (subView === 'orgs') {
+      setPreviewReport(generateOrgDirectoryReport(rosterSummary, filterState, adminName));
+    } else if (subView === 'advisers') {
+      setPreviewReport(generateClubAdvisersDirectoryReport(rosterSummary, filterState, adminName));
+    } else {
+      setPreviewReport(generateOfficerMasterRosterReport(rosterSummary, filterState, adminName));
+    }
+  };
+
+  const handleExportClubsSubViewCSV = (subView: ClubsSubView) => {
+    if (subView === 'orgs') {
+      exportReportToCSV(generateOrgDirectoryReport(rosterSummary, filterState, adminName));
+    } else if (subView === 'advisers') {
+      exportReportToCSV(generateClubAdvisersDirectoryReport(rosterSummary, filterState, adminName));
+    } else {
+      exportReportToCSV(generateOfficerMasterRosterReport(rosterSummary, filterState, adminName));
+    }
+  };
+
+  const handleExportSingleRecord = (selection: ReportDrawerSelection) => {
+    if (!selection) return;
+
+    if (selection.type === 'ap') {
+      const singleSummary = {
+        ...apSummary,
+        kpis: {
+          ...apSummary.kpis,
+          totalProposalsSubmitted: 1,
+          totalProposedBudget: selection.data.proposedBudget || 0,
+          totalApprovedBudget: selection.data.approvedBudget || 0,
+        },
+        rows: [selection.data],
+      };
+      setPreviewReport(generateAPSummaryReport(singleSummary, filterState, adminName));
+    } else if (selection.type === 'fl') {
+      const singleSummary = {
+        ...flSummary,
+        kpis: {
+          ...flSummary.kpis,
+          totalDisbursedAdvances: selection.data.disbursedAmount || 0,
+          totalLiquidatedExpenses: selection.data.totalActualExpense || 0,
+          surplusReturned: Math.max(0, selection.data.surplusDeficit || 0),
+        },
+        rows: [selection.data],
+      };
+      setPreviewReport(generateFLLedgerReport(singleSummary, filterState, adminName));
+    } else if (selection.type === 'par') {
+      const singleSummary = {
+        ...parSummary,
+        kpis: {
+          ...parSummary.kpis,
+          totalActivitiesConducted: 1,
+          totalUniqueStudentAttendees: selection.data.actualTurnout || 0,
+          overallEventRating: selection.data.rating || 0,
+        },
+        rows: [selection.data],
+      };
+      setPreviewReport(generatePARPortfolioReport(singleSummary, filterState, adminName));
+    } else if (selection.type === 'org') {
+      const singleSummary = {
+        ...rosterSummary,
+        orgRows: [selection.data],
+      };
+      setPreviewReport(generateOrgDirectoryReport(singleSummary, filterState, adminName));
+    } else if (selection.type === 'officer') {
+      const singleSummary = {
+        ...rosterSummary,
+        officerRows: [selection.data],
+      };
+      setPreviewReport(generateOfficerMasterRosterReport(singleSummary, filterState, adminName));
+    }
+
+    setDrawerSelection(null);
+  };
+
+  const handleSelectMasterEvent = (eventId: string) => {
+    const apRow = (apSummary.rows || []).find((r) => r.id === eventId);
+    if (apRow) {
+      setDrawerSelection({ type: 'ap', data: apRow });
+    }
+  };
+
+  const tabs: { id: ActiveReportTab; label: string; icon: React.ReactNode; badge?: number }[] = [
     {
-      id: 'ACTIVITY_PROPOSALS',
+      id: 'overview',
+      label: 'System Ledger & Top Orgs',
+      icon: <LayoutDashboard className="w-4 h-4" />,
+      badge: overviewSummary.masterLedgerRows?.length || 0,
+    },
+    {
+      id: 'ap',
       label: 'Activity Proposals (AP)',
-      icon: FileText,
-      badge: apSummary.rows.length,
+      icon: <FileText className="w-4 h-4" />,
+      badge: apSummary.rows?.length || 0,
     },
     {
-      id: 'FINANCIAL_LIQUIDATIONS',
+      id: 'fl',
       label: 'Financial Liquidations (FL)',
-      icon: Receipt,
-      badge: flSummary.rows.length,
+      icon: <Wallet className="w-4 h-4" />,
+      badge: flSummary.rows?.length || 0,
     },
     {
-      id: 'POST_ACTIVITY_REPORTS',
+      id: 'par',
       label: 'Post-Activity Reports (PAR)',
-      icon: FileCheck2,
-      badge: parSummary.rows.length,
+      icon: <ClipboardCheck className="w-4 h-4" />,
+      badge: parSummary.rows?.length || 0,
     },
     {
-      id: 'CLUBS_AND_OFFICERS',
-      label: 'Clubs & Officer Roster',
-      icon: Building2,
-      badge: rosterSummary.orgRows.length,
+      id: 'clubs',
+      label: 'Orgs, Advisers & Officers',
+      icon: <Building2 className="w-4 h-4" />,
+      badge: rosterSummary.orgRows?.length || 0,
     },
   ];
 
   return (
-    <div className="space-y-6 text-left">
-      {/* ── Page Header ── */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <p className="text-gray-500 text-sm font-medium">
-            Institutional intelligence, accreditation audits, financial liquidations, and leadership directories.
-          </p>
-        </div>
+    <div className="min-h-screen bg-[#F8FAFC] p-6 md:p-8 space-y-6">
+      {/* Institutional Header */}
+      <div className="bg-gradient-to-r from-[#003B73] via-[#002855] to-[#001F42] rounded-3xl p-6 md:p-8 text-white shadow-xl relative overflow-hidden">
+        <div className="absolute -right-12 -top-12 w-72 h-72 rounded-full bg-[#FFD100]/10 blur-3xl pointer-events-none" />
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+          <div>
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[#FFD100] text-xs font-extrabold uppercase tracking-wider mb-3">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Student Affairs & Services • Master Institutional Ledger & Reports
+            </div>
+            <h1 className="text-2xl md:text-3xl font-black tracking-tight">
+              SAS Reports & System Ledger
+            </h1>
+            <p className="text-xs md:text-sm text-blue-100/90 mt-1.5 max-w-2xl leading-relaxed">
+              Dynamically filter, audit, and export all Organizations, Club Advisers, Officers, Activity Proposals (AP), Financial Liquidations (FL), and Post-Activity Reports (PAR) with clean CSV & PDF exports.
+            </p>
+          </div>
 
-        {/* Global Print / Export Current Sub-directory Button */}
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => {
-              if (activeTab === 'ACTIVITY_PROPOSALS') handleExportAP();
-              else if (activeTab === 'FINANCIAL_LIQUIDATIONS') handleExportFL();
-              else if (activeTab === 'POST_ACTIVITY_REPORTS') handleExportPAR();
-              else if (activeTab === 'CLUBS_AND_OFFICERS') handleExportRoster();
-              else handleExportAP();
-            }}
-            className="bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold shadow-xs cursor-pointer"
-          >
-            <Printer className="w-4 h-4 mr-1.5" />
-            Export Tab Report (PDF/CSV)
-          </Button>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              onClick={handleQuickExportCSV}
+              className="inline-flex items-center gap-2 px-4 py-3 rounded-2xl bg-emerald-500 text-white text-xs font-black uppercase tracking-wider hover:bg-emerald-400 transition-all shadow-lg"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              Quick Export CSV
+            </button>
+            <button
+              onClick={handleExportCurrentTab}
+              className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl bg-[#FFD100] text-[#003B73] text-xs font-black uppercase tracking-wider hover:bg-amber-300 transition-all shadow-lg"
+            >
+              <Download className="w-4 h-4" />
+              Preview & Export (PDF / CSV)
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* ── Universal Persistent Filter Bar ── */}
+      {/* Universal Filter Bar */}
       <UniversalReportFilterBar
         filterState={filterState}
         onChange={updateFilters}
@@ -197,160 +255,145 @@ export function ReportsAnalytics() {
         activePeriod={activePeriod}
       />
 
-      {/* ── 5 Sub-Directory Navigation Tabs ── */}
-      <div className="border-b border-gray-200">
-        <nav className="flex space-x-2 sm:space-x-4 overflow-x-auto pb-1" aria-label="Tabs">
-          {tabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-
-            return (
-              <button
-                key={tab.id}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setReportParams((previous) => {
-                    previous.delete('reportId');
-                    const kind = { ACTIVITY_PROPOSALS: 'activity_proposal', FINANCIAL_LIQUIDATIONS: 'financial_liquidation', POST_ACTIVITY_REPORTS: 'post_activity_report' }[tab.id];
-                    if (kind) previous.set('reportStorage', kind); else previous.delete('reportStorage');
-                    return previous;
-                  });
-                }}
-                className={`flex items-center gap-2 py-3 px-3.5 border-b-2 font-bold text-xs whitespace-nowrap transition-all cursor-pointer ${
-                  isActive
-                    ? 'border-[#001A4D] text-[#001A4D]'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-[#0E4EBD]' : 'text-gray-400'}`} />
-                <span>{tab.label}</span>
-                {tab.badge !== undefined && (
-                  <span
-                    className={`ml-1 px-1.5 py-0.5 text-[10px] font-extrabold rounded-full ${
-                      isActive
-                        ? 'bg-[#001A4D] text-[#FFD41C]'
-                        : 'bg-gray-100 text-gray-600'
-                    }`}
-                  >
-                    {tab.badge}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </nav>
+      {/* Navigation Tabs */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`inline-flex items-center gap-2 px-4 py-3 rounded-2xl text-xs font-extrabold whitespace-nowrap transition-all ${
+                isActive
+                  ? 'bg-[#003B73] text-white shadow-md'
+                  : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50 hover:text-gray-900'
+              }`}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+              {tab.badge !== undefined && (
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                    isActive ? 'bg-[#FFD100] text-[#003B73]' : 'bg-gray-100 text-gray-600'
+                  }`}
+                >
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
-      {/* ── Active Tab Content ── */}
-      <div>
-        {activeTab === 'OVERVIEW' && (
-          <OverviewAnalyticsTab
-            summary={overviewSummary}
-            onNavigateTab={setActiveTab}
-            onOpenQuickReport={handleOpenQuickReport}
-          />
-        )}
-
-        {activeTab === 'ACTIVITY_PROPOSALS' && (
-          <div className="space-y-6">
-          <ApprovedReportStorage kind="activity_proposal" />
-          <ActivityProposalsTab
-            summary={apSummary}
-            onSelectEvent={setInspectingEvent}
-            onExport={handleExportAP}
-          />
+      {/* Content Area */}
+      {loading ? (
+        <div className="bg-white rounded-3xl border border-gray-200 p-16 text-center space-y-3 shadow-sm">
+          <div className="w-10 h-10 rounded-full border-4 border-[#003B73] border-t-transparent animate-spin mx-auto" />
+          <div className="text-sm font-bold text-gray-700">
+            Synchronizing Institutional Analytics & Live Firebase Collections...
           </div>
-        )}
+          <p className="text-xs text-gray-400">
+            Compiling Activity Proposals, Financial Liquidations, Post-Activity Reports, Club Advisers, and Officer Rosters
+          </p>
+        </div>
+      ) : (
+        <>
+          {activeTab === 'overview' && (
+            <OverviewAnalyticsTab
+              summary={overviewSummary}
+              onNavigateTab={(t) => setActiveTab(t as ActiveReportTab)}
+              onFilterOrg={(orgId) => updateFilters({ organizationId: orgId })}
+              onSelectEvent={handleSelectMasterEvent}
+              onExportMasterCSV={() =>
+                exportReportToCSV(
+                  generateMasterSystemLedgerReport(overviewSummary, filterState, adminName)
+                )
+              }
+              onExportMasterModal={() =>
+                setPreviewReport(
+                  generateMasterSystemLedgerReport(overviewSummary, filterState, adminName)
+                )
+              }
+            />
+          )}
 
-        {activeTab === 'FINANCIAL_LIQUIDATIONS' && (
-          <div className="space-y-6">
-          <ApprovedReportStorage kind="financial_liquidation" />
-          <FinancialLiquidationsTab
-            summary={flSummary}
-            onInspectLiquidation={setInspectingLiquidation}
-            onExport={handleExportFL}
-          />
-          </div>
-        )}
+          {activeTab === 'ap' && (
+            <ActivityProposalsTab
+              summary={apSummary}
+              onSelectProposal={(row: APReportRow) =>
+                setDrawerSelection({ type: 'ap', data: row })
+              }
+              onExport={() =>
+                setPreviewReport(generateAPSummaryReport(apSummary, filterState, adminName))
+              }
+              onExportCSV={() =>
+                exportReportToCSV(generateAPSummaryReport(apSummary, filterState, adminName))
+              }
+            />
+          )}
 
-        {activeTab === 'POST_ACTIVITY_REPORTS' && (
-          <div className="space-y-6">
-          <ApprovedReportStorage kind="post_activity_report" />
-          <PostActivityReportsTab
-            summary={parSummary}
-            onSelectPAR={setInspectingPAR}
-            onExport={handleExportPAR}
-          />
-          </div>
-        )}
+          {activeTab === 'fl' && (
+            <FinancialLiquidationsTab
+              summary={flSummary}
+              onSelectLiquidation={(row: FLReportRow) =>
+                setDrawerSelection({ type: 'fl', data: row })
+              }
+              onExport={() =>
+                setPreviewReport(generateFLLedgerReport(flSummary, filterState, adminName))
+              }
+              onExportCSV={() =>
+                exportReportToCSV(generateFLLedgerReport(flSummary, filterState, adminName))
+              }
+            />
+          )}
 
-        {activeTab === 'CLUBS_AND_OFFICERS' && (
-          <ClubsAndOfficersTab
-            summary={rosterSummary}
-            onViewOrgDetails={setInspectingOrg}
-            onExportRoster={handleExportRoster}
-          />
-        )}
-      </div>
+          {activeTab === 'par' && (
+            <PostActivityReportsTab
+              summary={parSummary}
+              onSelectPAR={(row: PARReportRow) =>
+                setDrawerSelection({ type: 'par', data: row })
+              }
+              onExport={() =>
+                setPreviewReport(generatePARPortfolioReport(parSummary, filterState, adminName))
+              }
+              onExportCSV={() =>
+                exportReportToCSV(generatePARPortfolioReport(parSummary, filterState, adminName))
+              }
+            />
+          )}
 
-      {/* ── Interactive Modal 1: Full AP Proposal Review ── */}
-      {inspectingEvent && (
-        <EventProposalReview
-          event={inspectingEvent}
-          onClose={() => setInspectingEvent(null)}
-        />
+          {activeTab === 'clubs' && (
+            <ClubsAndOfficersTab
+              summary={rosterSummary}
+              onSelectOrg={(row: OrgDirectoryRow) =>
+                setDrawerSelection({ type: 'org', data: row })
+              }
+              onSelectOfficer={(row: OfficerRosterRow) =>
+                setDrawerSelection({ type: 'officer', data: row })
+              }
+              onExportView={handleExportClubsSubView}
+              onExportCSVView={handleExportClubsSubViewCSV}
+              onFilterByAdviser={(advName) => updateFilters({ adviserName: advName })}
+            />
+          )}
+        </>
       )}
 
-      {/* ── Interactive Modal 2: Full Form LF-01 Liquidation Preview ── */}
-      {inspectingLiquidation && (
-        <LiquidationExportPreviewModal
-          isOpen={Boolean(inspectingLiquidation)}
-          onClose={() => setInspectingLiquidation(null)}
-          report={inspectingLiquidation}
-        />
-      )}
+      {/* Print / PDF / CSV Preview Modal */}
+      <ReportExportModal
+        report={previewReport}
+        isOpen={Boolean(previewReport)}
+        onClose={() => setPreviewReport(null)}
+      />
 
-      {/* ── Interactive Modal 3: Receipt Lightbox ── */}
-      {lightboxData && (
-        <ReceiptLightboxModal
-          isOpen={Boolean(lightboxData)}
-          onClose={() => setLightboxData(null)}
-          imageUrl={lightboxData.url}
-          itemTitle={lightboxData.title}
-          vendorName={lightboxData.vendor}
-        />
-      )}
-
-      {/* ── Interactive Modal 4: Full PAR Detail Review ── */}
-      {inspectingPAR && (
-        <PostActivityReportDetailModal
-          isOpen={Boolean(inspectingPAR)}
-          onClose={() => setInspectingPAR(null)}
-          report={inspectingPAR}
-          isSasAdmin={true}
-          currentUserId={adminUid}
-        />
-      )}
-
-      {/* ── Interactive Modal 5: Organization Hierarchy & Profile ── */}
-      {inspectingOrg && (
-        <OrganizationDetailModal
-          isOpen={Boolean(inspectingOrg)}
-          onClose={() => setInspectingOrg(null)}
-          organization={inspectingOrg}
-        />
-      )}
-
-      {/* ── Interactive Modal 6: Unified PDF & CSV Report Export Preview ── */}
-      {exportReportData && (
-        <ReportExportModal
-          isOpen={Boolean(exportReportData)}
-          onClose={() => setExportReportData(null)}
-          report={exportReportData}
-        />
-      )}
+      {/* Detail Inspection Drawer */}
+      <ReportDetailDrawer
+        selection={drawerSelection}
+        onClose={() => setDrawerSelection(null)}
+        onExportSingle={handleExportSingleRecord}
+      />
     </div>
   );
-}
+};
 
 export default ReportsAnalytics;

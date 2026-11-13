@@ -54,6 +54,36 @@ interface ApprovalItem {
   dateFormatted: string;
   route: string;
   badgeColor: string;
+  fundingBadge: string;
+  fundingBadgeClass: string;
+  actionLabel: string;
+  actionButtonClass: string;
+}
+
+function isOrganizationSubmission(
+  orgId?: string | null,
+  orgName?: string | null,
+  createdByRole?: string | null
+): boolean {
+  const normalizedRole = (createdByRole || "").toLowerCase();
+  if (normalizedRole === "sas" || normalizedRole === "admin" || normalizedRole === "sas_admin") {
+    return false;
+  }
+  const normalizedId = (orgId || "").trim().toLowerCase();
+  if (normalizedId === "sas" || normalizedId === "sao") return false;
+
+  const normalizedName = (orgName || "").trim().toLowerCase();
+  if (
+    normalizedName === "sas" ||
+    normalizedName === "sao" ||
+    normalizedName === "student affairs & services" ||
+    normalizedName === "student affairs and services" ||
+    normalizedName === "sti sas"
+  ) {
+    return false;
+  }
+
+  return Boolean(normalizedId || normalizedName);
 }
 
 export function Dashboard() {
@@ -238,31 +268,55 @@ export function Dashboard() {
     return map;
   }, [organizations]);
 
-  // ─── Unified Approvals Queue Feed (Scrollable, No Visible Scrollbar) ────────
+  // ─── Organization Submissions & Action Queue (Newest First / LIFO) ────────
   const unifiedApprovalsQueue = useMemo(() => {
     const items: ApprovalItem[] = [];
 
-    // 1. Pending Incoming Submitted Documents (Route directly to specific document review)
+    const eventFundingMap = new Map<string, string>();
+    events.forEach((ev) => {
+      if (ev.id && (ev as any).fundingSource) {
+        eventFundingMap.set(ev.id, (ev as any).fundingSource);
+      }
+    });
+
+    // 1. Pending Incoming Submitted Documents (Strictly Organization Submissions)
     pendingIncomingDocs.forEach((doc) => {
-      const ms = getMillis(doc.createdAt);
+      const orgId = (doc as any).senderOrgId || (doc as any).organizationId;
+      const orgName = doc.senderOrgName;
+      if (!isOrganizationSubmission(orgId, orgName, (doc as any).senderRole)) return;
+
+      const ms = getMillis((doc as any).submittedAt || doc.createdAt);
+      const isSchoolFunded = (doc as any).fundingSource === "school_budget";
       items.push({
         id: `doc-${doc.id}`,
         rawId: doc.id,
         domain: "document",
         domainLabel: "Document Submission",
         title: doc.title || doc.referenceNumber || "Document Review",
-        subtitle: `${doc.senderOrgName || "STI SAS"} · ${doc.category}`,
+        subtitle: `${orgName || "Organization"} · ${doc.category}`,
         timestampMs: ms,
-        dateFormatted: formatTimestampDate(doc.createdAt),
+        dateFormatted: formatTimestampDate((doc as any).submittedAt || doc.createdAt),
         route: `/home/documents/${doc.id}/review`,
         badgeColor: "bg-[#0284C7]",
+        fundingBadge: isSchoolFunded ? "School Funded" : "Org Document",
+        fundingBadgeClass: isSchoolFunded
+          ? "bg-blue-50 text-[#003B73] border-blue-200"
+          : "bg-sky-50 text-sky-700 border-sky-200",
+        actionLabel: isSchoolFunded ? "Release to Signatories" : "Approve",
+        actionButtonClass: isSchoolFunded
+          ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
+          : "bg-emerald-600 hover:bg-emerald-700 text-white",
       });
     });
 
-    // 2. Pending Activity Proposals (Route directly to specific activity proposal review)
+    // 2. Pending Activity Proposals (Strictly Organization Submissions)
     pendingActivities.forEach((e) => {
-      const ms = getMillis(e.createdAt);
+      const orgId = e.hostingOrgId || (e as any).organizationId;
       const cleanOrg = resolveCleanOrgName(e, orgMap);
+      if (!isOrganizationSubmission(orgId, cleanOrg, (e as any).createdByRole)) return;
+
+      const ms = getMillis((e as any).submittedAt || e.createdAt || (e as any).updatedAt);
+      const isSchoolFunded = (e as any).fundingSource === "school_budget";
       items.push({
         id: `activity-${e.id}`,
         rawId: e.id,
@@ -271,18 +325,34 @@ export function Dashboard() {
         title: e.title || "Untitled Proposal",
         subtitle: `${cleanOrg} · Proposed`,
         timestampMs: ms,
-        dateFormatted: formatTimestampDate(e.createdAt),
+        dateFormatted: formatTimestampDate((e as any).submittedAt || e.createdAt || (e as any).updatedAt),
         route: `/home/event-approvals?tab=pending&id=${e.id}`,
         badgeColor: "bg-[#0E4EBD]",
+        fundingBadge: isSchoolFunded ? "School Funded" : "Club Funded",
+        fundingBadgeClass: isSchoolFunded
+          ? "bg-blue-50 text-[#003B73] border-blue-200"
+          : "bg-emerald-50 text-emerald-700 border-emerald-200",
+        actionLabel: isSchoolFunded ? "Release to Signatories" : "Approve",
+        actionButtonClass: isSchoolFunded
+          ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
+          : "bg-emerald-600 hover:bg-emerald-700 text-white",
       });
     });
 
-    // 3. Pending Liquidations (Route directly to specific liquidation review)
+    // 3. Pending Liquidations (Strictly Organization Submissions)
     pendingLiquidations.forEach((l) => {
-      const ms = getMillis(l.submittedAt || l.updatedAt || l.createdAt);
-      const totalExp = Number(l.totalActualSpending ?? (l as any).totalExpenses ?? (l as any).totalAmount ?? 0);
+      const orgId = l.organizationId || (l as any).orgId;
       const orgName = resolveCleanOrgName(l, orgMap);
+      if (!isOrganizationSubmission(orgId, orgName, (l as any).createdByRole)) return;
+
+      const ms = getMillis(l.submittedAt || l.createdAt || l.updatedAt);
+      const totalExp = Number(l.totalActualSpending ?? (l as any).totalExpenses ?? (l as any).totalAmount ?? 0);
       const title = l.eventTitle || (l as any).eventName || (l as any).title || "Financial Liquidation";
+      const resolvedFunding =
+        (l as any).fundingSource ||
+        (l.eventId ? eventFundingMap.get(l.eventId) : undefined);
+      const isSchoolFunded = resolvedFunding === "school_budget";
+
       items.push({
         id: `liq-${l.id}`,
         rawId: l.id,
@@ -291,16 +361,27 @@ export function Dashboard() {
         title: title,
         subtitle: `${orgName} · ${formatCurrency(totalExp)}`,
         timestampMs: ms,
-        dateFormatted: formatTimestampDate(l.submittedAt || l.updatedAt || l.createdAt),
+        dateFormatted: formatTimestampDate(l.submittedAt || l.createdAt || l.updatedAt),
         route: `/home/liquidations?tab=pending&id=${l.id}`,
         badgeColor: "bg-amber-500",
+        fundingBadge: isSchoolFunded ? "School Funded" : "Club Funded",
+        fundingBadgeClass: isSchoolFunded
+          ? "bg-blue-50 text-[#003B73] border-blue-200"
+          : "bg-emerald-50 text-emerald-700 border-emerald-200",
+        actionLabel: isSchoolFunded ? "Release to Signatories" : "Approve",
+        actionButtonClass: isSchoolFunded
+          ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
+          : "bg-emerald-600 hover:bg-emerald-700 text-white",
       });
     });
 
-    // 4. Pending Post-Activity Reports (Route directly to specific PAR review)
+    // 4. Pending Post-Activity Reports (Strictly Organization Submissions)
     pendingPARs.forEach((par) => {
-      const ms = getMillis(par.createdAt || (par as any).updatedAt);
+      const orgId = (par as any).organizationId || (par as any).hostingOrgId;
       const orgName = resolveCleanOrgName(par, orgMap);
+      if (!isOrganizationSubmission(orgId, orgName, (par as any).createdByRole)) return;
+
+      const ms = getMillis((par as any).submittedAt || par.createdAt || (par as any).updatedAt);
       items.push({
         id: `par-${par.id}`,
         rawId: par.id,
@@ -309,16 +390,20 @@ export function Dashboard() {
         title: par.eventTitle || par.referenceNo || "Post-Activity Report",
         subtitle: `${orgName} · Post-Activity Report`,
         timestampMs: ms,
-        dateFormatted: formatTimestampDate(par.createdAt || (par as any).updatedAt),
+        dateFormatted: formatTimestampDate((par as any).submittedAt || par.createdAt || (par as any).updatedAt),
         route: `/home/post-activity-reports?id=${par.id}`,
         badgeColor: "bg-[#FF5E36]",
+        fundingBadge: "Club Activity Report",
+        fundingBadgeClass: "bg-orange-50 text-orange-700 border-orange-200",
+        actionLabel: "Approve",
+        actionButtonClass: "bg-emerald-600 hover:bg-emerald-700 text-white",
       });
     });
 
-    // Sort FIFO: oldest pending items first (first in, first out)
-    items.sort((a, b) => a.timestampMs - b.timestampMs);
+    // Sort newest submission first (LIFO): last submission on top, earliest on bottom
+    items.sort((a, b) => b.timestampMs - a.timestampMs);
     return items;
-  }, [pendingIncomingDocs, pendingActivities, pendingLiquidations, pendingPARs, orgMap]);
+  }, [pendingIncomingDocs, pendingActivities, pendingLiquidations, pendingPARs, orgMap, events]);
 
   // ─── Real Organization Activity Roster ─────────────────────────────────────
   const organizationActivityList = useMemo(() => {
@@ -449,17 +534,19 @@ export function Dashboard() {
 
           {/* 2 Hub Cards: Pending Approvals Queue & Organization Activity */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* 1. Unified Approvals Queue (Fixed Height h-[500px], Rows Pushed Directly to Top) */}
+            {/* 1. Organization Submissions Queue (Fixed Height h-[500px], Newest First) */}
             <Card className="h-[500px] border-[#E0E0E0] shadow-sm rounded-2xl flex flex-col gap-0 overflow-hidden">
               <CardHeader className="border-b border-gray-100 py-3.5 px-4 flex-shrink-0">
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="flex items-center gap-2">
                       <FileCheck className="w-5 h-5 text-[#0E4EBD]" />
-                      <CardTitle className="text-[#001A4D] text-lg font-bold">Pending Approvals Queue</CardTitle>
+                      <CardTitle className="text-[#001A4D] text-lg font-bold">
+                        Organization Submissions Queue
+                      </CardTitle>
                     </div>
                     <p className="text-[11px] text-gray-500 mt-0.5">
-                      Showing oldest pending submissions (FIFO)
+                      Newest submissions on top • Release school-funded items to signatories or approve club-funded requests
                     </p>
                   </div>
                   <span className="px-2.5 py-0.5 bg-[#001A4D] text-white rounded-full text-xs font-mono font-bold">
@@ -468,18 +555,18 @@ export function Dashboard() {
                 </div>
               </CardHeader>
               <CardContent className="px-4 pt-3 pb-3 flex-1 flex flex-col justify-start overflow-hidden">
-                {/* Rows Pushed Directly to Top - Scrollable FIFO queue without visible scrollbar */}
+                {/* Rows Pushed Directly to Top - Scrollable newest-first queue without visible scrollbar */}
                 <div className="space-y-2 flex-1 overflow-y-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden pt-0 mt-0">
                   {unifiedApprovalsQueue.length === 0 ? (
                     <div className="py-16 text-center text-gray-500">
                       <CheckCircle2 className="w-10 h-10 text-green-500 mx-auto mb-2" />
-                      <p className="font-bold text-[#001A4D]">All Approval Queues are Clear!</p>
+                      <p className="font-bold text-[#001A4D]">All Organization Queues are Clear!</p>
                       <p className="text-xs text-gray-400 mt-0.5">
-                        There are currently no pending items awaiting adviser review.
+                        There are currently no pending organization submissions awaiting SAS action.
                       </p>
                     </div>
                   ) : (
-                    unifiedApprovalsQueue.slice(0, 6).map((item) => (
+                    unifiedApprovalsQueue.map((item) => (
                       <div
                         key={item.id}
                         className="flex items-center gap-3 p-2.5 hover:bg-gray-50/80 rounded-xl transition-colors border border-gray-100"
@@ -487,25 +574,32 @@ export function Dashboard() {
                         <div className={`w-2.5 h-2.5 rounded-full ${item.badgeColor} flex-shrink-0`} />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1.5">
-                            <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                              {item.domainLabel}
-                            </span>
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider truncate">
+                                {item.domainLabel}
+                              </span>
+                              <span
+                                className={`px-1.5 py-0.5 rounded-md text-[9px] font-bold border whitespace-nowrap ${item.fundingBadgeClass}`}
+                              >
+                                {item.fundingBadge}
+                              </span>
+                            </div>
                             {item.dateFormatted && (
-                              <span className="text-[10px] text-gray-400 font-medium">
-                                Submitted: {item.dateFormatted}
+                              <span className="text-[10px] text-gray-400 font-medium whitespace-nowrap">
+                                {item.dateFormatted}
                               </span>
                             )}
                           </div>
-                          <div className="font-semibold text-[#001A4D] text-xs truncate">{item.title}</div>
+                          <div className="font-semibold text-[#001A4D] text-xs truncate mt-0.5">{item.title}</div>
                           <div className="text-[11px] text-gray-500 truncate mt-0.5">{item.subtitle}</div>
                         </div>
-                        {/* Review Button Redirecting Directly to Specific Item Review Page */}
+                        {/* Action Button Routing Directly to Release to Signatories or SAS Approve */}
                         <Button
                           size="sm"
                           onClick={() => navigate(item.route)}
-                          className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-semibold h-7 px-3 flex-shrink-0 cursor-pointer"
+                          className={`${item.actionButtonClass} text-[11px] font-semibold h-7 px-2.5 flex-shrink-0 cursor-pointer whitespace-nowrap`}
                         >
-                          Review
+                          {item.actionLabel}
                         </Button>
                       </div>
                     ))

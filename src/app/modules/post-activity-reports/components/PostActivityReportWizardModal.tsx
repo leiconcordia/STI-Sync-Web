@@ -30,8 +30,11 @@ import {
   Check,
   Lock,
   Coins,
+  Paperclip,
+  Clock,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { uploadToCloudinary } from '../../../../services/cloudinary';
 import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
 import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
@@ -54,6 +57,7 @@ import type {
   PARObjectiveStatus,
   PARPhotoAttachment,
   PARApprovalStep,
+  PARAttachmentFile,
 } from '../types/par.types';
 import type { EventDocument } from '../../events/types/event.types';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
@@ -322,6 +326,10 @@ export default function PostActivityReportWizardModal({
   // Proposal Copied Fields
   const [proposalOrganizers, setProposalOrganizers] = useState<string[]>([]);
   const [proposedMechanics, setProposedMechanics] = useState<string[]>([]);
+  const [mechanicsDiffered, setMechanicsDiffered] = useState(false);
+  const [mechanicsAttachmentUrl, setMechanicsAttachmentUrl] = useState('');
+  const [mechanicsAttachmentName, setMechanicsAttachmentName] = useState('');
+  const [isUploadingMechanicsFile, setIsUploadingMechanicsFile] = useState(false);
   const [proposalMaterials, setProposalMaterials] = useState<string[]>([]);
   const [proposalMarketingPlan, setProposalMarketingPlan] = useState<string[]>([]);
   const [proposalDocumentationPlan, setProposalDocumentationPlan] = useState<string[]>([]);
@@ -332,6 +340,10 @@ export default function PostActivityReportWizardModal({
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [totalDisbursed, setTotalDisbursed] = useState(0);
   const [liquidationRef, setLiquidationRef] = useState('');
+  const [linkedLiquidationId, setLinkedLiquidationId] = useState('');
+  const [copiedFromLiquidation, setCopiedFromLiquidation] = useState(false);
+  const [financialAttachments, setFinancialAttachments] = useState<PARAttachmentFile[]>([]);
+  const [isUploadingFinancialFile, setIsUploadingFinancialFile] = useState(false);
   const [financialLineItems, setFinancialLineItems] = useState<
     Array<{ description: string; unitAmount: number; totalAmount: number }>
   >([]);
@@ -417,25 +429,23 @@ export default function PostActivityReportWizardModal({
 
   // Attendance & Validation Engine States
   const [hasScannedAttendance, setHasScannedAttendance] = useState(false);
+  const [estimatedAttendance, setEstimatedAttendance] = useState(0);
+  const [attendanceListUrl, setAttendanceListUrl] = useState('');
+  const [attendanceListName, setAttendanceListName] = useState('');
+  const [isUploadingAttendanceFile, setIsUploadingAttendanceFile] = useState(false);
   const [validationErrors, setValidationErrors] = useState<Record<string, boolean>>({});
-
-  const handleRegisteredCountChange = (val: number) => {
-    const reg = Math.max(0, val);
-    setRegisteredCount(reg);
-    const rate = reg > 0 ? Math.min(100, Math.round((attendedCount / reg) * 100)) : (attendedCount > 0 ? 100 : 0);
-    setTurnoutRate(rate);
-    setHowManyAttended(`${attendedCount} / ${reg} Attendees (${rate}% Turnout)`);
-    if (validationErrors.registeredCount && reg > 0) {
-      setValidationErrors((prev) => ({ ...prev, registeredCount: false }));
-    }
-  };
 
   const handleAttendedCountChange = (val: number) => {
     const att = Math.max(0, val);
     setAttendedCount(att);
-    const rate = registeredCount > 0 ? Math.min(100, Math.round((att / registeredCount) * 100)) : (att > 0 ? 100 : 0);
+    const basis = estimatedAttendance || registeredCount || att;
+    const rate = basis > 0 ? Math.min(100, Math.round((att / basis) * 100)) : (att > 0 ? 100 : 0);
     setTurnoutRate(rate);
-    setHowManyAttended(`${att} / ${registeredCount || att} Attendees (${rate}% Turnout)`);
+    setHowManyAttended(
+      estimatedAttendance > 0
+        ? `${att} / ${estimatedAttendance} Estimated Attendees (${rate}% Turnout)`
+        : `${att} Attendees`
+    );
     if (validationErrors.attendedCount && att > 0) {
       setValidationErrors((prev) => ({ ...prev, attendedCount: false }));
     }
@@ -609,11 +619,33 @@ Output ONLY the paragraph text.
     if (initialReport) {
       setSelectedEventId(initialReport.eventId);
       setActualMechanics(initialReport.actualMechanics || '');
+      setMechanicsDiffered(
+        typeof initialReport.mechanicsDiffered === 'boolean'
+          ? initialReport.mechanicsDiffered
+          : Boolean(
+              initialReport.actualMechanics &&
+              initialReport.actualMechanics.trim() &&
+              initialReport.actualMechanics.trim() !== (initialReport.proposedMechanics || []).join('\n').trim()
+            )
+      );
+      setMechanicsAttachmentUrl(initialReport.mechanicsAttachmentUrl || '');
+      setMechanicsAttachmentName(initialReport.mechanicsAttachmentName || '');
       setRegisteredCount(initialReport.attendanceSummary?.registeredCount || 0);
+      setEstimatedAttendance(
+        initialReport.attendanceSummary?.estimatedAttendance ||
+        initialReport.attendanceSummary?.registeredCount ||
+        0
+      );
       setAttendedCount(initialReport.attendanceSummary?.attendedCount || 0);
       setTargetAudience(initialReport.attendanceSummary?.targetAudience || '');
       setWhoAttended(initialReport.attendanceSummary?.whoAttended || '');
-      setHasScannedAttendance((initialReport.attendanceSummary?.attendedCount || 0) > 0);
+      setHasScannedAttendance(
+        typeof initialReport.attendanceSummary?.attendanceMonitoringUsed === 'boolean'
+          ? initialReport.attendanceSummary.attendanceMonitoringUsed
+          : (initialReport.attendanceSummary?.attendedCount || 0) > 0
+      );
+      setAttendanceListUrl(initialReport.attendanceSummary?.attendanceListUrl || '');
+      setAttendanceListName(initialReport.attendanceSummary?.attendanceListName || '');
       setHowManyAttended(
         initialReport.attendanceSummary?.howManyAttended ||
           (initialReport.attendanceSummary?.attendedCount
@@ -633,6 +665,9 @@ Output ONLY the paragraph text.
       setTotalRevenue(initialReport.financialSummary?.totalRevenue || 0);
       setTotalDisbursed(initialReport.financialSummary?.totalDisbursed || 0);
       setLiquidationRef(initialReport.liquidationRefNumber || '');
+      setLinkedLiquidationId(initialReport.liquidationId || '');
+      setCopiedFromLiquidation(Boolean(initialReport.financialSummary?.copiedFromLiquidation || initialReport.liquidationId));
+      setFinancialAttachments(initialReport.financialSummary?.attachments || []);
       setFinancialLineItems(initialReport.financialSummary?.lineItems || []);
 
       setObjectiveStatus(initialReport.results?.objectiveStatus || 'fully_achieved');
@@ -779,18 +814,20 @@ Output ONLY the paragraph text.
           });
         }
 
-        // Bridge real-time attendance logs (eliminates static 50 fallback)
+        // Bridge real-time attendance logs + AP-01 Estimated Attendance & Target Market
         try {
           const attResult = await computeEventAttendanceSummary(selectedEventId, evData, proposalDoc);
+          setEstimatedAttendance(attResult.estimatedAttendance);
           setAttendedCount(attResult.attendedCount);
           setRegisteredCount(attResult.registeredCount);
           setTurnoutRate(attResult.turnoutRate);
           setHowManyAttended(attResult.howManyAttended);
           setWhoAttended(attResult.whoAttended || '');
           setTargetAudience(attResult.targetAudience || '');
-          setHasScannedAttendance(attResult.attendedCount > 0);
+          setHasScannedAttendance(attResult.hasAttendanceLogs);
         } catch (attErr) {
           console.warn('[PostActivityReportWizardModal] Attendance bridge fallback:', attErr);
+          setEstimatedAttendance(0);
           setAttendedCount(0);
           setRegisteredCount(0);
           setTurnoutRate(0);
@@ -800,48 +837,110 @@ Output ONLY the paragraph text.
           setHasScannedAttendance(false);
         }
 
-        if (mechs.length > 0) {
-          setActualMechanics((prev) => prev || mechs.join('\n'));
+        // Copy Financial Report directly from Actual Financial Liquidation (LF-01) if available;
+        // fallback to Form AP-01 budget projection only when no liquidation record exists.
+        let liquidationDoc: any = null;
+        const explicitLiqId = (evData as any).liquidationReportId || (evData as any).liquidationId || initialReport?.liquidationId;
+        if (explicitLiqId) {
+          try {
+            const liqSnap = await getDoc(doc(db, LIQUIDATIONS_COLLECTION, explicitLiqId));
+            if (liqSnap.exists()) {
+              liquidationDoc = { id: liqSnap.id, ...liqSnap.data() };
+            }
+          } catch (liqErr) {
+            console.warn('[PostActivityReportWizardModal] Liquidation fetch by ID notice:', liqErr);
+          }
+        }
+        if (!liquidationDoc) {
+          try {
+            const liqQuery = await getDocs(
+              query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', selectedEventId))
+            );
+            if (!liqQuery.empty) {
+              const docs = liqQuery.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+              liquidationDoc =
+                docs.find((d) => d.status === 'approved') ||
+                docs.find((d) => d.status === 'under_review') ||
+                docs[0];
+            }
+          } catch (liqQErr) {
+            console.warn('[PostActivityReportWizardModal] Liquidation query notice:', liqQErr);
+          }
         }
 
-        // Auto-populate Financial Projection directly from Form AP-01 (Approved Proposal)
-        const pItems =
-          Array.isArray(proposalDoc?.lineItems) && proposalDoc.lineItems.length > 0
-            ? proposalDoc.lineItems
-            : Array.isArray((evData as any).lineItems)
-            ? (evData as any).lineItems
-            : [];
+        if (liquidationDoc) {
+          const liqItems = Array.isArray(liquidationDoc.lineItems) ? liquidationDoc.lineItems : [];
+          const liqRev = Number(
+            liquidationDoc.allocatedBudget ??
+              proposalDoc?.allocatedBudget ??
+              proposalDoc?.totalProposedBudget ??
+              evData.budget ??
+              0
+          );
+          const liqSpent = Number(
+            liquidationDoc.totalActualSpending ??
+              liqItems.reduce((sum: number, li: any) => sum + Number(li.totalCost || li.amount || 0), 0)
+          );
+          setTotalRevenue(liqRev);
+          setTotalDisbursed(liqSpent);
+          setFinancialLineItems(
+            liqItems.map((li: any) => ({
+              description: li.particulars || li.description || li.itemName || li.category || 'Expense Item',
+              unitAmount: Number(li.unitCost || li.unitPrice || li.unitAmount || li.totalCost || 0),
+              totalAmount: Number(
+                li.totalCost ||
+                  li.totalAmount ||
+                  li.amount ||
+                  Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0) ||
+                  0
+              ),
+            }))
+          );
+          setLinkedLiquidationId(liquidationDoc.id || '');
+          setLiquidationRef(liquidationDoc.referenceNo || 'LF-01');
+          setCopiedFromLiquidation(true);
+        } else {
+          // Fallback: Form AP-01 projection
+          const pItems =
+            Array.isArray(proposalDoc?.lineItems) && proposalDoc.lineItems.length > 0
+              ? proposalDoc.lineItems
+              : Array.isArray((evData as any).lineItems)
+              ? (evData as any).lineItems
+              : [];
 
-        const rev = Number(
-          proposalDoc?.allocatedBudget ??
-            proposalDoc?.totalProposedBudget ??
-            proposalDoc?.totalBudget ??
-            evData.budget ??
-            0
-        );
-        const exp = Number(
-          proposalDoc?.totalExpenseAmount ??
-            proposalDoc?.totalBudget ??
-            evData.budget ??
-            0
-        );
+          const rev = Number(
+            proposalDoc?.allocatedBudget ??
+              proposalDoc?.totalProposedBudget ??
+              proposalDoc?.totalBudget ??
+              evData.budget ??
+              0
+          );
+          const exp = Number(
+            proposalDoc?.totalExpenseAmount ??
+              proposalDoc?.totalBudget ??
+              evData.budget ??
+              0
+          );
 
-        setTotalRevenue(rev);
-        setTotalDisbursed(exp);
-        setFinancialLineItems(
-          pItems.map((li: any) => ({
-            description: li.particulars || li.description || li.item || 'Projected Item',
-            unitAmount: Number(li.unitCost || li.unitPrice || li.unitAmount || 0),
-            totalAmount: Number(
-              li.totalCost ||
-                li.total ||
-                li.totalAmount ||
-                Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0) ||
-                0
-            ),
-          }))
-        );
-        setLiquidationRef(proposalDoc?.referenceNo || evData.referenceId || 'AP-PROJECTION');
+          setTotalRevenue(rev);
+          setTotalDisbursed(exp);
+          setFinancialLineItems(
+            pItems.map((li: any) => ({
+              description: li.particulars || li.description || li.item || 'Projected Item',
+              unitAmount: Number(li.unitCost || li.unitPrice || li.unitAmount || 0),
+              totalAmount: Number(
+                li.totalCost ||
+                  li.total ||
+                  li.totalAmount ||
+                  Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0) ||
+                  0
+              ),
+            }))
+          );
+          setLinkedLiquidationId('');
+          setLiquidationRef(proposalDoc?.referenceNo || evData.referenceId || 'AP-PROJECTION');
+          setCopiedFromLiquidation(false);
+        }
 
         // Auto-populate dynamic signatory pipeline if not initialized
         if (approvalChain.length === 0) {
@@ -870,6 +969,96 @@ Output ONLY the paragraph text.
 
   const handleRemoveLearning = (idx: number) => {
     setKeyLearnings(keyLearnings.filter((_, i) => i !== idx));
+  };
+
+  // Compute 15-school-day submission deadline from event completion date (skipping weekends)
+  const parDeadlineInfo = useMemo(() => {
+    const rawDate =
+      (selectedEvent as any)?.concludedAt ||
+      (selectedEvent as any)?.endDate ||
+      (selectedEvent as any)?.date ||
+      null;
+    if (!rawDate) return null;
+    const base = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate);
+    if (isNaN(base.getTime())) return null;
+    const due = new Date(base);
+    let schoolDaysAdded = 0;
+    while (schoolDaysAdded < 15) {
+      due.setDate(due.getDate() + 1);
+      const day = due.getDay();
+      if (day !== 0 && day !== 6) {
+        schoolDaysAdded++;
+      }
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dueCompare = new Date(due);
+    dueCompare.setHours(0, 0, 0, 0);
+    const isOverdue = today > dueCompare;
+    return {
+      dueDateFormatted: due.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      isOverdue,
+    };
+  }, [selectedEvent]);
+
+  const handleMechanicsFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingMechanicsFile(true);
+    try {
+      const res = await uploadToCloudinary(file, { folder: 'par_attachments/mechanics' });
+      setMechanicsAttachmentUrl(res.secure_url);
+      setMechanicsAttachmentName(file.name);
+      toast.success(`Attached mechanics sheet: ${file.name}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to upload mechanics sheet.');
+    } finally {
+      setIsUploadingMechanicsFile(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleAttendanceFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingAttendanceFile(true);
+    try {
+      const res = await uploadToCloudinary(file, { folder: 'par_attachments/attendance' });
+      setAttendanceListUrl(res.secure_url);
+      setAttendanceListName(file.name);
+      toast.success(`Attached attendance list: ${file.name}`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to upload attendance list.');
+    } finally {
+      setIsUploadingAttendanceFile(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleFinancialFilesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setIsUploadingFinancialFile(true);
+    try {
+      const uploaded: PARAttachmentFile[] = [];
+      for (const file of Array.from(files)) {
+        const res = await uploadToCloudinary(file, { folder: 'par_attachments/financial' });
+        uploaded.push({
+          id: `fin-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          name: file.name,
+          url: res.secure_url,
+          size: file.size,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+      setFinancialAttachments((prev) => [...prev, ...uploaded]);
+      toast.success(`Uploaded ${uploaded.length} financial supporting file(s)!`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to upload financial file(s).');
+    } finally {
+      setIsUploadingFinancialFile(false);
+      e.target.value = '';
+    }
   };
 
   const handleMultipleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -937,13 +1126,6 @@ Output ONLY the paragraph text.
       setValidationErrors(errors);
       setActiveTab('overview');
       toast.error('Please select a concluded event.');
-      return false;
-    }
-    if (!registeredCount || registeredCount <= 0 || isNaN(registeredCount)) {
-      errors.registeredCount = true;
-      setValidationErrors(errors);
-      setActiveTab('overview');
-      toast.error('Please provide a valid Registered / Target participant headcount (greater than 0).');
       return false;
     }
     if (!attendedCount || attendedCount <= 0 || isNaN(attendedCount)) {
@@ -1097,8 +1279,11 @@ Output ONLY the paragraph text.
           : initialReport?.eventDateFormatted || 'Concluded Event',
         eventDescription: selectedEvent?.description || initialReport?.eventDescription || '',
         organizerName: selectedEvent?.organizerName || currentUser.name,
-        actualMechanics: proposedMechanics.join('\n') || '',
-        liquidationId: (selectedEvent as any)?.liquidationReportId || (selectedEvent as any)?.liquidationId || initialReport?.liquidationId || '',
+        mechanicsDiffered,
+        actualMechanics: mechanicsDiffered ? actualMechanics.trim() : '',
+        mechanicsAttachmentUrl: mechanicsDiffered ? mechanicsAttachmentUrl : '',
+        mechanicsAttachmentName: mechanicsDiffered ? mechanicsAttachmentName : '',
+        liquidationId: linkedLiquidationId || (selectedEvent as any)?.liquidationReportId || (selectedEvent as any)?.liquidationId || initialReport?.liquidationId || '',
         liquidationRefNumber: liquidationRef || (selectedEvent as any)?.liquidationRefNumber || initialReport?.liquidationRefNumber || '',
 
         // Proposal Copied Fields
@@ -1117,19 +1302,29 @@ Output ONLY the paragraph text.
         organizationAcronym: isSasAdmin ? 'SAS' : ((selectedEvent as any)?.hostingOrgAcronym || 'ORG'),
 
         attendanceSummary: {
-          registeredCount,
+          registeredCount: estimatedAttendance || registeredCount || attendedCount,
+          estimatedAttendance,
           attendedCount,
           turnoutRate,
           targetAudience,
           whoAttended,
-          howManyAttended: howManyAttended || (attendedCount ? `${attendedCount} Attendees` : 'Attendance verified from logs'),
+          howManyAttended:
+            howManyAttended ||
+            (estimatedAttendance > 0
+              ? `${attendedCount} / ${estimatedAttendance} Estimated Attendees (${turnoutRate}% Turnout)`
+              : `${attendedCount} Attendees`),
+          attendanceMonitoringUsed: hasScannedAttendance,
+          attendanceListUrl,
+          attendanceListName,
         },
 
         financialSummary: {
           totalRevenue,
           totalDisbursed,
           surplusOrDeficit: netBalance,
+          copiedFromLiquidation,
           lineItems: financialLineItems,
+          attachments: financialAttachments,
         },
 
         results: {
@@ -1393,147 +1588,265 @@ Output ONLY the paragraph text.
                 </div>
               ) : selectedEvent ? (
                 <div className="space-y-5">
-                  {/* Event Overview Card */}
-                  <div className="bg-gradient-to-br from-slate-900 to-[#001A4D] rounded-xl p-5 text-white">
-                    <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  {/* 15-School-Day Deadline Notice */}
+                  <div className={`rounded-xl px-4 py-2.5 border flex flex-wrap items-center justify-between gap-2 text-xs ${
+                    parDeadlineInfo?.isOverdue
+                      ? 'bg-red-50 border-red-200 text-red-900'
+                      : 'bg-amber-50 border-amber-200 text-amber-900'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      <Clock className={`w-4 h-4 shrink-0 ${parDeadlineInfo?.isOverdue ? 'text-red-600' : 'text-amber-600'}`} />
+                      <span>
+                        <strong>Submission Guideline:</strong> This report must be submitted to the Administrator within <strong>15 school days</strong> from the date of activity completion.
+                      </span>
+                    </div>
+                    {parDeadlineInfo && (
+                      <span className={`font-bold px-2.5 py-0.5 rounded-full text-[11px] ${
+                        parDeadlineInfo.isOverdue ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
+                      }`}>
+                        Due: {parDeadlineInfo.dueDateFormatted} {parDeadlineInfo.isOverdue ? '(Overdue)' : ''}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Event Overview Card (Auto-Populated from AP-01) */}
+                  <div className="bg-gradient-to-br from-slate-900 to-[#001A4D] rounded-xl p-5 text-white space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-bold text-[#FFD41C] uppercase tracking-wider">
-                        Linked Event Proposal
+                        Auto-Populated from Approved Form AP-01
                       </span>
                       <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
                         Lifecycle: Concluded
                       </span>
                     </div>
-                    <h3 className="text-lg font-black text-white">{selectedEvent.title}</h3>
-                    <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-4 text-xs text-slate-300">
+                    <div>
+                      <h3 className="text-lg font-black text-white">{linkedProposal?.title || selectedEvent.title}</h3>
+                      {(linkedProposal?.description || selectedEvent.description) && (
+                        <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                          {linkedProposal?.description || selectedEvent.description}
+                        </p>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1 text-xs text-slate-300">
                       <div>
-                        <span className="text-slate-400 block font-medium">Linked AP-01 Ref:</span>
+                        <span className="text-slate-400 block font-medium">Organizer/s:</span>
+                        <strong className="text-white">
+                          {proposalOrganizers.length > 0
+                            ? proposalOrganizers.join(', ')
+                            : (selectedEvent.hostingOrgName || (selectedEvent as any).organizationName || 'SAS')}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-medium">Date & Time:</span>
+                        <strong className="text-white">
+                          {(selectedEvent as any)?.date
+                            ? `${(selectedEvent as any).date}${(selectedEvent as any).startTime ? `, ${(selectedEvent as any).startTime}${(selectedEvent as any).endTime ? ` – ${(selectedEvent as any).endTime}` : ''}` : ''}`
+                            : (linkedProposal?.proposedDate || 'Concluded Event')}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-medium">Venue:</span>
+                        <strong className="text-white">
+                          {(selectedEvent as any)?.venueName || (selectedEvent as any)?.venue || linkedProposal?.venue || 'STI Ormoc Campus'}
+                        </strong>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block font-medium">Linked AP-01 / LF-01:</span>
                         <strong className="text-[#FFD41C] font-mono">
-                          {linkedProposal?.referenceNo || selectedEvent.referenceId || 'AP-01 Reference'}
-                        </strong>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block font-medium">Hosting Body:</span>
-                        <strong className="text-white">
-                          {selectedEvent.hostingOrgName || (selectedEvent as any).organizationName || 'SAS'}
-                        </strong>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block font-medium">Conducted At:</span>
-                        <strong className="text-white">
-                          {(selectedEvent as any).venue || 'STI Ormoc Campus'}
-                        </strong>
-                      </div>
-                      <div>
-                        <span className="text-slate-400 block font-medium">Liquidation Clearance:</span>
-                        <strong className="text-emerald-300">
-                          {liquidationRef || 'Approved & Verified'}
+                          {linkedProposal?.referenceNo || selectedEvent.referenceId || 'AP-01'}
+                          {copiedFromLiquidation && liquidationRef ? ` • ${liquidationRef}` : ''}
                         </strong>
                       </div>
                     </div>
+                    {proposalMaterials.length > 0 && (
+                      <div className="pt-2 border-t border-white/10 text-xs">
+                        <span className="text-slate-400 font-medium block mb-1">Materials (from AP-01):</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {proposalMaterials.map((mat, i) => (
+                            <span key={i} className="px-2 py-0.5 rounded-md bg-white/10 text-slate-200 text-[11px]">
+                              {mat}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* 2-Column Summary Metrics */}
+                  {/* Mechanics Card: Optional Override Toggle + Sheet Upload */}
+                  <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                          Mechanics
+                        </h4>
+                        <p className="text-[11px] text-slate-500 italic">
+                          (Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setMechanicsDiffered(false)}
+                          className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                            !mechanicsDiffered ? 'bg-[#001A4D] text-white' : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          Same as Proposed
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMechanicsDiffered(true);
+                            if (!actualMechanics.trim() && proposedMechanics.length > 0) {
+                              setActualMechanics(proposedMechanics.join('\n'));
+                            }
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                            mechanicsDiffered ? 'bg-amber-600 text-white' : 'text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          Mechanics Differed
+                        </button>
+                      </div>
+                    </div>
+
+                    {!mechanicsDiffered ? (
+                      <div className="bg-white border border-slate-200 rounded-lg p-3">
+                        <span className="text-[11px] font-bold text-slate-500 block mb-1">
+                          Proposed Mechanics (from Form AP-01):
+                        </span>
+                        {proposedMechanics.length > 0 ? (
+                          <ul className="list-disc pl-4 space-y-0.5 text-xs text-slate-700">
+                            {proposedMechanics.map((m, idx) => (
+                              <li key={idx}>{m}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">No mechanics listed in proposal.</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        <textarea
+                          rows={4}
+                          value={actualMechanics}
+                          onChange={(e) => setActualMechanics(e.target.value)}
+                          placeholder="Enter the actual mechanics conducted (one bullet per line)..."
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2.5 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-xs font-semibold text-slate-700 cursor-pointer">
+                            {isUploadingMechanicsFile ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
+                            ) : (
+                              <Paperclip className="w-3.5 h-3.5 text-blue-600" />
+                            )}
+                            <span>{isUploadingMechanicsFile ? 'Uploading...' : 'Attach Mechanics Sheet (Optional)'}</span>
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg"
+                              onChange={handleMechanicsFileUpload}
+                              disabled={isUploadingMechanicsFile}
+                            />
+                          </label>
+                          {mechanicsAttachmentUrl && (
+                            <div className="flex items-center gap-2 text-xs bg-blue-50 text-blue-800 px-2.5 py-1 rounded-lg border border-blue-200">
+                              <a href={mechanicsAttachmentUrl} target="_blank" rel="noreferrer" className="underline font-medium truncate max-w-[200px]">
+                                {mechanicsAttachmentName || 'Mechanics Sheet'}
+                              </a>
+                              <button
+                                type="button"
+                                onClick={() => { setMechanicsAttachmentUrl(''); setMechanicsAttachmentName(''); }}
+                                className="text-red-500 hover:text-red-700 cursor-pointer"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2-Column Summary Metrics: Attendance & Financial Report */}
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Attendance Turnout */}
+                    {/* Attendance Verification */}
                     <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between">
                       <div>
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
                             <Users className="w-4 h-4 text-blue-600" />
                             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                              Attendance Verification
+                              Attendance
                             </h4>
                           </div>
                           {hasScannedAttendance ? (
                             <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex items-center gap-1 border border-emerald-200">
                               <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Scanner Verified
+                              Attendance Monitoring Synced
                             </span>
                           ) : (
-                            <span className="text-[11px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full flex items-center gap-1 border border-amber-200">
-                              <AlertCircle className="w-3 h-3 text-amber-600" />
-                              Manual Entry
+                            <span className="text-[11px] font-bold text-slate-700 bg-slate-200 px-2 py-0.5 rounded-full flex items-center gap-1 border border-slate-300">
+                              <AlertCircle className="w-3 h-3 text-slate-600" />
+                              Didn&apos;t Use Attendance Monitoring
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 italic mb-3">
+                          (Attach attendance list, if available.)
+                        </p>
+
+                        {/* AP-01 Basis: Estimated Attendance & Target Market */}
+                        <div className="grid grid-cols-2 gap-2 mb-3">
+                          <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                              <Lock className="w-3 h-3" /> Estimated Attendance (AP-01)
+                            </span>
+                            <span className="text-sm font-black text-slate-800 block mt-0.5">
+                              {estimatedAttendance > 0 ? `${estimatedAttendance} Pax` : 'Not Specified'}
+                            </span>
+                          </div>
+                          <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
+                              <Lock className="w-3 h-3" /> Target Market (AP-01)
+                            </span>
+                            <span className="text-xs font-bold text-slate-800 block mt-0.5 truncate" title={targetAudience || 'General Student Body'}>
+                              {targetAudience || 'General Student Body'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* How many attended? */}
+                        <div className={`bg-white p-3 rounded-lg border mb-3 ${validationErrors.attendedCount ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`}>
+                          <label className="text-[11px] font-bold text-blue-700 block mb-1">
+                            How many attended? *
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={attendedCount || ''}
+                            onChange={(e) => handleAttendedCountChange(parseInt(e.target.value, 10) || 0)}
+                            placeholder={hasScannedAttendance ? '0' : 'Enter actual headcount (no monitoring logs found)'}
+                            className="w-full text-base font-black text-blue-700 bg-transparent border-b border-blue-200 focus:border-blue-500 focus:outline-none"
+                          />
+                          {validationErrors.attendedCount && (
+                            <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
+                              Attended count required
+                            </span>
+                          )}
+                          {estimatedAttendance > 0 && attendedCount > 0 && (
+                            <span className="text-[10px] text-slate-500 block mt-1">
+                              Turnout vs. AP-01 Estimate: <strong>{turnoutRate}%</strong> ({attendedCount} / {estimatedAttendance})
                             </span>
                           )}
                         </div>
 
-                        {/* Headcount Inputs / Status */}
-                        <div className="grid grid-cols-2 gap-3 mb-3">
-                          <div className={`bg-white p-3 rounded-lg border ${validationErrors.registeredCount ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`}>
-                            <label className="text-[11px] font-bold text-slate-600 block mb-1">
-                              Registered / Target *
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              value={registeredCount || ''}
-                              onChange={(e) => handleRegisteredCountChange(parseInt(e.target.value, 10) || 0)}
-                              placeholder="0"
-                              className="w-full text-base font-black text-slate-800 bg-transparent border-b border-slate-200 focus:border-blue-500 focus:outline-none"
-                            />
-                            {validationErrors.registeredCount && (
-                              <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
-                                Target count required
-                              </span>
-                            )}
-                          </div>
-                          <div className={`bg-white p-3 rounded-lg border ${validationErrors.attendedCount ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-200'}`}>
-                            <label className="text-[11px] font-bold text-blue-700 block mb-1">
-                              Actual Attended *
-                            </label>
-                            <input
-                              type="number"
-                              min="0"
-                              value={attendedCount || ''}
-                              onChange={(e) => handleAttendedCountChange(parseInt(e.target.value, 10) || 0)}
-                              placeholder="0"
-                              className="w-full text-base font-black text-blue-700 bg-transparent border-b border-blue-200 focus:border-blue-500 focus:outline-none"
-                            />
-                            {validationErrors.attendedCount && (
-                              <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
-                                Attended count required
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Turnout Indicator */}
-                        <div className="bg-white p-2 rounded-lg border border-slate-200 mb-3 flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-600">Calculated Turnout:</span>
-                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${
-                            turnoutRate >= 80
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : turnoutRate >= 50
-                              ? 'bg-blue-100 text-blue-800'
-                              : 'bg-amber-100 text-amber-800'
-                          }`}>
-                            {turnoutRate}% Turnout ({attendedCount} / {registeredCount || 0})
-                          </span>
-                        </div>
-
-                        {/* Audience Profile Fields (De-duplicated) */}
+                        {/* Who attended? */}
                         <div className="space-y-2 text-xs">
                           <div>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-slate-600 font-bold flex items-center gap-1.5 text-xs">
-                                <Lock className="w-3.5 h-3.5 text-slate-400" />
-                                <span>Target Audience (from Form AP-01)</span>
-                              </label>
-                              <span className="text-[10px] text-slate-500 font-medium bg-slate-200/70 px-1.5 py-0.5 rounded">
-                                Pre-populated (Readonly)
-                              </span>
-                            </div>
-                            <input
-                              type="text"
-                              value={targetAudience || 'General Student Body'}
-                              readOnly
-                              disabled
-                              className="w-full bg-slate-100 border border-slate-200 rounded-lg p-2 text-xs text-slate-700 font-medium cursor-not-allowed select-none"
-                            />
-                          </div>
-                          <div>
                             <label className="text-slate-600 font-bold block mb-1">
-                              Actual Participant Profile (Who Attended?) *
+                              Who attended? *
                             </label>
                             <input
                               type="text"
@@ -1547,7 +1860,7 @@ Output ONLY the paragraph text.
                               className={`w-full bg-white border rounded-lg p-2 text-xs text-slate-800 focus:ring-2 focus:ring-blue-500 focus:outline-none ${
                                 validationErrors.whoAttended ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-300'
                               }`}
-                              placeholder="e.g. 1st & 2nd Year BSIT Students, Club Officers"
+                              placeholder="e.g. BSIT all year level"
                             />
                             {validationErrors.whoAttended && (
                               <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
@@ -1555,50 +1868,156 @@ Output ONLY the paragraph text.
                               </span>
                             )}
                           </div>
+
+                          {/* Optional Attendance List Attachment */}
+                          <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
+                            <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold text-slate-700 cursor-pointer">
+                              {isUploadingAttendanceFile ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
+                              ) : (
+                                <Paperclip className="w-3.5 h-3.5 text-blue-600" />
+                              )}
+                              <span>{isUploadingAttendanceFile ? 'Uploading...' : 'Attach Attendance List (Optional)'}</span>
+                              <input
+                                type="file"
+                                className="hidden"
+                                accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg"
+                                onChange={handleAttendanceFileUpload}
+                                disabled={isUploadingAttendanceFile}
+                              />
+                            </label>
+                            {attendanceListUrl && (
+                              <div className="flex items-center gap-1.5 text-[11px] bg-blue-50 text-blue-800 px-2 py-1 rounded-md border border-blue-200">
+                                <a href={attendanceListUrl} target="_blank" rel="noreferrer" className="underline font-medium truncate max-w-[160px]">
+                                  {attendanceListName || 'Attendance List'}
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => { setAttendanceListUrl(''); setAttendanceListName(''); }}
+                                  className="text-red-500 hover:text-red-700 cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
 
-                    {/* Financial Projection from AP-01 */}
-                    <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2">
-                          <DollarSign className="w-4 h-4 text-emerald-600" />
-                          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                            Financial Report (Approved Form AP-01 Budget Projection)
-                          </h4>
+                    {/* Financial Report (Copied from Actual Financial Liquidation LF-01) */}
+                    <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between space-y-3">
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <DollarSign className="w-4 h-4 text-emerald-600" />
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                              Financial Report
+                            </h4>
+                          </div>
+                          <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                            copiedFromLiquidation
+                              ? 'text-emerald-700 bg-emerald-100 border-emerald-200'
+                              : 'text-blue-700 bg-blue-100 border-blue-200'
+                          }`}>
+                            {copiedFromLiquidation ? `Copied from LF-01 (${liquidationRef})` : 'AP-01 Fallback'}
+                          </span>
                         </div>
-                        <span className="text-[11px] font-bold text-blue-700 bg-blue-100 px-2.5 py-0.5 rounded-full border border-blue-200">
-                          From AP-01
-                        </span>
+                        <p className="text-[11px] text-slate-500 italic mb-3">
+                          (Attach supporting receipts and list of participants who have/haven&apos;t paid.) Attached also the liquidation.
+                        </p>
+
+                        <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 block">Revenue / Budget</span>
+                            <span className="text-sm font-bold text-[#001A4D] font-mono">
+                              {formatCurrency(totalRevenue)}
+                            </span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 block">Total Expenses</span>
+                            <span className="text-sm font-bold text-slate-800 font-mono">
+                              {formatCurrency(totalDisbursed)}
+                            </span>
+                          </div>
+                          <div
+                            className={`p-2.5 rounded-lg border ${
+                              isSurplus ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
+                            }`}
+                          >
+                            <span className="text-[10px] block font-medium">Balance</span>
+                            <span className="text-sm font-bold font-mono">
+                              {formatVariance(netBalance)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Itemized Table Preview */}
+                        {financialLineItems.length > 0 && (
+                          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden mb-3 max-h-40 overflow-y-auto">
+                            <table className="w-full text-[11px]">
+                              <thead className="bg-slate-100 text-slate-600 font-bold sticky top-0">
+                                <tr>
+                                  <th className="text-left px-2.5 py-1.5">Description</th>
+                                  <th className="text-right px-2 py-1.5">Unit</th>
+                                  <th className="text-right px-2.5 py-1.5">Total</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {financialLineItems.map((li, idx) => (
+                                  <tr key={idx}>
+                                    <td className="px-2.5 py-1 text-slate-700 truncate max-w-[160px]">{li.description}</td>
+                                    <td className="px-2 py-1 text-right font-mono text-slate-600">{formatCurrency(li.unitAmount)}</td>
+                                    <td className="px-2.5 py-1 text-right font-mono font-semibold text-slate-800">{formatCurrency(li.totalAmount)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-center mb-3">
-                        <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                          <span className="text-[10px] text-slate-500 block">Approved Allocation</span>
-                          <span className="text-sm font-bold text-[#001A4D] font-mono">
-                            {formatCurrency(totalRevenue)}
+
+                      {/* Multi-file upload for supporting receipts, payment list, liquidation */}
+                      <div className="space-y-2 pt-2 border-t border-slate-200">
+                        <label className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded-lg bg-white border border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer transition-colors">
+                          {isUploadingFinancialFile ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                          ) : (
+                            <Upload className="w-4 h-4 text-blue-600" />
+                          )}
+                          <span>
+                            {isUploadingFinancialFile
+                              ? 'Uploading files...'
+                              : 'Upload Receipts, Participant Payment List, or Liquidation File(s)'}
                           </span>
-                        </div>
-                        <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                          <span className="text-[10px] text-slate-500 block">Projected Expenses</span>
-                          <span className="text-sm font-bold text-slate-800 font-mono">
-                            {formatCurrency(totalDisbursed)}
-                          </span>
-                        </div>
-                        <div
-                          className={`p-2.5 rounded-lg border ${
-                            isSurplus ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
-                          }`}
-                        >
-                          <span className="text-[10px] block font-medium">Projected Balance</span>
-                          <span className="text-sm font-bold font-mono">
-                            {formatVariance(netBalance)}
-                          </span>
-                        </div>
+                          <input
+                            type="file"
+                            multiple
+                            className="hidden"
+                            accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg"
+                            onChange={handleFinancialFilesUpload}
+                            disabled={isUploadingFinancialFile}
+                          />
+                        </label>
+                        {financialAttachments.length > 0 && (
+                          <div className="space-y-1">
+                            {financialAttachments.map((att) => (
+                              <div key={att.id} className="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 text-[11px]">
+                                <a href={att.url} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline font-medium truncate">
+                                  {att.name}
+                                </a>
+                                <button
+                                  type="button"
+                                  onClick={() => setFinancialAttachments((prev) => prev.filter((f) => f.id !== att.id))}
+                                  className="text-red-500 hover:text-red-700 shrink-0 cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <p className="text-[11px] text-slate-500">
-                        Financial figures are populated directly from the approved Activity Proposal{liquidationRef ? ` (${liquidationRef})` : ''}.
-                      </p>
                     </div>
                   </div>
                 </div>

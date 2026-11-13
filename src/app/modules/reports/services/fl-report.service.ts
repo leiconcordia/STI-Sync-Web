@@ -16,7 +16,8 @@ import { calendarDaysRemaining, isActivityConcluded, liquidationSubmissionDeadli
 export function filterLiquidationsByUniversalFilters(
   liquidations: LiquidationDocument[],
   eventsMap: Map<string, EventDocument>,
-  filters: UniversalFilterState
+  filters: UniversalFilterState,
+  orgsMap?: Map<string, OrganizationDocument>
 ): LiquidationDocument[] {
   return liquidations.filter((liq) => {
     if (liq.isDeleted || liq.status === 'voided') return false;
@@ -48,14 +49,30 @@ export function filterLiquidationsByUniversalFilters(
       }
     }
 
+    // Club Adviser filter
+    const orgDoc = orgsMap?.get(liq.organizationId) || (linkedEvent ? orgsMap?.get(linkedEvent.hostingOrgId) : undefined);
+    const adviserName = orgDoc?.adviser?.name || (liq.organizationId === 'sas' ? 'SAS Office' : '');
+    if (filters.adviserName && filters.adviserName !== 'ALL') {
+      if (adviserName !== filters.adviserName) return false;
+    }
+
+    // Status filter
+    if (filters.statusFilter && filters.statusFilter !== 'ALL') {
+      const st = (liq.status || 'pending').toLowerCase();
+      if (filters.statusFilter === 'approved' && st !== 'approved') return false;
+      if (filters.statusFilter === 'pending' && st !== 'pending' && st !== 'under_review' && st !== 'draft') return false;
+      if (filters.statusFilter === 'returned' && st !== 'returned') return false;
+    }
+
     // Search query
     if (filters.searchQuery.trim()) {
       const q = filters.searchQuery.toLowerCase().trim();
       const ref = (liq.referenceNo || liq.referenceNumber || liq.id).toLowerCase();
       const eventTitle = (liq.eventTitle || '').toLowerCase();
-      const orgName = (liq.organizationName || '').toLowerCase();
+      const orgName = (liq.organizationName || orgDoc?.name || orgDoc?.acronym || '').toLowerCase();
       const cheq = (liq.chequeNumber || '').toLowerCase();
-      if (!ref.includes(q) && !eventTitle.includes(q) && !orgName.includes(q) && !cheq.includes(q)) {
+      const adv = adviserName.toLowerCase();
+      if (!ref.includes(q) && !eventTitle.includes(q) && !orgName.includes(q) && !cheq.includes(q) && !adv.includes(q)) {
         return false;
       }
     }
@@ -95,7 +112,7 @@ export function computeFLAnalytics(
 ): FLAnalyticsSummary {
   const eventsMap = new Map<string, EventDocument>(events.map((e) => [e.id, e]));
   const orgsMap = new Map<string, OrganizationDocument>(organizations.map((o) => [o.id, o]));
-  const filteredLiquidations = filterLiquidationsByUniversalFilters(liquidations, eventsMap, filters);
+  const filteredLiquidations = filterLiquidationsByUniversalFilters(liquidations, eventsMap, filters, orgsMap);
 
   let totalDisbursedAdvances = 0;
   let totalLiquidatedExpenses = 0;
@@ -160,12 +177,19 @@ export function computeFLAnalytics(
         daysLapsedVal = `${Math.abs(daysRemaining)} days overdue`;
     }
 
+    const orgDoc = orgsMap.get(liq.organizationId) || (eventsMap.get(liq.eventId) ? orgsMap.get(eventsMap.get(liq.eventId)!.hostingOrgId) : undefined);
+    const adviserName =
+      orgDoc?.adviser?.name ||
+      (liq.organizationId === 'sas' || liq.createdByRole === 'sas_admin' ? 'SAS Office' : 'Unassigned');
+
     return {
       id: liq.id,
       liquidationId: liq.referenceNo || liq.referenceNumber || `LF-${liq.id.slice(0, 6)}`,
       eventTitle: liq.eventTitle || 'Campus Activity',
-      organization: liq.organizationName || 'Student Organization',
+      organization: liq.organizationName || orgDoc?.name || 'Student Organization',
       organizationId: liq.organizationId,
+      adviserName,
+      cashierStatus: (liq as any).cashierSettlementStatus || 'not_required',
       disbursedAmount: disbursed,
       totalActualExpense: spent,
       surplusDeficit,

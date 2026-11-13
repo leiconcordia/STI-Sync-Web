@@ -1,285 +1,237 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
-  FileCheck2,
-  Users,
-  Target,
-  Award,
-  Star,
-  Download,
-  Eye,
-  Camera,
+  ClipboardCheck,
   CheckCircle2,
   Clock,
-  Sparkles,
+  Star,
+  Users,
+  Eye,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
-import { Button } from '../../../components/ui/button';
-import { TablePagination } from '../../../components/common/TablePagination';
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
-import type { PARAnalyticsSummary, PARReportRow } from '../types/report.types';
-import type { PostActivityReportDocument } from '../../post-activity-reports/types/par.types';
+import { PARAnalyticsSummary, PARReportRow } from '../types/report.types';
+import { TablePagination, usePagination } from '../../../components/ui/table-pagination';
 
 interface PostActivityReportsTabProps {
   summary: PARAnalyticsSummary;
-  onSelectPAR: (par: PostActivityReportDocument) => void;
+  onSelectPAR: (row: PARReportRow) => void;
   onExport: () => void;
+  onExportCSV?: () => void;
 }
-
-const ITEMS_PER_PAGE = 8;
 
 export const PostActivityReportsTab: React.FC<PostActivityReportsTabProps> = ({
   summary,
   onSelectPAR,
   onExport,
+  onExportCSV,
 }) => {
-  const { kpis, charts, rows } = summary;
-  const [currentPage, setCurrentPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'under_review' | 'returned'>('all');
+  const rows = summary?.rows || [];
+  const kpis = summary?.kpis || {
+    totalActivitiesConducted: 0,
+    turnoutAccuracyRate: 0,
+    totalUniqueStudentAttendees: 0,
+    parCompletionCompliance: 0,
+    overallEventRating: 0,
+  };
 
-  const filteredRows = rows.filter((r) => {
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'approved') return r.status === 'approved';
-    if (statusFilter === 'returned') return r.status === 'returned';
-    if (statusFilter === 'under_review') return r.status === 'under_review' || r.status === 'draft';
-    return true;
-  });
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    paginatedItems,
+    setCurrentPage,
+    setPageSize,
+    totalItems,
+  } = usePagination(rows, 10);
 
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / ITEMS_PER_PAGE));
-  const paginatedRows = filteredRows.slice(
-    (currentPage - 1) * ITEMS_PER_PAGE,
-    currentPage * ITEMS_PER_PAGE
-  );
+  const statusBadge = (status: string) => {
+    const lower = (status || '').toLowerCase();
+    if (lower === 'approved' || lower === 'completed') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <CheckCircle2 className="w-3 h-3" /> APPROVED
+        </span>
+      );
+    }
+    if (lower === 'pending' || lower === 'under_review' || lower === 'submitted') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+          <Clock className="w-3 h-3" /> UNDER REVIEW
+        </span>
+      );
+    }
+    if (lower === 'returned') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">
+          RETURNED
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-gray-100 text-gray-600 border border-gray-200">
+        {(status || 'PENDING').toUpperCase()}
+      </span>
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* ── KPI Summary Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Conducted Events</span>
-            <FileCheck2 className="w-4 h-4 text-green-600" />
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-gray-500 uppercase mb-1">
+            <span>Activities Conducted</span>
+            <ClipboardCheck className="w-4 h-4 text-[#003B73]" />
           </div>
-          <h3 className="text-2xl font-black text-[#001A4D]">{kpis.totalActivitiesConducted}</h3>
-          <p className="text-[11px] text-gray-400 mt-1">Completed campus activities</p>
+          <div className="text-2xl font-black text-gray-900">
+            {(kpis.totalActivitiesConducted || 0).toLocaleString()}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Total PARs in current filter
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Turnout Accuracy</span>
-            <Target className="w-4 h-4 text-[#0E4EBD]" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-emerald-600 uppercase mb-1">
+            <span>PAR Compliance Rate</span>
+            <CheckCircle2 className="w-4 h-4" />
           </div>
-          <h3 className="text-2xl font-black text-[#0E4EBD]">{kpis.turnoutAccuracyRate}%</h3>
-          <p className="text-[11px] text-blue-600 font-semibold mt-1">Actual vs Target attendees</p>
+          <div className="text-2xl font-black text-emerald-700">
+            {kpis.parCompletionCompliance || 0}%
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Turnout Accuracy: {kpis.turnoutAccuracyRate || 0}%
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Total Attendees</span>
-            <Users className="w-4 h-4 text-purple-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-amber-600 uppercase mb-1">
+            <span>Average Evaluation</span>
+            <Star className="w-4 h-4 text-amber-500" />
           </div>
-          <h3 className="text-2xl font-black text-[#001A4D]">{kpis.totalUniqueStudentAttendees.toLocaleString()}</h3>
-          <p className="text-[11px] text-purple-600 font-semibold mt-1">Verified check-in records</p>
+          <div className="text-2xl font-black text-gray-900">
+            ⭐ {Number(kpis.overallEventRating || 0).toFixed(2)}{' '}
+            <span className="text-xs font-semibold text-gray-400">/ 5.0</span>
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Participant evaluation average
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">PAR Compliance</span>
-            <Award className="w-4 h-4 text-emerald-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-purple-600 uppercase mb-1">
+            <span>Verified Attendance</span>
+            <Users className="w-4 h-4" />
           </div>
-          <h3 className="text-2xl font-black text-emerald-600">{kpis.parCompletionCompliance}%</h3>
-          <p className="text-[11px] text-emerald-700 font-semibold mt-1">Submitted PAR documents</p>
-        </div>
-
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Overall Rating</span>
-            <Star className="w-4 h-4 text-amber-500 fill-amber-500" />
+          <div className="text-2xl font-black text-purple-700">
+            {(kpis.totalUniqueStudentAttendees || 0).toLocaleString()}
           </div>
-          <h3 className="text-2xl font-black text-amber-600">{kpis.overallEventRating} / 5.0</h3>
-          <p className="text-[11px] text-amber-700 font-semibold mt-1">Student feedback score</p>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Verified student participants
+          </div>
         </div>
       </div>
 
-      {/* ── Visual Analytics: Turnout vs Capacity & Engagement by Course ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Attendance Turnout vs Capacity */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Attendance Turnout vs Capacity</span>
-              <span className="text-xs font-normal text-gray-500">Target vs Actual</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={charts.turnoutVsCapacity}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="eventTitle" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="target" fill="#94A3B8" name="Expected Target" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="actual" fill="#22C55E" name="Actual Turnout" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Engagement by Academic Strand / Course */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Student Turnout by Strand / Course</span>
-              <span className="text-xs font-normal text-gray-500">Participation Breakdown</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={charts.engagementByStrandCourse}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="courseStrand" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#0E4EBD" name="Student Attendees" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Sub-Directory Table & Export ── */}
-      <Card className="border-gray-200 rounded-2xl shadow-xs overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50/50">
+      {/* Detailed PAR Table */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="font-bold text-base text-[#001A4D]">Post-Activity Reports (PAR) Portfolio</h3>
-            <p className="text-xs text-gray-500">
-              Showing {filteredRows.length} post-activity reports with verified evidence & documentation
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-extrabold text-gray-900">
+                Post-Activity Reports & Outcomes Ledger (PAR-01)
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-purple-50 text-purple-700 border border-purple-200">
+                {rows.length} Reports
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Complete registry of submitted Post-Activity Reports, Club Advisers, verified student turnout, and activity evaluation ratings.
             </p>
           </div>
-
-          <div className="flex items-center gap-2.5">
-            <select
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as any);
-                setCurrentPage(1);
-              }}
-              className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 outline-none focus:border-[#001A4D]"
-            >
-              <option value="all">All Approval States</option>
-              <option value="approved">Approved & Finalized</option>
-              <option value="under_review">Under Review</option>
-              <option value="returned">Returned for Revisions</option>
-            </select>
-
-            <Button
+          <div className="flex items-center gap-2">
+            {onExportCSV && (
+              <button
+                onClick={onExportCSV}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-sm"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                Export CSV
+              </button>
+            )}
+            <button
               onClick={onExport}
-              className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#003B73] text-white hover:bg-[#002855] transition-colors shadow-sm"
             >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Export PAR Portfolio
-            </Button>
+              <Download className="w-3.5 h-3.5" />
+              Export PDF / CSV
+            </button>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-[#001A4D] text-white font-bold uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-3 whitespace-nowrap">PAR Code</th>
-                <th className="px-4 py-3 whitespace-nowrap">Activity Title</th>
-                <th className="px-4 py-3 whitespace-nowrap">Date Held</th>
-                <th className="px-4 py-3 whitespace-nowrap">Organizer</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Target vs Actual</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Turnout %</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Evidence & Docs</th>
-                <th className="px-4 py-3 whitespace-nowrap">Status</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Action</th>
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-gray-200 text-[11px] font-extrabold uppercase tracking-wider text-gray-500">
+                <th className="py-3.5 px-4">PAR Code</th>
+                <th className="py-3.5 px-4">Activity Title</th>
+                <th className="py-3.5 px-4">Organization</th>
+                <th className="py-3.5 px-4">Club Adviser</th>
+                <th className="py-3.5 px-4">Date Held</th>
+                <th className="py-3.5 px-4 text-right">Turnout (Actual / Est.)</th>
+                <th className="py-3.5 px-4 text-center">Rating</th>
+                <th className="py-3.5 px-4">Status</th>
+                <th className="py-3.5 px-4 text-center">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
-              {paginatedRows.map((row) => {
-                const isApproved = row.status === 'approved';
-                const isReturned = row.status === 'returned';
-
-                return (
-                  <tr key={row.id} className="hover:bg-blue-50/40 transition-colors">
-                    <td className="px-4 py-3 font-mono font-bold text-[#0E4EBD] whitespace-nowrap">
+            <tbody className="divide-y divide-gray-100 text-xs">
+              {paginatedItems.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-gray-400 font-medium">
+                    No Post-Activity Reports match the current filters.
+                  </td>
+                </tr>
+              ) : (
+                paginatedItems.map((row) => (
+                  <tr key={row.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="py-3.5 px-4 font-mono font-bold text-[#003B73] whitespace-nowrap">
                       {row.parCode}
                     </td>
-                    <td className="px-4 py-3 font-bold text-gray-900 max-w-xs truncate">
-                      {row.activityName}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
-                      {row.dateHeld}
-                    </td>
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap font-medium">
-                      {row.organizer}
-                    </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap font-medium">
-                      <span className="text-gray-900 font-bold">{row.actualTurnout}</span>
-                      <span className="text-gray-400"> / {row.targetTurnout}</span>
-                    </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
-                      <span className="font-extrabold text-[#0E4EBD] bg-blue-50 px-2 py-0.5 rounded-md">
-                        {row.turnoutPercent}%
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] font-semibold">
-                          <Camera className="w-3 h-3 text-[#0E4EBD]" />
-                          {row.documentationStatus.photosCount} photos
-                        </span>
-                        {row.documentationStatus.hasEvaluation && (
-                          <span className="px-1.5 py-0.5 rounded bg-green-50 text-green-700 text-[10px] font-bold">
-                            Evaluated
-                          </span>
-                        )}
+                    <td className="py-3.5 px-4">
+                      <div className="font-bold text-gray-900">{row.activityName}</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        Photos: {row.documentationStatus?.photosCount || 0}
+                        {row.documentationStatus?.hasEvaluation ? ' · Eval Attached' : ''}
                       </div>
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          isApproved
-                            ? 'bg-green-100 text-green-700'
-                            : isReturned
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {isApproved ? 'Approved' : isReturned ? 'Returned' : 'Under Review'}
-                      </span>
+                    <td className="py-3.5 px-4 font-semibold text-gray-800">{row.organizer}</td>
+                    <td className="py-3.5 px-4 font-semibold text-gray-700">
+                      {row.adviserName || 'SAS Office'}
                     </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                    <td className="py-3.5 px-4 font-semibold text-gray-800">{row.dateHeld}</td>
+                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                      <div className="font-extrabold text-gray-900">
+                        {(row.actualTurnout || 0).toLocaleString()} /{' '}
+                        {(row.targetTurnout || 0).toLocaleString()}
+                      </div>
+                      <div className="text-[11px] font-bold text-purple-700">
+                        {row.turnoutPercent || 0}% turnout
+                      </div>
+                    </td>
+                    <td className="py-3.5 px-4 text-center font-bold text-amber-600 whitespace-nowrap">
+                      ⭐ {Number(row.rating || 0).toFixed(1)}
+                    </td>
+                    <td className="py-3.5 px-4 whitespace-nowrap">{statusBadge(row.status)}</td>
+                    <td className="py-3.5 px-4 text-center">
                       <button
-                        onClick={() => onSelectPAR(row.rawPAR)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#0E4EBD] hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                        title="View Full PAR Document"
+                        onClick={() => onSelectPAR(row)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-[#003B73] bg-blue-50 hover:bg-[#003B73] hover:text-white transition-colors"
                       >
                         <Eye className="w-3.5 h-3.5" />
-                        Preview
+                        Inspect
                       </button>
                     </td>
                   </tr>
-                );
-              })}
-
-              {paginatedRows.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="text-center py-12 text-gray-400">
-                    No post-activity reports found matching the selected filters.
-                  </td>
-                </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -288,13 +240,12 @@ export const PostActivityReportsTab: React.FC<PostActivityReportsTabProps> = ({
         <TablePagination
           currentPage={currentPage}
           totalPages={totalPages}
-          totalItems={filteredRows.length}
-          itemsPerPage={ITEMS_PER_PAGE}
+          pageSize={pageSize}
+          totalItems={totalItems}
           onPageChange={setCurrentPage}
-          itemName="reports"
+          onPageSizeChange={setPageSize}
         />
-      </Card>
+      </div>
     </div>
   );
 };
-

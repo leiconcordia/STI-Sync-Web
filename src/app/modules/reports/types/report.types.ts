@@ -25,7 +25,9 @@ export type AdminReportId =
   | 'AP_SUMMARY_REPORT'
   | 'FL_LEDGER_REPORT'
   | 'PAR_PORTFOLIO_REPORT'
-  | 'OFFICER_MASTER_ROSTER_REPORT';
+  | 'OFFICER_MASTER_ROSTER_REPORT'
+  | 'MASTER_SYSTEM_LEDGER_REPORT'
+  | 'CLUB_ADVISERS_DIRECTORY_REPORT';
 
 export type OfficerReportId =
   | 'OFFICER_SEMESTRAL_ACCOMPLISHMENT'
@@ -51,6 +53,9 @@ export interface UniversalFilterState {
   academicYear?: string;
   semester?: string;
   organizationId: string; // 'ALL' or specific org id or 'sas'
+  adviserName?: string; // 'ALL' or specific adviser name
+  statusFilter?: string; // 'ALL' | 'approved' | 'pending' | 'returned' | 'completed' | 'cancelled'
+  fundingSource?: string; // 'ALL' | 'school_budget' | 'organization_funds'
   scope: ReportScope; // 'ALL' | 'COLLEGE' | 'SHS'
   searchQuery: string;
   startDate?: string;
@@ -110,6 +115,8 @@ export interface APReportRow {
   title: string;
   organizer: string;
   organizationId: string;
+  adviserName?: string;
+  fundingSource?: string;
   targetDateVenue: string;
   proposedBudget: number;
   approvedBudget: number;
@@ -144,6 +151,8 @@ export interface FLReportRow {
   eventTitle: string;
   organization: string;
   organizationId: string;
+  adviserName?: string;
+  cashierStatus?: string;
   disbursedAmount: number;
   totalActualExpense: number;
   surplusDeficit: number;
@@ -181,6 +190,7 @@ export interface PARReportRow {
   dateHeld: string;
   organizer: string;
   organizationId: string;
+  adviserName?: string;
   targetTurnout: number;
   actualTurnout: number;
   turnoutPercent: number;
@@ -219,11 +229,28 @@ export interface OrgDirectoryRow {
   acronym: string;
   category: string;
   adviserName: string;
+  adviserEmail?: string;
   presidentName: string;
+  activeOfficersCount?: number;
   activeMembers: number;
+  totalAPs?: number;
+  approvedFLs?: number;
+  approvedPARs?: number;
   accreditationStatus: string; // 'Fully Compliant' | 'Conditional' | 'Probationary'
   academicYear: string;
   rawOrg: OrganizationDocument;
+}
+
+export interface AdviserDirectoryRow {
+  id: string;
+  adviserName: string;
+  adviserEmail: string;
+  department: string;
+  assignedClubs: string[];
+  assignedClubsCount: number;
+  totalActivitiesAdvised: number;
+  clearedActivitiesCount: number;
+  status: string;
 }
 
 export interface OfficerRosterRow {
@@ -233,6 +260,7 @@ export interface OfficerRosterRow {
   organizationName: string;
   organizationAcronym: string;
   organizationId: string;
+  adviserName?: string;
   positionTitle: string;
   courseAndYear: string;
   email: string;
@@ -256,7 +284,43 @@ export interface ClubRosterSummary {
     officerDepartmentDistribution: Array<{ department: string; count: number }>;
   };
   orgRows: OrgDirectoryRow[];
+  adviserRows?: AdviserDirectoryRow[];
   officerRows: OfficerRosterRow[];
+}
+
+export interface TopPerformingOrgStat {
+  orgId: string;
+  acronym: string;
+  name: string;
+  adviserName: string;
+  overallScore: number; // 0-100 composite score
+  completedActivities: number;
+  totalProposals: number;
+  totalAttendees: number;
+  avgTurnoutRate: number;
+  liquidationComplianceRate: number;
+  parComplianceRate: number;
+  totalLiquidatedAmount: number;
+}
+
+export interface MasterActivityLedgerRow {
+  id: string;
+  eventTitle: string;
+  organization: string;
+  organizationId: string;
+  adviserName: string;
+  eventDate: string;
+  apRef: string;
+  apStatus: string;
+  flRef: string;
+  flStatus: string;
+  approvedBudget: number;
+  actualSpent: number;
+  parRef: string;
+  parStatus: string;
+  actualAttendees: number;
+  lifecycleStage: string;
+  rawEvent: EventDocument;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -272,9 +336,12 @@ export interface OverviewAnalyticsSummary {
     totalAttendees: number;
     recognizedClubs: number;
     activeOfficers: number;
+    totalAdvisers?: number;
   };
   monthlyTrends: Array<{ month: string; proposals: number; events: number; attendance: number }>;
   orgBudgetStats: Array<{ org: string; allocated: number; spent: number }>;
   programDistribution: Array<{ name: string; value: number; color: string }>;
   recentActivities: Array<{ id: string; title: string; org: string; date: string; status: string }>;
+  topPerformingOrgs?: TopPerformingOrgStat[];
+  masterLedgerRows?: MasterActivityLedgerRow[];
 }

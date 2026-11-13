@@ -6,6 +6,7 @@ import type {
   UniversalFilterState,
   ClubRosterSummary,
   OrgDirectoryRow,
+  AdviserDirectoryRow,
   OfficerRosterRow,
 } from '../types/report.types';
 
@@ -17,7 +18,10 @@ export function computeRosterAnalytics(
   officers: OrganizationOfficerDocument[],
   roles: OfficerRoleDocument[],
   students: StudentDocument[],
-  filters: UniversalFilterState
+  filters: UniversalFilterState,
+  events: any[] = [],
+  liquidations: any[] = [],
+  pars: any[] = []
 ): ClubRosterSummary {
   const rolesMap = new Map<string, string>(roles.map((r) => [r.id, r.name]));
   const studentsMap = new Map<string, StudentDocument>();
@@ -46,6 +50,12 @@ export function computeRosterAnalytics(
       if (isShsOnly) return false;
     }
 
+    // Adviser filter
+    if (filters.adviserName && filters.adviserName !== 'ALL') {
+      const advName = org.adviser?.name || 'Not Assigned';
+      if (advName !== filters.adviserName) return false;
+    }
+
     // Search query
     if (filters.searchQuery.trim()) {
       const q = filters.searchQuery.toLowerCase().trim();
@@ -62,9 +72,12 @@ export function computeRosterAnalytics(
 
   const orgsMap = new Map<string, OrganizationDocument>(filteredOrgs.map((o) => [o.id, o]));
 
-  // Find president for each org
+  // Find president and active officer counts for each org
   const orgPresidentMap = new Map<string, string>();
+  const orgOfficerCountMap = new Map<string, number>();
   officers.forEach((off) => {
+    if (!off.isActive) return;
+    orgOfficerCountMap.set(off.organizationId, (orgOfficerCountMap.get(off.organizationId) || 0) + 1);
     const roleTitle = rolesMap.get(off.roleId) || (off as any).roleName || '';
     if (roleTitle.toLowerCase().includes('president') && !roleTitle.toLowerCase().includes('vice')) {
       orgPresidentMap.set(off.organizationId, off.studentName);
@@ -76,11 +89,40 @@ export function computeRosterAnalytics(
   let conditional = 0;
   let probationary = 0;
   const uniqueAdvisers = new Set<string>();
+  const adviserAggregation = new Map<string, {
+    adviserName: string;
+    adviserEmail: string;
+    department: string;
+    assignedClubs: string[];
+    totalActivitiesAdvised: number;
+    clearedActivitiesCount: number;
+  }>();
 
   const orgRows: OrgDirectoryRow[] = filteredOrgs.map((org) => {
     const presidentName = orgPresidentMap.get(org.id) || 'To be elected';
     const adviserName = org.adviser?.name || 'Not Assigned';
+    const adviserEmail = org.adviser?.email || '—';
     if (org.adviser?.name) uniqueAdvisers.add(org.adviser.name);
+
+    const orgEvents = events.filter((e) => !e.isDeleted && e.hostingOrgId === org.id);
+    const orgFLs = liquidations.filter((l) => !l.isDeleted && l.organizationId === org.id && l.status === 'approved');
+    const orgPARs = pars.filter((p) => !p.isDeleted && p.organizationId === org.id && p.status === 'approved');
+
+    if (org.adviser?.name) {
+      const key = org.adviser.name.trim();
+      const existing = adviserAggregation.get(key) || {
+        adviserName: key,
+        adviserEmail: org.adviser.email || '—',
+        department: org.departmentName || (org.isCrossDepartmental ? 'Cross-Departmental' : 'Academic Department'),
+        assignedClubs: [],
+        totalActivitiesAdvised: 0,
+        clearedActivitiesCount: 0,
+      };
+      existing.assignedClubs.push(org.acronym ? `${org.acronym} (${org.name})` : org.name);
+      existing.totalActivitiesAdvised += orgEvents.length;
+      existing.clearedActivitiesCount += orgPARs.length;
+      adviserAggregation.set(key, existing);
+    }
 
     let accreditationStatus = 'Fully Compliant';
     if (org.status === 'suspended' || org.status === 'inactive') {
@@ -104,13 +146,30 @@ export function computeRosterAnalytics(
       acronym: org.acronym || org.name.slice(0, 6).toUpperCase(),
       category,
       adviserName,
+      adviserEmail,
       presidentName,
+      activeOfficersCount: orgOfficerCountMap.get(org.id) || 0,
       activeMembers: org.memberCount || 0,
+      totalAPs: orgEvents.length,
+      approvedFLs: orgFLs.length,
+      approvedPARs: orgPARs.length,
       accreditationStatus,
       academicYear: org.academicYear || '2026-2027',
       rawOrg: org,
     };
   });
+
+  const adviserRows: AdviserDirectoryRow[] = Array.from(adviserAggregation.values()).map((adv, idx) => ({
+    id: `adv-${idx}-${adv.adviserName}`,
+    adviserName: adv.adviserName,
+    adviserEmail: adv.adviserEmail,
+    department: adv.department,
+    assignedClubs: adv.assignedClubs,
+    assignedClubsCount: adv.assignedClubs.length,
+    totalActivitiesAdvised: adv.totalActivitiesAdvised,
+    clearedActivitiesCount: adv.clearedActivitiesCount,
+    status: 'Active Faculty Adviser',
+  }));
 
   // Filter officers
   const filteredOfficers = officers.filter((off) => {
@@ -163,6 +222,7 @@ export function computeRosterAnalytics(
       organizationName: org?.name || 'Organization',
       organizationAcronym: org?.acronym || 'ORG',
       organizationId: off.organizationId,
+      adviserName: org?.adviser?.name || 'Not Assigned',
       positionTitle,
       courseAndYear,
       email: off.email,
@@ -210,6 +270,7 @@ export function computeRosterAnalytics(
             ],
     },
     orgRows,
+    adviserRows,
     officerRows,
   };
 }

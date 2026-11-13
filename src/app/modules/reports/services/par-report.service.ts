@@ -14,7 +14,8 @@ import { isEventInTrack } from './report-generator.service';
 export function filterPARsByUniversalFilters(
   pars: PostActivityReportDocument[],
   eventsMap: Map<string, EventDocument>,
-  filters: UniversalFilterState
+  filters: UniversalFilterState,
+  orgsMap?: Map<string, OrganizationDocument>
 ): PostActivityReportDocument[] {
   return pars.filter((par) => {
     if ((par as any).isDeleted) return false;
@@ -45,13 +46,29 @@ export function filterPARsByUniversalFilters(
       }
     }
 
+    // Club Adviser filter
+    const orgDoc = orgsMap?.get(par.organizationId) || (linkedEvent ? orgsMap?.get(linkedEvent.hostingOrgId) : undefined);
+    const adviserName = orgDoc?.adviser?.name || (par.organizationId === 'sas' || par.isSasInternal ? 'SAS Office' : '');
+    if (filters.adviserName && filters.adviserName !== 'ALL') {
+      if (adviserName !== filters.adviserName) return false;
+    }
+
+    // Status filter
+    if (filters.statusFilter && filters.statusFilter !== 'ALL') {
+      const st = (par.status || 'under_review').toLowerCase();
+      if (filters.statusFilter === 'approved' && st !== 'approved') return false;
+      if (filters.statusFilter === 'pending' && st !== 'under_review' && st !== 'draft') return false;
+      if (filters.statusFilter === 'returned' && st !== 'returned') return false;
+    }
+
     // Search query
     if (filters.searchQuery.trim()) {
       const q = filters.searchQuery.toLowerCase().trim();
       const ref = (par.referenceNo || par.id).toLowerCase();
       const title = (par.eventTitle || '').toLowerCase();
-      const org = (par.organizationName || par.organizationAcronym || '').toLowerCase();
-      if (!ref.includes(q) && !title.includes(q) && !org.includes(q)) {
+      const org = (par.organizationName || par.organizationAcronym || orgDoc?.name || '').toLowerCase();
+      const adv = adviserName.toLowerCase();
+      if (!ref.includes(q) && !title.includes(q) && !org.includes(q) && !adv.includes(q)) {
         return false;
       }
     }
@@ -70,7 +87,8 @@ export function computePARAnalytics(
   organizations: OrganizationDocument[]
 ): PARAnalyticsSummary {
   const eventsMap = new Map<string, EventDocument>(events.map((e) => [e.id, e]));
-  const filteredPars = filterPARsByUniversalFilters(pars, eventsMap, filters);
+  const orgsMap = new Map<string, OrganizationDocument>(organizations.map((o) => [o.id, o]));
+  const filteredPars = filterPARsByUniversalFilters(pars, eventsMap, filters, orgsMap);
 
   let totalTargetAttendees = 0;
   let totalActualAttendees = 0;
@@ -129,13 +147,19 @@ export function computePARAnalytics(
       strandCourseMap.set(code, count + actualTurnout);
     }
 
+    const orgDoc = orgsMap.get(par.organizationId) || (linkedEvent ? orgsMap.get(linkedEvent.hostingOrgId) : undefined);
+    const adviserName =
+      orgDoc?.adviser?.name ||
+      (par.organizationId === 'sas' || par.isSasInternal ? 'SAS Office' : 'Unassigned');
+
     return {
       id: par.id,
       parCode: par.referenceNo || `PAR-${par.id.slice(0, 6)}`,
       activityName: par.eventTitle || 'Campus Activity',
       dateHeld: par.eventDateFormatted || 'TBD',
-      organizer: par.organizationName || par.organizerName || 'Student Org',
+      organizer: par.organizationName || par.organizerName || orgDoc?.name || 'Student Org',
       organizationId: par.organizationId,
+      adviserName,
       targetTurnout,
       actualTurnout,
       turnoutPercent,

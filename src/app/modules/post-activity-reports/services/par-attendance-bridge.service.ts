@@ -179,20 +179,21 @@ export async function computeEventAttendanceSummary(
   }
 
   // 6. Construct formatted howManyAttended string
+  const hasAttendanceLogs = actualAttendedCount > 0;
   let howManyAttended = '';
   if (actualAttendedCount > 0 && expectedHeadcount > 0) {
     howManyAttended = `${actualAttendedCount} / ${expectedHeadcount} Expected Attendees (${turnoutRate}% Turnout)`;
   } else if (actualAttendedCount > 0) {
     howManyAttended = `${actualAttendedCount} Attendees (Verified Attendance Logs)`;
-  } else if (expectedHeadcount > 0) {
-    howManyAttended = `0 / ${expectedHeadcount} Expected Attendees`;
   } else {
-    howManyAttended = 'Attendance verified via session check-in logs';
+    howManyAttended = '';
   }
 
   return {
     registeredCount: expectedHeadcount,
+    estimatedAttendance: expectedFromProposal || expectedFromEvent || 0,
     attendedCount: actualAttendedCount,
+    hasAttendanceLogs,
     turnoutRate,
     howManyAttended,
     whoAttended,

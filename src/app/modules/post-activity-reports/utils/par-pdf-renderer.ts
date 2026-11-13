@@ -495,8 +495,11 @@ export async function buildPostActivityReportPDF(
   );
 
   // ─── Row 4 & 5: Mechanics (Prompt + Bullet Items + Bottom Line) ───
+  const mechAttachNote = rawReport.mechanicsAttachmentName
+    ? `Attached sheet: ${rawReport.mechanicsAttachmentName}`
+    : '';
   const mechListH = measureBulletListHeight(mechanicsItems, 9, col1Width, 4.2);
-  const totalMechH = 5.5 + mechListH;
+  const totalMechH = 5.5 + mechListH + (mechAttachNote ? 4.5 : 0);
   drawStandaloneSection(
     'Mechanics:',
     totalMechH,
@@ -507,6 +510,12 @@ export async function buildPostActivityReportPDF(
       docPdf.text('(Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)', x, y + 3.0);
 
       drawBulletList(mechanicsItems, x, y + 5.5, w, 4.2);
+      if (mechAttachNote) {
+        docPdf.setFont('helvetica', 'italic');
+        docPdf.setFontSize(7.5);
+        docPdf.setTextColor(40, 40, 40);
+        docPdf.text(mechAttachNote, x, y + 5.5 + mechListH + 2.5);
+      }
     },
     { hasBottomLine: true }
   );
@@ -527,13 +536,17 @@ export async function buildPostActivityReportPDF(
     rawReport.attendanceSummary?.howManyAttended ||
     (rawReport.attendanceSummary?.attendedCount
       ? `${rawReport.attendanceSummary.attendedCount} Attendees`
-      : '110 IT students');
+      : '—');
 
   const who =
     rawReport.attendanceSummary?.whoAttended ||
     rawReport.attendanceSummary?.targetAudience ||
     proposalData?.targetAudienceText ||
-    'BSIT all year level';
+    '—';
+
+  const attListLabel = rawReport.attendanceSummary?.attendanceListName
+    ? `(Attach attendance list, if available.) Attached: ${rawReport.attendanceSummary.attendanceListName}`
+    : '(Attach attendance list, if available.)';
 
   const attH = 6.0 + 7.5 + 7.5;
   drawStandaloneSection(
@@ -544,7 +557,7 @@ export async function buildPostActivityReportPDF(
       docPdf.setFont('helvetica', 'italic');
       docPdf.setFontSize(8);
       docPdf.setTextColor(60, 60, 60);
-      docPdf.text('(Attach attendance list, if available.)', x, y + 3.0);
+      docPdf.text(attListLabel, x, y + 3.0);
       offset += 6.5;
 
       const valStartX = x + 40;
@@ -743,7 +756,9 @@ export async function buildPostActivityReportPDF(
 
   // ─── Financial Report (Prompt + Bordered Nested Table) ───
   const finTableRowsCount = financialItems.length > 0 ? financialItems.length : 1;
-  const estimatedFinH = 6.0 + 5.0 + 5.0 + finTableRowsCount * 5.0 + 5.0 + 2.0 + 6.0;
+  const finAttachments = rawReport.financialSummary?.attachments || [];
+  const finAttachH = finAttachments.length > 0 ? 5.0 + finAttachments.length * 4.0 : 0;
+  const estimatedFinH = 6.0 + 5.0 + 5.0 + finTableRowsCount * 5.0 + 5.0 + 2.0 + 6.0 + finAttachH;
 
   drawStandaloneSection(
     'Financial report:',
@@ -842,6 +857,20 @@ export async function buildPostActivityReportPDF(
       docPdf.rect(x, curFinY, w, 5.5);
       const balLabel = `Balance (Revenue less Expenses)  PHP ${formatPdfCurrency(netBalance)}`;
       docPdf.text(balLabel, x + 2, curFinY + 3.8);
+      curFinY += 5.5;
+
+      if (finAttachments.length > 0) {
+        curFinY += 2.0;
+        docPdf.setFont('helvetica', 'italic');
+        docPdf.setFontSize(7.5);
+        docPdf.setTextColor(60, 60, 60);
+        docPdf.text('Attached Supporting Files:', x, curFinY + 2.5);
+        curFinY += 4.0;
+        finAttachments.forEach((att) => {
+          docPdf.text(`• ${att.name}`, x + 3, curFinY + 2.5);
+          curFinY += 4.0;
+        });
+      }
     },
     { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.0 }
   );

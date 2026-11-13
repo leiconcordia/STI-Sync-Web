@@ -1,280 +1,249 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   FileText,
-  Clock,
   CheckCircle2,
-  AlertCircle,
-  TrendingUp,
-  Download,
+  Clock,
+  RotateCcw,
+  Wallet,
   Eye,
-  Filter,
-  DollarSign,
-  ChevronRight,
-  ShieldCheck,
+  Download,
+  FileSpreadsheet,
 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '../../../components/ui/card';
-import { Button } from '../../../components/ui/button';
-import { TablePagination } from '../../../components/common/TablePagination';
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts';
-import type { APAnalyticsSummary, APReportRow } from '../types/report.types';
-import type { EventDocument } from '../../events/types/event.types';
-import { formatCurrency } from '../../../utils/currency';
+import { APAnalyticsSummary, APReportRow } from '../types/report.types';
+import { TablePagination, usePagination } from '../../../components/ui/table-pagination';
 
 interface ActivityProposalsTabProps {
   summary: APAnalyticsSummary;
-  onSelectEvent: (event: EventDocument) => void;
+  onSelectProposal: (row: APReportRow) => void;
   onExport: () => void;
+  onExportCSV?: () => void;
 }
-
-const ITEMS_PER_PAGE = 8;
 
 export const ActivityProposalsTab: React.FC<ActivityProposalsTabProps> = ({
   summary,
-  onSelectEvent,
+  onSelectProposal,
   onExport,
+  onExportCSV,
 }) => {
-  const { kpis, charts, rows } = summary;
-  const [currentPage, setCurrentPage] = useState(1);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'pending' | 'returned'>('all');
+  const rows = summary?.rows || [];
+  const kpis = summary?.kpis || {
+    totalProposalsSubmitted: 0,
+    approvalRate: 0,
+    averageLeadTimeDays: 0,
+    totalProposedBudget: 0,
+    totalApprovedBudget: 0,
+    pendingRevisionCount: 0,
+  };
 
-  // Filter rows by local status dropdown
-  const filteredRows = rows.filter((r) => {
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'approved') return r.signatoryStatus === 'approved' || r.signatoryStatus === 'completed';
-    if (statusFilter === 'returned') return r.signatoryStatus === 'returned';
-    if (statusFilter === 'pending') {
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    paginatedItems,
+    setCurrentPage,
+    setPageSize,
+    totalItems,
+  } = usePagination(rows, 10);
+
+  const formatPHP = (val?: number | null) =>
+    `₱${(Number(val) || 0).toLocaleString('en-PH', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+  const statusBadge = (status: string) => {
+    const lower = (status || '').toLowerCase();
+    if (lower === 'approved' || lower === 'completed') {
       return (
-        r.signatoryStatus === 'pending' ||
-        r.signatoryStatus === 'pending_review' ||
-        r.signatoryStatus === 'draft'
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <CheckCircle2 className="w-3 h-3" /> {status.toUpperCase()}
+        </span>
       );
     }
-    return true;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / ITEMS_PER_PAGE));
-  const paginatedRows = filteredRows.slice(
-    (currentPage - 1) * ITEMS_PER_PAGE,
-    currentPage * ITEMS_PER_PAGE
-  );
+    if (lower === 'pending' || lower === 'in_review') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200">
+          <Clock className="w-3 h-3" /> UNDER REVIEW
+        </span>
+      );
+    }
+    if (lower === 'returned') {
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-orange-50 text-orange-700 border border-orange-200">
+          <RotateCcw className="w-3 h-3" /> RETURNED
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-700 border border-red-200">
+        {(status || 'PENDING').toUpperCase()}
+      </span>
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* ── KPI Summary Cards ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3.5">
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Total Submitted</span>
-            <FileText className="w-4 h-4 text-[#0E4EBD]" />
+      {/* KPI Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-gray-500 uppercase mb-1">
+            <span>Total Proposals</span>
+            <FileText className="w-4 h-4 text-[#003B73]" />
           </div>
-          <h3 className="text-2xl font-black text-[#001A4D]">{kpis.totalProposalsSubmitted}</h3>
-          <p className="text-[11px] text-gray-400 mt-1">Form AP-01 Submissions</p>
+          <div className="text-2xl font-black text-gray-900">
+            {(kpis.totalProposalsSubmitted || 0).toLocaleString()}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">Matching current filter</div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Approval Rate</span>
-            <CheckCircle2 className="w-4 h-4 text-green-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-emerald-600 uppercase mb-1">
+            <span>Approval Rate</span>
+            <CheckCircle2 className="w-4 h-4" />
           </div>
-          <h3 className="text-2xl font-black text-[#001A4D]">{kpis.approvalRate}%</h3>
-          <p className="text-[11px] text-green-600 font-semibold mt-1">
-            ~{kpis.averageLeadTimeDays} days avg. lead time
-          </p>
+          <div className="text-2xl font-black text-emerald-700">{kpis.approvalRate || 0}%</div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">
+            Avg Lead Time: {kpis.averageLeadTimeDays || 0} days
+          </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Proposed Budget</span>
-            <DollarSign className="w-4 h-4 text-purple-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-amber-600 uppercase mb-1">
+            <span>Pending / Revision</span>
+            <Clock className="w-4 h-4" />
           </div>
-          <h3 className="text-xl font-black text-[#001A4D]">{formatCurrency(kpis.totalProposedBudget)}</h3>
-          <p className="text-[11px] text-gray-400 mt-1">Initial funding requested</p>
+          <div className="text-2xl font-black text-amber-700">
+            {(kpis.pendingRevisionCount || 0).toLocaleString()}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">In signatory pipeline</div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">Approved Budget</span>
-            <TrendingUp className="w-4 h-4 text-emerald-600" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm">
+          <div className="flex items-center justify-between text-xs font-bold text-blue-600 uppercase mb-1">
+            <span>Proposed Budget</span>
+            <Wallet className="w-4 h-4" />
           </div>
-          <h3 className="text-xl font-black text-emerald-600">{formatCurrency(kpis.totalApprovedBudget)}</h3>
-          <p className="text-[11px] text-emerald-700 font-semibold mt-1">Officially endorsed funds</p>
+          <div className="text-xl font-black text-gray-900 truncate">
+            {formatPHP(kpis.totalProposedBudget)}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1">Total requested</div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
-          <div className="flex items-center justify-between text-gray-500 mb-1">
-            <span className="text-[11px] font-bold uppercase tracking-wider">In Review / Revisions</span>
-            <Clock className="w-4 h-4 text-amber-500" />
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm col-span-2 lg:col-span-1">
+          <div className="flex items-center justify-between text-xs font-bold text-[#003B73] uppercase mb-1">
+            <span>Approved Budget</span>
+            <Wallet className="w-4 h-4" />
           </div>
-          <h3 className="text-2xl font-black text-amber-600">{kpis.pendingRevisionCount}</h3>
-          <p className="text-[11px] text-amber-700 font-medium mt-1">Pending approval pipeline</p>
+          <div className="text-xl font-black text-[#003B73] truncate">
+            {formatPHP(kpis.totalApprovedBudget)}
+          </div>
+          <div className="text-[11px] font-semibold text-gray-400 mt-1 truncate">
+            Authorized allocation
+          </div>
         </div>
       </div>
 
-      {/* ── Visual Analytics: Monthly Volume & Stage Funnel ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Monthly Submission vs Approval Volume */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Monthly Proposal Volume</span>
-              <span className="text-xs font-normal text-gray-500">Submitted vs Approved</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={charts.monthlyVolume}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis dataKey="month" stroke="#94A3B8" fontSize={11} />
-                <YAxis stroke="#94A3B8" fontSize={11} />
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar dataKey="submitted" fill="#001A4D" name="Proposals Submitted" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="approved" fill="#22C55E" name="Final Approved" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Approval Stage Funnel */}
-        <Card className="border-gray-200 rounded-2xl shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base font-bold text-[#001A4D] flex items-center justify-between">
-              <span>Approval Stage Funnel</span>
-              <span className="text-xs font-normal text-gray-500">Pipeline Distribution</span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={charts.approvalFunnel} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
-                <XAxis type="number" stroke="#94A3B8" fontSize={11} />
-                <YAxis dataKey="stage" type="category" width={140} stroke="#475569" fontSize={11} />
-                <Tooltip />
-                <Bar dataKey="count" fill="#0E4EBD" name="Proposals Reached" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* ── Sub-Directory Table & Export ── */}
-      <Card className="border-gray-200 rounded-2xl shadow-xs overflow-hidden">
-        <div className="p-4 sm:p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50/50">
+      {/* Detailed Ledger Table */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+        <div className="p-5 border-b border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h3 className="font-bold text-base text-[#001A4D]">Activity Proposals Master Log</h3>
-            <p className="text-xs text-gray-500">
-              Showing {filteredRows.length} activity proposals matching current filters
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-extrabold text-gray-900">
+                Activity Proposals Master Ledger (AP-01)
+              </h3>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-[#003B73]/10 text-[#003B73]">
+                {rows.length} Proposals
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Complete list of submitted Activity Proposals, assigned Club Advisers, requested budgets, and signatory pipeline progress.
             </p>
           </div>
-
-          <div className="flex items-center gap-2.5">
-            {/* Quick Status Filter */}
-            <select
-              value={statusFilter}
-              onChange={(e) => {
-                setStatusFilter(e.target.value as any);
-                setCurrentPage(1);
-              }}
-              className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-semibold text-gray-700 outline-none focus:border-[#001A4D]"
-            >
-              <option value="all">All Approval States</option>
-              <option value="approved">Approved & Completed</option>
-              <option value="pending">In Review / Pending</option>
-              <option value="returned">Returned for Revision</option>
-            </select>
-
-            {/* Export Summary Button */}
-            <Button
+          <div className="flex items-center gap-2">
+            {onExportCSV && (
+              <button
+                onClick={onExportCSV}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-sm"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                Export CSV
+              </button>
+            )}
+            <button
               onClick={onExport}
-              className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold cursor-pointer shadow-xs"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#003B73] text-white hover:bg-[#002855] transition-colors shadow-sm"
             >
-              <Download className="w-3.5 h-3.5 mr-1.5" />
-              Export AP Summary
-            </Button>
+              <Download className="w-3.5 h-3.5" />
+              Export PDF / CSV
+            </button>
           </div>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-[#001A4D] text-white font-bold uppercase tracking-wider">
-              <tr>
-                <th className="px-4 py-3 whitespace-nowrap">Ref #</th>
-                <th className="px-4 py-3 whitespace-nowrap">Activity Title</th>
-                <th className="px-4 py-3 whitespace-nowrap">Organizer / Club</th>
-                <th className="px-4 py-3 whitespace-nowrap">Target Date & Venue</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Proposed</th>
-                <th className="px-4 py-3 whitespace-nowrap text-right">Approved</th>
-                <th className="px-4 py-3 whitespace-nowrap">Stage / Status</th>
-                <th className="px-4 py-3 whitespace-nowrap text-center">Action</th>
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-slate-50 border-b border-gray-200 text-[11px] font-extrabold uppercase tracking-wider text-gray-500">
+                <th className="py-3.5 px-4">Ref Code</th>
+                <th className="py-3.5 px-4">Activity Title</th>
+                <th className="py-3.5 px-4">Organization</th>
+                <th className="py-3.5 px-4">Club Adviser</th>
+                <th className="py-3.5 px-4">Event Date & Venue</th>
+                <th className="py-3.5 px-4 text-right">Proposed / Approved</th>
+                <th className="py-3.5 px-4">Pipeline Stage</th>
+                <th className="py-3.5 px-4">Status</th>
+                <th className="py-3.5 px-4 text-center">Action</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-100">
-              {paginatedRows.map((row) => {
-                const isApproved = row.signatoryStatus === 'approved' || row.signatoryStatus === 'completed';
-                const isReturned = row.signatoryStatus === 'returned';
-
-                return (
-                  <tr key={row.id} className="hover:bg-blue-50/40 transition-colors">
-                    <td className="px-4 py-3 font-mono font-bold text-[#0E4EBD] whitespace-nowrap">
+            <tbody className="divide-y divide-gray-100 text-xs">
+              {paginatedItems.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-gray-400 font-medium">
+                    No Activity Proposals match the current filters.
+                  </td>
+                </tr>
+              ) : (
+                paginatedItems.map((row) => (
+                  <tr key={row.id} className="hover:bg-blue-50/30 transition-colors">
+                    <td className="py-3.5 px-4 font-mono font-bold text-[#003B73] whitespace-nowrap">
                       {row.referenceNo}
                     </td>
-                    <td className="px-4 py-3 font-bold text-gray-900 max-w-xs truncate">
-                      {row.title}
+                    <td className="py-3.5 px-4">
+                      <div className="font-bold text-gray-900">{row.title}</div>
+                      <div className="text-[11px] text-gray-500 mt-0.5">
+                        Submitted: {row.submissionDate}
+                        {row.fundingSource ? ` · ${row.fundingSource}` : ''}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap font-medium">
-                      {row.organizer}
+                    <td className="py-3.5 px-4 font-semibold text-gray-800">{row.organizer}</td>
+                    <td className="py-3.5 px-4 font-semibold text-gray-700">
+                      {row.adviserName || 'SAS Office'}
                     </td>
-                    <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                      {row.targetDateVenue}
+                    <td className="py-3.5 px-4 text-gray-700 font-medium">{row.targetDateVenue}</td>
+                    <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                      <div className="font-extrabold text-gray-900">
+                        {formatPHP(row.proposedBudget)}
+                      </div>
+                      <div className="text-[11px] text-emerald-700 font-semibold">
+                        Appr: {formatPHP(row.approvedBudget)}
+                      </div>
                     </td>
-                    <td className="px-4 py-3 text-right font-medium text-gray-600 whitespace-nowrap">
-                      {formatCurrency(row.proposedBudget)}
+                    <td className="py-3.5 px-4">
+                      <div className="text-gray-700 font-semibold">{row.stage}</div>
                     </td>
-                    <td className="px-4 py-3 text-right font-bold text-emerald-600 whitespace-nowrap">
-                      {row.approvedBudget > 0 ? formatCurrency(row.approvedBudget) : '—'}
+                    <td className="py-3.5 px-4 whitespace-nowrap">
+                      {statusBadge(row.signatoryStatus)}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                          isApproved
-                            ? 'bg-green-100 text-green-700'
-                            : isReturned
-                            ? 'bg-red-100 text-red-700'
-                            : 'bg-amber-100 text-amber-800'
-                        }`}
-                      >
-                        {row.stage}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                    <td className="py-3.5 px-4 text-center">
                       <button
-                        onClick={() => onSelectEvent(row.rawEvent)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#0E4EBD] hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                        title="View Full AP Details"
+                        onClick={() => onSelectProposal(row)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-[#003B73] bg-blue-50 hover:bg-[#003B73] hover:text-white transition-colors"
                       >
                         <Eye className="w-3.5 h-3.5" />
                         Preview
                       </button>
                     </td>
                   </tr>
-                );
-              })}
-
-              {paginatedRows.length === 0 && (
-                <tr>
-                  <td colSpan={8} className="text-center py-12 text-gray-400">
-                    No activity proposals found matching the selected filters.
-                  </td>
-                </tr>
+                ))
               )}
             </tbody>
           </table>
@@ -283,13 +252,12 @@ export const ActivityProposalsTab: React.FC<ActivityProposalsTabProps> = ({
         <TablePagination
           currentPage={currentPage}
           totalPages={totalPages}
-          totalItems={filteredRows.length}
-          itemsPerPage={ITEMS_PER_PAGE}
+          pageSize={pageSize}
+          totalItems={totalItems}
           onPageChange={setCurrentPage}
-          itemName="proposals"
+          onPageSizeChange={setPageSize}
         />
-      </Card>
+      </div>
     </div>
   );
 };
-
