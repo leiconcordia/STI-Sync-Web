@@ -24,7 +24,9 @@ import type {
   EventCancellationPayload,
   EventCancellationResult,
 } from '../types/event.types';
-import { canCancelEvent } from '../utils/event-lifecycle.utils';
+import { canCancelEvent, isOfficerProposal } from '../utils/event-lifecycle.utils';
+import { withdrawProposal as unifiedWithdrawProposal } from '../../activity-proposals/services/proposal.service';
+import { createNotification } from '../../notifications';
 import { STUDENTS_COLLECTION } from '../../students/services/student.service';
 import { 
   deductApprovedEventBudget, 
@@ -32,7 +34,7 @@ import {
   removeLedgerTransactionsForLiquidation 
 } from '../../finance/services/finance.service';
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
-import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
+import { LIQUIDATIONS_COLLECTION, createLiquidationReport, submitLiquidationReport } from '../../finance/services/liquidation.service';
 import { archiveDocumentRevision } from '../../workflow/services/revision-history.service';
 import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
@@ -925,72 +927,15 @@ export const restoreEvent = async (
 };
 
 /**
- * Allows an officer or admin to withdraw an event proposal that is currently under review
- * back to 'draft' status so that revisions can be made safely before further evaluations.
+ * Delegates to the canonical proposal withdrawal engine so signature locks,
+ * dual-collection sync, and signatory notifications stay 100% consistent.
  */
 export const withdrawProposal = async (
   eventId: string,
   userId: string,
   userName?: string
 ): Promise<void> => {
-  const ref = doc(db, EVENTS_COLLECTION, eventId);
-  const snap = await getDoc(ref);
-  let data = snap.exists() ? snap.data() : null;
-
-  if (!data) {
-    for (const col of ['events', 'proposals', 'activity_proposals']) {
-      try {
-        const fbSnap = await getDoc(doc(db, col, eventId));
-        if (fbSnap.exists()) {
-          data = fbSnap.data();
-          break;
-        }
-      } catch {}
-    }
-  }
-
-  if (!data) {
-    throw new Error('Event not found.');
-  }
-
-  const currentStatus = (data.proposalStatus || data.status || '').toLowerCase();
-  if (currentStatus !== 'pending_review' && currentStatus !== 'pending') {
-    throw new Error('Only proposals under review can be withdrawn.');
-  }
-
-  const historyEntry: EventProposalHistoryLog = cleanUndefined({
-    id: `log-${Date.now()}`,
-    action: 'edited',
-    performedBy: userId,
-    performedByName: userName || 'User',
-    performedAt: Timestamp.now(),
-    remarks: `Proposal withdrawn back to draft by ${userName || 'proponent'} for revisions.`,
-  });
-
-  const payload: any = {
-    proposalStatus: 'draft',
-    status: 'draft',
-    lifecycleStatus: 'draft',
-    proposalHistory: arrayUnion(historyEntry),
-    updatedAt: serverTimestamp(),
-  };
-
-  if (!snap.exists()) {
-    await setDoc(ref, { ...data, ...payload }, { merge: true });
-  } else {
-    await setDoc(ref, payload, { merge: true });
-  }
-
-  // Sync to proposals, events, and activity_proposals mirrors
-  for (const col of ['proposals', 'events', 'activity_proposals']) {
-    try {
-      const colRef = doc(db, col, eventId);
-      const colSnap = await getDoc(colRef);
-      if (colSnap.exists()) {
-        await setDoc(colRef, payload, { merge: true });
-      }
-    } catch (err) {}
-  }
+  await unifiedWithdrawProposal(eventId, userId, userName);
 };
 
 /**
@@ -1015,7 +960,9 @@ export const cancelEventTransaction = async (
     cancelledByName,
     cancelledByRole,
     cancellationReason,
-    refundPolicy,
+    refundPolicy = 'no_fees_collected',
+    cashierSettlementProofs = [],
+    cashierReferenceNo = '',
   } = payload;
 
   if (!eventId) {
@@ -1026,16 +973,23 @@ export const cancelEventTransaction = async (
     throw new Error('A detailed cancellation reason (at least 10 characters) is required.');
   }
 
-  // 1. Validate target event
-  const eventRef = doc(db, EVENTS_COLLECTION, eventId);
-  const eventSnap = await getDoc(eventRef);
+  // 1. Validate target event (check primary activities collection with fallback to events)
+  let eventRef = doc(db, EVENTS_COLLECTION, eventId);
+  let eventSnap = await getDoc(eventRef);
   if (!eventSnap.exists()) {
-    throw new Error(`Event with ID "${eventId}" was not found.`);
+    const fallbackRef = doc(db, 'events', eventId);
+    const fallbackSnap = await getDoc(fallbackRef);
+    if (fallbackSnap.exists()) {
+      eventRef = fallbackRef;
+      eventSnap = fallbackSnap;
+    } else {
+      throw new Error(`Event with ID "${eventId}" was not found.`);
+    }
   }
 
   const eventData = eventSnap.data() as EventDocument;
 
-  // 2. Validate cancellation permissions
+  // 2. Validate cancellation permissions & start time guard
   const cancelCheck = canCancelEvent(eventData, cancelledByRole, payload.userOrgId);
   if (!cancelCheck.canCancel) {
     throw new Error(cancelCheck.reason || 'This event cannot be cancelled.');
@@ -1059,7 +1013,6 @@ export const cancelEventTransaction = async (
 
   const operations: BatchOperation[] = [];
 
-  // Payables updates
   for (const docSnap of payablesSnap.docs) {
     const payable = docSnap.data();
     const pRef = docSnap.ref;
@@ -1068,7 +1021,6 @@ export const cancelEventTransaction = async (
     const isAlreadyClosed = payable.status === 'waived' || payable.status === 'refunded';
 
     if (isAlreadyClosed) {
-      // Ensure gate ticket is locked even if previously closed
       if (payable.qrTicketUnlocked !== false) {
         operations.push({
           type: 'update',
@@ -1083,6 +1035,9 @@ export const cancelEventTransaction = async (
     }
 
     if (isPaid) {
+      if (refundPolicy === 'no_fees_collected') {
+        throw new Error('Cannot cancel with "No Fees Collected" while paid student payable records exist.');
+      }
       operations.push({
         type: 'update',
         ref: pRef,
@@ -1114,86 +1069,246 @@ export const cancelEventTransaction = async (
     }
   }
 
-  // 4. Query all associated liquidations for this event
+  // 4. Objective Disbursement Voucher + Receipt-Backed Liquidation Check
+  const voucher = (eventData as any).disbursementVoucher;
+  const hasDisbursementVoucher = Boolean(voucher?.fileUrl);
+  const amountDisbursed = Number(voucher?.amountDisbursed || 0);
+
   const liquidationsCol = collection(db, LIQUIDATIONS_COLLECTION);
   const liquidationsQuery = query(liquidationsCol, where('eventId', '==', eventId));
   const liquidationsSnap = await getDocs(liquidationsQuery);
 
   let voidedLiquidationsCount = 0;
+  let keptLiquidationsCount = 0;
+  let createdLiquidationId: string | null = null;
 
-  for (const docSnap of liquidationsSnap.docs) {
-    // Purge any posted ledger entries for this voided liquidation
+  const activeExistingLiquidations = liquidationsSnap.docs.filter((d) => {
+    const st = String(d.data().status || '').toLowerCase();
+    return st !== 'voided' && st !== 'cancelled' && d.data().isDeleted !== true;
+  });
+
+  const hasItemReceipt = (item: any) =>
+    Boolean(
+      item?.receiptUrl ||
+        (Array.isArray(item?.receiptUrls) && item.receiptUrls.length > 0) ||
+        (Array.isArray(item?.receiptFiles) && item.receiptFiles.length > 0)
+    );
+
+  // Gather all receipt-backed line items across active liquidations
+  const verifiedItems: any[] = [];
+  activeExistingLiquidations.forEach((d) => {
+    const items = Array.isArray(d.data().lineItems) ? d.data().lineItems : [];
+    items.forEach((it: any) => {
+      if (hasItemReceipt(it)) verifiedItems.push(it);
+    });
+  });
+
+  const verifiedReceiptsTotal = verifiedItems.reduce(
+    (sum, it) =>
+      sum + Number(it.totalCost || Number(it.quantity || 1) * Number(it.unitCost || 0) || 0),
+    0
+  );
+
+  const hasVerifiedExpenses = verifiedItems.length > 0;
+  const cancellationPendingApproval = hasVerifiedExpenses;
+
+  // Scenario 2: Voucher attached + 0 expenses => must upload Cashier Return Proof inside Cancel Modal
+  if (hasDisbursementVoucher && !hasVerifiedExpenses) {
+    if (!Array.isArray(cashierSettlementProofs) || cashierSettlementProofs.length === 0) {
+      throw new Error(
+        'A Disbursement Voucher is attached with 0 expense receipts. Please upload at least one Cashier Return Proof file showing the disbursed funds were returned.'
+      );
+    }
+  }
+
+  if (hasVerifiedExpenses) {
+    // Scenario 3: Submit Financial Liquidation first through the FL signatory pipeline (NOT AP pipeline)
+    keptLiquidationsCount = activeExistingLiquidations.length;
+    const totalApprovedBudget =
+      amountDisbursed ||
+      Number(eventData.totalApprovedBudget || 0) ||
+      Number(eventData.approvedBudget || 0) ||
+      Number(eventData.totalBudget || 0) ||
+      (eventData.budgetItems || []).reduce(
+        (sum, bi) =>
+          sum +
+          Number(
+            bi.approvedAmount ||
+              bi.totalCost ||
+              Number(bi.quantity || 1) * Number(bi.unitCost || 0) ||
+              0
+          ),
+        0
+      ) ||
+      Number((eventData as any).financialProjections?.totalExpenses || 0);
+
+    const amountToReturn = hasDisbursementVoucher
+      ? Math.max(0, amountDisbursed - verifiedReceiptsTotal)
+      : 0;
+    const flPurpose = `ACTIVITY CANCELLED: ${cancellationReason.trim()}`;
+
+    if (activeExistingLiquidations.length > 0) {
+      const targetLiqDoc = activeExistingLiquidations[0];
+      createdLiquidationId = targetLiqDoc.id;
+      await updateDoc(doc(db, LIQUIDATIONS_COLLECTION, targetLiqDoc.id), {
+        purpose: flPurpose,
+        lineItems: verifiedItems,
+        allocatedBudget: totalApprovedBudget,
+        totalActualSpending: verifiedReceiptsTotal,
+        surplusOrDeficit: totalApprovedBudget - verifiedReceiptsTotal,
+        amountToReturn,
+        isCancellationLiquidation: true,
+        cancellationReason: cancellationReason.trim(),
+        updatedAt: serverTimestamp(),
+      });
+      await submitLiquidationReport(
+        targetLiqDoc.id,
+        actorName,
+        `Submitted for FL Signatory Approval due to Activity Cancellation: ${cancellationReason.trim()}`
+      );
+    } else {
+      const isOrgEvent = isOfficerProposal(eventData);
+      const resolvedOrgId = isOrgEvent
+        ? eventData.hostingOrgId || eventData.organizationId || payload.userOrgId || 'student_org'
+        : 'sas';
+      const resolvedOrgName = isOrgEvent
+        ? (eventData as any).organizationName || 'Student Organization'
+        : 'Student Affairs & Services (SAS)';
+
+      createdLiquidationId = await createLiquidationReport({
+        eventId,
+        eventTitle: eventData.title || 'Cancelled Activity',
+        referenceNumber: `LF-CANCEL-${Date.now().toString().slice(-6)}`,
+        fundingSource:
+          (eventData as any).fundingSource ||
+          (isOrgEvent ? 'organization_funds' : 'school_budget'),
+        organizationId: resolvedOrgId,
+        organizationName: resolvedOrgName,
+        createdById: cancelledBy,
+        createdByRole: isOrgEvent ? 'officer' : 'admin',
+        createdByName: actorName,
+        purpose: flPurpose,
+        allocatedBudget: totalApprovedBudget,
+        totalActualSpending: verifiedReceiptsTotal,
+        surplusOrDeficit: totalApprovedBudget - verifiedReceiptsTotal,
+        amountToReturn,
+        status: 'under_review',
+        lineItems: verifiedItems,
+        schoolYear: eventData.schoolYear || '',
+        semester: (eventData as any).semester || '',
+        semesterId: eventData.semesterId || '',
+        isCancellationLiquidation: true,
+        cancellationReason: cancellationReason.trim(),
+      } as any);
+    }
+  } else {
+    // Scenarios 1 & 2: Void empty draft liquidations and purge event budget deductions
+    for (const docSnap of liquidationsSnap.docs) {
+      try {
+        await removeLedgerTransactionsForLiquidation(docSnap.id);
+      } catch (lErr) {
+        console.warn('[cancelEventTransaction] Liquidation ledger rollback note:', lErr);
+      }
+
+      const lData = docSnap.data();
+      if (lData.status !== 'voided') {
+        const voidRemark = cleanUndefined({
+          id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          authorName: actorName,
+          authorRole: cancelledByRole,
+          action: 'voided',
+          comment: `Liquidation voided: Parent event was cancelled (${cancellationReason}).`,
+          timestamp: new Date().toISOString(),
+        });
+
+        operations.push({
+          type: 'update',
+          ref: docSnap.ref,
+          data: {
+            status: 'voided',
+            voidedAt: serverTimestamp(),
+            voidedBy: cancelledBy,
+            voidedReason: `Parent event was cancelled: ${cancellationReason}`,
+            remarksHistory: arrayUnion(voidRemark),
+            updatedAt: serverTimestamp(),
+          },
+        });
+        voidedLiquidationsCount++;
+      }
+    }
+
     try {
-      await removeLedgerTransactionsForLiquidation(docSnap.id);
-    } catch (lErr) {
-      console.warn('[cancelEventTransaction] Liquidation ledger rollback note:', lErr);
-    }
-
-    const lData = docSnap.data();
-    if (lData.status !== 'voided') {
-      const voidRemark = cleanUndefined({
-        id: `rem-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        authorName: actorName,
-        authorRole: cancelledByRole,
-        action: 'voided',
-        comment: `Liquidation voided: Parent event was cancelled (${cancellationReason}).`,
-        timestamp: new Date().toISOString(),
-      });
-
-      operations.push({
-        type: 'update',
-        ref: docSnap.ref,
-        data: {
-          status: 'voided',
-          voidedAt: serverTimestamp(),
-          voidedBy: cancelledBy,
-          voidedReason: `Parent event was cancelled: ${cancellationReason}`,
-          remarksHistory: arrayUnion(voidRemark),
-          updatedAt: serverTimestamp(),
-        },
-      });
-      voidedLiquidationsCount++;
+      await removeLedgerTransactionsForEvent(eventId);
+    } catch (evtLedgerErr) {
+      console.warn('[cancelEventTransaction] Event ledger rollback note:', evtLedgerErr);
     }
   }
 
-  // Purge any event budget deduction from the ledger
-  try {
-    await removeLedgerTransactionsForEvent(eventId);
-  } catch (evtLedgerErr) {
-    console.warn('[cancelEventTransaction] Event ledger rollback note:', evtLedgerErr);
-  }
-
-  // 5. Update Event Document
+  // 5. Update Event Document across both activities and events collections
   const cancellationHistory: EventProposalHistoryLog = cleanUndefined({
     id: `log-${Date.now()}`,
     action: 'cancelled',
     performedBy: cancelledBy,
     performedByName: actorName,
     performedAt: now,
-    remarks: `Event cancelled: ${cancellationReason}`,
+    remarks: cancellationPendingApproval
+      ? `Cancellation submitted for FL Signatory Approval: ${cancellationReason}. Verified receipts: ₱${verifiedReceiptsTotal.toLocaleString()}.`
+      : hasDisbursementVoucher
+        ? `Event cancelled with Cashier Return Proof (${cashierSettlementProofs.length} file(s)): ${cancellationReason}.`
+        : `Event cancelled: ${cancellationReason}`,
   });
 
-  const eventUpdates: Record<string, any> = {
-    status: 'cancelled',
-    proposalStatus: 'cancelled',
+  const eventUpdates: Record<string, any> = cleanUndefined({
+    status: cancellationPendingApproval ? 'cancellation_pending' : 'cancelled',
+    proposalStatus: cancellationPendingApproval ? 'cancellation_pending' : 'cancelled',
+    lifecycleStatus: cancellationPendingApproval ? 'cancellation_pending' : 'cancelled',
+    isCancelled: !cancellationPendingApproval,
+    isApproved: false,
+    cancellationStatus: cancellationPendingApproval ? 'pending_approval' : 'approved',
     cancellationReason: cancellationReason,
     cancelledBy: cancelledBy,
     cancelledByName: actorName,
     cancelledByRole: cancelledByRole,
-    cancelledAt: serverTimestamp(),
+    ...(!cancellationPendingApproval ? { cancelledAt: serverTimestamp() } : {}),
+    ...(hasDisbursementVoucher && !hasVerifiedExpenses
+      ? {
+          cashierSettlementProofs,
+          cashierReferenceNo: cashierReferenceNo.trim() || '',
+          cashierSettlementStatus: 'proof_uploaded',
+        }
+      : {}),
     cancellationRefundPolicy: refundPolicy,
-    refundStatus: refundPolicy === 'no_fees_collected' ? 'none' : 'pending',
+    refundStatus: refundPendingCount > 0 ? 'pending' : 'none',
+    hasPreCancellationExpenses: hasVerifiedExpenses,
+    preCancellationAmountSpent: verifiedReceiptsTotal,
+    liquidationRequired: hasVerifiedExpenses,
+    liquidationStatus: hasVerifiedExpenses ? 'under_review' : 'voided',
+    ...(createdLiquidationId ? { liquidationReportId: createdLiquidationId } : {}),
     enableQRTickets: false,
     scannerActivationCode: '',
     proposalHistory: arrayUnion(cancellationHistory),
     updatedAt: serverTimestamp(),
-  };
+  });
 
   operations.push({
     type: 'update',
     ref: eventRef,
     data: eventUpdates,
   });
+
+  // Also sync mirror document ('events' vs 'activities') if it exists
+  const mirrorCol = eventRef.parent.id === 'events' ? 'activities' : 'events';
+  const mirrorRef = doc(db, mirrorCol, eventId);
+  try {
+    const mirrorSnap = await getDoc(mirrorRef);
+    if (mirrorSnap.exists()) {
+      operations.push({
+        type: 'update',
+        ref: mirrorRef,
+        data: eventUpdates,
+      });
+    }
+  } catch {}
 
   // 6. Commit operations in chunks of 450
   const CHUNK_SIZE = 450;
@@ -1210,12 +1325,76 @@ export const cancelEventTransaction = async (
     await batch.commit();
   }
 
-  // 7. Audit Logging
+  // 7. Notify all designated signatories + SAS / Organization stakeholders
+  let notifiedSignatoriesCount = 0;
+  try {
+    const rawChain: any[] = Array.isArray((eventData as any).approvalChain)
+      ? (eventData as any).approvalChain
+      : [];
+    const seenRecipients = new Set<string>();
+    const titleLabel = eventData.title || 'Activity';
+    const refLabel = eventData.referenceId || eventId;
+
+    for (const step of rawChain) {
+      const recId = step?.signatoryUid || step?.signatoryId || step?.uid || step?.signatoryEmail || '';
+      if (!recId || seenRecipients.has(String(recId).toLowerCase())) continue;
+      seenRecipients.add(String(recId).toLowerCase());
+
+      await createNotification({
+        recipientId: String(recId),
+        recipientRole: 'signatory',
+        title: 'Approved Activity Cancelled',
+        message: `"${titleLabel}" (${refLabel}) was cancelled by ${actorName}. Reason: ${cancellationReason}.${fundsSpent ? ` Financial liquidation is required for ₱${Number(amountSpent).toLocaleString()} in pre-cancellation expenses.` : ''}`,
+        type: 'event',
+        priority: 'high',
+        resourceId: eventId,
+        resourceType: 'event',
+        actionRoute: '/signatory/proposals',
+        metadata: { eventId, cancellationReason, fundsSpent },
+      }).catch(() => {});
+      notifiedSignatoriesCount++;
+    }
+
+    if (cancelledByRole === 'officer') {
+      await createNotification({
+        recipientId: 'sas_admin',
+        recipientRole: 'admin',
+        title: 'Organization Event Cancelled',
+        message: `${actorName} cancelled "${titleLabel}" (${refLabel}). Reason: ${cancellationReason}.`,
+        type: 'event',
+        priority: 'high',
+        resourceId: eventId,
+        resourceType: 'event',
+        actionRoute: '/admin/approvals',
+        metadata: { eventId, cancellationReason, fundsSpent },
+      }).catch(() => {});
+    } else if (isOfficerProposal(eventData)) {
+      const orgRecipient = eventData.createdBy || eventData.hostingOrgId || eventData.organizationId;
+      if (orgRecipient) {
+        await createNotification({
+          recipientId: String(orgRecipient),
+          recipientRole: 'officer',
+          title: 'Activity Cancelled by SAS Office',
+          message: `"${titleLabel}" (${refLabel}) was cancelled by ${actorName}. Reason: ${cancellationReason}.${fundsSpent ? ' A Financial Liquidation draft has been prepared for pre-cancellation expenses.' : ''}`,
+          type: 'event',
+          priority: 'high',
+          resourceId: eventId,
+          resourceType: 'event',
+          actionRoute: '/officer/events',
+          metadata: { eventId, cancellationReason, createdLiquidationId },
+        }).catch(() => {});
+      }
+    }
+  } catch (notifErr) {
+    console.warn('[cancelEventTransaction] Non-critical signatory notification notice:', notifErr);
+  }
+
+  // 8. Audit Logging
   try {
     await logAuditEvent({
       action: 'CANCEL_EVENT',
       actionType: 'DELETE',
-      details: `Event "${eventData.title || eventId}" was cancelled. Reason: ${cancellationReason}. ${waivedCount} payables waived, ${refundPendingCount} flagged for refund, ${voidedLiquidationsCount} liquidations voided.`,
+      details: `Event "${eventData.title || eventId}" was cancelled. Reason: ${cancellationReason}. ${waivedCount} payables waived, ${refundPendingCount} flagged for refund, ${voidedLiquidationsCount} liquidations voided, ${notifiedSignatoriesCount} signatories notified${fundsSpent ? `, Pre-cancellation expense liquidation created/active (₱${Number(amountSpent).toLocaleString()})` : ''}.`,
       performedBy: actorName,
       userRole: cancelledByRole === 'admin' ? 'SAO Admin' : 'Officer',
       targetId: eventId,
@@ -1227,6 +1406,14 @@ export const cancelEventTransaction = async (
         waivedPayablesCount: waivedCount,
         refundPendingPayablesCount: refundPendingCount,
         voidedLiquidationsCount,
+        keptLiquidationsCount,
+        createdLiquidationId,
+        notifiedSignatoriesCount,
+        hasDisbursementVoucher,
+        hasVerifiedExpenses,
+        verifiedReceiptsTotal,
+        cancellationPendingApproval,
+        cashierSettlementProofsCount: cashierSettlementProofs.length,
       },
     });
   } catch (auditErr) {
@@ -1238,6 +1425,10 @@ export const cancelEventTransaction = async (
     waivedPayablesCount: waivedCount,
     refundPendingPayablesCount: refundPendingCount,
     voidedLiquidationsCount,
+    keptLiquidationsCount,
+    createdLiquidationId,
+    cancellationPendingApproval,
+    notifiedSignatoriesCount,
     qrTicketsRevoked: true,
     cancelledAt: new Date().toISOString(),
   };

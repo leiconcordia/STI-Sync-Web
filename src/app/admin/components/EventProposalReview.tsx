@@ -7,7 +7,7 @@ import {
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
-  PenTool, ShieldCheck, Undo2, GitCompare, ChevronDown, Upload, Building2
+  PenTool, ShieldCheck, Undo2, GitCompare, ChevronDown, Upload, Building2, Loader2
 } from 'lucide-react';
 import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -37,11 +37,15 @@ import {
 import {
   CancelEventModal,
   canCancelEvent,
+  canWithdrawProposal,
   ConcludeEventModal,
   ArchiveEventModal,
   DeleteArchivedEventModal,
   getEventTimingStatus,
+  isEventAttendanceEnabled,
   isProposalFullySigned,
+  isEventCancelled,
+  isEventCancellationPending,
   PublishStudentFeedModal,
   AttendanceScannersModal,
 } from '../../modules/events';
@@ -153,6 +157,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const [remarksError, setRemarksError] = useState(false);
   const [activeModal, setActiveModal] = useState<ActiveModal>('none');
   const [showCancelModal, setShowCancelModal] = useState(false);
+  const [showReleaseConfirmModal, setShowReleaseConfirmModal] = useState(false);
+  const [showApproveConfirmModal, setShowApproveConfirmModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
 
@@ -378,8 +384,30 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         }
       }
 
-      setLiveEvent(merged as EventDocument);
+      setLiveEvent((prev: any) => ({ ...prev, ...merged }));
       setFullProposal((prev: any) => ({ ...prev, ...merged }));
+      const rawMergedHist: any[] = Array.isArray(merged.proposalHistory) ? merged.proposalHistory : [];
+      let lastResetIdx = -1;
+      let lastReleaseIdx = -1;
+      rawMergedHist.forEach((h: any, idx: number) => {
+        if (['withdrawn', 'submitted', 'resubmitted', 'returned'].includes(h?.action)) {
+          lastResetIdx = idx;
+        }
+        if (h?.action === 'sas_vetted_and_released') {
+          lastReleaseIdx = idx;
+        }
+      });
+      const isActiveRelease =
+        merged.isPendingSasVetting !== true &&
+        (Boolean(merged.sasVettedAt) || (lastReleaseIdx > lastResetIdx && lastReleaseIdx !== -1));
+
+      if (merged.isPendingSasVetting === true) {
+        setSasReleasedLocally(false);
+      } else if (isActiveRelease) {
+        setSasReleasedLocally(true);
+      } else {
+        setSasReleasedLocally(false);
+      }
     };
 
 
@@ -678,11 +706,64 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     (activeEvent as any)?.isDirectPublished === true
   );
 
+  const [sasReleasedLocally, setSasReleasedLocally] = useState(false);
+
+  // Reset local override whenever switching proposals
+  useEffect(() => {
+    setSasReleasedLocally(false);
+  }, [event?.id]);
+
   // Adviser Decision panel should ONLY show if and only if the proposal is coming from an Org AND SAS needs to review it
   const showAdviserDecision = useMemo(() => {
     if (isCancelled || isApproved || isCompleted) return false;
     // Must be an Org proposal, NOT authored/created by SAS
     if (isSasCreated) return false;
+
+    const latestPendingVetting =
+      (liveEvent as any)?.isPendingSasVetting !== undefined
+        ? (liveEvent as any).isPendingSasVetting === true
+        : (fullProposal as any)?.isPendingSasVetting !== undefined
+          ? (fullProposal as any).isPendingSasVetting === true
+          : (activeEvent as any)?.isPendingSasVetting === true;
+
+    if (latestPendingVetting) {
+      return true;
+    }
+
+    if (sasReleasedLocally) {
+      return false;
+    }
+
+    // Pick the most complete history array (avoid concatenating stale copies)
+    const histCandidates: any[][] = [
+      Array.isArray((liveEvent as any)?.proposalHistory) ? (liveEvent as any).proposalHistory : [],
+      Array.isArray((fullProposal as any)?.proposalHistory) ? (fullProposal as any).proposalHistory : [],
+      Array.isArray((activeEvent as any)?.proposalHistory) ? (activeEvent as any).proposalHistory : [],
+    ];
+    const canonicalHist = histCandidates.reduce((best, cur) => (cur.length >= best.length ? cur : best), []);
+
+    let lastResetIdx = -1;
+    let lastReleaseIdx = -1;
+    canonicalHist.forEach((h: any, idx: number) => {
+      if (['withdrawn', 'submitted', 'resubmitted', 'returned'].includes(h?.action)) {
+        lastResetIdx = idx;
+      }
+      if (h?.action === 'sas_vetted_and_released') {
+        lastReleaseIdx = idx;
+      }
+    });
+    const hasSasReleaseHistory = lastReleaseIdx > lastResetIdx && lastReleaseIdx !== -1;
+
+    const effectiveSasVettedAt =
+      (liveEvent as any)?.sasVettedAt ??
+      (fullProposal as any)?.sasVettedAt ??
+      (activeEvent as any)?.sasVettedAt;
+
+    const hasBeenVettedBySas = Boolean(effectiveSasVettedAt) || hasSasReleaseHistory;
+
+    if (hasBeenVettedBySas) {
+      return false;
+    }
 
     // If an approval chain exists:
     if (displayApprovalChain && displayApprovalChain.length > 0) {
@@ -693,8 +774,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         }
         return true;
       }
-      // If SAS is not in the chain, it's an Org proposal in routing:
-      // SAS can review if stage 1 is currently active/pending
+      // If SAS is not in the chain, check if all steps are still waiting (awaiting SAS release)
+      const allWaiting = displayApprovalChain.every((s: any) => s.status === 'waiting');
+      if (allWaiting) return true;
+
+      // If any signatory has already signed, SAS has already cleared it
+      const anySigned = displayApprovalChain.some((s: any) => s.status === 'approved' || s.status === 'endorsed');
+      if (anySigned) return false;
+
       const isFirstStageActive = displayApprovalChain.some(
         (s: any) => (s.stageIndex === 1 || !s.stageIndex) && s.status !== 'approved' && s.status !== 'endorsed'
       );
@@ -703,7 +790,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
     // If no chain, Org proposal pending in SAS admin needs review
     return true;
-  }, [isCancelled, isApproved, isCompleted, isSasCreated, displayApprovalChain, sasStep]);
+  }, [isCancelled, isApproved, isCompleted, isSasCreated, sasReleasedLocally, displayApprovalChain, sasStep, activeEvent, liveEvent, fullProposal]);
 
 
   const initialDecision: Decision = isApproved
@@ -984,34 +1071,66 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   };
 
   const handleReleaseToSignatories = async () => {
-    if (!profile?.uid) {
-      toast.error('Authentication required to release proposals.');
+    const adminUid = profile?.uid || (profile as any)?.id || 'sas_admin';
+    const targetId = activeEvent.id || event.id || fullProposal?.id;
+    if (!targetId) {
+      toast.error('Proposal ID is missing.');
       return;
     }
     setSubmitting(true);
     try {
-      await releaseProposalToSignatories(activeEvent.id, profile.uid, remarks || '');
-      setDecision('approved');
-      setLiveEvent((prev: any) => ({
-        ...prev,
-        proposalStatus: 'under_review',
-        status: 'pending',
-        lifecycleStatus: 'pending_review',
-        isApproved: false,
-        isReturned: false,
-        currentStageIndex: 1,
+      const vettedAt = new Date().toISOString();
+      await releaseProposalToSignatories(targetId, adminUid, remarks || '');
+      setSasReleasedLocally(true);
+      const updatedChain = (displayApprovalChain || []).map((s: any) => ({
+        ...s,
+        status: (s.stageIndex ?? 1) === 1 ? 'current' : 'waiting',
       }));
-      setFullProposal((prev: any) => ({
-        ...prev,
-        proposalStatus: 'under_review',
-        status: 'under_review',
-        lifecycleStatus: 'pending_review',
-        isApproved: false,
-        isReturned: false,
-        currentStageIndex: 1,
-      }));
+      const clearanceHistoryItem = {
+        id: `hist_${Date.now()}`,
+        action: 'sas_vetted_and_released',
+        performedBy: adminUid,
+        performedByName: 'SAS Office (Clearance)',
+        timestamp: vettedAt,
+        reason: remarks?.trim() || 'Proposal vetted and cleared by SAS. Released to Stage 1 Signatories.',
+      };
+      setLiveEvent((prev: any) => {
+        const base = prev || activeEvent || event;
+        const prevHist = Array.isArray(base?.proposalHistory) ? base.proposalHistory : [];
+        return {
+          ...base,
+          proposalStatus: 'pending',
+          status: 'pending',
+          lifecycleStatus: 'pending_review',
+          isApproved: false,
+          isReturned: false,
+          isPendingSasVetting: false,
+          sasVettedAt: vettedAt,
+          sasVettedBy: adminUid,
+          approvalChain: updatedChain,
+          currentStageIndex: 1,
+          proposalHistory: [...prevHist, clearanceHistoryItem],
+        };
+      });
+      setFullProposal((prev: any) => {
+        const base = prev || activeEvent || event;
+        const prevHist = Array.isArray(base?.proposalHistory) ? base.proposalHistory : [];
+        return {
+          ...base,
+          proposalStatus: 'pending',
+          status: 'under_review',
+          lifecycleStatus: 'pending_review',
+          isApproved: false,
+          isReturned: false,
+          isPendingSasVetting: false,
+          sasVettedAt: vettedAt,
+          sasVettedBy: adminUid,
+          approvalChain: updatedChain,
+          currentStageIndex: 1,
+          proposalHistory: [...prevHist, clearanceHistoryItem],
+        };
+      });
       toast.success('Proposal vetted by SAS and released to Stage 1 Signatories! Institutional signers can now review and sign.');
-      if (onClose) onClose();
     } catch (err: any) {
       console.error(err);
       toast.error(err?.message || 'Failed to release proposal to signatories.');
@@ -1783,7 +1902,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       </div>
 
                       {/* Conclude Action */}
-                      {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
+                      {!isCancelled && !isEventCancellationPending(activeEvent) && event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
                         <button
                           type="button"
                           onClick={() => {
@@ -1798,7 +1917,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             </div>
                             <div className="min-w-0">
                               <div className="font-bold truncate">Conclude Activity</div>
-                              <div className="text-[11px] text-emerald-600 truncate">Mark completed & finalize attendance</div>
+                              <div className="text-[11px] text-emerald-600 truncate">
+                                {isEventAttendanceEnabled(activeEvent)
+                                  ? 'Mark completed & finalize attendance'
+                                  : 'Mark activity as officially completed'}
+                              </div>
                             </div>
                           </div>
                           <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -3166,7 +3289,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                                               ? 'Edited & Updated'
                                               : item.action === 'draft_saved'
                                                 ? 'Draft Saved'
-                                                : item.action}
+                                                : item.action === 'withdrawn'
+                                                  ? 'Proposal Withdrawn'
+                                                  : item.action === 'sas_vetted_and_released'
+                                                    ? 'Cleared & Released by SAS'
+                                                    : item.action}
                               </span>
                               {(item.versionLabel || item.version) && (
                                 <span className="px-2 py-0.5 bg-blue-100 text-[#0E4EBD] font-mono text-[10px] font-bold rounded-md">
@@ -3467,7 +3594,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </button>
                   ) : displayApprovalChain && displayApprovalChain.length > 0 ? (
                     <button
-                      onClick={handleReleaseToSignatories}
+                      onClick={() => setShowReleaseConfirmModal(true)}
                       disabled={submitting}
                       className="w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D] disabled:opacity-50"
                       title="Clear proposal from SAS Vetting and unlock Stage 1 in Signatory Portal (No SAS signature required)"
@@ -3567,14 +3694,16 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <Download className="w-4 h-4" />
                   <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
                 </button>
-                <button
-                  onClick={() => setShowWithdrawModal(true)}
-                  disabled={isWithdrawing}
-                  className="w-full py-2.5 bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-                >
-                  <Undo2 className="w-4 h-4 text-amber-600" />
-                  <span>Withdraw Submission to Edit</span>
-                </button>
+                {canWithdrawProposal(activeEvent, 'admin', adviserProfile?.uid).canWithdraw && (
+                  <button
+                    onClick={() => setShowWithdrawModal(true)}
+                    disabled={isWithdrawing}
+                    className="w-full py-2.5 bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+                  >
+                    <Undo2 className="w-4 h-4 text-amber-600" />
+                    <span>Withdraw Submission to Edit</span>
+                  </button>
+                )}
                 <button
                   onClick={onClose}
                   className="w-full py-2.5 bg-[#001A4D] text-white hover:bg-[#001A4D]/90 rounded-xl font-bold text-xs transition-colors shadow-xs cursor-pointer"
@@ -3584,13 +3713,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               </div>
             </div>
           ) : (
-            /* ORG PROPOSAL ENDORSED BY SAS — Awaiting Subsequent Campus Signatories */
+            /* ORG PROPOSAL CLEARED BY SAS — Awaiting Campus Signatories */
             <div className="space-y-4">
               <div className="flex items-center gap-2 mb-1">
                 <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                 <div>
-                  <p className="text-[#001A4D] font-bold text-base">Endorsed by SAS</p>
-                  <p className="text-gray-500 text-xs">Awaiting subsequent campus signatories</p>
+                  <p className="text-[#001A4D] font-bold text-base">Cleared & Released by SAS</p>
+                  <p className="text-gray-500 text-xs">Awaiting campus signatory approvals</p>
                 </div>
               </div>
 
@@ -3601,9 +3730,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     <CheckCircle2 className="w-6 h-6 text-[#FFD41C]" />
                   </div>
                   <div>
-                    <h4 className="font-extrabold text-base text-white">SAS Endorsement Complete</h4>
+                    <h4 className="font-extrabold text-base text-white">SAS Clearance Complete</h4>
                     <p className="text-xs text-blue-100">
-                      Routing in Progress
+                      Released to Signatory Pipeline
                     </p>
                   </div>
                 </div>
@@ -3855,7 +3984,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 Cancel
               </button>
               <button
-                onClick={confirmApprove}
+                onClick={() => setShowApproveConfirmModal(true)}
                 disabled={submitting || (!sasConfig.signatureUrl && !modalSignatureDataUrl)}
                 className={`flex-1 py-3 text-white rounded-xl text-sm font-bold flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer transition-all ${hasSubsequentStages && isSasStepPending
                     ? 'bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D]'
@@ -3871,6 +4000,188 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <>
                     <Rocket className="w-4 h-4" />
                     <span>{submitting ? 'Approving...' : 'Approve Activity'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SAS CLEARANCE & RELEASE CONFIRMATION MODAL */}
+      {showReleaseConfirmModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[92vh]">
+            {/* Modal Header */}
+            <div className="px-6 py-5 bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] text-white flex items-center gap-3.5 flex-shrink-0">
+              <div className="w-11 h-11 rounded-2xl bg-white/10 text-[#FFD41C] flex items-center justify-center flex-shrink-0">
+                <Send className="w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-base text-white">Confirm SAS Review Clearance & Release</h3>
+                <p className="text-xs text-[#FFD41C] mt-0.5 truncate max-w-sm font-medium">
+                  {event.title}
+                </p>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4 overflow-y-auto flex-1">
+              {/* Proposal Summary Card */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">Host Organization:</span>
+                  <span className="font-bold text-[#001A4D]">{orgName}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">Document Reference:</span>
+                  <span className="font-mono font-bold text-[#0E4EBD]">{event.referenceNo || event.id}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-500 font-medium">Institutional Pipeline:</span>
+                  <span className="font-bold text-slate-800">
+                    {displayApprovalChain.length} Designated Signator{displayApprovalChain.length === 1 ? 'y' : 'ies'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Confirmation Prompt */}
+              <div className="p-3.5 rounded-2xl bg-amber-50/80 border border-amber-200/80 text-xs text-amber-950 space-y-2">
+                <p className="font-bold text-sm text-[#001A4D] flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  Are you sure you want to approve and release this proposal to signatories?
+                </p>
+                <div className="pt-1">
+                  <p className="font-bold text-[11px] uppercase tracking-wider text-slate-500 mb-1.5">
+                    What happens next:
+                  </p>
+                  <ul className="list-disc list-inside space-y-1 text-slate-700 text-xs leading-relaxed">
+                    <li>
+                      SAS initial review is recorded as <strong>Cleared</strong> and stamped into Form AP-01 trail.
+                    </li>
+                    <li>
+                      Proposal status advances to <strong>Under Review</strong> and unlocks Stage 1 in the Signatory Portal.
+                    </li>
+                    <li>
+                      Stage 1 campus signatories will be automatically notified to inspect and digitally sign.
+                    </li>
+                    <li>
+                      The student organization cannot withdraw this proposal once any signatory has digitally signed.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Optional Clearance Remarks Field */}
+              <div>
+                <label className="block text-xs font-bold text-[#001A4D] mb-1.5">
+                  Clearance Directives / Remarks for Signatories (Optional)
+                </label>
+                <textarea
+                  value={remarks}
+                  onChange={(e) => setRemarks(e.target.value)}
+                  rows={2}
+                  placeholder="Optional note or guidance for campus signatories..."
+                  className="w-full text-xs border border-slate-200 rounded-xl p-3 focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none resize-none text-[#001A4D]"
+                />
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-3 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowReleaseConfirmModal(false)}
+                disabled={submitting}
+                className="px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await handleReleaseToSignatories();
+                  setShowReleaseConfirmModal(false);
+                }}
+                disabled={submitting}
+                className="px-5 py-2.5 text-xs font-bold text-white rounded-xl transition-all shadow-md cursor-pointer flex items-center gap-2 bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D] disabled:opacity-50"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />
+                    <span>Releasing to Signatories...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    <span>Approve & Release to Signatories</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SAS DIRECT APPROVAL CONFIRMATION MODAL */}
+      {showApproveConfirmModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 flex items-center gap-3.5 border-b bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD] text-white">
+              <div className="p-2.5 rounded-2xl bg-white/10 text-[#FFD41C]">
+                <ShieldCheck className="w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="font-bold text-sm text-white">Confirm Activity Proposal Approval</h3>
+                <p className="text-xs text-white/80 mt-0.5 truncate max-w-xs">{event.title}</p>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-3.5">
+              <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                Are you sure you want to digitally sign and officially approve this Activity Proposal?
+              </p>
+
+              <div className="p-3.5 rounded-2xl border bg-amber-50/70 border-amber-200 text-amber-900 text-xs leading-relaxed space-y-2">
+                <div className="font-bold text-[11px] uppercase tracking-wider text-slate-500">
+                  What happens next:
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                  <li>Your official SAS digital signature will be sealed onto Form AP-01.</li>
+                  <li>The proposal transitions to <strong>Fully Approved</strong>.</li>
+                  <li>Operational studio permissions (pass scanners, publishing feed) will be unlocked.</li>
+                  <li>Student organization officers and stakeholders will be notified immediately.</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowApproveConfirmModal(false)}
+                disabled={submitting}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowApproveConfirmModal(false);
+                  await confirmApprove();
+                }}
+                disabled={submitting}
+                className="px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40"
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Approving...</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                    <span>✓ Confirm & Approve</span>
                   </>
                 )}
               </button>
@@ -4204,9 +4515,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         isOpen={showWithdrawModal}
         onClose={() => setShowWithdrawModal(false)}
         onConfirm={handleWithdraw}
-        documentType="Activity Proposal"
+        documentTypeLabel="Activity Proposal"
         documentTitle={event.title}
-        isProcessing={isWithdrawing}
       />
 
       {/* Visual Diff Comparison Modal */}

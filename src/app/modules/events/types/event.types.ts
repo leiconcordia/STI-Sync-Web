@@ -149,8 +149,13 @@ export interface EventCancellationPayload {
   cancelledByRole: 'admin' | 'officer';
   userOrgId?: string;
   cancellationReason: string;
-  refundPolicy: 'refund_cash' | 'credit_next_event' | 'no_fees_collected';
+  refundPolicy?: 'refund_cash' | 'credit_next_event' | 'no_fees_collected';
   notifyAttendees?: boolean;
+  fundsSpent?: boolean;
+  amountSpent?: number;
+  spentRemarks?: string;
+  cashierSettlementProofs?: any[];
+  cashierReferenceNo?: string;
 }
 
 export interface EventCancellationResult {
@@ -158,13 +163,17 @@ export interface EventCancellationResult {
   waivedPayablesCount: number;
   refundPendingPayablesCount: number;
   voidedLiquidationsCount: number;
+  keptLiquidationsCount?: number;
+  createdLiquidationId?: string | null;
+  cancellationPendingApproval?: boolean;
+  notifiedSignatoriesCount?: number;
   qrTicketsRevoked: boolean;
   cancelledAt: string;
 }
 
 export interface EventProposalHistoryLog {
   id: string;
-  action: 'created' | 'submitted' | 'approved' | 'returned' | 'rejected' | 'resubmitted' | 'edited' | 'draft_saved' | 'cancelled' | 'archived' | 'restored' | 'completed' | 'deleted';
+  action: 'created' | 'submitted' | 'approved' | 'returned' | 'rejected' | 'resubmitted' | 'edited' | 'draft_saved' | 'withdrawn' | 'cancelled' | 'archived' | 'restored' | 'completed' | 'deleted';
   performedBy: string;
   performedByName?: string;
   performedAt: Timestamp | Date | any;

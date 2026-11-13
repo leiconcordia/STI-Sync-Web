@@ -29,7 +29,7 @@ import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { finalizeEventAttendance } from '../../attendance/services/attendance.service';
 import type { EventDocument, EventProposalHistoryLog } from '../types/event.types';
-import { getEventTimingStatus, areEventSessionsOver } from '../utils/event-lifecycle.utils';
+import { getEventTimingStatus, areEventSessionsOver, canConcludeEvent, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { isEventLiquidationExempt } from '../utils/organization-display.utils';
 
 export interface EventArchiveReadinessSummary {
@@ -118,16 +118,31 @@ export async function concludeEvent(
     throw new Error('Archived events cannot be modified.');
   }
 
+  // Enforce lifecycle state validation (already completed, cancelled, rejected, or unapproved cannot be concluded)
+  const baseStatus = (eventData.status || eventData.proposalStatus || '').toLowerCase();
+  if (baseStatus === 'completed' || (eventData as any).isConcluded) {
+    throw new Error('This event is already marked as completed.');
+  }
+  if (baseStatus === 'cancelled' || eventData.isCancelled) {
+    throw new Error('Cancelled events cannot be concluded.');
+  }
+  if (baseStatus === 'rejected') {
+    throw new Error('Rejected proposals cannot be concluded.');
+  }
+
   // Enforce session completion validation (bypass if forceConclude is explicitly requested)
   if (!options.forceConclude) {
-    const sessionsOver = areEventSessionsOver(eventData);
-    if (!sessionsOver.allOver) {
+    const concludeCheck = canConcludeEvent(eventData);
+    if (!concludeCheck.canConclude) {
       throw new Error(
-        sessionsOver.reason ||
+        concludeCheck.reason ||
           'Cannot conclude event: Scheduled sessions are not over yet. All sessions must end before concluding.'
       );
     }
   }
+
+  const usesAttendance = isEventAttendanceEnabled(eventData);
+  const shouldFinalizeAttendance = usesAttendance && options.finalizeAttendance !== false;
 
   // Determine financial liquidation requirement
   const totalApprovedBudget =
@@ -152,9 +167,9 @@ export async function concludeEvent(
   const isExempt = isEventLiquidationExempt(eventData);
   const isLiquidationRequired = !isExempt && (totalApprovedBudget > 0 || hasCashCustodians);
 
-  // Finalize attendance if enabled with strict 7s safety timeout to prevent hanging
+  // Finalize attendance ONLY if event actually uses attendance and finalization is requested
   let absenteesCount = 0;
-  if (options.finalizeAttendance !== false) {
+  if (shouldFinalizeAttendance) {
     try {
       const attResult = await withTimeout(
         finalizeEventAttendance(
@@ -181,7 +196,9 @@ export async function concludeEvent(
       options.note ||
       (options.forceConclude
         ? 'Concluded early ahead of scheduled end. Event officially closed.'
-        : 'All sessions concluded. Event officially closed and attendance sealed.'),
+        : usesAttendance
+          ? 'All sessions concluded. Event officially closed and attendance sealed.'
+          : 'Activity schedule concluded and officially closed.'),
   });
 
   const updatePayload = cleanUndefined({
@@ -191,10 +208,10 @@ export async function concludeEvent(
     completedAt: serverTimestamp(),
     completedBy: adminUid || 'administrator',
     completedByName: adminName || 'Administrator',
-    attendanceLocked: true,
-    attendanceFinalized: options.finalizeAttendance !== false,
-    scannerStatus: 'concluded',
-    scannerAssignmentStatus: 'concluded',
+    attendanceLocked: usesAttendance ? true : undefined,
+    attendanceFinalized: shouldFinalizeAttendance,
+    scannerStatus: usesAttendance ? 'concluded' : undefined,
+    scannerAssignmentStatus: usesAttendance ? 'concluded' : undefined,
     cashAllocationsLocked: true,
     liquidationRequired: isLiquidationRequired,
     liquidationStatus: isLiquidationRequired ? 'pending' : 'none_required',

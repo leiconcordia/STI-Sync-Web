@@ -31,7 +31,7 @@ import {
 } from '../../modules/events/hooks/useEventConfigStream';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
-import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, getSignatoryProgress } from '../../modules/events/utils/event-lifecycle.utils';
+import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, getSignatoryProgress, isEventCancelled, isEventCancellationPending } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
 import {
   OfficerEventDetailView,
@@ -267,6 +267,7 @@ export default function EventManagement() {
     Boolean(e.stepRevisionRemarks && Object.keys(e.stepRevisionRemarks).length > 0);
 
   const isEventApproved = (e: EventDocument) => {
+    if (isEventCancelled(e) || isEventCancellationPending(e)) return false;
     if (isItemReturnedCheck(e)) return false;
     const chain = (e as any).approvalChain || [];
     const hasChain = Array.isArray(chain) && chain.length > 0;
@@ -277,7 +278,7 @@ export default function EventManagement() {
   };
 
   const isEventCompleted = (e: EventDocument) => {
-    if (e.isArchived || e.isDeleted) return false;
+    if (e.isArchived || e.isDeleted || isEventCancelled(e) || isEventCancellationPending(e)) return false;
     if (e.proposalStatus === 'completed' || e.status === 'completed' || (e as any).lifecycleStatus === 'completed') {
       return true;
     }
@@ -1077,7 +1078,17 @@ export default function EventManagement() {
 
                           {/* Signatory Stage */}
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            {isRejected ? (
+                            {isEventCancelled(event) ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                Cancelled
+                              </span>
+                            ) : isEventCancellationPending(event) ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                                Cancellation Pending
+                              </span>
+                            ) : isRejected ? (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
                                 <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                                 Rejected
@@ -1183,8 +1194,8 @@ export default function EventManagement() {
                                 </>
                               ) : (
                                 <>
-                                  {/* Freshly created / Pending Review: View + Withdraw */}
-                                  {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'officer', profile?.uid, activeOrgId).canWithdraw && (
+                                  {/* Under Review: Withdraw (allowed until 1st signatory signs, or SAS signs for org funds) */}
+                                  {canWithdrawProposal(event, 'officer', profile?.uid, activeOrgId).canWithdraw && (
                                     <button
                                       onClick={() => handleWithdraw(event)}
                                       disabled={withdrawingId === event.id}

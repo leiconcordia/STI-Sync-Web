@@ -341,17 +341,22 @@ export default function CreateProposalModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedReferenceNo, setSubmittedReferenceNo] = useState<string | null>(null);
 
-  // Maker Signature State (Adviser / Submitter)
+  // Maker Signature State (Adviser / Submitter only — student officers never sign APs)
   const [makerSignatureUrl, setMakerSignatureUrl] = useState<string>(() => {
+    if (isOfficerOnly) return '';
     return getFastCachedSignature(currentUser);
   });
-  const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
   const [isSubmitConfirmOpen, setIsSubmitConfirmOpen] = useState(false);
 
   useEffect(() => {
+    if (isOfficerOnly) {
+      setMakerSignatureUrl('');
+      return;
+    }
+
     let isCancelled = false;
     const fastSig = getFastCachedSignature(currentUser);
-    if (fastSig && !makerSignatureUrl) {
+    if (fastSig) {
       setMakerSignatureUrl(fastSig);
     }
 
@@ -361,37 +366,45 @@ export default function CreateProposalModal({
       role: currentUser?.role,
       profile: currentUser,
     }).then((sig) => {
-      if (!isCancelled && sig) {
-        setMakerSignatureUrl(sig);
+      if (!isCancelled) {
+        setMakerSignatureUrl(sig || fastSig || '');
       }
     });
 
     return () => {
       isCancelled = true;
     };
-  }, [currentUser?.uid, currentUser?.email, currentUser?.role, currentUser?.signatureUrl]);
+  }, [isOfficerOnly, currentUser?.uid, currentUser?.email, currentUser?.role, currentUser?.signatureUrl]);
 
-  // Keep formData's maker signature synchronized with makerSignatureUrl
+  // Keep formData's maker signature and Prepared By identity synchronized with the official Adviser / Maker
   useEffect(() => {
-    if (makerSignatureUrl) {
-      setFormData((prev) => {
-        if (prev.submittedBySignatureUrl === makerSignatureUrl && prev.preparedBy?.signatureUrl === makerSignatureUrl) {
-          return prev;
-        }
-        return {
-          ...prev,
-          submittedBySignatureUrl: makerSignatureUrl,
-          preparedBy: {
-            ...prev.preparedBy,
-            name: prev.preparedBy?.name || currentUser.name || prev.createdByName || '',
-            roleTitle: prev.preparedBy?.roleTitle || (currentUser.role === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
-            signatureUrl: makerSignatureUrl,
-            signedAt: prev.preparedBy?.signedAt || new Date().toISOString(),
-          },
-        };
-      });
-    }
-  }, [makerSignatureUrl, currentUser.name, currentUser.role]);
+    const officialPrepareName = isOfficerProp
+      ? (resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser')
+      : (currentUser.name || 'Student Affairs & Services');
+    const officialRoleTitle = currentUser.role === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser';
+    const effectiveSig = isOfficerOnly ? '' : makerSignatureUrl;
+
+    setFormData((prev) => {
+      if (
+        prev.submittedBySignatureUrl === effectiveSig &&
+        prev.preparedBy?.signatureUrl === effectiveSig &&
+        prev.preparedBy?.name === officialPrepareName
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        submittedBySignatureUrl: effectiveSig,
+        preparedBy: {
+          ...prev.preparedBy,
+          name: officialPrepareName,
+          roleTitle: officialRoleTitle,
+          signatureUrl: effectiveSig,
+          signedAt: effectiveSig ? (prev.preparedBy?.signedAt || new Date().toISOString()) : undefined,
+        },
+      };
+    });
+  }, [makerSignatureUrl, isOfficerOnly, isOfficerProp, isAdviserMaker, resolvedAdviserName, currentUser.name, currentUser.role]);
 
   // Sync initial data or set default reference number
   useEffect(() => {
@@ -472,8 +485,8 @@ export default function CreateProposalModal({
           proponents: (() => {
             const raw = initialData.proponents && initialData.proponents.length > 0 ? initialData.proponents : [];
             if (isOfficerInitial) {
-              const adviser = resolvedAdviserName || 'Organization Adviser';
-              const drafter = (initialData.createdByName || currentUser.name || '').trim();
+              const adviser = resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser';
+              const drafter = (initialData.createdByName || (!isAdviserMaker ? currentUser.name : '') || '').trim();
               const cleanWithoutDrafter = raw.filter((p) => p && p.trim() !== drafter);
               if (cleanWithoutDrafter.length === 0) return [adviser];
               if (cleanWithoutDrafter[0] !== adviser && resolvedAdviserName) {
@@ -483,6 +496,15 @@ export default function CreateProposalModal({
             }
             return raw.length > 0 ? raw : [currentUser.name || 'Student Affairs & Services'];
           })(),
+          submittedBySignatureUrl: isOfficerOnly ? '' : makerSignatureUrl,
+          preparedBy: {
+            name: isOfficerInitial
+              ? (resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser')
+              : (initialData.preparedBy?.name || currentUser.name || 'Student Affairs & Services'),
+            roleTitle: isSasProposal ? 'SAS Administrator' : 'Organization Adviser',
+            signatureUrl: isOfficerOnly ? '' : makerSignatureUrl,
+            signedAt: !isOfficerOnly && makerSignatureUrl ? (initialData.preparedBy?.signedAt || new Date().toISOString()) : undefined,
+          },
           approvalChain:
             initialData.approvalChain && initialData.approvalChain.length > 0
               ? initialData.approvalChain
@@ -995,11 +1017,11 @@ export default function CreateProposalModal({
         : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
 
       const sanitizedDraftProponents = isOfficerForm
-        ? (formData.proponents || []).filter((p) => p && p.trim() !== drafterName)
+        ? (formData.proponents || []).filter((p) => p && p.trim() !== (formData.createdByName || (!isAdviserMaker ? currentUser.name : '') || '').trim())
         : (formData.proponents || []);
       const finalDraftProponents = sanitizedDraftProponents.length > 0
         ? sanitizedDraftProponents
-        : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
+        : (isOfficerForm ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
       const isOrgFunds = formData.fundingSource === 'organization_funds';
       const effectiveDraftChain = isOrgFunds
@@ -1027,6 +1049,15 @@ export default function CreateProposalModal({
           approvalChain: effectiveDraftChain,
           organizers: finalDraftOrganizers,
           proponents: finalDraftProponents,
+          submittedBySignatureUrl: isOfficerOnly ? '' : makerSignatureUrl,
+          preparedBy: {
+            name: isOfficerForm
+              ? (resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser')
+              : (currentUser.name || 'Student Affairs & Services'),
+            roleTitle: isOfficerForm ? 'Organization Adviser' : 'SAS Administrator',
+            signatureUrl: isOfficerOnly ? '' : makerSignatureUrl,
+            signedAt: !isOfficerOnly && makerSignatureUrl ? new Date().toISOString() : undefined,
+          },
           status: 'draft',
           ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
         },
@@ -1087,11 +1118,11 @@ export default function CreateProposalModal({
       }
     }
 
-    // Strict Verification: The Maker or Organization Adviser MUST have a registered e-signature
+    // Strict Verification: The Maker or Organization Adviser MUST have a registered e-signature in Settings
     const effectiveSignature = (
       (makerSignatureUrl && makerSignatureUrl.trim().length > 0 && !makerSignatureUrl.includes('[base64-'))
         ? makerSignatureUrl.trim()
-        : (currentUser?.signatureUrl && currentUser.signatureUrl.trim().length > 0 && !currentUser.signatureUrl.includes('[base64-'))
+        : (!isOfficerOnly && currentUser?.signatureUrl && currentUser.signatureUrl.trim().length > 0 && !currentUser.signatureUrl.includes('[base64-'))
         ? currentUser.signatureUrl.trim()
         : ''
     );
@@ -1099,9 +1130,8 @@ export default function CreateProposalModal({
     if (!effectiveSignature) {
       const signerTitle = isAdviserMaker || isOfficerProp ? 'Organization Adviser' : 'Proposal Maker';
       toast.error('Signature Required: No Registered Signature Found', {
-        description: `Your ${signerTitle} signature is required before submitting this activity proposal so it is attached upon export. Please register your signature now.`,
+        description: `Please upload or register your ${signerTitle} signature in Settings first before submitting this activity proposal so that it is attached upon export.`,
       });
-      setIsSignatureModalOpen(true);
       return;
     }
 
@@ -1122,11 +1152,11 @@ export default function CreateProposalModal({
         : (isOfficerForm ? [formData.organizationName || 'Student Organization'] : []);
 
       const sanitizedSubmitProponents = isOfficerForm
-        ? (formData.proponents || []).filter((p) => p && p.trim() !== drafterName)
+        ? (formData.proponents || []).filter((p) => p && p.trim() !== (formData.createdByName || (!isAdviserMaker ? currentUser.name : '') || '').trim())
         : (formData.proponents || []);
       const finalSubmitProponents = sanitizedSubmitProponents.length > 0
         ? sanitizedSubmitProponents
-        : (isOfficerForm ? [resolvedAdviserName || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
+        : (isOfficerForm ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
       const isOrgFunds = formData.fundingSource === 'organization_funds';
       const effectiveApprovalChain = isOrgFunds
@@ -1577,8 +1607,7 @@ export default function CreateProposalModal({
                   isSavingDraft={isSavingDraft}
                   isOfficerOnly={isOfficerOnly}
                   errors={errors}
-                  makerSignatureUrl={makerSignatureUrl}
-                  onOpenSignatureModal={() => setIsSignatureModalOpen(true)}
+                  makerSignatureUrl={isOfficerOnly ? '' : makerSignatureUrl}
                 />
               )}
             </>
@@ -1668,47 +1697,6 @@ export default function CreateProposalModal({
           </div>
         )}
       </div>
-
-      {/* Inline Digital Signature Modal for Document Maker */}
-      {isSignatureModalOpen && (
-        <DigitalSignatureModal
-          isOpen={isSignatureModalOpen}
-          onClose={() => setIsSignatureModalOpen(false)}
-          signatoryUid={currentUser?.uid}
-          signatoryName={currentUser?.name}
-          signatoryEmail={currentUser?.email}
-          currentSignatureUrl={makerSignatureUrl}
-          onSignatureSaved={(newUrl) => {
-            setMakerSignatureUrl(newUrl);
-            setFormData((prev) => ({
-              ...prev,
-              submittedBySignatureUrl: newUrl,
-              preparedBy: {
-                ...prev.preparedBy,
-                name: prev.preparedBy?.name || currentUser.name || prev.createdByName || '',
-                roleTitle: prev.preparedBy?.roleTitle || (currentUser.role === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
-                signatureUrl: newUrl,
-                signedAt: prev.preparedBy?.signedAt || new Date().toISOString(),
-              },
-            }));
-            syncUserSignatureAcrossProfiles({
-              uid: currentUser?.uid,
-              email: currentUser?.email,
-              name: currentUser?.name,
-              signatureUrl: newUrl,
-              role: currentUser?.role,
-            });
-            const raw = localStorage.getItem('sti_sync_officer_session');
-            if (raw) {
-              try {
-                const parsed = JSON.parse(raw);
-                parsed.signatureUrl = newUrl;
-                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
-              } catch {}
-            }
-          }}
-        />
-      )}
 
       {/* Proposal Submission Confirmation Modal */}
       {isSubmitConfirmOpen && (

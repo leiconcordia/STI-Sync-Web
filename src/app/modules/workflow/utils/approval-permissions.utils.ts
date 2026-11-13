@@ -180,15 +180,21 @@ export function resolveApprovalPermissions(
     // B. SAS Gatekeeper reviewing an Org submission at Stage 1
     const isSasDoc = isDocumentSasCreated(doc);
     if (isSasAdmin && !isSasDoc) {
-      const sasStep = chain.find(
-        (s) => (s.role === 'sas_head' || s.role === 'sas_coordinator' || s.stageIndex === 1) &&
-               s.status !== 'endorsed' && s.status !== 'approved'
-      );
-      if (sasStep || activeStage === 1 || chain.length === 0) {
-        canEndorse = true;
-        canApprove = chain.length === 0;
-        canReturn = true;
-        canReject = true;
+      const isPendingSasVetting = (doc as any).isPendingSasVetting === true;
+      const sasVettedAt = (doc as any).sasVettedAt;
+      const isReleasedToSignatories = Boolean(sasVettedAt) && !isPendingSasVetting;
+
+      if (!isReleasedToSignatories) {
+        const sasStep = chain.find(
+          (s) => (s.role === 'sas_head' || s.role === 'sas_coordinator' || s.stageIndex === 1) &&
+                 s.status !== 'endorsed' && s.status !== 'approved'
+        );
+        if (isPendingSasVetting || sasStep || activeStage === 1 || chain.length === 0) {
+          canEndorse = true;
+          canApprove = true;
+          canReturn = true;
+          canReject = true;
+        }
       }
     }
   }

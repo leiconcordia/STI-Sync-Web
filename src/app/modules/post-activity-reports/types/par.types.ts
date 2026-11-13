@@ -20,6 +20,14 @@ export interface PARPhotoAttachment {
   uploadedAt?: string;
 }
 
+export interface PARAttachmentFile {
+  id: string;
+  name: string;
+  url: string;
+  size?: number;
+  uploadedAt?: string;
+}
+
 export interface PARApprovalStep {
   id?: string;
   step: number;
@@ -84,7 +92,10 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   organizerName: string;
   proposalOrganizers?: string[];
   proposedMechanics?: string[];
+  mechanicsDiffered?: boolean;
   actualMechanics?: string; // Fill up only if actual mechanics differed from proposed
+  mechanicsAttachmentUrl?: string;
+  mechanicsAttachmentName?: string;
   materialsUtilized?: string[];
   proposalMaterials?: string[];
   marketingConducted?: string[];
@@ -96,24 +107,29 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   // ─── Section 2: Attendance Verification (Auto-Populated from Attendance Logs) ───
   attendanceSummary: {
     registeredCount: number;
+    estimatedAttendance?: number;
     attendedCount: number;
     turnoutRate?: number; // e.g. 93 (percent)
     targetAudience: string;
     whoAttended: string; // e.g., "BSIT all year levels"
     howManyAttended?: string; // e.g., "112 / 120 Expected Attendees (93% Turnout)"
+    attendanceMonitoringUsed?: boolean;
     attendanceListUrl?: string;
+    attendanceListName?: string;
   };
 
-  // ─── Section 3: Financial Report Projection (Auto-Populated from Approved Form AP-01) ───
+  // ─── Section 3: Financial Report (Copied from Actual Financial Liquidation LF-01) ───
   financialSummary: {
     totalRevenue: number;
     totalDisbursed: number;
     surplusOrDeficit: number;
+    copiedFromLiquidation?: boolean;
     lineItems: Array<{
       description: string;
       unitAmount: number;
       totalAmount: number;
     }>;
+    attachments?: PARAttachmentFile[];
   };
 
   // ─── Section 4: Results & Post-Event Evaluation (Officer Inputs & KPI Bridge) ───

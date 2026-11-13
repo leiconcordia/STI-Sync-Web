@@ -54,7 +54,6 @@ interface Step7Props {
   isOfficerOnly?: boolean;
   errors?: Record<string, string>;
   makerSignatureUrl?: string;
-  onOpenSignatureModal?: () => void;
 }
 
 export default function Step7ReviewSubmit({
@@ -67,7 +66,6 @@ export default function Step7ReviewSubmit({
   isOfficerOnly = false,
   errors = {},
   makerSignatureUrl,
-  onOpenSignatureModal,
 }: Step7Props) {
   const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
   const [loadingSignatories, setLoadingSignatories] = useState(true);
@@ -784,7 +782,12 @@ export default function Step7ReviewSubmit({
               <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
                 15. Prepared By (Official E-Signature Verification)
               </h3>
-              {makerSignatureUrl ? (
+              {isOfficerOnly ? (
+                <span className="text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                  <Lock className="w-3.5 h-3.5 text-blue-600" />
+                  Adviser Signature Required on Submission
+                </span>
+              ) : makerSignatureUrl ? (
                 <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                   Official Signature Attached
@@ -792,14 +795,16 @@ export default function Step7ReviewSubmit({
               ) : (
                 <span className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                   <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-                  Signature Required
+                  Signature Required in Settings
                 </span>
               )}
             </div>
 
             <div
               className={`p-4 rounded-2xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all ${
-                makerSignatureUrl
+                isOfficerOnly
+                  ? 'bg-slate-50 border-slate-200 shadow-2xs'
+                  : makerSignatureUrl
                   ? 'bg-emerald-50/60 border-emerald-200 shadow-2xs'
                   : 'bg-amber-50/80 border-amber-300 shadow-xs'
               }`}
@@ -807,20 +812,22 @@ export default function Step7ReviewSubmit({
               <div className="space-y-1 max-w-xl">
                 <div className="text-xs font-bold text-slate-800 flex items-center gap-2 flex-wrap">
                   <FileSignature className="w-4 h-4 text-blue-600 shrink-0" />
-                  <span>{formData.preparedBy?.name || proponents[0] || 'Official Proponent'}</span>
+                  <span>{proponents[0] || formData.preparedBy?.name || 'Organization Adviser'}</span>
                   <span className="text-[10px] font-medium text-slate-500 bg-white px-2 py-0.5 rounded-md border border-slate-200">
-                    {formData.preparedBy?.roleTitle || (formData.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser')}
+                    {formData.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'}
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  {makerSignatureUrl
-                    ? 'Official signature is verified and will be stamped onto Form AP-01 upon submission and publication-quality PDF export.'
-                    : 'A verified digital signature is required before submitting this Activity Proposal. Please register your signature below.'}
+                  {isOfficerOnly
+                    ? 'Only the Organization Adviser’s registered digital signature will be verified and attached when the Adviser formally submits this Activity Proposal.'
+                    : makerSignatureUrl
+                    ? 'Official signature is verified from your registered profile and will be stamped onto Form AP-01 upon submission and publication-quality PDF export.'
+                    : 'No registered digital signature found for your account. Please upload or register your signature in your Profile / Account Settings before submitting this Activity Proposal.'}
                 </p>
               </div>
 
-              <div className="flex items-center gap-3 shrink-0">
-                {makerSignatureUrl && (
+              {!isOfficerOnly && makerSignatureUrl && (
+                <div className="flex items-center gap-3 shrink-0">
                   <div className="bg-white p-1.5 rounded-xl border border-emerald-200 shadow-2xs">
                     <img
                       src={makerSignatureUrl}
@@ -828,22 +835,8 @@ export default function Step7ReviewSubmit({
                       className="h-10 max-w-[140px] object-contain"
                     />
                   </div>
-                )}
-                {onOpenSignatureModal && (
-                  <button
-                    type="button"
-                    onClick={onOpenSignatureModal}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                      makerSignatureUrl
-                        ? 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 shadow-2xs'
-                        : 'bg-amber-600 hover:bg-amber-700 text-white shadow-sm shadow-amber-600/20'
-                    }`}
-                  >
-                    <PenTool className="w-3.5 h-3.5" />
-                    <span>{makerSignatureUrl ? 'Update Signature' : 'Upload / Draw Signature Now'}</span>
-                  </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
 

@@ -40,17 +40,21 @@ export function useSignatoryDocuments(session: any) {
     const stepUid = step.signatoryUid || step.signedByUid;
     const stepEmail = (step.signatoryEmail || step.signedByEmail || '').toLowerCase().trim();
 
-    if (stepUid) {
-      return Boolean(userUid && stepUid === userUid);
-    }
-    if (stepEmail) {
-      return Boolean(userEmail && stepEmail === userEmail);
-    }
+    const uidMatches = Boolean(
+      stepUid &&
+      ((session?.id && stepUid === session.id) || (session?.uid && stepUid === session.uid))
+    );
+    if (uidMatches) return true;
 
-    if (step.role && userRole && step.role.toLowerCase() === userRole.toLowerCase()) return true;
-    if (step.roleTitle && userRoleTitle) {
-      const sTitle = step.roleTitle.toLowerCase();
-      if (sTitle === userRoleTitle || sTitle.includes(userRoleTitle) || userRoleTitle.includes(sTitle)) return true;
+    const emailMatches = Boolean(stepEmail && userEmail && stepEmail === userEmail);
+    if (emailMatches) return true;
+
+    if (!stepUid && !stepEmail) {
+      if (step.role && userRole && step.role.toLowerCase() === userRole.toLowerCase()) return true;
+      if (step.roleTitle && userRoleTitle) {
+        const sTitle = step.roleTitle.toLowerCase();
+        if (sTitle === userRoleTitle || sTitle.includes(userRoleTitle) || userRoleTitle.includes(sTitle)) return true;
+      }
     }
     return false;
   };
@@ -85,12 +89,23 @@ export function useSignatoryDocuments(session: any) {
       const currentStep = chain[currentIdx];
 
       const isReturnedStatus = isDocumentCurrentlyReturned(p);
+      const isOrgSchoolBudget =
+        Boolean((p as any).isOfficerProposal) && (p as any).fundingSource !== 'organization_funds';
+      const hasAnySignature = chain.some((s) => s.status === 'endorsed' || s.status === 'approved');
+      const isAwaitingSasGate =
+        (p as any).isPendingSasVetting === true ||
+        (isOrgSchoolBudget &&
+          !(p as any).sasVettedAt &&
+          (p as any).isPendingSasVetting !== false &&
+          !hasAnySignature);
 
       const isUnderReview =
         !isReturnedStatus &&
+        !isAwaitingSasGate &&
         (p.status === 'under_review' ||
         (p as any).proposalStatus === 'pending' ||
-        (p as any).proposalStatus === 'pending_review');
+        (p as any).proposalStatus === 'pending_review' ||
+        (p as any).proposalStatus === 'under_review');
 
       if (isUnderReview) {
         const currentStage = p.currentStageIndex ?? 1;
@@ -159,7 +174,10 @@ export function useSignatoryDocuments(session: any) {
       const currentStep = chain[currentIdx];
 
       const isReturnedStatus = isDocumentCurrentlyReturned(l);
-      const isUnderReview = !isReturnedStatus && (l.status === 'under_review' || l.status === 'pending');
+      const isUnderReview =
+        !isReturnedStatus &&
+        (l as any).isPendingSasVetting !== true &&
+        (l.status === 'under_review' || l.status === 'pending');
 
       if (isUnderReview) {
         const currentStage = l.currentStageIndex ?? 1;
@@ -228,6 +246,7 @@ export function useSignatoryDocuments(session: any) {
       const isReturnedStatus = isDocumentCurrentlyReturned(par);
       const isUnderReview =
         !isReturnedStatus &&
+        (par as any).isPendingSasVetting !== true &&
         (par.status === 'under_review' ||
         par.status === 'pending' ||
         (par as any).reportStatus === 'submitted');

@@ -4,7 +4,9 @@ import { ATTENDANCE_COLLECTION } from '../../attendance/services/attendance.serv
 
 export interface EventAttendanceBridgeResult {
   registeredCount: number;
+  estimatedAttendance: number;
   attendedCount: number;
+  hasAttendanceLogs: boolean;
   turnoutRate: number; // 0 to 100
   howManyAttended: string;
   whoAttended: string;

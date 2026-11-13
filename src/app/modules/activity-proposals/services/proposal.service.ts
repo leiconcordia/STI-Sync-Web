@@ -336,6 +336,18 @@ export async function syncProposalToEventsCollection(
         approvalChain: (proposal as any).approvalChain || existingData.approvalChain || [],
         currentStepIndex: (proposal as any).currentStepIndex ?? existingData.currentStepIndex ?? 0,
         currentStageIndex: (proposal as any).currentStageIndex ?? existingData.currentStageIndex ?? 1,
+        isPendingSasVetting:
+          (proposal as any).isPendingSasVetting !== undefined
+            ? Boolean((proposal as any).isPendingSasVetting)
+            : Boolean(existingData.isPendingSasVetting),
+        sasVettedAt:
+          (proposal as any).sasVettedAt !== undefined
+            ? (proposal as any).sasVettedAt
+            : existingData.sasVettedAt || null,
+        sasVettedBy:
+          (proposal as any).sasVettedBy !== undefined
+            ? (proposal as any).sasVettedBy
+            : existingData.sasVettedBy || null,
         submissionDate: (proposal as any).submissionDate || existingData.submissionDate || null,
         isReturned: Boolean((proposal as any).isReturned),
         stepRevisionRemarks: (proposal as any).stepRevisionRemarks || null,
@@ -538,6 +550,10 @@ export async function submitProposalForReview(
   }
 
   // Initialize or reset approval chain statuses for multi-stage execution (strictly normalized 1..M)
+  const isOrgFunds = formData.fundingSource === 'organization_funds';
+  // Student Org proposals using School Budget require SAS Pre-Approval Vetting BEFORE Stage 1 signatories can see or sign
+  const requiresSasPreApprovalGate = isOfficer && !isOrgFunds;
+
   const chain = normalizeApprovalStages(formData.approvalChain || []);
   const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
   if (hasStages) {
@@ -548,7 +564,9 @@ export async function submitProposalForReview(
         delete cleanStep.signedAt;
         delete cleanStep.remarks;
       }
-      if ((step.stageIndex ?? 1) === 1) {
+      if (requiresSasPreApprovalGate) {
+        chain[idx] = { ...cleanStep, status: 'waiting' };
+      } else if ((step.stageIndex ?? 1) === 1) {
         chain[idx] = { ...cleanStep, status: 'current' };
       } else {
         chain[idx] = { ...cleanStep, status: 'waiting' };
@@ -562,7 +580,11 @@ export async function submitProposalForReview(
         delete cleanStep.signedAt;
         delete cleanStep.remarks;
       }
-      chain[idx] = { ...cleanStep, status: idx === 0 ? 'current' : 'waiting' };
+      if (requiresSasPreApprovalGate) {
+        chain[idx] = { ...cleanStep, status: 'waiting' };
+      } else {
+        chain[idx] = { ...cleanStep, status: idx === 0 ? 'current' : 'waiting' };
+      }
     });
   }
 
@@ -584,6 +606,9 @@ export async function submitProposalForReview(
     lifecycleStatus: 'pending_review',
     isOfficerProposal: isOfficer,
     isSasDirect: isSasAdmin,
+    isPendingSasVetting: requiresSasPreApprovalGate,
+    sasVettedAt: null,
+    sasVettedBy: null,
     organizationId: isSasAdmin ? 'sas' : (formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || 'student_org'),
     hostingOrgId: isSasAdmin ? 'sas' : (formData.hostingOrgId || formData.organizationId || (user as any).organizationId || 'student_org'),
     approvalChain: chain,
@@ -603,7 +628,7 @@ export async function submitProposalForReview(
     createdByEmail: formData.createdByEmail || user.email,
     creatorRole: isSasAdmin ? 'sas_admin' : 'adviser',
     preparedBy: {
-      name: user.name,
+      name: formData.preparedBy?.name || formData.proponents?.[0] || user.name,
       roleTitle: isSasAdmin ? 'SAS Administrator' : 'Organization Adviser',
       email: user.email,
       signatureUrl: (user as any).signatureUrl || formData.submittedBySignatureUrl || (formData as any).signatureUrl || '',
@@ -714,6 +739,18 @@ export async function submitProposalForReview(
       payload.resubmissionNote = resubmissionNote;
     }
     payload.proposalHistory = arrayUnion(resubmitHistoryEntry);
+  } else {
+    const submitHistoryEntry = {
+      id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      action: 'submitted',
+      performedBy: user.uid,
+      performedByName: user.name || 'Proponent',
+      performedAt: new Date().toISOString(),
+      version: currentVersion,
+      versionLabel: `v${currentVersion}.0`,
+      remarks: 'Proposal submitted for institutional review.',
+    };
+    payload.proposalHistory = arrayUnion(submitHistoryEntry);
   }
 
   if (!existingId && !formData.id) {
@@ -1196,10 +1233,22 @@ export async function releaseProposalToSignatories(
   remarks = ''
 ): Promise<{ success: boolean }> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) throw new Error('Proposal not found');
+  let snap = await getDoc(docRef);
+  let data: ActivityProposal | null = snap.exists() ? (snap.data() as ActivityProposal) : null;
 
-  const data = snap.data() as ActivityProposal;
+  if (!data) {
+    for (const col of ['events', 'activity_proposals', 'proposals']) {
+      try {
+        const fbSnap = await getDoc(doc(db, col, proposalId));
+        if (fbSnap.exists()) {
+          data = fbSnap.data() as ActivityProposal;
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!data) throw new Error('Proposal not found');
+
   const chain = normalizeApprovalStages(data.approvalChain || []);
 
   // Activate Stage 1 signers
@@ -1211,12 +1260,14 @@ export async function releaseProposalToSignatories(
     }
   });
 
+  const vettedAt = new Date().toISOString();
+
   const clearanceEntry = {
     id: `hist_sas_release_${Date.now()}`,
     action: 'sas_vetted_and_released',
     performedBy: sasAdminUid,
     performedByName: 'Student Affairs & Services',
-    performedAt: new Date().toISOString(),
+    performedAt: vettedAt,
     remarks: remarks || 'Cleared and released by SAS Admin to Institutional Signatory Pipeline.',
   };
 
@@ -1224,46 +1275,32 @@ export async function releaseProposalToSignatories(
     approvalChain: chain,
     currentStageIndex: 1,
     status: 'under_review' as ProposalStatus,
-    proposalStatus: 'under_review',
-    lifecycleStatus: 'under_review',
+    proposalStatus: 'pending',
+    lifecycleStatus: 'pending_review',
     isPendingSasVetting: false,
-    sasVettedAt: new Date().toISOString(),
+    sasVettedAt: vettedAt,
     sasVettedBy: sasAdminUid,
     updatedAt: serverTimestamp(),
     proposalHistory: arrayUnion(clearanceEntry),
   };
 
-  await updateDoc(docRef, sanitizeFirestorePayload(updatePayload));
+  await setDoc(docRef, sanitizeFirestorePayload(updatePayload), { merge: true });
 
-  // Sync to activities/events collection
-  try {
-    const actRef = doc(db, ACTIVITIES_COLLECTION, proposalId);
-    await updateDoc(actRef, sanitizeFirestorePayload({
-      approvalChain: chain,
-      currentStageIndex: 1,
-      status: 'pending',
-      proposalStatus: 'under_review',
-      lifecycleStatus: 'pending_review',
-      isPendingSasVetting: false,
-      sasVettedAt: new Date().toISOString(),
-      sasVettedBy: sasAdminUid,
-      updatedAt: serverTimestamp(),
-    }));
-  } catch (_) {}
-
+  // Sync to events collection
   try {
     const evRef = doc(db, 'events', proposalId);
-    await updateDoc(evRef, sanitizeFirestorePayload({
+    await setDoc(evRef, sanitizeFirestorePayload({
       approvalChain: chain,
       currentStageIndex: 1,
       status: 'pending',
-      proposalStatus: 'under_review',
+      proposalStatus: 'pending',
       lifecycleStatus: 'pending_review',
       isPendingSasVetting: false,
-      sasVettedAt: new Date().toISOString(),
+      sasVettedAt: vettedAt,
       sasVettedBy: sasAdminUid,
+      proposalHistory: arrayUnion(clearanceEntry),
       updatedAt: serverTimestamp(),
-    }));
+    }), { merge: true });
   } catch (_) {}
 
   // Dispatch notifications to Stage 1 signers
@@ -1272,12 +1309,17 @@ export async function releaseProposalToSignatories(
     if (signer.signatoryUid || signer.signatoryEmail) {
       try {
         await createNotification({
-          userId: signer.signatoryUid || signer.signatoryEmail,
-          title: `Proposal Released: ${data.title}`,
-          message: `Activity proposal "${data.title}" has been cleared by SAS and is now awaiting your review in Stage 1.`,
-          type: 'action_required',
+          recipientRole: 'signatory',
+          recipientId: signer.signatoryUid || signer.signatoryEmail,
+          title: `Proposal Released: ${data.title || 'Activity Proposal'}`,
+          message: `Activity proposal "${data.title || 'Activity Proposal'}" has been cleared by SAS and is now awaiting your review in Stage 1.`,
+          type: 'document_submission',
           category: 'activity_proposal',
-          link: '/signatory/portal',
+          resourceId: proposalId,
+          resourceType: 'event',
+          actionRoute: '/signatory/proposals',
+          senderId: sasAdminUid,
+          senderName: 'Student Affairs & Services',
           senderRoleTitle: 'Student Affairs & Services',
         });
       } catch (notifErr) {
@@ -1558,7 +1600,10 @@ export async function rejectProposal(
 }
 
 /**
- * Withdraw an Activity Proposal back to 'draft' status so author can edit before review.
+ * Withdraw an Activity Proposal back to 'draft' status so author can edit before signatory endorsements.
+ * - Organization proposals with school_budget can be withdrawn even after SAS clearance, ONLY until 1+ signatories sign.
+ * - Organization proposals with organization_funds cannot be withdrawn once SAS has digitally signed/approved.
+ * - Notifies designated signatories and SAS when a submitted/cleared proposal is withdrawn by its maker.
  */
 export async function withdrawProposal(
   proposalId: string,
@@ -1566,38 +1611,81 @@ export async function withdrawProposal(
   userName?: string
 ): Promise<void> {
   const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) throw new Error('Proposal not found.');
+  let snap = await getDoc(docRef);
+  let data: any = snap.exists() ? (snap.data() as ActivityProposal) : null;
 
-  const data = snap.data() as ActivityProposal;
-  const currentStatus = (data.status || (data as any).proposalStatus || '').toLowerCase().trim();
-  if (currentStatus !== 'under_review' && currentStatus !== 'pending') {
+  if (!data) {
+    for (const col of ['events', 'proposals', 'activity_proposals']) {
+      try {
+        const fbSnap = await getDoc(doc(db, col, proposalId));
+        if (fbSnap.exists()) {
+          data = fbSnap.data();
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  if (!data) throw new Error('Proposal not found.');
+
+  const currentStatus = (data.status || data.proposalStatus || '').toLowerCase().trim();
+  if (currentStatus !== 'under_review' && currentStatus !== 'pending' && currentStatus !== 'pending_review') {
     throw new Error('Only proposals currently under review can be withdrawn.');
   }
 
-  // Reset chain steps
-  const chain = (data.approvalChain || []).map((step, idx) => {
+  // Enforce signature lock conditions
+  const rawChain: any[] = Array.isArray(data.approvalChain) ? data.approvalChain : [];
+  const anySignatorySigned = rawChain.some(
+    (s: any) =>
+      s &&
+      (s.status === 'endorsed' ||
+        s.status === 'approved' ||
+        Boolean(s.signedAt) ||
+        Boolean(s.signatureUrl))
+  );
+  const isOrgFunds = data.fundingSource === 'organization_funds';
+
+  if (isOrgFunds) {
+    if (anySignatorySigned || Boolean(data.sasSignedAt) || Boolean(data.isApproved) || Boolean(data.approvedBy)) {
+      throw new Error(
+        'Cannot withdraw: SAS has already digitally signed and approved this Organization Funds proposal.'
+      );
+    }
+  } else if (anySignatorySigned) {
+    throw new Error(
+      'Cannot withdraw: One or more signatories have already digitally signed this proposal. Request a Return for Revision instead.'
+    );
+  }
+
+  const wasClearedBySas = Boolean(data.sasVettedAt) || data.isPendingSasVetting === false;
+
+  // Reset chain steps cleanly
+  const chain = rawChain.map((step) => {
     const s: any = { ...step };
-    s.status = idx === 0 ? 'current' : 'waiting';
+    s.status = 'waiting';
     delete s.signedAt;
     delete s.signatureUrl;
     delete s.remarks;
     return s;
   });
 
+  const actorName = userName || data.createdByName || 'Proponent';
   const historyEntry = {
     id: `log-${Date.now()}`,
-    action: 'edited',
+    action: 'withdrawn',
     performedBy: userId,
-    performedByName: userName || 'User',
+    performedByName: actorName,
     performedAt: new Date().toISOString(),
-    remarks: `Proposal withdrawn back to draft by ${userName || 'proponent'} for revision.`,
+    remarks: `Proposal withdrawn back to draft by ${actorName} for revision.`,
   };
 
   const payload: any = {
     proposalStatus: 'draft',
     status: 'draft',
     lifecycleStatus: 'draft',
+    isPendingSasVetting: false,
+    sasVettedAt: null,
+    sasVettedBy: null,
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
@@ -1608,7 +1696,51 @@ export async function withdrawProposal(
   await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
 
   // Sync to events, proposals, activity_proposals collections
-  await syncProposalToEventsCollection({ ...data, ...payload }, 'draft');
+  await syncProposalToEventsCollection({ ...data, ...payload, id: proposalId }, 'draft');
+
+  // Notify signatories and SAS so reviewers know the maker withdrew the submission
+  try {
+    const notifiedKeys = new Set<string>();
+    const titleLabel = data.title || 'Activity Proposal';
+    const refLabel = data.referenceNo || data.referenceId || proposalId;
+
+    for (const step of rawChain) {
+      const recId = step?.signatoryUid || step?.signatoryId || step?.uid || step?.signatoryEmail || '';
+      if (!recId || notifiedKeys.has(String(recId).toLowerCase())) continue;
+      notifiedKeys.add(String(recId).toLowerCase());
+
+      await createNotification({
+        recipientId: String(recId),
+        recipientRole: 'signatory',
+        title: 'Activity Proposal Withdrawn by Maker',
+        message: `"${titleLabel}" (${refLabel}) was withdrawn back to Draft by ${actorName}${wasClearedBySas ? ' after SAS release' : ''}. No signature action is needed unless resubmitted.`,
+        type: 'proposal',
+        priority: 'medium',
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: '/signatory/proposals',
+        metadata: { proposalId, withdrawnBy: actorName },
+      }).catch(() => {});
+    }
+
+    // Also notify SAS Office if authored by a student organization
+    if (data.isOfficerProposal !== false) {
+      await createNotification({
+        recipientId: 'sas_admin',
+        recipientRole: 'admin',
+        title: 'Organization Proposal Withdrawn',
+        message: `${actorName} withdrew "${titleLabel}" (${refLabel}) back to Draft for revisions.`,
+        type: 'proposal',
+        priority: 'low',
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: '/admin/approvals',
+        metadata: { proposalId, withdrawnBy: actorName },
+      }).catch(() => {});
+    }
+  } catch (notifErr) {
+    console.warn('[withdrawProposal] Non-critical notification notice:', notifErr);
+  }
 }
 
 

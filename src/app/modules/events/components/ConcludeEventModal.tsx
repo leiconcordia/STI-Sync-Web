@@ -1,8 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   CheckCircle2,
-  AlertTriangle,
-  AlertCircle,
   Lock,
   X,
   Clock,
@@ -10,12 +8,11 @@ import {
   Loader2,
   DollarSign,
   UserCheck,
-  FileSpreadsheet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { EventDocument } from '../types/event.types';
 import { concludeEvent } from '../services/event-lifecycle.service';
-import { areEventSessionsOver } from '../utils/event-lifecycle.utils';
+import { areEventSessionsOver, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { isEventLiquidationExempt } from '../utils/organization-display.utils';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
 
@@ -40,10 +37,30 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
   const [finalizeAttendance, setFinalizeAttendance] = useState(true);
   const [forceConclude, setForceConclude] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [clockTick, setClockTick] = useState(0);
 
-  // Check if scheduled sessions are finished
+  const hasAttendance = useMemo(() => isEventAttendanceEnabled(event), [event, isOpen]);
+
+  // Reset modal state on open and refresh clock evaluation on focus/tick (supports changing computer date)
+  useEffect(() => {
+    if (!isOpen) return;
+    setNote('');
+    setForceConclude(false);
+    setFinalizeAttendance(hasAttendance);
+    setClockTick((t) => t + 1);
+
+    const handleFocus = () => setClockTick((t) => t + 1);
+    window.addEventListener('focus', handleFocus);
+    const interval = window.setInterval(() => setClockTick((t) => t + 1), 5000);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.clearInterval(interval);
+    };
+  }, [isOpen, hasAttendance, event?.id]);
+
+  // Check if scheduled sessions are finished against current system clock
   const sessions = event?.sessions || [];
-  const sessionsOver = useMemo(() => areEventSessionsOver(event), [event]);
+  const sessionsOver = useMemo(() => areEventSessionsOver(event), [event, isOpen, clockTick]);
 
   // Compute total approved budget & cash custodian allocations
   const totalApprovedBudget = useMemo(() => {
@@ -85,24 +102,28 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
   if (!isOpen || !event) return null;
 
   const handleConfirm = async () => {
-    if (!sessionsOver.allOver && !forceConclude) {
-      toast.error('Cannot Conclude Event', {
+    // Re-evaluate live system clock in case computer date was changed while modal was open
+    const liveSessionsOver = areEventSessionsOver(event);
+    if (!liveSessionsOver.allOver && !forceConclude) {
+      toast.error('Cannot Conclude Event Yet', {
         description:
-          sessionsOver.reason ||
-          'Scheduled sessions are not finished yet. Check early conclusion override if testing or event finished ahead of time.',
+          liveSessionsOver.reason ||
+          'The scheduled end date/time has not passed yet based on your system clock.',
       });
       return;
     }
+
+    const effectiveFinalizeAttendance = hasAttendance ? finalizeAttendance : false;
 
     try {
       setIsSubmitting(true);
       const res = await concludeEvent(event.id, adminUid, adminName, {
         note,
-        finalizeAttendance,
-        forceConclude,
+        finalizeAttendance: effectiveFinalizeAttendance,
+        forceConclude: !liveSessionsOver.allOver ? forceConclude : false,
       });
 
-      if (finalizeAttendance && res.absenteesCount > 0) {
+      if (effectiveFinalizeAttendance && res.absenteesCount > 0) {
         toast.success(
           `Event "${event.title}" concluded! Attendance finalized with ${res.absenteesCount} absentee record(s) logged.`
         );
@@ -131,7 +152,11 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold tracking-tight">Conclude & Complete Event</h2>
-              <p className="text-xs text-emerald-100">Finalize event lifecycle and lock attendance</p>
+              <p className="text-xs text-emerald-100">
+                {hasAttendance
+                  ? 'Finalize event lifecycle and lock attendance'
+                  : 'Officially close and mark this activity as completed'}
+              </p>
             </div>
           </div>
           <button
@@ -144,7 +169,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-4">
+        <div className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
           <div className="bg-slate-50 dark:bg-slate-800/60 p-4 rounded-xl border border-slate-200 dark:border-slate-700/60 space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-500 uppercase tracking-wider font-mono">
@@ -154,20 +179,22 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
                 className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
                   sessionsOver.allOver
                     ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-                    : 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200'
+                    : 'bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200'
                 }`}
               >
-                {sessionsOver.allOver ? 'Ready for Completion' : 'Sessions Ongoing / Incomplete'}
+                {sessionsOver.allOver ? 'Ready for Completion' : 'Awaiting Scheduled End'}
               </span>
             </div>
             <h3 className="font-bold text-slate-900 dark:text-white text-base leading-snug">
               {event.title}
             </h3>
             <div className="flex items-center gap-4 text-xs text-slate-600 dark:text-slate-400 pt-1">
-              <span className="flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                {sessions.length} Session(s)
-              </span>
+              {sessions.length > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                  {sessions.length} Session(s)
+                </span>
+              )}
               <span className="flex items-center gap-1.5">
                 <Clock className="w-3.5 h-3.5 text-slate-400" />
                 {event.schoolYear || 'Current AY'}
@@ -175,33 +202,19 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
             </div>
           </div>
 
-          {/* Sessions Ongoing Warning & Override */}
           {!sessionsOver.allOver && (
-            <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 space-y-2">
-              <div className="flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed">
-                  <span className="font-bold block text-xs mb-0.5 text-amber-950 dark:text-amber-100">
-                    Sessions Ongoing / Scheduled:
-                  </span>
-                  {sessionsOver.reason ||
-                    'Scheduled sessions have not ended yet based on the event schedule.'}
-                </div>
-              </div>
-
-              <label className="flex items-center gap-2 pt-2 border-t border-amber-200/80 dark:border-amber-800/80 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={forceConclude}
-                  onChange={(e) => setForceConclude(e.target.checked)}
-                  disabled={isSubmitting}
-                  className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
-                />
-                <span className="text-xs font-semibold text-amber-950 dark:text-amber-100">
-                  Conclude early ahead of scheduled end (Testing & Operational Override)
-                </span>
-              </label>
-            </div>
+            <label className="flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700 cursor-pointer select-none">
+              <span className="text-xs text-slate-700 dark:text-slate-300">
+                Scheduled end time has not passed yet. <strong>Conclude early?</strong>
+              </span>
+              <input
+                type="checkbox"
+                checked={forceConclude}
+                onChange={(e) => setForceConclude(e.target.checked)}
+                disabled={isSubmitting}
+                className="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
+              />
+            </label>
           )}
 
           {/* Financial Liquidation Readiness Card */}
@@ -246,50 +259,53 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
             </div>
           </div>
 
-          {/* Attendance Finalization Toggle */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                <span className="text-xs font-bold text-slate-900 dark:text-white">
-                  Finalize Attendance & Mark Absentees
-                </span>
+          {/* Attendance Finalization & Scanner Safeguard — ONLY shown when event uses attendance */}
+          {hasAttendance && (
+            <>
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <UserCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Finalize Attendance & Mark Absentees
+                    </span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={finalizeAttendance}
+                      onChange={(e) => setFinalizeAttendance(e.target.checked)}
+                      disabled={isSubmitting}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                  {finalizeAttendance
+                    ? 'All eligible students who did not scan in will have both Time-In and Time-Out recorded as Absent. Any incomplete check-outs will be sealed.'
+                    : 'Leave attendance as currently scanned without generating automated absentee records.'}
+                </p>
               </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={finalizeAttendance}
-                  onChange={(e) => setFinalizeAttendance(e.target.checked)}
-                  disabled={isSubmitting}
-                  className="sr-only peer"
-                />
-                <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all dark:border-slate-600 peer-checked:bg-emerald-600"></div>
-              </label>
-            </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
-              {finalizeAttendance
-                ? 'All eligible students who did not scan in will have both Time-In and Time-Out recorded as Absent. Any incomplete check-outs will be sealed.'
-                : 'Leave attendance as currently scanned without generating automated absentee records.'}
-            </p>
-          </div>
 
-          {/* Scanner Duty Gate Lock & Sync Safeguard */}
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Lock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                <span className="text-xs font-bold text-slate-900 dark:text-white">
-                  Scanner Duty Gate Lock & Sync Safeguard
-                </span>
+              <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-700/80 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Scanner Duty Gate Lock & Sync Safeguard
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200">
+                    {Math.max((event.scanners || []).length, ((event as any).scannerUserIds || []).length)} Scanner(s) Assigned
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                  Upon conclusion, camera scanning gates will be locked immediately. Any assigned officer with unsynced offline attendance will be prompted before local scanner caches are cleaned up.
+                </p>
               </div>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200">
-                {(event.scanners || []).length} Scanner(s) Assigned
-              </span>
-            </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
-              Upon conclusion, camera scanning gates will be locked immediately. Any assigned officer with unsynced offline attendance will be prompted with "Upload your attendance: Event has been concluded" before local scanner caches are cleaned up.
-            </p>
-          </div>
+            </>
+          )}
 
           {/* Action Impact List */}
           <div className="space-y-2 pt-1">
@@ -300,15 +316,25 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               <li className="flex items-start gap-2">
                 <Lock className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
                 <span>
-                  <strong>Financial Liquidation Ready:</strong> Official expense receipts can now be submitted for institutional review and signatory audit.
+                  {isLiquidationCompulsory ? (
+                    <>
+                      <strong>Financial Liquidation Ready:</strong> Official expense receipts can now be submitted for institutional review and signatory audit.
+                    </>
+                  ) : (
+                    <>
+                      <strong>Activity Lifecycle Sealed:</strong> Status updates to Completed and Post-Activity Report submission unlocks.
+                    </>
+                  )}
                 </span>
               </li>
-              <li className="flex items-start gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
-                <span>
-                  <strong>Scanner Duty Locked & Synced:</strong> Live scanners are locked and offline attendance sync guards are enforced before scanner cache cleanup.
-                </span>
-              </li>
+              {hasAttendance && (
+                <li className="flex items-start gap-2">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Scanner Duty Locked & Synced:</strong> Live scanners are locked and offline attendance sync guards are enforced before scanner cache cleanup.
+                  </span>
+                </li>
+              )}
             </ul>
           </div>
 
@@ -321,8 +347,8 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               type="text"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              disabled={!sessionsOver.allOver}
-              placeholder="e.g., Event successfully concluded with all attendees accounted for."
+              disabled={isSubmitting}
+              placeholder="e.g., Event successfully concluded."
               className="w-full px-3.5 py-2 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
             />
           </div>

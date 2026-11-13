@@ -31,6 +31,8 @@ import {
   isOfficerProposal,
   withdrawProposal,
   deleteEvent,
+  isEventCancelled,
+  isEventCancellationPending,
 } from "../../modules/events";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import {
@@ -386,10 +388,11 @@ export function EventApprovals() {
         const chain = (event as any).approvalChain || [];
         const hasChain = Array.isArray(chain) && chain.length > 0;
         const fullySigned = isProposalFullySigned(chain);
-        const isApprovedStatus = (hasChain && fullySigned) || (!isRet && (event.proposalStatus === "approved" || event.status === "approved" || (event as any).status === "approved_president" || (event as any).isApproved === true));
-        const effectiveIsRet = !isApprovedStatus && isRet;
+        const isCancellationPending = isEventCancellationPending(event);
+        const isApprovedStatus = !isCancelled && !isCancellationPending && ((hasChain && fullySigned) || (!isRet && (event.proposalStatus === "approved" || event.status === "approved" || (event as any).status === "approved_president" || (event as any).isApproved === true)));
+        const effectiveIsRet = !isApprovedStatus && !isCancelled && isRet;
 
-        if (activeTab === "pending" && (isApprovedStatus || effectiveIsRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review"))) return false;
+        if (activeTab === "pending" && (isApprovedStatus || effectiveIsRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review" && event.proposalStatus !== "under_review"))) return false;
         if (activeTab === "returned") {
           if (!effectiveIsRet) return false;
         }
@@ -488,7 +491,7 @@ export function EventApprovals() {
 
   // Counts (excluding archived & soft-deleted from active tallies)
   const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
-  const pendingCount = events.filter((e) => (e.proposalStatus === "pending" || e.proposalStatus === "pending_review") && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
+  const pendingCount = events.filter((e) => (e.proposalStatus === "pending" || e.proposalStatus === "pending_review" || e.proposalStatus === "under_review") && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const approvedCount = events.filter((e) => e.proposalStatus === "approved" && e.status !== "completed" && !isEventPast(e) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const returnedCount = events.filter((e) => !isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const completedCount = events.filter((e) => (e.status === "completed" || e.proposalStatus === "completed" || (e.proposalStatus === "approved" && isEventPast(e))) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
@@ -1248,25 +1251,30 @@ export function EventApprovals() {
                   (paginatedItems as EventDocument[]).map((event) => {
                     const orgAcronym = getOrgAcronym(event);
                     const orgLogo = getOrgLogo(event);
-                    const isRejected = event.proposalStatus === "rejected";
+                    const isCancelled = isEventCancelled(event);
+                    const isCancellationPending = isEventCancellationPending(event);
+                    const isRejected = !isCancelled && event.proposalStatus === "rejected";
                     const isReturned =
-                      event.proposalStatus === "returned" ||
+                      !isCancelled &&
+                      (event.proposalStatus === "returned" ||
                       event.proposalStatus === "returned_for_revision" ||
                       (event as any).status === "returned" ||
                       (event as any).lifecycleStatus === "returned" ||
                       Boolean((event as any).isReturned) ||
-                      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
+                      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0));
                     const chain = (event as any).approvalChain || [];
                     const hasChain = Array.isArray(chain) && chain.length > 0;
                     const fullySigned = isProposalFullySigned(chain);
                     const isApproved =
-                      (hasChain && fullySigned) ||
+                      !isCancelled &&
+                      !isCancellationPending &&
+                      ((hasChain && fullySigned) ||
                       (!isReturned &&
                         (event.proposalStatus === "approved" ||
                           event.status === "approved" ||
                           (event as any).status === "approved_president" ||
-                          (event as any).isApproved === true));
-                    const effectiveIsReturned = !isApproved && isReturned;
+                          (event as any).isApproved === true)));
+                    const effectiveIsReturned = !isApproved && !isCancelled && isReturned;
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
                     const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
@@ -1375,7 +1383,17 @@ export function EventApprovals() {
 
                         {/* Signatory Stage */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          {isRejected ? (
+                          {isCancelled ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                              Cancelled
+                            </span>
+                          ) : isCancellationPending ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                              Cancellation Pending
+                            </span>
+                          ) : isRejected ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
                               <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                               Rejected
@@ -1463,8 +1481,8 @@ export function EventApprovals() {
                               <span>View</span>
                             </button>
 
-                            {/* Freshly created / Pending Review: View + Withdraw */}
-                            {(event.proposalStatus === 'pending' || event.proposalStatus === 'pending_review') && canWithdrawProposal(event, 'admin', adviserProfile?.uid).canWithdraw && (
+                            {/* Freshly created / Under Review: Withdraw (blocked once any signatory signs) */}
+                            {canWithdrawProposal(event, 'admin', adviserProfile?.uid).canWithdraw && (
                               <button
                                 onClick={() => handleWithdraw(event)}
                                 disabled={withdrawingId === event.id}
@@ -1522,7 +1540,7 @@ export function EventApprovals() {
                               </>
                             ) : (
                               <>
-                                {isApproved && event.status !== 'completed' && isSasCreatedEvent(event, orgMap) && (
+                                {!isCancelled && !isCancellationPending && isApproved && event.status !== 'completed' && isSasCreatedEvent(event, orgMap) && (
                                   <button
                                     onClick={() => setConcludingEvent(event)}
                                     className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1533,7 +1551,7 @@ export function EventApprovals() {
                                   </button>
                                 )}
 
-                                {(event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && isSasCreatedEvent(event, orgMap) && (
+                                {!isCancelled && !isCancellationPending && (event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && isSasCreatedEvent(event, orgMap) && (
                                   <button
                                     onClick={() => setArchivingEvent(event)}
                                     className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"

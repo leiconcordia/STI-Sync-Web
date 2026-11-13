@@ -26,6 +26,16 @@ export interface UserSignatureIdentifier {
  * Useful for initial state rendering to prevent UI flickering.
  */
 export function getFastCachedSignature(profile?: any): string {
+  const profileRole = (profile?.role || '').trim().toLowerCase();
+  const isOfficerOnly =
+    (profileRole === 'officer' || profileRole === 'student_officer') &&
+    profile?.isAdviser !== true;
+
+  // Student officers do not register or attach signatures to Activity Proposals
+  if (isOfficerOnly) {
+    return '';
+  }
+
   if (profile?.signatureUrl && typeof profile.signatureUrl === 'string' && profile.signatureUrl.trim().length > 0) {
     return profile.signatureUrl.trim();
   }
@@ -34,7 +44,6 @@ export function getFastCachedSignature(profile?: any): string {
   }
 
   const profileEmail = (profile?.email || '').trim().toLowerCase();
-  const profileRole = (profile?.role || '').trim().toLowerCase();
   const isSasUser =
     profileRole === 'sas_admin' ||
     profileRole === 'admin' ||
@@ -55,13 +64,14 @@ export function getFastCachedSignature(profile?: any): string {
     }
   } catch {}
 
-  // 2. Check officer / adviser session ONLY if email strictly matches
+  // 2. Check officer / adviser session ONLY if email strictly matches AND session is an Adviser
   try {
     const rawOff = localStorage.getItem('sti_sync_officer_session');
     if (rawOff) {
       const parsed = JSON.parse(rawOff);
       const sessionEmail = (parsed.email || '').trim().toLowerCase();
-      if (profileEmail && sessionEmail === profileEmail) {
+      const sessionIsAdviser = parsed.isAdviser === true || (parsed.role || '').toLowerCase() === 'adviser';
+      if (profileEmail && sessionEmail === profileEmail && sessionIsAdviser) {
         const sig = parsed.signatureUrl || parsed.signatureDataUrl;
         if (sig && typeof sig === 'string' && sig.trim().length > 0) return sig.trim();
       }
@@ -92,6 +102,14 @@ export function getFastCachedSignature(profile?: any): string {
  * 5. organization_advisers collection
  */
 export async function resolveUserSignature(identifier: UserSignatureIdentifier): Promise<string> {
+  const role = (identifier.role?.trim() || identifier.profile?.role || '').toLowerCase();
+  const isOfficerOnly =
+    (role === 'officer' || role === 'student_officer') &&
+    identifier.profile?.isAdviser !== true;
+  if (isOfficerOnly) {
+    return '';
+  }
+
   const cached = getFastCachedSignature({
     ...identifier.profile,
     email: identifier.email || identifier.profile?.email,
@@ -102,7 +120,6 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
 
   const uid = identifier.uid?.trim() || identifier.profile?.uid || identifier.profile?.id || '';
   const email = (identifier.email?.trim() || identifier.profile?.email || '').toLowerCase();
-  const role = (identifier.role?.trim() || identifier.profile?.role || '').toLowerCase();
 
   const isSasOrAdmin =
     role === 'admin' ||

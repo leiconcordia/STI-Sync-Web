@@ -147,22 +147,20 @@ export default function ProposalFlowBuilder({
     );
   }, [activeSignatories]);
 
-  // Auto-initialize default dynamic chain based on target audience if chain is empty or incomplete for officer
+  // Auto-initialize default dynamic chain based on target audience if chain is empty or only holds the placeholder SAS gatekeeper
   const hasInitializedRef = React.useRef(false);
   useEffect(() => {
     if (!hasInitializedRef.current && activeSignatories.length > 0) {
+      hasInitializedRef.current = true;
       const needsInit =
         !approvalChain ||
         approvalChain.length === 0 ||
-        (isOfficerProposal &&
-          approvalChain.length === 1 &&
-          (approvalChain[0].stageIndex === 1 || approvalChain[0].role === 'sas_head'));
+        (approvalChain.length === 1 && approvalChain[0].id === 'step_sas_gatekeeper');
       if (needsInit) {
-        hasInitializedRef.current = true;
         handleAutoSuggest();
       }
     }
-  }, [activeSignatories.length, approvalChain?.length, sasConfig.name, sasConfig.roleTitle]);
+  }, [activeSignatories.length, sasConfig.name, sasConfig.roleTitle]);
 
   // Adapt existing approvalChain in real-time to signatory edits and scope changes in database
   useEffect(() => {
@@ -218,7 +216,7 @@ export default function ProposalFlowBuilder({
     if (modified) {
       onChange(updatedSteps);
     }
-  }, [activeSignatories, isOfficerProposal]);
+  }, [activeSignatories, approvalChain, isOfficerProposal]);
 
   // Synchronize stage counts from approvalChain into stageConfigs
   React.useEffect(() => {
@@ -1022,7 +1020,7 @@ export default function ProposalFlowBuilder({
                       </div>
                       <div className="text-[11px] text-slate-500 px-2 mt-0.5">
                         {isOfficerProposal && stage.stageIndex === 1
-                          ? 'Mandatory Stage 1: Voluntarily routes to SAS Admin for official initial vetting and digital endorsement.'
+                          ? 'Stage 1 Signers: Unlocks once SAS Admin approves and releases this proposal to signatories.'
                           : isFirstStage
                           ? 'Initial Stage: Active immediately upon proposal submission.'
                           : `Stage ${stage.stageIndex}: Unlocks after all Stage ${stage.stageIndex - 1} signatories have signed.`}

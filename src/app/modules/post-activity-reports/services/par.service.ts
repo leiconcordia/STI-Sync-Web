@@ -518,8 +518,19 @@ export async function saveOrSubmitPAR(
     }
   }
 
+  const isOrgFunds =
+    (formData as any).fundingSource === 'organization_funds' ||
+    eventData.fundingSource === 'organization_funds';
+  const requiresSasPreApprovalGate = isOfficer && !isOrgFunds;
+
   if (submit && approvalChain && approvalChain.length > 0) {
     approvalChain = approvalChain.map((step: any) => {
+      if (requiresSasPreApprovalGate) {
+        return {
+          ...step,
+          status: 'waiting',
+        };
+      }
       const inStageOne = (step.stageIndex ?? 1) === 1;
       const isAlreadySigned = step.status === 'endorsed' || step.status === 'approved';
       return {
@@ -541,6 +552,10 @@ export async function saveOrSubmitPAR(
     semesterId: eventData.semesterId || formData.semesterId || '',
     schoolYear: eventData.schoolYear || formData.schoolYear || '',
     semester: eventData.semester || formData.semester || '',
+    fundingSource: (formData as any).fundingSource || eventData.fundingSource || (isOfficer ? 'organization_funds' : 'school_budget'),
+    isPendingSasVetting: submit ? requiresSasPreApprovalGate : false,
+    sasVettedAt: null,
+    sasVettedBy: null,
 
     organizationId: isSasEvent ? 'sas' : (eventData.hostingOrgId || formData.organizationId || ''),
     organizationName: isSasEvent ? 'Student Affairs Services (SAS)' : (eventData.hostingOrgName || formData.organizationName || ''),
@@ -992,7 +1007,8 @@ export async function withdrawPostActivityReport(
 }
 
 /**
- * Directly approve a Post-Activity Report by SAS Administrator.
+ * Release a Post-Activity Report from SAS Pre-Approval Vetting Gate to Institutional Signatories.
+ * (Or directly approve if Organization Internal Funds).
  */
 export async function approvePAR(
   parId: string,
@@ -1005,6 +1021,38 @@ export async function approvePAR(
   if (!snap.exists()) throw new Error('Post-Activity Report not found.');
 
   const data = snap.data() as PostActivityReportDocument;
+  const isOrgFunds =
+    (data as any).fundingSource === 'organization_funds' ||
+    ((data.approvalChain || []).length === 1 && (data.approvalChain || [])[0].role === 'sas_head');
+
+  // If School Budget with Signatory Pipeline awaiting SAS clearance, release to Stage 1 Signatories!
+  if (!isOrgFunds && (data as any).isPendingSasVetting === true && (data.approvalChain || []).length > 0) {
+    const chain = (data.approvalChain || []).map((step) => ({
+      ...step,
+      status: (step.stageIndex ?? 1) === 1 ? ('current' as const) : ('waiting' as const),
+    }));
+
+    const releaseRemark: PARRemark = {
+      id: `rem-${Date.now()}`,
+      authorName: adminName || 'SAS Adviser',
+      authorRole: 'admin',
+      action: 'endorsed',
+      comment: remarks || 'Cleared by SAS and released to Institutional Signatory Pipeline.',
+      timestamp: new Date().toISOString(),
+    };
+
+    await updateDoc(parRef, sanitizeFirestorePayload({
+      status: 'under_review',
+      approvalChain: chain,
+      currentStageIndex: 1,
+      isPendingSasVetting: false,
+      sasVettedAt: new Date().toISOString(),
+      sasVettedBy: adminUserId,
+      updatedAt: serverTimestamp(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(releaseRemark)),
+    }));
+    return;
+  }
 
   const approvalRemark: PARRemark = {
     id: `rem-${Date.now()}`,
@@ -1017,6 +1065,7 @@ export async function approvePAR(
 
   await updateDoc(parRef, sanitizeFirestorePayload({
     status: 'approved',
+    isPendingSasVetting: false,
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

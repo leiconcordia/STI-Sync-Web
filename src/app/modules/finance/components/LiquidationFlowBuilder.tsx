@@ -57,6 +57,7 @@ interface LiquidationFlowBuilderProps {
   orgName?: string;
   allocatedBudget?: number;
   isSasCreator?: boolean;
+  readOnly?: boolean;
 }
 
 export default function LiquidationFlowBuilder({
@@ -67,6 +68,7 @@ export default function LiquidationFlowBuilder({
   orgName,
   allocatedBudget,
   isSasCreator = false,
+  readOnly = false,
 }: LiquidationFlowBuilderProps) {
   const [selectedSignatoryIdPerStage, setSelectedSignatoryIdPerStage] = useState<Record<number, string>>({});
   const [workflowSettings, setWorkflowSettings] = useState<DefaultWorkflowSettings | null>(() => getCachedWorkflowSettings());
@@ -304,6 +306,7 @@ export default function LiquidationFlowBuilder({
 
   // 2. Add New Empty Stage
   const handleAddStage = () => {
+    if (readOnly) return;
     const newStageNumber = stages.length + 1;
     const newStages = [
       ...stages,
@@ -520,28 +523,9 @@ export default function LiquidationFlowBuilder({
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={handleResetToEmpty}
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Clear all assigned signatories and reset"
-            >
-              <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
-              <span>Clear Names</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={handleAutoSuggest}
-              className="px-3 py-1.5 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-400/40 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Pre-fills signatories configured in institutional maintenance"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-[#FFD41C]" />
-              <span>Auto-Fill Signatories</span>
-            </button>
-
-            <button
-              type="button"
               onClick={handleAddStage}
-              className="px-3.5 py-1.5 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+              disabled={readOnly}
+              className="px-3.5 py-1.5 rounded-xl bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[#001A4D]"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Add Stage</span>
@@ -597,22 +581,15 @@ export default function LiquidationFlowBuilder({
               <h4 className="font-bold text-slate-800 text-sm">No Approval Stages Configured</h4>
               <p className="text-xs text-slate-500 max-w-md mx-auto mt-1">
                 The liquidation pipeline is dynamic and generated from your institutional maintenance.
-                Click <strong>Auto-Fill Signatories</strong> to populate active signers, or click <strong>Add Stage</strong> to create a stage.
+                Click <strong>Add Stage</strong> to create a stage.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 pt-2">
               <button
                 type="button"
-                onClick={handleAutoSuggest}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              >
-                <Sparkles className="w-4 h-4 text-[#FFD41C]" />
-                <span>Auto-Fill Signatories</span>
-              </button>
-              <button
-                type="button"
                 onClick={handleAddStage}
-                className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
+                disabled={readOnly}
+                className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
               >
                 <Plus className="w-4 h-4" />
                 <span>Add Stage</span>

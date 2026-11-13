@@ -206,6 +206,38 @@ export const MAJOR_EVENT_FIELDS: ReadonlyArray<string> = [
 ];
 
 /**
+ * Checks if an event is permanently cancelled.
+ */
+export function isEventCancelled(event?: Partial<EventDocument> | any | null): boolean {
+  if (!event) return false;
+  const p = String(event.proposalStatus || '').toLowerCase();
+  const s = String(event.status || '').toLowerCase();
+  const l = String(event.lifecycleStatus || '').toLowerCase();
+  return Boolean(
+    event.isCancelled === true ||
+      p === 'cancelled' ||
+      s === 'cancelled' ||
+      l === 'cancelled'
+  );
+}
+
+/**
+ * Checks if an event has a pending cancellation waiting on Financial Liquidation signatory approval.
+ */
+export function isEventCancellationPending(event?: Partial<EventDocument> | any | null): boolean {
+  if (!event || isEventCancelled(event)) return false;
+  const p = String(event.proposalStatus || '').toLowerCase();
+  const s = String(event.status || '').toLowerCase();
+  const l = String(event.lifecycleStatus || '').toLowerCase();
+  return Boolean(
+    event.cancellationStatus === 'pending_approval' ||
+      p === 'cancellation_pending' ||
+      s === 'cancellation_pending' ||
+      l === 'cancellation_pending'
+  );
+}
+
+/**
  * Checks if an event is currently marked as soft-deleted.
  */
 export function isEventSoftDeleted(event?: Partial<EventDocument> | null): boolean {
@@ -453,6 +485,117 @@ export function isMajorFieldLocked(
 export type EventTimingStatus = 'upcoming' | 'ongoing' | 'completed';
 
 /**
+ * Formats a Firestore Timestamp, Date, or ISO/YYYY-MM-DD value into a local YYYY-MM-DD string
+ * without shifting days across UTC boundaries.
+ */
+function toLocalDateStr(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+      return trimmed.slice(0, 10);
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+    }
+    return '';
+  }
+  let dateObj: Date | null = null;
+  if (val && typeof val.toDate === 'function') {
+    dateObj = val.toDate();
+  } else if (val instanceof Date) {
+    dateObj = val;
+  } else if (val && typeof val.seconds === 'number') {
+    dateObj = new Date(val.seconds * 1000);
+  }
+  if (!dateObj || Number.isNaN(dateObj.getTime())) return '';
+  return `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')}`;
+}
+
+/**
+ * Parses both 24-hour ("17:30") and 12-hour ("5:30 PM") time strings into [hours, minutes].
+ */
+function parseTimeTo24h(timeStr: string | undefined | null, fallbackHours: number, fallbackMinutes: number): [number, number] {
+  if (!timeStr || typeof timeStr !== 'string') {
+    return [fallbackHours, fallbackMinutes];
+  }
+  const clean = timeStr.trim().toUpperCase();
+  const match = clean.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?$/);
+  if (!match) {
+    return [fallbackHours, fallbackMinutes];
+  }
+  let hours = parseInt(match[1], 10);
+  const minutes = parseInt(match[2], 10);
+  const meridiem = match[3];
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return [fallbackHours, fallbackMinutes];
+  }
+  if (meridiem === 'PM' && hours < 12) hours += 12;
+  if (meridiem === 'AM' && hours === 12) hours = 0;
+
+  return [Math.min(23, Math.max(0, hours)), Math.min(59, Math.max(0, minutes))];
+}
+
+function buildLocalDateTime(dateVal: any, timeStr: string | undefined | null, isEnd: boolean): Date | null {
+  const dateStr = toLocalDateStr(dateVal);
+  if (!dateStr) return null;
+  const [year, month, day] = dateStr.split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const [hh, mm] = parseTimeTo24h(timeStr, isEnd ? 23 : 0, isEnd ? 59 : 0);
+  return new Date(year, month - 1, day, hh, mm, isEnd ? 59 : 0);
+}
+
+/**
+ * Checks whether an event has already started based on its earliest session or start date/time
+ * against the local client clock.
+ */
+export function hasEventStarted(event?: Partial<EventDocument> | null): boolean {
+  if (!event) return false;
+  const status = (event.status || '').toLowerCase();
+  const pStatus = (event.proposalStatus || '').toLowerCase();
+  const lStatus = ((event as any).lifecycleStatus || '').toLowerCase();
+
+  if (
+    status === 'ongoing' ||
+    status === 'completed' ||
+    pStatus === 'completed' ||
+    lStatus === 'ongoing' ||
+    lStatus === 'completed' ||
+    lStatus === 'concluded' ||
+    Boolean((event as any).isConcluded) ||
+    Boolean(event.completedAt)
+  ) {
+    return true;
+  }
+
+  const now = new Date();
+  const sessions = Array.isArray(event.sessions) ? event.sessions : [];
+
+  if (sessions.length > 0) {
+    let earliestStart: Date | null = null;
+    for (const s of sessions) {
+      const start = buildLocalDateTime(s.date, s.startTime || '00:00', false);
+      if (start && (!earliestStart || start < earliestStart)) {
+        earliestStart = start;
+      }
+    }
+    if (earliestStart) {
+      return now >= earliestStart;
+    }
+  }
+
+  const fallbackDate = event.startDate || (event as any).date || event.endDate;
+  const fallbackStart = buildLocalDateTime(fallbackDate, event.startTime || '00:00', false);
+  if (fallbackStart) {
+    return now >= fallbackStart;
+  }
+
+  return false;
+}
+
+/**
  * Calculates the real-time operational schedule status of an event
  * based on its session dates, start/end times, and lifecycle markers.
  */
@@ -465,31 +608,24 @@ export function getEventTimingStatus(event?: Partial<EventDocument> | null): Eve
     return 'ongoing';
   }
 
+  const now = new Date();
   const sessions = event.sessions || [];
   if (sessions.length === 0) {
+    const startDateVal = event.startDate || (event as any).date;
+    const endDateVal = event.endDate || startDateVal;
+    const start = buildLocalDateTime(startDateVal, event.startTime || '00:00', false);
+    const end = buildLocalDateTime(endDateVal, event.endTime || '23:59', true);
+    if (end && now > end) return 'completed';
+    if (start && end && now >= start && now <= end) return 'ongoing';
     return 'upcoming';
   }
-
-  const now = new Date();
-
-  const parseSessionDates = (s: any) => {
-    if (!s.date) return { start: null, end: null };
-    const dateStr = typeof s.date === 'string' ? s.date.split('T')[0] : '';
-    if (!dateStr) return { start: null, end: null };
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const startParts = (s.startTime || '00:00').split(':').map(Number);
-    const endParts = (s.endTime || '23:59').split(':').map(Number);
-
-    const start = new Date(year, month - 1, day, startParts[0] || 0, startParts[1] || 0);
-    const end = new Date(year, month - 1, day, endParts[0] || 23, endParts[1] || 59, 59);
-    return { start, end };
-  };
 
   let allCompleted = true;
   let hasOngoing = false;
 
   for (const session of sessions) {
-    const { start, end } = parseSessionDates(session);
+    const start = buildLocalDateTime(session.date, session.startTime || '00:00', false);
+    const end = buildLocalDateTime(session.date, session.endTime || '23:59', true);
     if (!start || !end) continue;
 
     if (now >= start && now <= end) {
@@ -498,7 +634,7 @@ export function getEventTimingStatus(event?: Partial<EventDocument> | null): Eve
       break;
     }
 
-    if (now < start) {
+    if (now <= end) {
       allCompleted = false;
     }
   }
@@ -518,49 +654,29 @@ export function areEventSessionsOver(
     return { allOver: false, reason: 'Event not found.' };
   }
 
+  const now = new Date();
   const sessions = event.sessions || [];
   if (sessions.length === 0) {
-    // If no explicit sessions array, check startDate / endDate fallback if present
-    if (event.endDate || event.startDate) {
-      const dateStr = typeof (event.endDate || event.startDate) === 'string'
-        ? (event.endDate || event.startDate)!.split('T')[0]
-        : '';
-      if (dateStr) {
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const endParts = (event.endTime || '23:59').split(':').map(Number);
-        const end = new Date(year, month - 1, day, endParts[0] || 23, endParts[1] || 59, 59);
-        if (new Date() < end) {
-          return {
-            allOver: false,
-            reason: `Event date has not finished yet (scheduled until ${dateStr} ${event.endTime || '23:59'}).`,
-          };
-        }
+    const dateVal = event.endDate || event.startDate || (event as any).date;
+    const dateStr = toLocalDateStr(dateVal);
+    if (dateStr) {
+      const end = buildLocalDateTime(dateVal, event.endTime || '23:59', true);
+      if (end && now < end) {
+        return {
+          allOver: false,
+          reason: `Event date has not finished yet (scheduled until ${dateStr} ${event.endTime || '23:59'}).`,
+        };
       }
     }
     return { allOver: true };
   }
 
-  const now = new Date();
   for (const s of sessions) {
-    if (!s.date) continue;
-    let dateStr = '';
-    if (typeof s.date === 'string') {
-      dateStr = s.date.split('T')[0];
-    } else if (s.date && typeof s.date.toDate === 'function') {
-      dateStr = s.date.toDate().toISOString().split('T')[0];
-    } else if (s.date instanceof Date) {
-      dateStr = s.date.toISOString().split('T')[0];
-    } else if (s.date && typeof s.date.seconds === 'number') {
-      dateStr = new Date(s.date.seconds * 1000).toISOString().split('T')[0];
-    }
-
+    const dateStr = toLocalDateStr(s.date);
     if (!dateStr) continue;
 
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const endParts = (s.endTime || '23:59').split(':').map(Number);
-    const end = new Date(year, month - 1, day, endParts[0] || 23, endParts[1] || 59, 59);
-
-    if (now < end) {
+    const end = buildLocalDateTime(s.date, s.endTime || '23:59', true);
+    if (end && now < end) {
       return {
         allOver: false,
         unfinishedSession: s,
@@ -599,6 +715,22 @@ export function canConcludeEvent(
     return { canConclude: false, reason: 'Rejected proposals cannot be concluded.' };
   }
 
+  const pStatus = (event.proposalStatus || '').toLowerCase();
+  const lStatus = ((event as any).lifecycleStatus || '').toLowerCase();
+  const isApproved =
+    status === 'approved' ||
+    status === 'published' ||
+    status === 'ongoing' ||
+    pStatus === 'approved' ||
+    lStatus === 'approved' ||
+    lStatus === 'published' ||
+    Boolean((event as any).isApproved) ||
+    Boolean((event as any).isDirectPublished);
+
+  if (!isApproved) {
+    return { canConclude: false, reason: 'Only approved activities or events can be concluded.' };
+  }
+
   const sessionsOver = areEventSessionsOver(event);
   if (!sessionsOver.allOver) {
     return {
@@ -635,11 +767,16 @@ export function canCancelEvent(
 
   if (
     event.isDeleted ||
-    event.proposalStatus === 'cancelled' ||
-    event.status === 'cancelled' ||
-    (event as any).isCancelled
+    isEventCancelled(event)
   ) {
     return { canCancel: false, reason: 'Event is already cancelled.' };
+  }
+
+  if (isEventCancellationPending(event)) {
+    return {
+      canCancel: false,
+      reason: 'A cancellation request with Financial Liquidation is already pending signatory approval.',
+    };
   }
 
   const pStatus = (event.proposalStatus || '').toLowerCase();
@@ -704,13 +841,13 @@ export function canCancelEvent(
   }
 
   const timing = getEventTimingStatus(event);
-  if (timing !== 'upcoming') {
+  if (timing !== 'upcoming' || hasEventStarted(event)) {
     return {
       canCancel: false,
       reason:
         timing === 'completed'
           ? 'Completed events cannot be cancelled.'
-          : 'Ongoing events cannot be cancelled while in progress.',
+          : 'Cannot cancel: This event has already started or is currently in progress.',
     };
   }
 
@@ -766,9 +903,45 @@ export function canWithdrawProposal(
     };
   }
 
+  // Enforce signature lock rules before checking ownership
+  const chain: any[] = Array.isArray((event as any).approvalChain) ? (event as any).approvalChain : [];
+  const anySignatorySigned = chain.some(
+    (s: any) =>
+      s &&
+      (s.status === 'endorsed' ||
+        s.status === 'approved' ||
+        Boolean(s.signedAt) ||
+        Boolean(s.signatureUrl))
+  );
+  const isOrgFunds = (event as any).fundingSource === 'organization_funds';
+
+  if (isOrgFunds) {
+    // Organization's own funds go straight to SAS for final approval & signature
+    if (
+      anySignatorySigned ||
+      Boolean((event as any).sasSignedAt) ||
+      Boolean((event as any).isApproved) ||
+      Boolean((event as any).approvedBy)
+    ) {
+      return {
+        canWithdraw: false,
+        reason:
+          'Cannot withdraw: SAS has already digitally signed and approved this Organization Funds proposal. Request a Return for Revision instead.',
+      };
+    }
+  } else if (anySignatorySigned) {
+    // Officer/School Budget proposals can still be withdrawn even after SAS clearance,
+    // EXCEPT once 1 or more campus signatories have digitally signed.
+    return {
+      canWithdraw: false,
+      reason:
+        'Cannot withdraw: One or more signatories have already digitally signed this proposal. Request a Return for Revision from SAS/Signatories instead.',
+    };
+  }
+
   const officerProp = isOfficerProposal(event);
 
-  // Direct creator/maker can always withdraw their own pending proposal
+  // Direct creator/maker can withdraw their own pending proposal (subject to signature lock above)
   const creatorUid = (event as any).createdByUid || (event as any).createdById;
   if (userId && creatorUid && userId === creatorUid) {
     return { canWithdraw: true };
@@ -993,15 +1166,29 @@ export function isEventConcluded(event?: Partial<EventDocument> | null): boolean
 }
 
 /**
- * Checks whether an event has attendance tracking enabled (Option A QR / Attendance scanner).
+ * Checks whether an event or activity actively uses attendance tracking (QR / Attendance scanner).
  */
 export function isEventAttendanceEnabled(event?: Partial<EventDocument> | null): boolean {
   if (!event) return false;
-  return (
-    event.enableQRTickets !== false &&
-    (event as any).enableQR !== false &&
-    (event as any).attendanceEnabled !== false
-  );
+  if (
+    event.enableQRTickets === false ||
+    (event as any).enableQR === false ||
+    (event as any).attendanceEnabled === false
+  ) {
+    return false;
+  }
+
+  const hasSessions = Array.isArray(event.sessions) && event.sessions.length > 0;
+  const hasScanners =
+    (Array.isArray((event as any).scanners) && (event as any).scanners.length > 0) ||
+    (Array.isArray((event as any).scannerUserIds) && (event as any).scannerUserIds.length > 0);
+
+  if ((event as any).isActivityProposal) {
+    // Activity proposals do not use attendance unless Operational Studio sessions & scanners/QR were configured
+    return hasSessions && (hasScanners || (event as any).attendanceEnabled === true || event.enableQRTickets === true);
+  }
+
+  return hasSessions || hasScanners || (event as any).attendanceEnabled === true;
 }
 
 /**

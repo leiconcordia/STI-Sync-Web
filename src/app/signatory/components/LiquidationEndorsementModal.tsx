@@ -444,8 +444,9 @@ export default function LiquidationEndorsementModal({
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
 
   // Dynamic approval authority permission check
-  const isChecker = myStep?.actionType === 'check' || signatorySession?.actionType === 'check';
-  const canApprove = canSignatoryApproveDocument(signatorySession, 'liquidation', myStep);
+  const isChecker = myStep?.actionType ? myStep.actionType === 'check' : signatorySession?.actionType === 'check';
+  const isStepEndorseOrCheck = myStep?.actionType === 'endorse' || myStep?.actionType === 'check';
+  const canApprove = !isStepEndorseOrCheck && canSignatoryApproveDocument(signatorySession, 'liquidation', myStep);
 
   // Subsequent approvers after my step in the pipeline
   const subsequentApproversCount = chain.filter((s, idx) => {
@@ -453,7 +454,9 @@ export default function LiquidationEndorsementModal({
   }).length;
 
   const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
-  const isFinalApprover = Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0));
+  const isFinalApprover =
+    !isStepEndorseOrCheck &&
+    (Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0)));
 
   const allocatedBudget = liquidation.allocatedBudget || 0;
   const totalActualSpending =
@@ -1628,7 +1631,7 @@ export default function LiquidationEndorsementModal({
                   Close
                 </button>
 
-                {canApprove ? (
+                {canApprove && isFinalApprover ? (
                   <button
                     type="button"
                     onClick={() => setPendingConfirmType('approve')}

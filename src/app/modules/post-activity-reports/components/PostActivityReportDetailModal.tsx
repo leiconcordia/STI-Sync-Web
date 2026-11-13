@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Undo2,
   GitCompare,
+  Send,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import type { PostActivityReportDocument } from '../types/par.types';
@@ -67,6 +68,7 @@ export default function PostActivityReportDetailModal({
 }: PostActivityReportDetailModalProps) {
   const [isExporting, setIsExporting] = useState(false);
   const [isReviewing, setIsReviewing] = useState(false);
+  const [showApproveConfirmModal, setShowApproveConfirmModal] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
@@ -151,8 +153,16 @@ export default function PostActivityReportDetailModal({
     if (!permissions.canApprove) return;
     setIsReviewing(true);
     try {
+      const isSchoolBudgetGate =
+        (report as any).fundingSource !== 'organization_funds' &&
+        (report as any).isPendingSasVetting === true &&
+        (report.approvalChain || []).length > 0;
       await approvePAR(report.id, effectiveUser.uid, effectiveUser.name || 'Institutional Signatory', 'Approved by Student Affairs Services.');
-      toast.success(`Post-Activity Report (${report.referenceNo}) approved and archived to EDMS!`);
+      toast.success(
+        isSchoolBudgetGate
+          ? `Post-Activity Report (${report.referenceNo}) cleared by SAS and released to Signatories!`
+          : `Post-Activity Report (${report.referenceNo}) approved and archived to EDMS!`
+      );
       if (onRefresh) onRefresh();
       onClose();
     } catch (err: any) {
@@ -705,11 +715,13 @@ export default function PostActivityReportDetailModal({
               <button
                 type="button"
                 disabled={isReviewing}
-                onClick={handleApprove}
+                onClick={() => setShowApproveConfirmModal(true)}
                 className="px-5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
               >
                 {isReviewing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                Approve & Clear Report
+                {(report as any).fundingSource !== 'organization_funds' && (report as any).isPendingSasVetting === true
+                  ? 'Approve & Release to Signatories'
+                  : 'Approve & Sign as SAS'}
               </button>
             )}
           </div>
@@ -749,6 +761,96 @@ export default function PostActivityReportDetailModal({
         revisionNumber={report.version || report.revisionCount || ((report.revisionHistory?.length || 0) + 1)}
         revisionHistory={report.revisionHistory}
       />
+
+      {/* SAS PAR Approval / Release Confirmation Modal */}
+      {showApproveConfirmModal && report && (() => {
+        const isRelease = (report as any).fundingSource !== 'organization_funds' && (report as any).isPendingSasVetting === true;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+              <div className={`p-5 flex items-center gap-3.5 border-b text-white ${
+                isRelease
+                  ? 'bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD]'
+                  : 'bg-gradient-to-r from-emerald-600 to-emerald-700'
+              }`}>
+                <div className="p-2.5 rounded-2xl bg-white/10 text-white">
+                  {isRelease ? <Send className="w-6 h-6 text-[#FFD41C]" /> : <CheckCircle2 className="w-6 h-6" />}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm text-white">
+                    {isRelease ? 'Confirm SAS Review Clearance & Release' : 'Confirm Post-Activity Report Approval'}
+                  </h3>
+                  <p className="text-xs text-white/80 mt-0.5 truncate max-w-xs">{report.eventTitle}</p>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-3.5">
+                <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                  {isRelease
+                    ? 'Are you sure you want to clear SAS vetting and release this Post-Activity Report to institutional signatories?'
+                    : 'Are you sure you want to approve and finalize this Post-Activity Report?'}
+                </p>
+
+                <div className="p-3.5 rounded-2xl border bg-slate-50 border-slate-200 text-xs leading-relaxed space-y-2">
+                  <div className="font-bold text-[11px] uppercase tracking-wider text-slate-500">
+                    What happens next:
+                  </div>
+                  {isRelease ? (
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                      <li>SAS clearance is recorded and the report status transitions to under review.</li>
+                      <li>Stage 1 campus signatories will be notified to review and sign.</li>
+                      <li>The student organization cannot withdraw this report once any signatory signs.</li>
+                    </ul>
+                  ) : (
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                      <li>Official SAS clearance is stamped onto Form PAR-01.</li>
+                      <li>The report status transitions to <strong>Approved</strong>.</li>
+                      <li>The report is archived into the campus EDMS repository.</li>
+                      <li>The student organization will be notified immediately.</li>
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowApproveConfirmModal(false)}
+                  disabled={isReviewing}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowApproveConfirmModal(false);
+                    await handleApprove();
+                  }}
+                  disabled={isReviewing}
+                  className={`px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 text-white ${
+                    isRelease
+                      ? 'bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D]'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  {isReviewing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : (
+                    <>
+                      {isRelease ? <Send className="w-4 h-4 text-[#FFD41C]" /> : <CheckCircle2 className="w-4 h-4" />}
+                      <span>{isRelease ? 'Approve & Release to Signatories' : 'Confirm & Approve as SAS'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

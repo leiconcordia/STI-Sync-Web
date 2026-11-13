@@ -22,6 +22,7 @@ import {
   Trash2,
   Shield,
   Undo2,
+  Send,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
@@ -32,7 +33,11 @@ import {
   returnLiquidationReport,
   deleteLiquidationReport,
   withdrawLiquidationReport,
+  attachCashierSettlementProofs,
+  verifyCashierSettlementProofs,
 } from '../../modules/finance/services/liquidation.service';
+import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
+import type { ReceiptAttachment } from '../../modules/finance/types/liquidation.types';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
@@ -103,7 +108,21 @@ export function FinancialLiquidations() {
   const [exportReport, setExportReport] = useState<LiquidationDocument | null>(null);
   const [reviewRemarks, setReviewRemarks] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showApproveConfirmModal, setShowApproveConfirmModal] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
+  const [cashierRefDraft, setCashierRefDraft] = useState('');
+  const [savingCashierProof, setSavingCashierProof] = useState(false);
+
+  useEffect(() => {
+    if (selectedReport) {
+      setCashierProofDrafts(selectedReport.cashierSettlementProofs || []);
+      setCashierRefDraft(selectedReport.cashierReferenceNo || '');
+    } else {
+      setCashierProofDrafts([]);
+      setCashierRefDraft('');
+    }
+  }, [selectedReport?.id]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -1127,6 +1146,119 @@ export function FinancialLiquidations() {
                 </div>
               </div>
 
+              {/* Post-Approval Cashier Settlement Proof (Multi-File) */}
+              {selectedReport.status === 'approved' &&
+                (Number(selectedReport.surplusOrDeficit || 0) !== 0 ||
+                  Number(selectedReport.amountToReturn || 0) > 0 ||
+                  (selectedReport.cashierSettlementProofs && selectedReport.cashierSettlementProofs.length > 0)) && (
+                  <div className="space-y-3 pt-2 border-t border-gray-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                        Post-Approval Cashier Settlement Proof
+                      </h4>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                          selectedReport.cashierSettlementStatus === 'verified'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : selectedReport.cashierSettlementStatus === 'proof_uploaded'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-amber-50 text-amber-800 border-amber-200'
+                        }`}
+                      >
+                        {selectedReport.cashierSettlementStatus === 'verified'
+                          ? 'Cashier Proof Verified'
+                          : selectedReport.cashierSettlementStatus === 'proof_uploaded'
+                            ? 'Proof Uploaded • Awaiting SAS Verification'
+                            : 'Pending Cashier Proof'}
+                      </span>
+                    </div>
+
+                    <CashierProofUploader
+                      proofs={cashierProofDrafts}
+                      onChange={setCashierProofDrafts}
+                      cashierReferenceNo={cashierRefDraft}
+                      onReferenceNoChange={setCashierRefDraft}
+                      folderKey={selectedReport.id}
+                      disabled={savingCashierProof}
+                      readOnly={selectedReport.cashierSettlementStatus === 'verified'}
+                      title={
+                        Number(selectedReport.surplusOrDeficit || 0) < 0
+                          ? `Cashier Reimbursement Proof (Deficit: ${formatCurrency(Math.abs(Number(selectedReport.surplusOrDeficit || 0)))})`
+                          : `Cashier Surplus / Return Proof (${formatCurrency(Number(selectedReport.amountToReturn ?? selectedReport.surplusOrDeficit ?? 0))})`
+                      }
+                      description="Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers after approval."
+                    />
+
+                    {selectedReport.cashierSettlementStatus !== 'verified' && (
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          disabled={savingCashierProof || cashierProofDrafts.length === 0}
+                          onClick={async () => {
+                            setSavingCashierProof(true);
+                            try {
+                              await attachCashierSettlementProofs(
+                                selectedReport.id,
+                                cashierProofDrafts,
+                                cashierRefDraft,
+                                {
+                                  uid: adviserProfile?.uid || 'sao_admin',
+                                  name: adviserProfile?.displayName || 'SAS Admin',
+                                  role: 'admin',
+                                }
+                              );
+                              setSelectedReport({
+                                ...selectedReport,
+                                cashierSettlementProofs: cashierProofDrafts,
+                                cashierReferenceNo: cashierRefDraft,
+                                cashierSettlementStatus: 'proof_uploaded',
+                              });
+                              toast.success('Cashier settlement proof saved.');
+                            } catch (err: any) {
+                              toast.error(err?.message || 'Failed to save Cashier proof.');
+                            } finally {
+                              setSavingCashierProof(false);
+                            }
+                          }}
+                          className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold cursor-pointer"
+                        >
+                          {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+                          Save Cashier Proof
+                        </Button>
+
+                        {(selectedReport.cashierSettlementProofs?.length || 0) > 0 && (
+                          <Button
+                            type="button"
+                            disabled={savingCashierProof}
+                            onClick={async () => {
+                              setSavingCashierProof(true);
+                              try {
+                                await verifyCashierSettlementProofs(selectedReport.id, {
+                                  uid: adviserProfile?.uid || 'sao_admin',
+                                  name: adviserProfile?.displayName || 'SAS Admin',
+                                });
+                                setSelectedReport({
+                                  ...selectedReport,
+                                  cashierSettlementStatus: 'verified',
+                                });
+                                toast.success('Cashier settlement proof verified and closed!');
+                              } catch (err: any) {
+                                toast.error(err?.message || 'Failed to verify Cashier proof.');
+                              } finally {
+                                setSavingCashierProof(false);
+                              }
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                            Verify &amp; Close Settlement
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
               {/* Multi-Stage Institutional Signatory Pipeline */}
               <div className="space-y-2 pt-2 border-t border-gray-200">
                 <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
@@ -1239,12 +1371,15 @@ export function FinancialLiquidations() {
 
                       {permissions.canApprove && (
                         <Button
-                          onClick={handleApprove}
+                          onClick={() => setShowApproveConfirmModal(true)}
                           disabled={isProcessing}
                           className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
                         >
                           {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                          Approve Liquidation
+                          {(selectedReport as any).fundingSource !== 'organization_funds' &&
+                          (selectedReport as any).isPendingSasVetting === true
+                            ? 'Approve & Release to Signatories'
+                            : 'Approve & Sign as SAS'}
                         </Button>
                       )}
                     </>
@@ -1394,6 +1529,96 @@ export function FinancialLiquidations() {
           initialOverallRemarks={reviewRemarks}
         />
       )}
+
+      {/* SAS Liquidation Approval / Release Confirmation Modal */}
+      {showApproveConfirmModal && selectedReport && (() => {
+        const isRelease = (selectedReport as any).fundingSource !== 'organization_funds' && (selectedReport as any).isPendingSasVetting === true;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+            <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+              <div className={`p-5 flex items-center gap-3.5 border-b text-white ${
+                isRelease
+                  ? 'bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD]'
+                  : 'bg-gradient-to-r from-emerald-600 to-emerald-700'
+              }`}>
+                <div className="p-2.5 rounded-2xl bg-white/10 text-white">
+                  {isRelease ? <Send className="w-6 h-6 text-[#FFD41C]" /> : <CheckCircle2 className="w-6 h-6" />}
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm text-white">
+                    {isRelease ? 'Confirm SAS Review Clearance & Release' : 'Confirm Liquidation Report Approval'}
+                  </h3>
+                  <p className="text-xs text-white/80 mt-0.5 truncate max-w-xs">{selectedReport.eventTitle}</p>
+                </div>
+              </div>
+
+              <div className="p-5 space-y-3.5">
+                <p className="text-xs text-slate-700 leading-relaxed font-medium">
+                  {isRelease
+                    ? 'Are you sure you want to clear SAS vetting and release this liquidation report to institutional signatories?'
+                    : 'Are you sure you want to approve and sign off on this financial liquidation report?'}
+                </p>
+
+                <div className="p-3.5 rounded-2xl border bg-slate-50 border-slate-200 text-xs leading-relaxed space-y-2">
+                  <div className="font-bold text-[11px] uppercase tracking-wider text-slate-500">
+                    What happens next:
+                  </div>
+                  {isRelease ? (
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                      <li>SAS clearance is recorded and the report status transitions to under review.</li>
+                      <li>Stage 1 campus signatories will be notified to review and sign.</li>
+                      <li>The student organization cannot withdraw this report once any signatory signs.</li>
+                    </ul>
+                  ) : (
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
+                      <li>Official SAS sign-off is stamped onto Form LF-01.</li>
+                      <li>The report status transitions to <strong>Approved</strong>.</li>
+                      <li>Financial ledger and budget balances are finalized.</li>
+                      <li>The student organization will be notified immediately.</li>
+                    </ul>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowApproveConfirmModal(false)}
+                  disabled={isProcessing}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowApproveConfirmModal(false);
+                    await handleApprove();
+                  }}
+                  disabled={isProcessing}
+                  className={`px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 text-white ${
+                    isRelease
+                      ? 'bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D]'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  {isProcessing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Processing...</span>
+                    </>
+                  ) : (
+                    <>
+                      {isRelease ? <Send className="w-4 h-4 text-[#FFD41C]" /> : <CheckCircle2 className="w-4 h-4" />}
+                      <span>{isRelease ? 'Approve & Release to Signatories' : 'Confirm & Approve as SAS'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

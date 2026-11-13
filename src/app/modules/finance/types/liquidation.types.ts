@@ -63,7 +63,7 @@ export interface LiquidationRemark {
   id: string;
   authorName: string;
   authorRole: 'admin' | 'officer' | 'signatory';
-  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'voided' | 'endorsed';
+  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'voided' | 'endorsed' | 'cashier_proof' | 'cashier_verified';
   comment: string;
   timestamp: string; // ISO string
 }
@@ -155,6 +155,19 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   voidedBy?: string;
   voidedReason?: string;
   revisionCount?: number;
+  // Post-Approval Cashier Settlement Proof (Surplus Return / Deficit Reimbursement / Cancellation Return)
+  cashierSettlementProofs?: ReceiptAttachment[];
+  cashierSettlementType?: 'surplus_return' | 'deficit_reimbursement' | 'cancellation_return';
+  cashierSettlementStatus?: 'not_required' | 'pending_proof' | 'proof_uploaded' | 'verified';
+  cashierReferenceNo?: string;
+  cashierSettledAt?: string;
+  cashierSettledByName?: string;
+  cashierVerifiedBy?: string;
+  cashierVerifiedByName?: string;
+  cashierVerifiedAt?: string;
+  amountToReturn?: number;
+  isCancellationLiquidation?: boolean;
+  cancellationReason?: string;
   createdAt?: Timestamp | any;
   updatedAt?: Timestamp | any;
 }

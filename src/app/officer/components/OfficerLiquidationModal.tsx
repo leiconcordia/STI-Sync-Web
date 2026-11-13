@@ -47,7 +47,9 @@ import {
   submitLiquidationReport,
   withdrawLiquidationReport,
   generateDefaultLiquidationChain,
+  attachCashierSettlementProofs,
 } from '../../modules/finance/services/liquidation.service';
+import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
 import { subscribeToSignatories } from '../../modules/signatories/services/signatory.service';
 import type { InstitutionalSignatory } from '../../modules/signatories/types/signatory.types';
 import type {
@@ -426,6 +428,9 @@ export default function OfficerLiquidationModal({
   const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resubmissionNote, setResubmissionNote] = useState('');
+  const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
+  const [cashierRefDraft, setCashierRefDraft] = useState('');
+  const [savingCashierProof, setSavingCashierProof] = useState(false);
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   const selectedEvent = useMemo(() => {
@@ -1357,10 +1362,9 @@ export default function OfficerLiquidationModal({
       // Mandatory Maker Signature Check for formal submission
       const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl;
       if (!effectiveSignature) {
-        toast.error('Electronic Signature Required', {
-          description: 'As the document maker, you must register your official signature before submitting this financial liquidation.',
+        toast.error('Signature Required: No Registered Signature Found', {
+          description: 'Please upload or register your signature in Settings first before submitting this financial liquidation so that it is attached upon export.',
         });
-        setIsSignatureModalOpen(true);
         return;
       }
     }
@@ -1376,6 +1380,7 @@ export default function OfficerLiquidationModal({
       const submitterName = userName || (isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Club Adviser' : 'Officer');
 
       // Ensure approval chain statuses are set appropriately on submit
+      const requiresSasPreApprovalGate = !isSasCreator && !isOrgFunds;
       let finalizedChain = approvalChain;
       if (isOrgFunds) {
         finalizedChain = [
@@ -1396,6 +1401,9 @@ export default function OfficerLiquidationModal({
         ];
       } else if (shouldSubmit) {
         finalizedChain = approvalChain.map((step) => {
+          if (requiresSasPreApprovalGate) {
+            return { ...step, status: 'waiting' as const };
+          }
           if ((step.stageIndex ?? 1) === 1) {
             return { ...step, status: 'current' as const };
           }
@@ -1408,6 +1416,7 @@ export default function OfficerLiquidationModal({
         eventTitle: selectedEvent?.title || eventTitle || '',
         organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId || '',
         organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName || '',
+        fundingSource: isOrgFunds ? 'organization_funds' : 'school_budget',
         createdById: userUid || 'user',
         createdByRole: submitterRole,
         createdByName: submitterName,
@@ -1452,7 +1461,14 @@ export default function OfficerLiquidationModal({
         await updateLiquidationReport(effectiveReportId, {
           ...sanitizedPayload,
           status: nextStatus,
-          ...(shouldSubmit ? { submittedAt: new Date() } : {}),
+          ...(shouldSubmit
+            ? {
+                submittedAt: new Date(),
+                isPendingSasVetting: requiresSasPreApprovalGate,
+                sasVettedAt: null,
+                sasVettedBy: null,
+              }
+            : {}),
           ...(shouldSubmit && isReturnedReport && resubmissionNote.trim()
             ? { resubmissionNote: resubmissionNote.trim() }
             : {}),
@@ -2578,6 +2594,7 @@ export default function OfficerLiquidationModal({
                     orgName={orgName}
                     allocatedBudget={allocatedBudget}
                     isSasCreator={isSasCreator}
+                    readOnly={isEffectiveReadOnly}
                   />
                 )}
               </div>
@@ -2617,6 +2634,107 @@ export default function OfficerLiquidationModal({
               />
             </div>
           )}
+          {/* Post-Approval Cashier Settlement Proof (Multi-File) */}
+          {effectiveReport?.status === 'approved' &&
+            (Number(effectiveReport.surplusOrDeficit || 0) !== 0 ||
+              Number((effectiveReport as any).amountToReturn || 0) > 0 ||
+              (effectiveReport.cashierSettlementProofs &&
+                effectiveReport.cashierSettlementProofs.length > 0)) && (
+              <div className="p-4 bg-blue-50/40 border border-blue-200 rounded-xl space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                    Post-Approval Cashier Settlement Proof
+                  </h4>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                      effectiveReport.cashierSettlementStatus === 'verified'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : effectiveReport.cashierSettlementStatus === 'proof_uploaded'
+                          ? 'bg-blue-50 text-blue-700 border-blue-200'
+                          : 'bg-amber-50 text-amber-800 border-amber-200'
+                    }`}
+                  >
+                    {effectiveReport.cashierSettlementStatus === 'verified'
+                      ? 'Cashier Proof Verified'
+                      : effectiveReport.cashierSettlementStatus === 'proof_uploaded'
+                        ? 'Proof Uploaded • Awaiting SAS Verification'
+                        : 'Pending Cashier Proof'}
+                  </span>
+                </div>
+
+                <CashierProofUploader
+                  proofs={
+                    cashierProofDrafts.length > 0
+                      ? cashierProofDrafts
+                      : effectiveReport.cashierSettlementProofs || []
+                  }
+                  onChange={setCashierProofDrafts}
+                  cashierReferenceNo={
+                    cashierRefDraft || effectiveReport.cashierReferenceNo || ''
+                  }
+                  onReferenceNoChange={setCashierRefDraft}
+                  folderKey={effectiveReport.id}
+                  disabled={savingCashierProof}
+                  readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
+                  title={
+                    Number(effectiveReport.surplusOrDeficit || 0) < 0
+                      ? `Cashier Reimbursement Proof (Deficit: ${formatCurrency(
+                          Math.abs(Number(effectiveReport.surplusOrDeficit || 0))
+                        )})`
+                      : `Cashier Surplus / Return Proof (${formatCurrency(
+                          Number(
+                            (effectiveReport as any).amountToReturn ??
+                              effectiveReport.surplusOrDeficit ??
+                              0
+                          )
+                        )})`
+                  }
+                  description="Your liquidation is approved. Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers below."
+                />
+
+                {effectiveReport.cashierSettlementStatus !== 'verified' && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      disabled={
+                        savingCashierProof ||
+                        (cashierProofDrafts.length === 0 &&
+                          (!effectiveReport.cashierSettlementProofs ||
+                            effectiveReport.cashierSettlementProofs.length === 0))
+                      }
+                      onClick={async () => {
+                        const proofsToSave =
+                          cashierProofDrafts.length > 0
+                            ? cashierProofDrafts
+                            : effectiveReport.cashierSettlementProofs || [];
+                        setSavingCashierProof(true);
+                        try {
+                          await attachCashierSettlementProofs(
+                            effectiveReport.id,
+                            proofsToSave,
+                            cashierRefDraft || effectiveReport.cashierReferenceNo || '',
+                            {
+                              uid: currentUserId || 'officer',
+                              name: currentUserName || 'Officer',
+                              role: userRole === 'admin' ? 'admin' : 'officer',
+                            }
+                          );
+                          toast.success('Cashier settlement proof uploaded and submitted to SAS!');
+                        } catch (err: any) {
+                          toast.error(err?.message || 'Failed to save Cashier proof.');
+                        } finally {
+                          setSavingCashierProof(false);
+                        }
+                      }}
+                      className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>Save &amp; Submit Cashier Proof</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
         </div>
 
         {/* Modal Footer with Lifecycle Submission Sync */}
@@ -2810,36 +2928,6 @@ export default function OfficerLiquidationModal({
           amount={lightboxData.amount}
           fileName={lightboxData.fileName}
           fileType={lightboxData.fileType}
-        />
-      )}
-
-      {/* Inline Digital Signature Modal for Document Maker */}
-      {isSignatureModalOpen && (
-        <DigitalSignatureModal
-          isOpen={isSignatureModalOpen}
-          onClose={() => setIsSignatureModalOpen(false)}
-          signatoryUid={userUid}
-          signatoryName={userName}
-          signatoryEmail={officerProfile?.email || ''}
-          currentSignatureUrl={makerSignatureUrl}
-          onSignatureSaved={(newUrl) => {
-            setMakerSignatureUrl(newUrl);
-            syncUserSignatureAcrossProfiles({
-              uid: userUid,
-              email: officerProfile?.email,
-              name: userName,
-              signatureUrl: newUrl,
-              role: userRole,
-            });
-            const raw = localStorage.getItem('sti_sync_officer_session');
-            if (raw) {
-              try {
-                const parsed = JSON.parse(raw);
-                parsed.signatureUrl = newUrl;
-                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
-              } catch {}
-            }
-          }}
         />
       )}
     </div>

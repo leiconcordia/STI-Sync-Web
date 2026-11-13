@@ -1,21 +1,23 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   AlertTriangle,
   X,
   ShieldAlert,
-  Coins,
   QrCode,
   FileText,
-  CheckCircle2,
-  AlertCircle,
+  Users,
   Loader2,
+  Receipt,
+  CheckCircle2,
 } from 'lucide-react';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { toast } from 'sonner';
 import { cancelEventTransaction } from '../services/event.service';
-import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
+import { canCancelEvent, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
+import { CashierProofUploader } from '../../finance/components/CashierProofUploader';
+import type { ReceiptAttachment } from '../../finance/types/liquidation.types';
 import type { EventDocument, EventCancellationResult } from '../types/event.types';
 import { formatCurrency } from '../../../utils/currency';
 
@@ -40,6 +42,14 @@ const PRESET_REASONS = [
   'Insufficient Participant Turnout & Rescheduling',
 ];
 
+function hasItemReceipt(item: any): boolean {
+  return Boolean(
+    item?.receiptUrl ||
+      (Array.isArray(item?.receiptUrls) && item.receiptUrls.length > 0) ||
+      (Array.isArray(item?.receiptFiles) && item.receiptFiles.length > 0)
+  );
+}
+
 export function CancelEventModal({
   isOpen,
   onClose,
@@ -54,25 +64,61 @@ export function CancelEventModal({
 }: CancelEventModalProps) {
   const userRole = propUserRole || role || 'officer';
   const [reason, setReason] = useState('');
-  const [refundPolicy, setRefundPolicy] = useState<'refund_cash' | 'credit_next_event' | 'no_fees_collected'>('refund_cash');
+  const [cashierProofs, setCashierProofs] = useState<ReceiptAttachment[]>([]);
+  const [cashierReferenceNo, setCashierReferenceNo] = useState('');
   const [confirmedCheck, setConfirmedCheck] = useState(false);
   const [confirmKeyword, setConfirmKeyword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Impact Preview State
   const [loadingImpact, setLoadingImpact] = useState(false);
-  const [unpaidCount, setUnpaidCount] = useState(0);
-  const [unpaidTotal, setUnpaidTotal] = useState(0);
-  const [paidCount, setPaidCount] = useState(0);
-  const [paidTotal, setPaidTotal] = useState(0);
-  const [unlockedTicketsCount, setUnlockedTicketsCount] = useState(0);
+  const [receiptItems, setReceiptItems] = useState<any[]>([]);
   const [liquidationsCount, setLiquidationsCount] = useState(0);
+
+  const cancelEligibility = useMemo(() => {
+    if (!event) return { canCancel: false, reason: 'Event not found.' };
+    return canCancelEvent(event, userRole, currentOrgId);
+  }, [event, userRole, currentOrgId, isOpen]);
+
+  const hasAttendance = useMemo(() => isEventAttendanceEnabled(event), [event, isOpen]);
+
+  const disbursementVoucher = (event as any)?.disbursementVoucher;
+  const hasDisbursementVoucher = Boolean(disbursementVoucher?.fileUrl);
+  const amountDisbursed = Number(disbursementVoucher?.amountDisbursed || 0);
+
+  const verifiedReceiptsTotal = useMemo(
+    () =>
+      receiptItems.reduce(
+        (sum, it) =>
+          sum + Number(it.totalCost || Number(it.quantity || 1) * Number(it.unitCost || 0) || 0),
+        0
+      ),
+    [receiptItems]
+  );
+
+  const hasVerifiedExpenses = receiptItems.length > 0;
+  // Scenario 2: Voucher attached + 0 expenses => must upload Cashier Return Proof inside Cancel Modal
+  const requiresCashierProofInModal = hasDisbursementVoucher && !hasVerifiedExpenses;
+
+  const signatoriesCount = useMemo(() => {
+    const chain = Array.isArray((event as any)?.approvalChain) ? (event as any).approvalChain : [];
+    const unique = new Set<string>();
+    chain.forEach((s: any) => {
+      const k = s?.signatoryUid || s?.signatoryId || s?.uid || s?.signatoryEmail;
+      if (k) unique.add(String(k).toLowerCase());
+    });
+    return unique.size;
+  }, [event]);
 
   useEffect(() => {
     if (!isOpen || !event?.id) {
       setReason('');
+      setCashierProofs([]);
+      setCashierReferenceNo('');
       setConfirmedCheck(false);
       setConfirmKeyword('');
+      setReceiptItems([]);
+      setLiquidationsCount(0);
       return;
     }
 
@@ -81,63 +127,28 @@ export function CancelEventModal({
 
     const fetchImpactData = async () => {
       try {
-        // 1. Fetch payables for this event
-        const payablesQ = query(
-          collection(db, PAYABLES_COLLECTION),
-          where('eventId', '==', event.id)
-        );
-        const payablesSnap = await getDocs(payablesQ);
-
-        let unpCount = 0;
-        let unpSum = 0;
-        let pCount = 0;
-        let pSum = 0;
-        let tickets = 0;
-
-        payablesSnap.docs.forEach((d) => {
-          const data = d.data();
-          const paidAmt = Number(data.paidAmount || 0);
-          const isPaid = data.status === 'paid' || paidAmt > 0;
-          const isClosed = data.status === 'waived' || data.status === 'refunded';
-
-          if (data.qrTicketUnlocked === true) {
-            tickets++;
-          }
-
-          if (!isClosed) {
-            if (isPaid) {
-              pCount++;
-              pSum += paidAmt > 0 ? paidAmt : Number(data.assignedAmount || 0);
-            } else {
-              unpCount++;
-              unpSum += Number(data.assignedAmount || 0);
-            }
-          }
-        });
-
-        // 2. Fetch liquidations for this event
         const liquidationsQ = query(
           collection(db, LIQUIDATIONS_COLLECTION),
           where('eventId', '==', event.id)
         );
         const liquidationsSnap = await getDocs(liquidationsQ);
-        const activeLiqs = liquidationsSnap.docs.filter((d) => d.data().status !== 'voided').length;
+        const activeDocs = liquidationsSnap.docs.filter((d) => {
+          const data = d.data();
+          const st = String(data.status || '').toLowerCase();
+          return st !== 'voided' && st !== 'cancelled' && data.isDeleted !== true;
+        });
+
+        const foundReceipts: any[] = [];
+        activeDocs.forEach((d) => {
+          const items = Array.isArray(d.data().lineItems) ? d.data().lineItems : [];
+          items.forEach((it: any) => {
+            if (hasItemReceipt(it)) foundReceipts.push(it);
+          });
+        });
 
         if (isMounted) {
-          setUnpaidCount(unpCount);
-          setUnpaidTotal(unpSum);
-          setPaidCount(pCount);
-          setPaidTotal(pSum);
-          setUnlockedTicketsCount(tickets);
-          setLiquidationsCount(activeLiqs);
-
-          if (pCount === 0 && unpCount === 0 && !event.studentPayablesEnabled) {
-            setRefundPolicy('no_fees_collected');
-          } else if (pCount > 0) {
-            setRefundPolicy('refund_cash');
-          } else {
-            setRefundPolicy('no_fees_collected');
-          }
+          setLiquidationsCount(activeDocs.length);
+          setReceiptItems(foundReceipts);
         }
       } catch (err) {
         console.warn('[CancelEventModal] Error calculating impact preview:', err);
@@ -156,11 +167,27 @@ export function CancelEventModal({
   if (!isOpen || !event) return null;
 
   const isReasonValid = reason.trim().length >= 10;
+  const isCashierProofValid = !requiresCashierProofInModal || cashierProofs.length > 0;
   const isKeywordValid = confirmKeyword.trim().toUpperCase() === 'CANCEL';
-  const canSubmit = isReasonValid && confirmedCheck && isKeywordValid && !isSubmitting;
+  const canSubmit =
+    cancelEligibility.canCancel &&
+    !loadingImpact &&
+    isReasonValid &&
+    isCashierProofValid &&
+    confirmedCheck &&
+    isKeywordValid &&
+    !isSubmitting;
 
   const handleCancelSubmit = async () => {
     if (!canSubmit) return;
+
+    const liveCheck = canCancelEvent(event, userRole, currentOrgId);
+    if (!liveCheck.canCancel) {
+      toast.error('Cannot Cancel Event', {
+        description: liveCheck.reason || 'This event has already started or cannot be cancelled.',
+      });
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -171,21 +198,27 @@ export function CancelEventModal({
         cancelledByRole: userRole,
         userOrgId: currentOrgId,
         cancellationReason: reason.trim(),
-        refundPolicy,
         notifyAttendees: true,
+        cashierSettlementProofs: requiresCashierProofInModal ? cashierProofs : [],
+        cashierReferenceNo: requiresCashierProofInModal ? cashierReferenceNo.trim() : '',
       });
 
-      toast.success('Event Cancelled', {
-        description: `Successfully cancelled "${event.title}". Waived ${result.waivedPayablesCount} payables and flagged ${result.refundPendingPayablesCount} for refund.`,
-        duration: 6000,
-      });
+      if (result.cancellationPendingApproval) {
+        toast.success('Cancellation & Financial Liquidation Submitted', {
+          description: `Form LF-01 with attached receipts was submitted to the Financial Liquidation signatory pipeline. Once approved, "${event.title}" will finalize as cancelled and Cashier return proof will unlock.`,
+          duration: 7000,
+        });
+      } else {
+        toast.success('Event Cancelled', {
+          description: hasDisbursementVoucher
+            ? `Successfully cancelled "${event.title}" with Cashier Return Proof attached. ${result.notifiedSignatoriesCount || 0} signatory(ies) notified.`
+            : `Successfully cancelled "${event.title}". ${result.notifiedSignatoriesCount || 0} signatory(ies) notified.`,
+          duration: 6000,
+        });
+      }
 
-      if (onCancelled) {
-        onCancelled(result);
-      }
-      if (onSuccess) {
-        onSuccess();
-      }
+      if (onCancelled) onCancelled(result);
+      if (onSuccess) onSuccess();
       onClose();
     } catch (err: any) {
       console.error('[CancelEventModal] Error:', err);
@@ -199,12 +232,10 @@ export function CancelEventModal({
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
-      {/* Backdrop */}
       <div className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity" onClick={onClose} />
 
       <div className="flex min-h-full items-center justify-center p-4">
         <div className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl overflow-hidden border border-red-200 animate-in fade-in zoom-in-95 duration-200">
-          
           {/* Danger Header */}
           <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 px-6 py-5 text-white flex items-start justify-between">
             <div className="flex items-center gap-3">
@@ -213,13 +244,13 @@ export function CancelEventModal({
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold">Cancel Event &amp; Auto-Waive Finances</h3>
+                  <h3 className="text-lg font-bold">Cancel Activity &amp; Notify Stakeholders</h3>
                   <span className="px-2 py-0.5 bg-white/20 rounded text-[11px] font-mono uppercase tracking-wider font-semibold">
                     Irreversible
                   </span>
                 </div>
                 <p className="text-white/80 text-xs mt-0.5">
-                  Event: <strong className="text-white">{event.title}</strong>
+                  Activity: <strong className="text-white">{event.title}</strong>
                 </p>
               </div>
             </div>
@@ -232,7 +263,17 @@ export function CancelEventModal({
             </button>
           </div>
 
-          <div className="p-6 space-y-6 max-h-[75vh] overflow-y-auto">
+          <div className="p-6 space-y-5 max-h-[75vh] overflow-y-auto">
+            {!cancelEligibility.canCancel && (
+              <div className="p-4 rounded-xl bg-red-50 border border-red-300 flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="text-xs text-red-900 space-y-0.5">
+                  <p className="font-bold">Cancellation Blocked</p>
+                  <p>{cancelEligibility.reason}</p>
+                </div>
+              </div>
+            )}
+
             {/* Impact Summary Matrix */}
             <div className="bg-rose-50/70 border border-rose-200 rounded-xl p-4.5 space-y-3">
               <div className="flex items-center justify-between">
@@ -242,69 +283,138 @@ export function CancelEventModal({
                 </h4>
                 {loadingImpact && (
                   <span className="text-[11px] text-rose-700 flex items-center gap-1">
-                    <Loader2 className="w-3 h-3 animate-spin" /> Calculating...
+                    <Loader2 className="w-3 h-3 animate-spin" /> Checking voucher &amp; receipts...
                   </span>
                 )}
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                {/* Unpaid Payables / Fines */}
-                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
-                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
-                    <Coins className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Auto-Waived</span>
-                  </div>
-                  <p className="text-base font-extrabold text-gray-900 mt-1">
-                    {unpaidCount} <span className="text-xs font-normal text-gray-500">records</span>
-                  </p>
-                  <p className="text-[11px] font-mono text-emerald-700 font-semibold">
-                    {formatCurrency(unpaidTotal)}
-                  </p>
-                </div>
-
-                {/* Paid Fees / Refunds */}
-                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
-                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
-                    <Coins className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Refund Pending</span>
-                  </div>
-                  <p className="text-base font-extrabold text-gray-900 mt-1">
-                    {paidCount} <span className="text-xs font-normal text-gray-500">records</span>
-                  </p>
-                  <p className="text-[11px] font-mono text-amber-700 font-semibold">
-                    {formatCurrency(paidTotal)}
-                  </p>
-                </div>
-
-                {/* Revoked QR Tickets */}
-                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
-                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
-                    <QrCode className="w-3.5 h-3.5 text-blue-600" />
-                    <span>Revoked Passes</span>
-                  </div>
-                  <p className="text-base font-extrabold text-gray-900 mt-1">
-                    {unlockedTicketsCount} <span className="text-xs font-normal text-gray-500">tickets</span>
-                  </p>
-                  <p className="text-[11px] text-gray-500">Gate locked</p>
-                </div>
-
-                {/* Voided Liquidations */}
+                {/* Disbursement Voucher */}
                 <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
                   <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
                     <FileText className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Liquidations</span>
+                    <span>Disbursement Voucher</span>
                   </div>
                   <p className="text-base font-extrabold text-gray-900 mt-1">
-                    {liquidationsCount} <span className="text-xs font-normal text-gray-500">reports</span>
+                    {hasDisbursementVoucher ? formatCurrency(amountDisbursed) : 'None'}
                   </p>
-                  <p className="text-[11px] text-gray-500">Marked voided</p>
+                  <p className="text-[11px] text-gray-500 truncate">
+                    {hasDisbursementVoucher
+                      ? `Cheque #${disbursementVoucher.chequeNumber || 'Attached'}`
+                      : 'Not yet disbursed'}
+                  </p>
+                </div>
+
+                {/* Attached Receipts */}
+                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
+                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
+                    <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>Attached Receipts</span>
+                  </div>
+                  <p className="text-base font-extrabold text-gray-900 mt-1">
+                    {receiptItems.length}{' '}
+                    <span className="text-xs font-normal text-gray-500">
+                      receipt{receiptItems.length === 1 ? '' : 's'}
+                    </span>
+                  </p>
+                  <p className="text-[11px] font-mono text-emerald-700 font-semibold">
+                    {hasVerifiedExpenses ? formatCurrency(verifiedReceiptsTotal) : '₱0.00 spent'}
+                  </p>
+                </div>
+
+                {/* Attendance / QR Passes */}
+                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
+                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
+                    <QrCode className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Attendance</span>
+                  </div>
+                  <p className="text-base font-extrabold text-gray-900 mt-1">
+                    {hasAttendance ? 'Enabled' : '—'}
+                  </p>
+                  <p className="text-[11px] text-gray-500">
+                    {hasAttendance ? 'Gate & QR locked' : 'Not enabled'}
+                  </p>
+                </div>
+
+                {/* Signatories & Stakeholders Notified */}
+                <div className="bg-white p-3 rounded-lg border border-rose-100 shadow-2xs">
+                  <div className="flex items-center gap-1.5 text-gray-500 text-[11px] font-medium">
+                    <Users className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Notifications</span>
+                  </div>
+                  <p className="text-base font-extrabold text-gray-900 mt-1">
+                    {signatoriesCount}{' '}
+                    <span className="text-xs font-normal text-gray-500">signatories</span>
+                  </p>
+                  <p className="text-[11px] text-gray-500">+ SAS / Org alerted</p>
                 </div>
               </div>
 
               <p className="text-[11px] text-rose-800 leading-relaxed pt-1">
-                Executing cancellation will instantly purge active scanner codes, waive all unpaid fines, and queue any collected registration fees for student refunds in the Finance Center.
+                {hasVerifiedExpenses
+                  ? 'Because official expense receipts are already attached, confirming will submit Form LF-01 (with your Activity Cancelled reason) to the Financial Liquidation signatory pipeline first. Once approved, the activity becomes Cancelled and Cashier return proof will unlock.'
+                  : hasDisbursementVoucher
+                    ? `A Disbursement Voucher (${formatCurrency(amountDisbursed)}) is attached with 0 expense receipts. Upload the Cashier Return Proof below to confirm the full amount was returned before cancelling.`
+                    : `No Disbursement Voucher and no expense receipts are attached (${liquidationsCount} empty draft(s)). This activity can be cancelled immediately with no liquidation required.`}
               </p>
             </div>
+
+            {/* Read-Only List of Attached Receipts (Scenario 3) */}
+            {hasVerifiedExpenses && (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    Tracked Expense Receipts ({receiptItems.length})
+                  </h4>
+                  <span className="text-xs font-mono font-bold text-emerald-800">
+                    Verified Total: {formatCurrency(verifiedReceiptsTotal)}
+                  </span>
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                  {receiptItems.map((item, idx) => (
+                    <div
+                      key={item.id || idx}
+                      className="flex items-center justify-between bg-white border border-emerald-100 rounded-lg px-3 py-1.5 text-xs"
+                    >
+                      <div className="min-w-0 pr-3">
+                        <p className="font-semibold text-gray-900 truncate">{item.description || 'Expense Item'}</p>
+                        <p className="text-[10px] text-gray-500">
+                          {item.vendorName ? `${item.vendorName} • ` : ''}
+                          {item.receiptNumber ? `OR #${item.receiptNumber}` : 'Receipt attached'}
+                        </p>
+                      </div>
+                      <span className="font-mono font-bold text-gray-800 whitespace-nowrap">
+                        {formatCurrency(
+                          Number(item.totalCost || Number(item.quantity || 1) * Number(item.unitCost || 0) || 0)
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {hasDisbursementVoucher && amountDisbursed > verifiedReceiptsTotal && (
+                  <p className="text-[11px] text-emerald-900 font-medium pt-1">
+                    Estimated Cash to Return to Cashier after FL Approval:{' '}
+                    <strong>{formatCurrency(amountDisbursed - verifiedReceiptsTotal)}</strong>
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Scenario 2: Disbursement Voucher + 0 Expenses => Multi-File Cashier Return Proof in Cancel Modal */}
+            {requiresCashierProofInModal && (
+              <CashierProofUploader
+                proofs={cashierProofs}
+                onChange={setCashierProofs}
+                cashierReferenceNo={cashierReferenceNo}
+                onReferenceNoChange={setCashierReferenceNo}
+                folderKey={event.id}
+                required
+                disabled={isSubmitting}
+                title={`Cashier Return Proof Required (${formatCurrency(amountDisbursed)})`}
+                description={`A Disbursement Voucher for ${formatCurrency(amountDisbursed)} was uploaded with 0 expense receipts. Upload one or more Cashier Official Receipts / Return Slips proving the money was returned to the Cashier.`}
+              />
+            )}
 
             {/* Cancellation Reason (Required, min 10 chars) */}
             <div className="space-y-2">
@@ -312,7 +422,11 @@ export function CancelEventModal({
                 <label className="text-xs font-bold text-gray-800">
                   Cancellation Reason <span className="text-red-500">*</span>
                 </label>
-                <span className={`text-[11px] font-mono ${reason.trim().length >= 10 ? 'text-green-600 font-bold' : 'text-gray-400'}`}>
+                <span
+                  className={`text-[11px] font-mono ${
+                    reason.trim().length >= 10 ? 'text-green-600 font-bold' : 'text-gray-400'
+                  }`}
+                >
                   {reason.trim().length} / 10 characters minimum
                 </span>
               </div>
@@ -329,7 +443,6 @@ export function CancelEventModal({
                 }`}
               />
 
-              {/* Preset Reason Chips */}
               <div className="flex flex-wrap gap-1.5 pt-1">
                 <span className="text-[11px] text-gray-400 font-medium self-center mr-1">Quick Select:</span>
                 {PRESET_REASONS.map((preset, idx) => (
@@ -345,8 +458,6 @@ export function CancelEventModal({
               </div>
             </div>
 
-
-
             {/* Safety Confirmation Verification */}
             <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
               <label className="flex items-start gap-2.5 cursor-pointer text-xs text-gray-800">
@@ -357,7 +468,11 @@ export function CancelEventModal({
                   className="mt-0.5 rounded border-gray-300 text-red-600 focus:ring-red-500 cursor-pointer"
                 />
                 <span>
-                  I understand that cancelling this event will permanently set its status to <strong>Cancelled</strong>, waive active student fines, revoke QR passes, and abort attached liquidations.
+                  {hasVerifiedExpenses
+                    ? 'I understand that confirming will lock this activity as Cancellation Pending and submit the Financial Liquidation (Form LF-01) with attached receipts to the FL signatory pipeline for approval.'
+                    : hasDisbursementVoucher
+                      ? 'I confirm that the full disbursed amount has been returned to the Cashier with authentic proof attached, and cancelling will permanently mark this event as Cancelled.'
+                      : 'I understand that cancelling this event will permanently set its status to Cancelled, notify all designated signatories, and release unused budget allocations.'}
                 </span>
               </label>
 
@@ -401,7 +516,11 @@ export function CancelEventModal({
               ) : (
                 <>
                   <ShieldAlert className="w-4 h-4" />
-                  <span>Confirm &amp; Cancel Event</span>
+                  <span>
+                    {hasVerifiedExpenses
+                      ? 'Submit Cancellation & Liquidation'
+                      : 'Confirm & Cancel Event'}
+                  </span>
                 </>
               )}
             </button>

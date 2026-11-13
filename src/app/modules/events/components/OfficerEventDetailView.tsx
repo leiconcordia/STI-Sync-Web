@@ -27,7 +27,7 @@ import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBa
 import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewerModal';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
-import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned } from '../utils/event-lifecycle.utils';
+import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { CancelEventModal } from './CancelEventModal';
 import { ConcludeEventModal } from './ConcludeEventModal';
 import { ArchiveEventModal } from './ArchiveEventModal';
@@ -1262,7 +1262,11 @@ export default function OfficerEventDetailView({
                             </div>
                             <div className="min-w-0">
                               <div className="font-bold truncate">Conclude Activity</div>
-                              <div className="text-[11px] text-emerald-600 truncate">Mark completed & finalize attendance</div>
+                              <div className="text-[11px] text-emerald-600 truncate">
+                                {isEventAttendanceEnabled(activeEvent)
+                                  ? 'Mark completed & finalize attendance'
+                                  : 'Mark activity as officially completed'}
+                              </div>
                             </div>
                           </div>
                           <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -1451,9 +1455,9 @@ export default function OfficerEventDetailView({
               <div className="flex items-center gap-3 text-blue-900">
                 <Clock className="w-5 h-5 text-blue-600 shrink-0" />
                 <div>
-                  <p className="text-sm font-bold">Proposal Under Review by SAS Adviser</p>
+                  <p className="text-sm font-bold">Proposal Under Review — Available for Withdrawal</p>
                   <p className="text-xs text-blue-800 mt-0.5">
-                    This proposal is currently submitted and awaiting SAS review. Need to make revisions? You can withdraw it back to Draft status.
+                    No signatories have signed this submission yet. Need to make revisions? You can withdraw it back to Draft status (reviewers will be notified).
                   </p>
                 </div>
               </div>

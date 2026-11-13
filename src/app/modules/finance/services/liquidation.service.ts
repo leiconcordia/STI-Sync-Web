@@ -451,9 +451,15 @@ export const createLiquidationReport = async (
     );
   }
 
-  // If submitting right away, activate Stage 1 steps and ensure subsequent stages are waiting
+  const isOrgFunds = (data as any).fundingSource === 'organization_funds';
+  const requiresSasPreApprovalGate = !isSasCreator && !isOrgFunds;
+
+  // If submitting right away, hold in waiting if SAS Pre-Approval Gate is required; otherwise activate Stage 1 steps
   if (isSubmitting) {
     chain = chain.map((step) => {
+      if (requiresSasPreApprovalGate) {
+        return { ...step, status: 'waiting' as const };
+      }
       if ((step.stageIndex ?? 1) === 1) {
         return { ...step, status: 'current' as const };
       }
@@ -483,6 +489,9 @@ export const createLiquidationReport = async (
     approvalChain: chain,
     currentStageIndex: 1,
     currentStepIndex: 0,
+    isPendingSasVetting: isSubmitting ? requiresSasPreApprovalGate : false,
+    sasVettedAt: null,
+    sasVettedBy: null,
     remarksHistory: [initialRemark],
     ...(isSubmitting ? { submittedAt: serverTimestamp() as any } : {}),
     createdAt: serverTimestamp() as any,
@@ -596,8 +605,24 @@ export const updateLiquidationReport = async (
       (payload as any).resubmissionNote = resubmissionNote;
     }
 
+    const isSasDoc =
+      existingData.createdByRole === 'admin' ||
+      existingData.organizationId === 'sao_admin' ||
+      existingData.organizationId === 'sas';
+    const isOrgFundsResub =
+      (data as any).fundingSource === 'organization_funds' ||
+      (existingData as any).fundingSource === 'organization_funds';
+    const requiresSasGateOnResub = !isSasDoc && !isOrgFundsResub;
+
+    payload.isPendingSasVetting = requiresSasGateOnResub;
+    payload.sasVettedAt = null;
+    payload.sasVettedBy = null;
+
     let chain = (data.approvalChain || existingData.approvalChain || []);
     payload.approvalChain = chain.map((step) => {
+      if (requiresSasGateOnResub) {
+        return { ...step, status: 'waiting' as const, signedAt: null, signatureUrl: null };
+      }
       if ((step.stageIndex ?? 1) === 1) {
         return { ...step, status: 'current' as const, signedAt: null, signatureUrl: null };
       }
@@ -681,9 +706,19 @@ export const submitLiquidationReport = async (
   const snap = await getDoc(docRef);
   const data = snap.exists() ? (snap.data() as LiquidationDocument) : null;
 
-  // Activate Stage 1 signatories and set remaining to waiting
+  const isSasCreator =
+    data?.createdByRole === 'admin' ||
+    data?.organizationId === 'sao_admin' ||
+    data?.organizationId === 'sas';
+  const isOrgFunds = (data as any)?.fundingSource === 'organization_funds';
+  const requiresSasPreApprovalGate = !isSasCreator && !isOrgFunds;
+
+  // Activate Stage 1 signatories (or hold in waiting if SAS Pre-Approval Gate applies)
   let chain = data?.approvalChain || [];
   chain = chain.map((step) => {
+    if (requiresSasPreApprovalGate) {
+      return { ...step, status: 'waiting' as const };
+    }
     if ((step.stageIndex ?? 1) === 1) {
       return { ...step, status: 'current' as const };
     }
@@ -704,6 +739,9 @@ export const submitLiquidationReport = async (
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
+    isPendingSasVetting: requiresSasPreApprovalGate,
+    sasVettedAt: null,
+    sasVettedBy: null,
     submittedAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(sanitizeFirestorePayload(newRemark)),
@@ -888,7 +926,42 @@ export const approveLiquidationReport = async (
   liquidationData?: Partial<LiquidationDocument>
 ): Promise<void> => {
   const docRef = doc(db, LIQUIDATIONS_COLLECTION, id);
-  
+  const snap = await getDoc(docRef);
+  const docData = snap.exists() ? (snap.data() as LiquidationDocument) : liquidationData;
+
+  const isOrgFunds =
+    (docData as any)?.fundingSource === 'organization_funds' ||
+    ((docData?.approvalChain || []).length === 1 && (docData?.approvalChain || [])[0].role === 'sas_head');
+
+  // If School Budget with Signatory Pipeline awaiting SAS clearance, release to Stage 1 Signatories!
+  if (!isOrgFunds && (docData as any)?.isPendingSasVetting === true && (docData?.approvalChain || []).length > 0) {
+    const chain = (docData?.approvalChain || []).map((step) => ({
+      ...step,
+      status: (step.stageIndex ?? 1) === 1 ? ('current' as const) : ('waiting' as const),
+    }));
+
+    const releaseRemark: LiquidationRemark = {
+      id: `rem-${Date.now()}`,
+      authorName: 'SAO Adviser',
+      authorRole: 'admin',
+      action: 'endorsed',
+      comment: remarks || 'Cleared by SAS and released to Institutional Signatory Pipeline.',
+      timestamp: new Date().toISOString(),
+    };
+
+    await updateDoc(docRef, sanitizeFirestorePayload({
+      status: 'under_review',
+      approvalChain: chain,
+      currentStageIndex: 1,
+      isPendingSasVetting: false,
+      sasVettedAt: new Date().toISOString(),
+      sasVettedBy: adminUserId,
+      updatedAt: serverTimestamp(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(releaseRemark)),
+    }));
+    return;
+  }
+
   const approvalRemark: LiquidationRemark = {
     id: `rem-${Date.now()}`,
     authorName: 'SAO Adviser',
@@ -898,11 +971,15 @@ export const approveLiquidationReport = async (
     timestamp: new Date().toISOString(),
   };
 
+  const settlementFields = resolvePostApprovalSettlement(liquidationData);
+
   await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'approved',
+    isPendingSasVetting: false,
     approvedBy: adminUserId,
     approvedAt: serverTimestamp(),
     returnRemarks: remarks || null,
+    ...settlementFields,
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(sanitizeFirestorePayload(approvalRemark)),
   }));
@@ -917,6 +994,9 @@ export const approveLiquidationReport = async (
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
       }));
+      if ((liquidationData as any)?.isCancellationLiquidation) {
+        await finalizeCancelledEventFromLiquidation(targetEventId, liquidationData);
+      }
     } catch (e) {
       console.warn('[approveLiquidationReport] Event sync notice:', e);
     }
@@ -1240,6 +1320,7 @@ export async function endorseLiquidationStep(
   if (isFullyApproved) {
     rawUpdates.approvedAt = serverTimestamp();
     rawUpdates.approvedBy = signerUid || signatory.email;
+    Object.assign(rawUpdates, resolvePostApprovalSettlement(data));
   }
 
   await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
@@ -1254,6 +1335,9 @@ export async function endorseLiquidationStep(
         liquidationRefNumber: data.referenceNo || '',
         updatedAt: serverTimestamp(),
       }));
+      if (isFullyApproved && (data as any).isCancellationLiquidation) {
+        await finalizeCancelledEventFromLiquidation(data.eventId, data);
+      }
     } catch (evtErr) {
       console.warn('[endorseLiquidationStep] Event sync note:', evtErr);
     }
@@ -1469,4 +1553,203 @@ async function postLiquidationToLedger(
       createdAt: serverTimestamp(),
     });
   }
+}
+
+/**
+ * Computes post-approval Cashier Settlement status and type when a liquidation is approved.
+ */
+function resolvePostApprovalSettlement(data: Partial<LiquidationDocument> | any): Record<string, any> {
+  const surplusOrDeficit = Number(data?.surplusOrDeficit ?? 0);
+  const amountToReturn = Number(data?.amountToReturn ?? 0);
+  const existingProofs = Array.isArray(data?.cashierSettlementProofs) ? data.cashierSettlementProofs : [];
+  const isCancellation = Boolean(data?.isCancellationLiquidation);
+
+  const needsCashierSettlement =
+    isCancellation ? amountToReturn > 0 || surplusOrDeficit !== 0 : surplusOrDeficit !== 0;
+
+  let cashierSettlementType: 'surplus_return' | 'deficit_reimbursement' | 'cancellation_return' | undefined;
+  if (isCancellation) {
+    cashierSettlementType = 'cancellation_return';
+  } else if (surplusOrDeficit > 0) {
+    cashierSettlementType = 'surplus_return';
+  } else if (surplusOrDeficit < 0) {
+    cashierSettlementType = 'deficit_reimbursement';
+  }
+
+  let cashierSettlementStatus: 'not_required' | 'pending_proof' | 'proof_uploaded' | 'verified' = 'not_required';
+  if (needsCashierSettlement) {
+    cashierSettlementStatus = existingProofs.length > 0 ? 'proof_uploaded' : 'pending_proof';
+  }
+
+  return sanitizeFirestorePayload({
+    cashierSettlementType,
+    cashierSettlementStatus,
+  });
+}
+
+/**
+ * Finalizes a parent event from `cancellation_pending` to `cancelled` once its
+ * Cancellation Financial Liquidation is approved by the FL signatory pipeline.
+ */
+async function finalizeCancelledEventFromLiquidation(
+  eventId: string,
+  liqData: Partial<LiquidationDocument> | any
+): Promise<void> {
+  const eventUpdates = sanitizeFirestorePayload({
+    status: 'cancelled',
+    proposalStatus: 'cancelled',
+    lifecycleStatus: 'cancelled',
+    isCancelled: true,
+    isApproved: false,
+    cancellationStatus: 'approved',
+    cancelledAt: serverTimestamp(),
+    enableQRTickets: false,
+    scannerActivationCode: '',
+    updatedAt: serverTimestamp(),
+  });
+
+  const targetRef = doc(db, EVENTS_COLLECTION, eventId);
+  try {
+    await updateDoc(targetRef, eventUpdates);
+  } catch (err) {
+    console.warn('[finalizeCancelledEventFromLiquidation] activities update warning:', err);
+  }
+
+  try {
+    const legacyRef = doc(db, 'events', eventId);
+    const legacySnap = await getDoc(legacyRef);
+    if (legacySnap.exists()) {
+      await updateDoc(legacyRef, eventUpdates);
+    }
+  } catch (err) {
+    console.warn('[finalizeCancelledEventFromLiquidation] legacy events update warning:', err);
+  }
+
+  // Notify organization that cancellation + liquidation are approved and Cashier proof can now be uploaded if needed
+  try {
+    const amountToReturn = Number(liqData?.amountToReturn ?? Math.max(0, Number(liqData?.surplusOrDeficit || 0)));
+    await createNotification({
+      recipientRole: 'officer',
+      targetOrgId: liqData?.organizationId || '',
+      targetOrgName: liqData?.organizationName || 'Student Organization',
+      type: 'document_approved',
+      category: 'financial_liquidation',
+      title: `Cancellation & Liquidation Approved: ${liqData?.eventTitle || 'Activity'}`,
+      message:
+        amountToReturn > 0
+          ? `Your activity cancellation and Form LF-01 were approved. Please return ₱${amountToReturn.toLocaleString()} to the Cashier and upload the Cashier receipt proof.`
+          : `Your activity cancellation and Form LF-01 were approved. The activity is now officially cancelled.`,
+      resourceId: eventId,
+      resourceType: 'event',
+      actionRoute: '/officer/finance',
+      senderName: 'Signatory Pipeline',
+    });
+  } catch (notifErr) {
+    console.warn('[finalizeCancelledEventFromLiquidation] Notification warning:', notifErr);
+  }
+}
+
+/**
+ * Attaches multi-file Cashier return/reimbursement proof AFTER a liquidation has been approved.
+ */
+export async function attachCashierSettlementProofs(
+  liquidationId: string,
+  proofs: any[],
+  cashierReferenceNo: string,
+  actor: { uid: string; name: string; role: 'admin' | 'officer' }
+): Promise<void> {
+  if (!liquidationId) throw new Error('Liquidation ID is required.');
+  if (!Array.isArray(proofs) || proofs.length === 0) {
+    throw new Error('Please upload at least one Cashier receipt/proof file.');
+  }
+
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+  const data = snap.data() as LiquidationDocument;
+
+  if (data.status !== 'approved') {
+    throw new Error('Cashier settlement proof can only be attached after the Financial Liquidation is approved.');
+  }
+
+  const proofRemark: LiquidationRemark = {
+    id: `rem-${Date.now()}`,
+    authorName: actor.name || 'User',
+    authorRole: actor.role === 'admin' ? 'admin' : 'officer',
+    action: 'cashier_proof',
+    comment: `Uploaded ${proofs.length} Cashier proof file(s)${cashierReferenceNo?.trim() ? ` (Ref/OR #: ${cashierReferenceNo.trim()})` : ''}.`,
+    timestamp: new Date().toISOString(),
+  };
+
+  await updateDoc(
+    docRef,
+    sanitizeFirestorePayload({
+      cashierSettlementProofs: proofs,
+      cashierReferenceNo: cashierReferenceNo?.trim() || '',
+      cashierSettlementStatus: 'proof_uploaded',
+      cashierSettledAt: new Date().toISOString(),
+      cashierSettledByName: actor.name || 'User',
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(proofRemark)),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  // Notify SAS Admin when an officer uploads Cashier proof
+  if (actor.role !== 'admin') {
+    try {
+      await createNotification({
+        recipientRole: 'admin',
+        type: 'document_submission',
+        category: 'financial_liquidation',
+        title: `Cashier Proof Uploaded: ${data.eventTitle}`,
+        message: `${data.organizationName || actor.name} uploaded ${proofs.length} Cashier settlement proof file(s) for verification.`,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: `/home/liquidations?id=${liquidationId}`,
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        senderName: actor.name,
+      });
+    } catch (e) {
+      console.warn('[attachCashierSettlementProofs] Notification warning:', e);
+    }
+  }
+}
+
+/**
+ * SAS Admin verification of uploaded Cashier settlement proof files.
+ */
+export async function verifyCashierSettlementProofs(
+  liquidationId: string,
+  actor: { uid: string; name: string }
+): Promise<void> {
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+  const data = snap.data() as LiquidationDocument;
+
+  if (!data.cashierSettlementProofs || data.cashierSettlementProofs.length === 0) {
+    throw new Error('Cannot verify: No Cashier proof files are attached.');
+  }
+
+  const verifyRemark: LiquidationRemark = {
+    id: `rem-${Date.now()}`,
+    authorName: actor.name || 'SAS Admin',
+    authorRole: 'admin',
+    action: 'cashier_verified',
+    comment: `Cashier settlement proof verified and closed by ${actor.name || 'SAS Admin'}.`,
+    timestamp: new Date().toISOString(),
+  };
+
+  await updateDoc(
+    docRef,
+    sanitizeFirestorePayload({
+      cashierSettlementStatus: 'verified',
+      cashierVerifiedBy: actor.uid,
+      cashierVerifiedByName: actor.name || 'SAS Admin',
+      cashierVerifiedAt: new Date().toISOString(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(verifyRemark)),
+      updatedAt: serverTimestamp(),
+    })
+  );
 }

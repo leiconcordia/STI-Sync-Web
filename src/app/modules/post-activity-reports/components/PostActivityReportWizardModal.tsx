@@ -303,6 +303,10 @@ export default function PostActivityReportWizardModal({
   const [whoAttended, setWhoAttended] = useState('');
   const [howManyAttended, setHowManyAttended] = useState('');
   const [linkedProposal, setLinkedProposal] = useState<any>(null);
+  const isOrgFunds =
+    (selectedEvent as any)?.fundingSource === 'organization_funds' ||
+    (initialReport as any)?.fundingSource === 'organization_funds' ||
+    linkedProposal?.fundingSource === 'organization_funds';
   const [isGuidanceDrawerOpen, setIsGuidanceDrawerOpen] = useState(false);
   const [objectiveAssessments, setObjectiveAssessments] = useState<
     Array<{
@@ -1065,6 +1069,14 @@ Output ONLY the paragraph text.
       }
       const isValid = validateFormForSubmission();
       if (!isValid) return;
+
+      const checkSig = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
+      if (!checkSig) {
+        toast.error('Signature Required: No Registered Signature Found', {
+          description: 'Please upload or register your signature in Settings first before submitting this Post-Activity Report so that it is attached upon export.',
+        });
+        return;
+      }
     }
 
     const effectiveSignature = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
@@ -2253,36 +2265,6 @@ Output ONLY the paragraph text.
           toast.success(`Copied ${label} from Proposal!`);
         }}
       />
-
-      {/* Inline Digital Signature Modal for Document Maker */}
-      {isSignatureModalOpen && (
-        <DigitalSignatureModal
-          isOpen={isSignatureModalOpen}
-          onClose={() => setIsSignatureModalOpen(false)}
-          signatoryUid={currentUser?.uid}
-          signatoryName={currentUser?.name}
-          signatoryEmail={currentUser?.email}
-          currentSignatureUrl={makerSignatureUrl}
-          onSignatureSaved={(newUrl) => {
-            setMakerSignatureUrl(newUrl);
-            syncUserSignatureAcrossProfiles({
-              uid: currentUser?.uid,
-              email: currentUser?.email,
-              name: currentUser?.name,
-              signatureUrl: newUrl,
-              role: currentUser?.role,
-            });
-            const raw = localStorage.getItem('sti_sync_officer_session');
-            if (raw) {
-              try {
-                const parsed = JSON.parse(raw);
-                parsed.signatureUrl = newUrl;
-                localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
-              } catch {}
-            }
-          }}
-        />
-      )}
     </div>
   );
 }
