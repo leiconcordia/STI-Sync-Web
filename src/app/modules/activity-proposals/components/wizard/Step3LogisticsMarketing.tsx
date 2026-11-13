@@ -128,6 +128,14 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     allStudents: true,
   };
 
+  // ── Read-Only Student Reach Estimator State (Section 9 helper only; never alters Target Market or Publishing) ──
+  type ReachEstimatorMode = 'all' | 'shs' | 'college' | 'custom';
+  const [estMode, setEstMode] = useState<ReachEstimatorMode>('all');
+  const [estYears, setEstYears] = useState<string[]>([]);
+  const [estCourseCodes, setEstCourseCodes] = useState<string[]>([]);
+  const [estSections, setEstSections] = useState<string[]>([]);
+  const [showReachCalculator, setShowReachCalculator] = useState<boolean>(true);
+
   // ── Faculty & Staff Signatory Roster (For demographic breakdown if included) ──
   const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
   useEffect(() => {
@@ -244,45 +252,25 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     return demographicStats.totalStudents + (includeFaculty ? facultyCount : 0);
   }, [demographicStats.totalStudents, includeFaculty, facultyCount]);
 
-  const selectedCourses: string[] = targetAudience.courses || [];
-  const selectedCourseCodes: string[] = targetAudience.courseCodes || [];
-  const selectedSections: string[] = targetAudience.sections || [];
-  const selectedYears: string[] = (targetAudience.yearLevels || []).map(String);
-
-  type AudienceMode = 'all' | 'shs' | 'college' | 'custom';
-
-  const currentMode: AudienceMode = useMemo(() => {
-    if (targetAudience.allStudents || targetAudience.allStudents === undefined) {
-      return 'all';
-    }
-    const levels = targetAudience.academicLevels || [];
-    if (levels.length === 1 && levels[0] === 'SHS') return 'shs';
-    if (levels.length === 1 && levels[0] === 'College') return 'college';
-    return 'custom';
-  }, [targetAudience]);
-
-  // Dynamic list of available year levels based on active mode
   const currentAvailableYearLevels = useMemo(() => {
-    if (currentMode === 'shs') return shsYearLevels;
-    if (currentMode === 'college') return collegeYearLevels;
+    if (estMode === 'shs') return shsYearLevels;
+    if (estMode === 'college') return collegeYearLevels;
     return allYearLevels;
-  }, [currentMode, shsYearLevels, collegeYearLevels, allYearLevels]);
+  }, [estMode, shsYearLevels, collegeYearLevels, allYearLevels]);
 
-  // Dynamic filter for visible courses based on active mode and selected years
-  // If specific year levels (e.g. G11) are picked, only show strands that have sections for those years
   const visibleCourses = useMemo(() => {
     let list = allPrograms;
-    if (currentMode === 'shs') list = shsPrograms;
-    else if (currentMode === 'college') list = collegePrograms;
+    if (estMode === 'shs') list = shsPrograms;
+    else if (estMode === 'college') list = collegePrograms;
 
-    if (selectedYears.length > 0) {
+    if (estYears.length > 0) {
       const matchingSectionCourseIds = new Set<string>();
       const matchingSectionCourseCodes = new Set<string>();
 
       activeSections.forEach((sec) => {
         const secName = sec.name.toUpperCase();
         const yNum = Number(sec.yearLevel);
-        const matchesAnyYear = selectedYears.some((yearStr) => {
+        const matchesAnyYear = estYears.some((yearStr) => {
           const yrDigits = yearStr.replace(/\D/g, '');
           if (yrDigits && (yNum === Number(yrDigits) || secName.includes(yrDigits))) return true;
           if (yearStr.toLowerCase().includes('grade 11') && (yNum === 11 || secName.includes('11'))) return true;
@@ -313,69 +301,35 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     }
 
     return list;
-  }, [shsPrograms, collegePrograms, allPrograms, currentMode, selectedYears, activeSections]);
+  }, [shsPrograms, collegePrograms, allPrograms, estMode, estYears, activeSections]);
 
-  // Real-time calculation of actual eligible student reach from database
+  // Real-time read-only calculation of matching enrolled students for Est. attendance reference
   const calculatedReach = useMemo(() => {
-    if (!allStudentsData || allStudentsData.length === 0) return 0;
-    return allStudentsData.filter((s) => {
-      // 1. Only Active students
-      const sStatus = (s.status || 'ACTIVE').toUpperCase();
-      if (
-        (s as any).archived ||
-        sStatus === 'INACTIVE' ||
-        sStatus === 'ARCHIVED' ||
-        sStatus === 'RETURNED' ||
-        sStatus === 'DROPPED'
-      ) {
-        return false;
-      }
+    if (!activeStudents || activeStudents.length === 0) return 0;
+    if (estMode === 'all') return activeStudents.length;
 
-      // Level 1: All Students (Campus-Wide)
-      if (targetAudience.allStudents || currentMode === 'all') {
-        return true;
-      }
+    return activeStudents.filter((s) => {
+      const y = String(s.yearLevel || '').toUpperCase();
+      const c = String(s.courseCode || '').toUpperCase();
+      const lvl = String(s.academicLevel || '').toUpperCase();
+      const isShs =
+        lvl === 'SHS' ||
+        (lvl !== 'COLLEGE' &&
+          (y.includes('11') ||
+            y.includes('12') ||
+            y.includes('GRADE 11') ||
+            y.includes('GRADE 12') ||
+            y.includes('G11') ||
+            y.includes('G12') ||
+            shsCourseCodes.some((code) => c.includes(code.toUpperCase()))));
 
-      // Level 2: Academic Division
-      const isShs = ((): boolean => {
-        const y = String(s.yearLevel || '').toUpperCase();
-        const c = String(s.courseCode || '').toUpperCase();
-        const lvl = String(s.academicLevel || '').toUpperCase();
-        if (lvl === 'SHS') return true;
-        if (lvl === 'COLLEGE') return false;
-        if (
-          y.includes('11') ||
-          y.includes('12') ||
-          y.includes('GRADE 11') ||
-          y.includes('GRADE 12') ||
-          y.includes('G11') ||
-          y.includes('G12')
-        )
-          return true;
-        if (
-          c.includes('SHS') ||
-          c.includes('STEM') ||
-          c.includes('ABM') ||
-          c.includes('HUMSS') ||
-          c.includes('GAS') ||
-          c.includes('TVL')
-        )
-          return true;
-        return false;
-      })();
+      if (estMode === 'shs' && !isShs) return false;
+      if (estMode === 'college' && isShs) return false;
 
-      const levels = targetAudience.academicLevels || [];
-      if (levels.length === 1) {
-        if (levels[0] === 'SHS' && !isShs) return false;
-        if (levels[0] === 'College' && isShs) return false;
-      }
-
-      // Level 3: Year Levels (if empty -> wildcard)
-      const targetYears = (targetAudience.yearLevels || []).map(String).filter(Boolean);
-      if (targetYears.length > 0) {
+      if (estYears.length > 0) {
         const sYear = String(s.yearLevel || '').trim().toLowerCase();
         const sYearDigits = sYear.replace(/\D/g, '');
-        const matchesYear = targetYears.some((tYear) => {
+        const matchesYear = estYears.some((tYear) => {
           const t = tYear.trim().toLowerCase();
           if (t === sYear) return true;
           const tDigits = t.replace(/\D/g, '');
@@ -391,35 +345,27 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
         if (!matchesYear) return false;
       }
 
-      // Level 4: Courses / Strands (if empty -> wildcard)
-      const targetCourseCodesList = (targetAudience.courseCodes || []).map(String).filter(Boolean);
-      const targetCourseIdsList = (targetAudience.courses || []).map(String).filter(Boolean);
-      if (targetCourseCodesList.length > 0 || targetCourseIdsList.length > 0) {
+      if (estCourseCodes.length > 0) {
         const sCourseId = String(s.courseId || '').trim().toLowerCase();
         const sCourseCode = String(s.courseCode || '').trim().toLowerCase();
         const sCourseName = String(s.courseName || '').trim().toLowerCase();
-
-        const matchesCourse =
-          targetCourseCodesList.some((c) => {
-            const tc = c.trim().toLowerCase();
-            return (
-              tc === sCourseCode ||
-              tc === sCourseId ||
-              tc === sCourseName ||
-              (sCourseCode && tc.includes(sCourseCode)) ||
-              (sCourseName && (tc.includes(sCourseName) || sCourseName.includes(tc)))
-            );
-          }) || targetCourseIdsList.some((id) => id.toLowerCase() === sCourseId);
-
+        const matchesCourse = estCourseCodes.some((code) => {
+          const tc = code.trim().toLowerCase();
+          return (
+            tc === sCourseCode ||
+            tc === sCourseId ||
+            tc === sCourseName ||
+            (sCourseCode && tc.includes(sCourseCode)) ||
+            (sCourseName && (tc.includes(sCourseName) || sCourseName.includes(tc)))
+          );
+        });
         if (!matchesCourse) return false;
       }
 
-      // Level 5: Sections (if empty -> wildcard)
-      const targetSectionsList = (targetAudience.sections || []).map(String).filter(Boolean);
-      if (targetSectionsList.length > 0) {
+      if (estSections.length > 0) {
         const sSec = String(s.section || '').trim().toLowerCase();
         const sSecClean = sSec.replace(/[^a-z0-9]/g, '');
-        const matchesSection = targetSectionsList.some((tSec) => {
+        const matchesSection = estSections.some((tSec) => {
           const ts = tSec.trim().toLowerCase();
           if (ts === sSec) return true;
           const tsClean = ts.replace(/[^a-z0-9]/g, '');
@@ -431,35 +377,33 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
 
       return true;
     }).length;
-  }, [allStudentsData, targetAudience, currentMode]);
+  }, [activeStudents, estMode, estYears, estCourseCodes, estSections, shsCourseCodes]);
 
-  // Dynamic filter for visible sections based on active mode, selected courses, selected years, and search
+  // Dynamic filter for visible sections in the Reach Calculator
   const visibleSections = useMemo(() => {
     let list = activeSections;
-    if (currentMode === 'shs') {
+    if (estMode === 'shs') {
       list = activeSections.filter(isShsSection);
-    } else if (currentMode === 'college') {
+    } else if (estMode === 'college') {
       list = activeSections.filter((s) => !isShsSection(s));
     }
 
-    // Further filter by selected courses if any are chosen
-    if (selectedCourseCodes.length > 0) {
-      list = list.filter((sec) => {
-        return (
-          selectedCourses.includes(sec.courseId) ||
-          selectedCourseCodes.some((code) =>
-            sec.name.toUpperCase().includes(code.toUpperCase())
-          )
-        );
-      });
+    if (estCourseCodes.length > 0) {
+      const selectedIds = new Set(
+        activeCourses.filter((c) => estCourseCodes.includes(c.code)).map((c) => c.id)
+      );
+      list = list.filter(
+        (sec) =>
+          (sec.courseId && selectedIds.has(sec.courseId)) ||
+          estCourseCodes.some((code) => sec.name.toUpperCase().includes(code.toUpperCase()))
+      );
     }
 
-    // Further filter by selected year levels if specific years are chosen
-    if (selectedYears.length > 0) {
+    if (estYears.length > 0) {
       list = list.filter((sec) => {
         const secName = sec.name.toUpperCase();
         const yNum = Number(sec.yearLevel);
-        return selectedYears.some((yearStr) => {
+        return estYears.some((yearStr) => {
           const yrDigits = yearStr.replace(/\D/g, '');
           if (yrDigits && (yNum === Number(yrDigits) || secName.includes(yrDigits))) return true;
           if (yearStr.toLowerCase().includes('grade 11') && (yNum === 11 || secName.includes('11'))) return true;
@@ -478,303 +422,25 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
       list = list.filter((s) => s.name.toLowerCase().includes(q));
     }
     return list;
-  }, [activeSections, currentMode, selectedCourses, selectedCourseCodes, selectedYears, sectionSearch, isShsSection]);
+  }, [activeSections, activeCourses, estMode, estCourseCodes, estYears, sectionSearch]);
 
-  // Helper to re-derive department linkages
-  const syncDepartmentLinkages = (
-    nextCourseCodes: string[],
-    nextCourseIds: string[],
-    nextSections: string[],
-    academicLevels: ('SHS' | 'College')[]
-  ) => {
-    const deptIds = new Set<string>();
-    const deptNames = new Set<string>();
-
-    // From selected courses
-    nextCourseIds.forEach((cId) => {
-      const c = activeCourses.find((course) => course.id === cId);
-      if (c?.departmentId) {
-        deptIds.add(c.departmentId);
-        const d = activeDepartments.find((dept) => dept.id === c.departmentId);
-        if (d) deptNames.add(d.name || d.code);
-      }
-    });
-
-    // From selected sections
-    nextSections.forEach((secName) => {
-      const sec = activeSections.find((s) => s.name === secName);
-      if (sec) {
-        if (sec.departmentId) {
-          deptIds.add(sec.departmentId);
-          const d = activeDepartments.find((dept) => dept.id === sec.departmentId);
-          if (d) deptNames.add(d.name || d.code);
-        } else if (sec.courseId) {
-          const c = activeCourses.find((course) => course.id === sec.courseId);
-          if (c?.departmentId) {
-            deptIds.add(c.departmentId);
-            const d = activeDepartments.find((dept) => dept.id === c.departmentId);
-            if (d) deptNames.add(d.name || d.code);
-          }
-        }
-      }
-    });
-
-    // If SHS level is involved, ensure SHS department is captured
-    if (academicLevels.includes('SHS')) {
-      const shsDept = activeDepartments.find(
-        (d) =>
-          d.code?.toUpperCase() === 'SHS' ||
-          d.name?.toLowerCase().includes('senior high') ||
-          (d as any).academicLevel === 'SHS'
-      );
-      if (shsDept) {
-        deptIds.add(shsDept.id);
-        deptNames.add(shsDept.name || shsDept.code);
-      }
-    }
-
-    // If College level is involved and no specific department captured, include all college departments
-    if (academicLevels.includes('College') && deptIds.size === 0) {
-      activeDepartments.forEach((d) => {
-        if (d.code?.toUpperCase() !== 'SHS' && !(d as any).academicLevel?.includes('SHS')) {
-          deptIds.add(d.id);
-          deptNames.add(d.name || d.code);
-        }
-      });
-    }
-
-    return {
-      departmentIds: Array.from(deptIds),
-      departments: Array.from(deptNames),
-    };
+  const handleSelectEstMode = (newMode: ReachEstimatorMode) => {
+    setEstMode(newMode);
+    setEstYears([]);
+    setEstCourseCodes([]);
+    setEstSections([]);
   };
 
-  const handleSelectMode = (newMode: AudienceMode) => {
-    if (newMode === 'all') {
-      const effectiveTotal = demographicStats.totalStudents + (includeFaculty ? facultyCount : 0);
-      const calculatedAttendees = Math.max(1, Math.round(effectiveTotal * (expectedReachPercent / 100)));
-      setAttendanceCount(calculatedAttendees);
-      const qual = includeFaculty ? 'students & faculty' : 'students';
-      updateAttendance(calculatedAttendees, qual);
-
-      const strandsBreakdownObj: Record<string, number> = {};
-      demographicStats.strandsList.forEach((st) => {
-        strandsBreakdownObj[st.code] = st.count;
-      });
-
-      const programsBreakdownObj: Record<string, number> = {};
-      demographicStats.programsList.forEach((pr) => {
-        programsBreakdownObj[pr.code] = pr.count;
-      });
-
-      onChange({
-        targetAudience: {
-          scope: 'all',
-          allStudents: true,
-          academicLevels: ['College', 'SHS'],
-          departmentIds: activeDepartments.map((d) => d.id),
-          departments: ['All Academic Departments'],
-          courses: [],
-          courseCodes: [],
-          sections: [],
-          yearLevels: [],
-          includeFaculty,
-          facultyCount: includeFaculty ? facultyCount : 0,
-          expectedReachPercentage: expectedReachPercent,
-          demographicBreakdown: {
-            shsTotal: demographicStats.shsTotal,
-            collegeTotal: demographicStats.collegeTotal,
-            facultyTotal: includeFaculty ? facultyCount : 0,
-            totalPopulation: effectiveTotal,
-            expectedAttendees: calculatedAttendees,
-            expectedReachPercentage: expectedReachPercent,
-            strandsBreakdown: strandsBreakdownObj,
-            programsBreakdown: programsBreakdownObj,
-          },
-        },
-      });
-      return;
-    }
-
-    if (newMode === 'shs') {
-      const shsDeptIds = new Set<string>();
-      const shsDeptNames = new Set<string>();
-
-      activeDepartments.forEach((d) => {
-        if (
-          d.code?.toUpperCase() === 'SHS' ||
-          d.name?.toLowerCase().includes('senior high') ||
-          (d as any).academicLevel === 'SHS'
-        ) {
-          shsDeptIds.add(d.id);
-          shsDeptNames.add(d.name || d.code);
-        }
-      });
-      shsPrograms.forEach((c) => {
-        if (c.departmentId) {
-          shsDeptIds.add(c.departmentId);
-          const dept = activeDepartments.find((d) => d.id === c.departmentId);
-          if (dept) shsDeptNames.add(dept.name || dept.code);
-        }
-      });
-
-      const allShsCodes = shsPrograms.map((p) => p.code).filter(Boolean);
-      const allShsCourses = shsPrograms.map((p) => p.name).filter(Boolean);
-      const allShsYears = shsYearLevels.map(String);
-      const allShsSections = activeSections.filter((s) => isShsSection(s)).map((s) => s.name).filter(Boolean);
-
-      onChange({
-        targetAudience: {
-          ...targetAudience,
-          scope: 'specific',
-          allStudents: false,
-          academicLevels: ['SHS'],
-          departmentIds: Array.from(shsDeptIds),
-          departments: Array.from(shsDeptNames).length > 0 ? Array.from(shsDeptNames) : ['Senior High School'],
-          courses: allShsCourses,
-          courseCodes: allShsCodes,
-          sections: allShsSections,
-          yearLevels: allShsYears,
-        },
-      });
-      return;
-    }
-
-    if (newMode === 'college') {
-      const collegeDeptIds = new Set<string>();
-      const collegeDeptNames = new Set<string>();
-
-      collegePrograms.forEach((c) => {
-        if (c.departmentId) {
-          collegeDeptIds.add(c.departmentId);
-          const dept = activeDepartments.find((d) => d.id === c.departmentId);
-          if (dept) collegeDeptNames.add(dept.name || dept.code);
-        }
-      });
-
-      const allCollegeCodes = collegePrograms.map((p) => p.code).filter(Boolean);
-      const allCollegeCourses = collegePrograms.map((p) => p.name).filter(Boolean);
-      const allCollegeYears = collegeYearLevels.map(String);
-      const allCollegeSections = activeSections.filter((s) => !isShsSection(s)).map((s) => s.name).filter(Boolean);
-
-      onChange({
-        targetAudience: {
-          ...targetAudience,
-          scope: 'specific',
-          allStudents: false,
-          academicLevels: ['College'],
-          departmentIds: Array.from(collegeDeptIds),
-          departments: Array.from(collegeDeptNames),
-          courses: allCollegeCourses,
-          courseCodes: allCollegeCodes,
-          sections: allCollegeSections,
-          yearLevels: allCollegeYears,
-        },
-      });
-      return;
-    }
-
-    // Custom
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        scope: 'specific',
-      },
-    });
+  const toggleEstYear = (year: string) => {
+    setEstYears((prev) => (prev.includes(year) ? prev.filter((y) => y !== year) : [...prev, year]));
   };
 
-  const toggleCourseSelection = (course: any) => {
-    const isSelected = (targetAudience.courseCodes || []).includes(course.code);
-    const nextCodes = isSelected
-      ? (targetAudience.courseCodes || []).filter((c) => c !== course.code)
-      : [...(targetAudience.courseCodes || []), course.code];
-    const nextCourseIds = isSelected
-      ? (targetAudience.courses || []).filter((id) => id !== course.id)
-      : [...(targetAudience.courses || []), course.id];
-
-    const currentSectionsList = targetAudience.sections || [];
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      nextCodes,
-      nextCourseIds,
-      currentSectionsList,
-      targetAudience.academicLevels || ['College']
-    );
-
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        courseCodes: nextCodes,
-        courses: nextCourseIds,
-        departmentIds,
-        departments: dNames,
-      },
-    });
+  const toggleEstCourse = (code: string) => {
+    setEstCourseCodes((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
   };
 
-  const toggleSectionSelection = (sectionName: string) => {
-    const isSelected = (targetAudience.sections || []).includes(sectionName);
-    const nextSections = isSelected
-      ? (targetAudience.sections || []).filter((s) => s !== sectionName)
-      : [...(targetAudience.sections || []), sectionName];
-
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      targetAudience.courseCodes || [],
-      targetAudience.courses || [],
-      nextSections,
-      targetAudience.academicLevels || ['College']
-    );
-
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        sections: nextSections,
-        departmentIds,
-        departments: dNames,
-      },
-    });
-  };
-
-  const selectAllVisibleSections = () => {
-    const visibleNames = visibleSections.map((s) => s.name);
-    const combined = Array.from(new Set([...(targetAudience.sections || []), ...visibleNames]));
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      targetAudience.courseCodes || [],
-      targetAudience.courses || [],
-      combined,
-      targetAudience.academicLevels || ['College']
-    );
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        sections: combined,
-        departmentIds,
-        departments: dNames,
-      },
-    });
-  };
-
-  const clearVisibleSections = () => {
-    const visibleNames = new Set(visibleSections.map((s) => s.name));
-    const remaining = (targetAudience.sections || []).filter((s) => !visibleNames.has(s));
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      targetAudience.courseCodes || [],
-      targetAudience.courses || [],
-      remaining,
-      targetAudience.academicLevels || ['College']
-    );
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        sections: remaining,
-        departmentIds,
-        departments: dNames,
-      },
-    });
+  const toggleEstSection = (secName: string) => {
+    setEstSections((prev) => (prev.includes(secName) ? prev.filter((s) => s !== secName) : [...prev, secName]));
   };
 
   // ── Estimated Attendance State (Strictly Number on Left + Text on Right) ──
@@ -802,58 +468,7 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     });
   };
 
-  const applyExpectedReach = (percent: number, facultyIncluded = includeFaculty, customFacultyNum = facultyCount) => {
-    setExpectedReachPercent(percent);
-    const effectiveTotal = demographicStats.totalStudents + (facultyIncluded ? customFacultyNum : 0);
-    const calculatedAttendees = Math.max(1, Math.round(effectiveTotal * (percent / 100)));
-    setAttendanceCount(calculatedAttendees);
-    const qual = facultyIncluded ? 'students & faculty' : 'students';
-    updateAttendance(calculatedAttendees, qual);
-
-    const strandsBreakdownObj: Record<string, number> = {};
-    demographicStats.strandsList.forEach((st) => {
-      strandsBreakdownObj[st.code] = st.count;
-    });
-
-    const programsBreakdownObj: Record<string, number> = {};
-    demographicStats.programsList.forEach((pr) => {
-      programsBreakdownObj[pr.code] = pr.count;
-    });
-
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: true,
-        scope: 'all',
-        includeFaculty: facultyIncluded,
-        facultyCount: facultyIncluded ? customFacultyNum : 0,
-        expectedReachPercentage: percent,
-        demographicBreakdown: {
-          shsTotal: demographicStats.shsTotal,
-          collegeTotal: demographicStats.collegeTotal,
-          facultyTotal: facultyIncluded ? customFacultyNum : 0,
-          totalPopulation: effectiveTotal,
-          expectedAttendees: calculatedAttendees,
-          expectedReachPercentage: percent,
-          strandsBreakdown: strandsBreakdownObj,
-          programsBreakdown: programsBreakdownObj,
-        },
-      },
-    });
-  };
-
-  const handleToggleFaculty = (checked: boolean) => {
-    setIncludeFaculty(checked);
-    applyExpectedReach(expectedReachPercent, checked, facultyCount);
-  };
-
-  const handleFacultyCountChange = (countVal: number) => {
-    const validCount = Math.max(1, countVal);
-    setFacultyCount(validCount);
-    applyExpectedReach(expectedReachPercent, includeFaculty, validCount);
-  };
-
-  // Auto-initialize 90% expected reach for "all" mode if attendance is unset on a brand new proposal
+  // Auto-initialize default estimated attendance on a brand new proposal without mutating audience filters
   useEffect(() => {
     const hasExistingCount =
       Boolean((formData as any).id) ||
@@ -861,24 +476,16 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
       Boolean((formData as any).isReturnedProposal) ||
       Boolean(formData.estAttendanceCount && formData.estAttendanceCount > 0) ||
       Boolean(formData.estimatedAttendance) ||
-      Boolean(formData.targetAudience?.expectedAttendees && formData.targetAudience.expectedAttendees > 0) ||
       Boolean((formData as any).expectedParticipantCount && (formData as any).expectedParticipantCount > 0);
 
-    if (
-      !hasExistingCount &&
-      currentMode === 'all' &&
-      totalCampusPopulation > 0
-    ) {
-      applyExpectedReach(expectedReachPercent, includeFaculty, facultyCount);
+    if (!hasExistingCount && totalCampusPopulation > 0) {
+      const effectiveTotal = demographicStats.totalStudents + (includeFaculty ? facultyCount : 0);
+      const calculatedAttendees = Math.max(1, Math.round(effectiveTotal * (expectedReachPercent / 100)));
+      setAttendanceCount(calculatedAttendees);
+      const qual = includeFaculty ? 'students & faculty' : 'students';
+      updateAttendance(calculatedAttendees, qual);
     }
-  }, [currentMode, totalCampusPopulation]);
-
-  // Derived effective reach percentage if user typed a custom number
-  const effectiveReachPercentage = useMemo(() => {
-    const countNum = Number(attendanceCount);
-    if (!countNum || totalCampusPopulation <= 0) return expectedReachPercent;
-    return Math.min(100, Math.round((countNum / totalCampusPopulation) * 100));
-  }, [attendanceCount, totalCampusPopulation, expectedReachPercent]);
+  }, [totalCampusPopulation]);
 
   const marketingPlan = formData.marketingPlan || [];
   const [marketingInput, setMarketingInput] = useState('');
@@ -898,271 +505,42 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
     onChange({ materials: materials.filter((_, idx) => idx !== index) });
   };
 
-  // Custom Target Market groups state
-  const [customTargetName, setCustomTargetName] = useState('');
-  const [customTargetCount, setCustomTargetCount] = useState<number | ''>('');
-  const [isAddingCustomTarget, setIsAddingCustomTarget] = useState(false);
-
-  const customTargets = useMemo(() => {
-    return (formData.targetAudience?.customTargetMarkets || []) as { id: string; name: string; count: number }[];
-  }, [formData.targetAudience?.customTargetMarkets]);
-
-  const handleAddCustomTarget = () => {
-    const trimmed = customTargetName.trim();
-    const countNum = typeof customTargetCount === 'number' ? customTargetCount : parseInt(String(customTargetCount), 10);
-    if (!trimmed || isNaN(countNum) || countNum <= 0) return;
-
-    const newItem = {
-      id: `custom-target-${Date.now()}`,
-      name: trimmed,
-      count: countNum,
-    };
-    const nextList = [...customTargets, newItem];
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        customTargetMarkets: nextList,
-      },
-    });
-    setCustomTargetName('');
-    setCustomTargetCount('');
-    setIsAddingCustomTarget(false);
-  };
-
-  const handleRemoveCustomTarget = (idToRemove: string) => {
-    const nextList = customTargets.filter((item) => item.id !== idToRemove);
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        customTargetMarkets: nextList,
-      },
-    });
-  };
-
-  const baseTargetMarketSummary = useMemo(() => {
-    if (targetAudience.allStudents || currentMode === 'all') {
-      return 'All STI Students';
-    }
-    if (currentMode === 'shs') {
-      const years = selectedYears;
-      const courses = selectedCourseCodes;
-      const isAllShsYears = years.length === 0 || years.length >= shsYearLevels.length;
-      const isAllShsStrands = courses.length === 0 || courses.length >= shsCourseCodes.length;
-
-      if (isAllShsYears && isAllShsStrands) {
-        return 'All Senior High School Students';
-      }
-      const yearPrefix = years.length === 1
-        ? `Grade ${years[0]} SHS Students`
-        : (isAllShsYears ? 'Senior High School Students' : `Grade ${years.join(' & ')} SHS Students`);
-      const courseSuffix = isAllShsStrands ? '' : ` (${courses.join(', ')})`;
-      return `${yearPrefix}${courseSuffix}`;
-    }
-    if (currentMode === 'college') {
-      const years = selectedYears;
-      const courses = selectedCourseCodes;
-      const isAllCollegeYears = years.length === 0 || years.length >= collegeYearLevels.length;
-      const isAllCollegeCourses = courses.length === 0 || courses.length >= collegeCourseCodes.length;
-
-      if (isAllCollegeYears && isAllCollegeCourses) {
-        return 'All College Students';
-      }
-      const yearPrefix = years.length === 1
-        ? `${years[0]}${years[0] === '1' ? 'st' : years[0] === '2' ? 'nd' : years[0] === '3' ? 'rd' : 'th'} Year College Students`
-        : (isAllCollegeYears ? 'College Students' : `${years.map((y) => `${y}${y === '1' ? 'st' : y === '2' ? 'nd' : y === '3' ? 'rd' : 'th'}`).join(' & ')} Year College Students`);
-      const courseSuffix = isAllCollegeCourses ? '' : ` (${courses.join(', ')})`;
-      return `${yearPrefix}${courseSuffix}`;
-    }
-    return 'Selected Student Audience';
-  }, [currentMode, targetAudience.allStudents, selectedYears, selectedCourseCodes, shsYearLevels, collegeYearLevels, shsCourseCodes, collegeCourseCodes]);
-
-  const defaultCombinedTargetMarket = useMemo(() => {
-    const customNames = customTargets.map((t) => t.name.trim()).filter(Boolean);
-    if (customNames.length === 0) return baseTargetMarketSummary;
-    return `${baseTargetMarketSummary} and ${customNames.join(', ')}`;
-  }, [baseTargetMarketSummary, customTargets]);
-
+  // Free-text Target Market for Form AP-01 Section 8 (never overwritten automatically)
   const [targetMarketText, setTargetMarketText] = useState(
-    formData.targetMarket || formData.targetAudience?.targetMarketSummary || defaultCombinedTargetMarket
+    formData.targetMarket || formData.targetAudience?.targetMarketSummary || ''
   );
 
   useEffect(() => {
-    setTargetMarketText(defaultCombinedTargetMarket);
-    onChange({
-      targetMarket: defaultCombinedTargetMarket,
-      targetAudience: {
-        ...targetAudience,
-        targetMarketSummary: defaultCombinedTargetMarket,
-      },
-    });
-  }, [defaultCombinedTargetMarket]);
-
-  const studentEligibleReach = useMemo(() => {
-    if (targetAudience.allStudents || currentMode === 'all') {
-      return demographicStats.totalStudents;
+    const incoming = formData.targetMarket || formData.targetAudience?.targetMarketSummary || '';
+    if (incoming && incoming !== targetMarketText && !targetMarketText) {
+      setTargetMarketText(incoming);
     }
-    return calculatedReach;
-  }, [targetAudience.allStudents, currentMode, demographicStats.totalStudents, calculatedReach]);
+  }, [formData.targetMarket, formData.targetAudience?.targetMarketSummary]);
 
-  const customEligibleReach = useMemo(() => {
-    return customTargets.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
-  }, [customTargets]);
-
-  const totalActualEligibleReach = useMemo(() => {
-    return studentEligibleReach + customEligibleReach;
-  }, [studentEligibleReach, customEligibleReach]);
-
-  useEffect(() => {
-    if (formData.targetAudience?.actualEligibleReach !== totalActualEligibleReach) {
-      onChange({
-        targetAudience: {
-          ...targetAudience,
-          actualEligibleReach: totalActualEligibleReach,
-        },
-      });
-    }
-  }, [totalActualEligibleReach, formData.targetAudience?.actualEligibleReach]);
-
-  const [targetMarketInput, setTargetMarketInput] = useState('');
-
-  const targetMarkets: string[] = useMemo(() => {
-    if (targetAudience.allStudents || currentMode === 'all') {
-      return ['All Students (Campus-Wide)'];
-    }
-    const list: string[] = [];
-    if (
-      currentMode === 'shs' &&
-      (!targetAudience.yearLevels || targetAudience.yearLevels.length === 0) &&
-      (!targetAudience.courseCodes || targetAudience.courseCodes.length === 0) &&
-      (!targetAudience.sections || targetAudience.sections.length === 0)
-    ) {
-      list.push('All Senior High Students');
-    } else if (
-      currentMode === 'college' &&
-      (!targetAudience.yearLevels || targetAudience.yearLevels.length === 0) &&
-      (!targetAudience.courseCodes || targetAudience.courseCodes.length === 0) &&
-      (!targetAudience.sections || targetAudience.sections.length === 0)
-    ) {
-      list.push('All College Students');
-    }
-
-    if (targetAudience.yearLevels && targetAudience.yearLevels.length > 0) {
-      targetAudience.yearLevels.forEach((y) => list.push(String(y)));
-    }
-    if (targetAudience.courseCodes && targetAudience.courseCodes.length > 0) {
-      targetAudience.courseCodes.forEach((c) => list.push(c));
-    }
-    if (targetAudience.sections && targetAudience.sections.length > 0) {
-      targetAudience.sections.forEach((s) => list.push(s));
-    }
-    return list;
-  }, [targetAudience, currentMode]);
-
-  const handleAddTargetMarket = (val: string) => {
-    const trimmed = val.trim();
-    if (!trimmed || targetMarkets.includes(trimmed)) return;
-    const updated = [...targetMarkets, trimmed];
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        departments: updated,
-        courseCodes: updated,
-        courses: updated,
-        academicLevels: targetAudience.academicLevels && targetAudience.academicLevels.length > 0 ? targetAudience.academicLevels : ['College'],
-      },
-    });
-    setTargetMarketInput('');
+  const selectAllEstYears = () => {
+    setEstYears(currentAvailableYearLevels);
   };
 
-  const handleRemoveTargetMarket = (marketToRemove: string) => {
-    const nextCodes = (targetAudience.courseCodes || []).filter((c) => c !== marketToRemove);
-    const nextSections = (targetAudience.sections || []).filter((s) => s !== marketToRemove);
-    const nextDepts = (targetAudience.departments || []).filter((d) => d !== marketToRemove);
-
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        courseCodes: nextCodes,
-        sections: nextSections,
-        departments: nextDepts,
-      },
-    });
+  const clearEstYears = () => {
+    setEstYears([]);
   };
 
-  const toggleYearLevel = (year: string) => {
-    const updatedYears = selectedYears.includes(year)
-      ? selectedYears.filter((y) => y !== year)
-      : [...selectedYears, year];
-
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        yearLevels: updatedYears,
-      },
-    });
+  const selectAllEstCourses = () => {
+    setEstCourseCodes(visibleCourses.map((c) => c.code));
   };
 
-  const selectAllYears = () => {
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        yearLevels: currentAvailableYearLevels,
-      },
-    });
+  const clearEstCourses = () => {
+    setEstCourseCodes([]);
   };
 
-  const clearAllYears = () => {
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        yearLevels: [],
-      },
-    });
+  const selectAllEstSections = () => {
+    const visibleNames = visibleSections.map((s) => s.name);
+    setEstSections((prev) => Array.from(new Set([...prev, ...visibleNames])));
   };
 
-  const selectAllPrograms = () => {
-    const codes = visibleCourses.map((c) => c.code);
-    const ids = visibleCourses.map((c) => c.id);
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      codes,
-      ids,
-      targetAudience.sections || [],
-      targetAudience.academicLevels || ['College']
-    );
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        courseCodes: codes,
-        courses: ids,
-        departmentIds,
-        departments: dNames,
-      },
-    });
-  };
-
-  const clearAllPrograms = () => {
-    const { departmentIds, departments: dNames } = syncDepartmentLinkages(
-      [],
-      [],
-      targetAudience.sections || [],
-      targetAudience.academicLevels || ['College']
-    );
-    onChange({
-      targetAudience: {
-        ...targetAudience,
-        allStudents: false,
-        courseCodes: [],
-        courses: [],
-        departmentIds,
-        departments: dNames,
-      },
-    });
+  const clearEstSections = () => {
+    const visibleNames = new Set(visibleSections.map((s) => s.name));
+    setEstSections((prev) => prev.filter((s) => !visibleNames.has(s)));
   };
 
   // ── Marketing handlers ──
@@ -1484,8 +862,8 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
         </div>
       </div>
 
-      {/* ── Section 8: Target market (DYNAMIC SCOPE & DATABASE-DRIVEN SELECTION) ── */}
-      <div className="space-y-4 pt-4 border-t border-gray-200">
+      {/* ── Section 8: Target market (Free-text description for Form AP-01) ── */}
+      <div className="space-y-3 pt-4 border-t border-gray-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-lg bg-blue-100 text-[#001A4D] flex items-center justify-center font-bold text-xs">
@@ -1495,475 +873,39 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               Target market <span className="text-red-500">*</span>
             </label>
           </div>
-          <span className="text-[11px] text-gray-500">
-            {targetAudience.allStudents
-              ? 'Campus-Wide (All Students)'
-              : `${targetMarkets.length} Target Item(s) Selected`}
-          </span>
+          <span className="text-[11px] text-gray-400">Form AP-01 Section 8</span>
         </div>
 
-        {/* 1. Dynamic Audience Scope Selector (Pills) */}
-        <div className="bg-slate-50 p-1.5 rounded-2xl border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-          <button
-            type="button"
-            onClick={() => handleSelectMode('all')}
-            className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              currentMode === 'all'
-                ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
-                : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
-            }`}
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span>All Students (Default)</span>
-          </button>
+        <p className="text-xs text-gray-500">
+          Enter the intended participants or audience description for the proposal document (e.g., All STI Students, BSIT 3rd Year Students, Faculty &amp; Invited Guests).
+        </p>
 
-          <button
-            type="button"
-            onClick={() => handleSelectMode('shs')}
-            className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              currentMode === 'shs'
-                ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
-                : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
-            }`}
-          >
-            <School className="w-3.5 h-3.5" />
-            <span>SHS Only</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSelectMode('college')}
-            className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              currentMode === 'college'
-                ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
-                : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
-            }`}
-          >
-            <GraduationCap className="w-3.5 h-3.5" />
-            <span>College Only</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleSelectMode('custom')}
-            className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-              currentMode === 'custom'
-                ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
-                : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
-            }`}
-          >
-            <Filter className="w-3.5 h-3.5" />
-            <span>Custom Selection</span>
-          </button>
-        </div>
-
-        {/* Mode Info & Dynamic Segmented Demographic Breakdown */}
-        {currentMode === 'all' ? (
-          <div className="p-4 bg-gradient-to-br from-blue-50/90 via-indigo-50/50 to-white border border-blue-200/80 rounded-2xl shadow-xs space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs flex-shrink-0">
-                <BarChart3 className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h4 className="font-bold text-sm text-[#001A4D]">
-                    Campus-Wide Student Population
-                  </h4>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-[#001A4D] border border-blue-200">
-                    Live Registry
-                  </span>
-                </div>
-                <p className="text-blue-700 text-xs mt-0.5">
-                  All active enrolled STI College students across all departments and grade levels.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-              <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
-                <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
-                  <span>Total Campus Students</span>
-                  <Users className="w-3.5 h-3.5 text-[#001A4D]" />
-                </div>
-                <div className="text-lg font-black text-[#001A4D] mt-1">
-                  {demographicStats.totalStudents.toLocaleString()}
-                </div>
-                <div className="text-[10px] text-gray-500 mt-0.5">Enrolled Student Registry</div>
-              </div>
-
-              <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
-                <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
-                  <span>Senior High School</span>
-                  <School className="w-3.5 h-3.5 text-amber-600" />
-                </div>
-                <div className="text-lg font-black text-slate-800 mt-1">
-                  {demographicStats.shsTotal.toLocaleString()}
-                </div>
-                <div className="text-[10px] text-amber-700 font-medium mt-0.5">Grades 11 & 12</div>
-              </div>
-
-              <div className="p-3 bg-white rounded-xl border border-blue-100 shadow-2xs">
-                <div className="flex items-center justify-between text-gray-500 text-[11px] font-semibold">
-                  <span>Tertiary / College</span>
-                  <GraduationCap className="w-3.5 h-3.5 text-blue-600" />
-                </div>
-                <div className="text-lg font-black text-slate-800 mt-1">
-                  {demographicStats.collegeTotal.toLocaleString()}
-                </div>
-                <div className="text-[10px] text-blue-700 font-medium mt-0.5">1st to 4th Year Programs</div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* 1. Target Year Levels (Dynamically derived from Database) */}
-            <div className="p-4 border border-gray-200 rounded-2xl bg-white space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-[#0E4EBD]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
-                    <span>Target Year Levels</span>
-                    {selectedYears.length === 0 ? (
-                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        All Year Levels (Default)
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                        {selectedYears.length} of {currentAvailableYearLevels.length} Selected
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllYears}
-                    className="text-xs text-[#0E4EBD] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                  >
-                    <CheckSquare className="w-3.5 h-3.5" /> Select All ({currentAvailableYearLevels.length})
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <button
-                    type="button"
-                    onClick={clearAllYears}
-                    className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                {currentAvailableYearLevels.map((year) => {
-                  const isSelected = selectedYears.includes(year);
-                  return (
-                    <button
-                      type="button"
-                      key={year}
-                      onClick={() => toggleYearLevel(year)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                        isSelected
-                          ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                          : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#001A4D] hover:bg-gray-100'
-                      }`}
-                    >
-                      <span>{year}</span>
-                      {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 2. Filter by Academic Programs / Strands (Dynamically derived from Database) */}
-            <div className="p-4 border border-gray-200 rounded-2xl bg-white space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="w-4 h-4 text-[#001A4D]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
-                    <span>
-                      {currentMode === 'shs'
-                        ? 'Senior High School Tracks & Strands'
-                        : currentMode === 'college'
-                        ? 'College Academic Programs'
-                        : 'All Academic Programs & Strands'}
-                    </span>
-                    {selectedCourseCodes.length === 0 ? (
-                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        All Strands / Programs (Default)
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                        {selectedCourseCodes.length} of {visibleCourses.length} Selected
-                      </span>
-                    )}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllPrograms}
-                    className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                  >
-                    <CheckSquare className="w-3.5 h-3.5" /> Select All ({visibleCourses.length})
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <button
-                    type="button"
-                    onClick={clearAllPrograms}
-                    className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                {visibleCourses.map((c) => {
-                  const isSelected = selectedCourseCodes.includes(c.code);
-                  return (
-                    <button
-                      type="button"
-                      key={c.id || c.code}
-                      onClick={() => toggleCourseSelection(c)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                        isSelected
-                          ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                          : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#001A4D] hover:bg-gray-100'
-                      }`}
-                    >
-                      <span>{c.code}</span>
-                      <span className="text-[10px] opacity-75">({c.name})</span>
-                      {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 3. Filter by Sections (Dynamically filtered by selected years & programs) */}
-            <div className="p-4 border border-gray-200 rounded-2xl bg-white space-y-3">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-[#001A4D]" />
-                  <span className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-2">
-                    <span>
-                      {currentMode === 'shs'
-                        ? 'Senior High School Sections'
-                        : currentMode === 'college'
-                        ? 'College Sections'
-                        : 'Academic Sections'}
-                    </span>
-                    {selectedSections.length === 0 ? (
-                      <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                        All Sections (Default)
-                      </span>
-                    ) : (
-                      <span className="text-xs font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                        {selectedSections.length} Selected
-                      </span>
-                    )}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllVisibleSections}
-                    className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                  >
-                    <CheckSquare className="w-3.5 h-3.5" /> Select All Visible ({visibleSections.length})
-                  </button>
-                  <span className="text-gray-300">|</span>
-                  <button
-                    type="button"
-                    onClick={clearVisibleSections}
-                    className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              {/* Search box for section */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  value={sectionSearch}
-                  onChange={(e) => setSectionSearch(e.target.value)}
-                  placeholder={`Search ${currentMode === 'shs' ? 'SHS' : currentMode === 'college' ? 'College' : ''} sections (e.g. ${currentMode === 'shs' ? 'STEM 11-A' : 'BSIT 3101'})...`}
-                  className="w-full pl-8 pr-3.5 py-1.5 bg-gray-50/70 border border-gray-200 rounded-xl text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-[#001A4D]"
-                />
-              </div>
-
-              {/* Sections Chips */}
-              {visibleSections.length === 0 ? (
-                <p className="text-xs text-gray-400 italic py-2 text-center">
-                  No matching sections found for the current selection filter.
-                </p>
-              ) : (
-                <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto p-1">
-                  {visibleSections.map((sec) => {
-                    const isSelected = selectedSections.includes(sec.name);
-                    return (
-                      <button
-                        type="button"
-                        key={sec.id}
-                        onClick={() => toggleSectionSelection(sec.name)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer flex items-center gap-1.5 ${
-                          isSelected
-                            ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] font-bold shadow-2xs'
-                            : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
-                        }`}
-                      >
-                        <span>{sec.name}</span>
-                        {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
+        <input
+          type="text"
+          value={targetMarketText}
+          onChange={(e) => {
+            const val = e.target.value;
+            setTargetMarketText(val);
+            onChange({
+              targetMarket: val,
+              targetAudience: {
+                ...targetAudience,
+                targetMarketSummary: val,
+              },
+            });
+          }}
+          placeholder="e.g. All STI College Ormoc Students, BSIT &amp; BSHM Programs, Faculty &amp; Guests..."
+          className={`w-full px-3.5 py-2.5 bg-white border rounded-xl text-sm font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] ${
+            errors.targetMarket ? 'border-red-400 bg-red-50/20' : 'border-gray-300'
+          }`}
+        />
+        {errors.targetMarket && (
+          <p className="text-[11px] text-red-600 font-medium">{errors.targetMarket}</p>
         )}
-
-        {/* Dynamic Target Market Summary & Custom Target Market Builder */}
-        <div className="p-4 bg-slate-50/80 border border-slate-200/90 rounded-2xl space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <label className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
-                <span>Target Market</span>
-                <span className="text-red-500">*</span>
-              </label>
-              <p className="text-[11px] text-gray-500">
-                Official target market for Form AP-01 (automatically derived from audience filters + custom groups)
-              </p>
-            </div>
-            {!isAddingCustomTarget && (
-              <button
-                type="button"
-                onClick={() => setIsAddingCustomTarget(true)}
-                className="px-3 py-1.5 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] text-xs font-bold rounded-xl shadow-2xs transition-colors flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Custom Target Market</span>
-              </button>
-            )}
-          </div>
-
-          {/* Target market input field */}
-          <div className="relative">
-            <input
-              type="text"
-              value={targetMarketText}
-              onChange={(e) => {
-                const val = e.target.value;
-                setTargetMarketText(val);
-                onChange({
-                  targetMarket: val,
-                  targetAudience: {
-                    ...targetAudience,
-                    targetMarketSummary: val,
-                  },
-                });
-              }}
-              placeholder="e.g. All STI Students, 3rd Year College Students (BSIT)..."
-              className="w-full px-3.5 py-2.5 bg-white border border-gray-300 rounded-xl text-xs font-semibold text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D]"
-            />
-          </div>
-
-          {/* Inline Add Custom Target Market Form */}
-          {isAddingCustomTarget && (
-            <div className="p-3.5 bg-white border border-blue-200 rounded-xl space-y-3 shadow-2xs">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#001A4D] flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5" />
-                  <span>Add Custom Target Group</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAddingCustomTarget(false);
-                    setCustomTargetName('');
-                    setCustomTargetCount('');
-                  }}
-                  className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                <div className="sm:col-span-7">
-                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
-                    Group Name / Description
-                  </label>
-                  <input
-                    type="text"
-                    value={customTargetName}
-                    onChange={(e) => setCustomTargetName(e.target.value)}
-                    placeholder="e.g. Faculty & Staff, Alumni, External Guests"
-                    className="w-full px-3 py-1.5 bg-gray-50/70 border border-gray-300 rounded-lg text-xs text-gray-900 focus:outline-none focus:ring-1 focus:ring-[#001A4D]"
-                  />
-                </div>
-                <div className="sm:col-span-3">
-                  <label className="block text-[11px] font-semibold text-gray-600 mb-1">
-                    Headcount (Pax)
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    value={customTargetCount}
-                    onChange={(e) => setCustomTargetCount(e.target.value === '' ? '' : parseInt(e.target.value, 10))}
-                    placeholder="e.g. 35"
-                    className="w-full px-3 py-1.5 bg-gray-50/70 border border-gray-300 rounded-lg text-xs font-bold text-gray-900 focus:outline-none focus:ring-1 focus:ring-[#001A4D]"
-                  />
-                </div>
-                <div className="sm:col-span-2 flex items-end">
-                  <button
-                    type="button"
-                    onClick={handleAddCustomTarget}
-                    disabled={!customTargetName.trim() || !customTargetCount || Number(customTargetCount) <= 0}
-                    className="w-full py-1.5 px-3 bg-[#001A4D] hover:bg-[#0A2E6D] disabled:opacity-50 text-[#FFD41C] text-xs font-bold rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    Add
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Active Custom Target Badges */}
-          {customTargets.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <span className="text-[11px] font-semibold text-gray-500">Custom Target Groups:</span>
-              {customTargets.map((ct) => (
-                <span
-                  key={ct.id}
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-amber-50 text-amber-900 border border-amber-200 rounded-lg text-xs font-bold"
-                >
-                  <span>{ct.name}</span>
-                  <span className="px-1.5 py-0.2 bg-amber-200/80 rounded text-[10px] font-extrabold text-[#001A4D]">
-                    +{ct.count} pax
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveCustomTarget(ct.id)}
-                    className="text-amber-600 hover:text-red-600 transition-colors cursor-pointer ml-0.5"
-                    title={`Remove ${ct.name}`}
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
 
-      {/* ── Section 9: Est. attendance (NUMERIC ONLY + QUALIFIER BESIDE IT) ── */}
-      <div className="space-y-3 pt-4 border-t border-gray-200">
+      {/* ── Section 9: Est. attendance (WITH READ-ONLY LIVE REACH CALCULATOR) ── */}
+      <div className="space-y-4 pt-4 border-t border-gray-200">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded-lg bg-blue-100 text-[#001A4D] flex items-center justify-center font-bold text-xs">
@@ -1978,8 +920,8 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           </span>
         </div>
 
-        {/* Unified Actual Eligible Reach Card */}
-        <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 via-indigo-50/50 to-white border border-blue-200/80 shadow-2xs space-y-3">
+        {/* Read-Only Student Reach Calculator (Reference Only for Estimating Attendance) */}
+        <div className="p-4 rounded-2xl bg-gradient-to-br from-blue-50/90 via-indigo-50/50 to-white border border-blue-200/80 shadow-2xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold shadow-xs flex-shrink-0">
@@ -1988,73 +930,254 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               <div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold uppercase tracking-wider text-[#001A4D]">
-                    Actual Eligible Reach
+                    Student Registry Reach Estimator
                   </span>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-[#001A4D] border border-blue-200">
-                    Live Pool
+                    Read-Only Reference
                   </span>
                 </div>
                 <div className="text-base sm:text-xl font-black text-[#001A4D]">
-                  {totalActualEligibleReach.toLocaleString()}{' ' }
+                  {calculatedReach.toLocaleString()}{' '}
                   <span className="text-xs font-semibold text-gray-500">
-                    total eligible persons ({studentEligibleReach.toLocaleString()} students{customEligibleReach > 0 ? ` + ${customEligibleReach.toLocaleString()} custom` : ''})
+                    matching active students in registry
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Quick Turnout Presets */}
-            {totalActualEligibleReach > 0 && (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-[11px] font-medium text-gray-500 mr-1">Quick Presets:</span>
-                {[
-                  { label: '25%', ratio: 0.25 },
-                  { label: '50%', ratio: 0.5 },
-                  { label: '75%', ratio: 0.75 },
-                  { label: '90%', ratio: 0.9 },
-                  { label: '100%', ratio: 1.0 },
-                ].map((preset) => {
-                  const estCount = Math.max(1, Math.round(totalActualEligibleReach * preset.ratio));
-                  return (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => {
-                        setAttendanceCount(estCount);
-                        updateAttendance(estCount, attendanceQualifier);
-                      }}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-[#001A4D] border border-blue-200 hover:bg-[#001A4D] hover:text-[#FFD41C] hover:border-[#001A4D] transition-all shadow-2xs cursor-pointer"
-                      title={`Set estimated attendance to ${estCount} (${preset.label} of eligible reach)`}
-                    >
-                      {preset.label} (~{estCount})
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setShowReachCalculator((prev) => !prev)}
+              className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-blue-200 text-[#001A4D] rounded-xl text-xs font-semibold transition-colors cursor-pointer self-start sm:self-auto"
+            >
+              {showReachCalculator ? 'Hide Calculator Filters' : 'Filter by Level / Course'}
+            </button>
           </div>
 
-          {/* Validation warning if estimated attendance exceeds actual eligible reach */}
-          {Number(attendanceCount) > totalActualEligibleReach && totalActualEligibleReach > 0 && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2.5 text-xs text-red-800">
-              <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold">Estimated attendance exceeds actual eligible reach!</p>
-                <p className="text-[11px] text-red-700 mt-0.5">
-                  Your estimated attendance ({Number(attendanceCount).toLocaleString()}) cannot exceed the total eligible pool ({totalActualEligibleReach.toLocaleString()}). Please adjust the estimated number or add custom target market headcounts.
-                </p>
+          {showReachCalculator && (
+            <div className="space-y-3 pt-2 border-t border-blue-200/60">
+              <div className="bg-slate-50 p-1.5 rounded-2xl border border-slate-200 grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {(
+                  [
+                    { id: 'all', label: 'All Students', Icon: Users },
+                    { id: 'shs', label: 'SHS Only', Icon: School },
+                    { id: 'college', label: 'College Only', Icon: GraduationCap },
+                    { id: 'custom', label: 'Custom Selection', Icon: Filter },
+                  ] as const
+                ).map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => handleSelectEstMode(id)}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      estMode === id
+                        ? 'bg-[#001A4D] text-[#FFD41C] shadow-sm'
+                        : 'bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/60'
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    <span>{label}</span>
+                  </button>
+                ))}
               </div>
+
+              {estMode === 'all' ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <div className="p-2.5 bg-white rounded-xl border border-blue-100">
+                    <div className="text-[11px] font-semibold text-gray-500">Total Campus Students</div>
+                    <div className="text-base font-black text-[#001A4D]">{demographicStats.totalStudents.toLocaleString()}</div>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-blue-100">
+                    <div className="text-[11px] font-semibold text-gray-500">Senior High School</div>
+                    <div className="text-base font-black text-slate-800">{demographicStats.shsTotal.toLocaleString()}</div>
+                  </div>
+                  <div className="p-2.5 bg-white rounded-xl border border-blue-100">
+                    <div className="text-[11px] font-semibold text-gray-500">Tertiary / College</div>
+                    <div className="text-base font-black text-slate-800">{demographicStats.collegeTotal.toLocaleString()}</div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Year Levels */}
+                  <div className="p-3 border border-gray-200 rounded-xl bg-white space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">
+                        Year Levels ({estYears.length === 0 ? 'All in scope' : `${estYears.length} selected`})
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={selectAllEstYears} className="text-[11px] text-[#0E4EBD] hover:underline font-semibold cursor-pointer">
+                          Select All ({currentAvailableYearLevels.length})
+                        </button>
+                        <span className="text-gray-300">|</span>
+                        <button type="button" onClick={clearEstYears} className="text-[11px] text-gray-500 hover:text-gray-700 cursor-pointer">
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {currentAvailableYearLevels.map((year) => {
+                        const isSelected = estYears.includes(year);
+                        return (
+                          <button
+                            type="button"
+                            key={year}
+                            onClick={() => toggleEstYear(year)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1 ${
+                              isSelected
+                                ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D]'
+                                : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#001A4D]'
+                            }`}
+                          >
+                            <span>{year}</span>
+                            {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Programs / Strands */}
+                  <div className="p-3 border border-gray-200 rounded-xl bg-white space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">
+                        Programs / Strands ({estCourseCodes.length === 0 ? 'All in scope' : `${estCourseCodes.length} selected`})
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={selectAllEstCourses} className="text-[11px] text-[#001A4D] hover:underline font-semibold cursor-pointer">
+                          Select All ({visibleCourses.length})
+                        </button>
+                        <span className="text-gray-300">|</span>
+                        <button type="button" onClick={clearEstCourses} className="text-[11px] text-gray-500 hover:text-gray-700 cursor-pointer">
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {visibleCourses.map((c) => {
+                        const isSelected = estCourseCodes.includes(c.code);
+                        return (
+                          <button
+                            type="button"
+                            key={c.id || c.code}
+                            onClick={() => toggleEstCourse(c.code)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1 ${
+                              isSelected
+                                ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D]'
+                                : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-[#001A4D]'
+                            }`}
+                          >
+                            <span>{c.code}</span>
+                            <span className="text-[10px] opacity-75">({c.name})</span>
+                            {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Sections */}
+                  <div className="p-3 border border-gray-200 rounded-xl bg-white space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-gray-700 uppercase tracking-wider">
+                        Sections ({estSections.length === 0 ? 'All sections' : `${estSections.length} selected`})
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={selectAllEstSections} className="text-[11px] text-[#001A4D] hover:underline font-semibold cursor-pointer">
+                          Select All Visible ({visibleSections.length})
+                        </button>
+                        <span className="text-gray-300">|</span>
+                        <button type="button" onClick={clearEstSections} className="text-[11px] text-gray-500 hover:text-gray-700 cursor-pointer">
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="text"
+                        value={sectionSearch}
+                        onChange={(e) => setSectionSearch(e.target.value)}
+                        placeholder="Search sections..."
+                        className="w-full pl-8 pr-3.5 py-1.5 bg-gray-50/70 border border-gray-200 rounded-xl text-xs text-gray-800 placeholder:text-gray-400 focus:outline-none focus:ring-1 focus:ring-[#001A4D]"
+                      />
+                    </div>
+                    {visibleSections.length === 0 ? (
+                      <p className="text-xs text-gray-400 italic py-1 text-center">
+                        No matching sections found for current filter.
+                      </p>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-1">
+                        {visibleSections.map((sec) => {
+                          const isSelected = estSections.includes(sec.name);
+                          return (
+                            <button
+                              type="button"
+                              key={sec.id}
+                              onClick={() => toggleEstSection(sec.name)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer flex items-center gap-1 ${
+                                isSelected
+                                  ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] font-bold'
+                                  : 'bg-white text-gray-700 border-gray-200 hover:border-gray-400'
+                              }`}
+                            >
+                              <span>{sec.name}</span>
+                              {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {Number(attendanceCount) > 0 && totalActualEligibleReach > 0 && Number(attendanceCount) <= totalActualEligibleReach && (
+          {/* Quick Turnout Presets */}
+          {calculatedReach > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-blue-200/60">
+              <span className="text-[11px] font-medium text-gray-500 mr-1">Quick Presets:</span>
+              {[
+                { label: '25%', ratio: 0.25 },
+                { label: '50%', ratio: 0.5 },
+                { label: '75%', ratio: 0.75 },
+                { label: '90%', ratio: 0.9 },
+                { label: '100%', ratio: 1.0 },
+              ].map((preset) => {
+                const estCount = Math.max(1, Math.round(calculatedReach * preset.ratio));
+                return (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => {
+                      setAttendanceCount(estCount);
+                      updateAttendance(estCount, attendanceQualifier);
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-bold bg-white text-[#001A4D] border border-blue-200 hover:bg-[#001A4D] hover:text-[#FFD41C] hover:border-[#001A4D] transition-all shadow-2xs cursor-pointer"
+                    title={`Set estimated attendance to ${estCount} (${preset.label} of matching student reach)`}
+                  >
+                    {preset.label} (~{estCount})
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {Number(attendanceCount) > 0 && calculatedReach > 0 && (
             <div className="pt-2 border-t border-blue-200/60 flex items-center justify-between text-xs text-gray-600">
               <span>
-                Projected turnout: <strong className="text-[#001A4D]">{attendanceCount}</strong> of <strong className="text-[#001A4D]">{totalActualEligibleReach.toLocaleString()}</strong> eligible reach
+                Entered estimate: <strong className="text-[#001A4D]">{attendanceCount}</strong> vs.{' '}
+                <strong className="text-[#001A4D]">{calculatedReach.toLocaleString()}</strong> matching students
               </span>
-              <span className="font-bold text-emerald-700">
-                {Math.round((Number(attendanceCount) / totalActualEligibleReach) * 100)}% turnout rate
-              </span>
+              {Number(attendanceCount) <= calculatedReach ? (
+                <span className="font-bold text-emerald-700">
+                  {Math.round((Number(attendanceCount) / calculatedReach) * 100)}% of selected student pool
+                </span>
+              ) : (
+                <span className="font-semibold text-blue-700">
+                  Includes +{(Number(attendanceCount) - calculatedReach).toLocaleString()} additional guests / non-registry pax
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -2078,7 +1201,7 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
                 }}
                 placeholder="e.g. 150"
                 className={`w-full px-3.5 py-2.5 bg-white border rounded-xl text-sm font-bold text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] ${
-                  errors.estimatedAttendance || (Number(attendanceCount) > totalActualEligibleReach && totalActualEligibleReach > 0)
+                  errors.estimatedAttendance
                     ? 'border-red-400 bg-red-50/20'
                     : 'border-gray-300'
                 }`}

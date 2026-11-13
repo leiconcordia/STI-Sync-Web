@@ -143,6 +143,7 @@ export function EditOrganizationModal({
   const useExistingPerson = async (person: AdviserIdentity) => {
     setIsSelectingPerson(true);
     try {
+      if (person.sourceType === 'student') throw new Error('Student accounts cannot be selected as a club adviser.');
       const account = await checkAdviserAccount(person.email || '');
       if (!account.exists || !account.eligible || !account.uid) throw new Error(account.reason || 'This person has no usable login account. Complete their account setup first.');
       const fields = structuredNameFields(person.sourceType === 'account' && person.name === person.email ? newAdviserData : person);
@@ -235,7 +236,7 @@ export function EditOrganizationModal({
           email: newAdviserData.email.trim().toLowerCase(),
           employeeId: newAdviserData.employeeId.trim(),
           departmentId: isCross ? 'cross-departmental' : formData.department,
-          temporaryPassword: newAdviserData.temporaryPassword || 'Adv-2026!#',
+          ...(newAdviserData.existingAccountUid ? {} : { temporaryPassword: newAdviserData.temporaryPassword || 'Adv-2026!#' }),
         },
         adminUser: adminName,
         sendEmailNotice: newAdviserData.sendEmailNotice,
@@ -606,8 +607,9 @@ export function EditOrganizationModal({
                   <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
                     <ShieldCheck className="w-4 h-4 text-[#0E4EBD] shrink-0 mt-0.5" />
                     <span>
-                      The appointed faculty adviser will receive login credentials via email to
-                      lead the club and approve event proposals.
+                      {newAdviserData.existingAccountUid
+                        ? 'This person will keep their existing STI Sync password and receive an email notice that they have been assigned as Club Adviser.'
+                        : 'The appointed faculty adviser will receive login credentials via email to lead the club and approve event proposals.'}
                     </span>
                   </div>
                 )}

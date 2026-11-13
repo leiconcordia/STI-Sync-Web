@@ -32,6 +32,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
   const [viewOfficer, setViewOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [editOfficer, setEditOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [editRoleId, setEditRoleId] = useState('');
+  const [editWebPortalAccess, setEditWebPortalAccess] = useState(true);
   const [resetOfficer, setResetOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [copiedPassword, setCopiedPassword] = useState(false);
@@ -94,16 +95,33 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
   const handleOpenEdit = (officer: OrganizationOfficerDocument) => {
     setEditOfficer(officer);
     setEditRoleId(officer.roleId || '');
+    setEditWebPortalAccess(officer.hasWebPortalAccess !== false);
   };
 
   const handleSaveRole = async () => {
     if (!editOfficer || !editRoleId) return;
+    if (editWebPortalAccess) {
+      const otherOrgOfficer = officers.find(
+        (o) =>
+          o.id !== editOfficer.id &&
+          o.isActive &&
+          o.organizationId !== editOfficer.organizationId &&
+          o.studentId?.trim().toLowerCase() === editOfficer.studentId?.trim().toLowerCase()
+      );
+      if (otherOrgOfficer) {
+        toast.error(
+          `${editOfficer.studentName} is also an active officer in another organization and cannot be granted exclusive Web Portal access.`
+        );
+        return;
+      }
+    }
     setIsProcessing(true);
     try {
       const newRole = activeRoles.find((r) => r.id === editRoleId);
       await updateDoc(doc(db, 'organization_officers', editOfficer.id), {
         roleId: editRoleId,
         roleName: newRole?.name || '',
+        hasWebPortalAccess: editWebPortalAccess,
         updatedAt: serverTimestamp(),
       });
       toast.success(`Position updated for ${editOfficer.studentName}.`);
@@ -452,6 +470,21 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                   ))}
                 </select>
               </div>
+
+              <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-200 bg-gray-50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editWebPortalAccess}
+                  onChange={(e) => setEditWebPortalAccess(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#001A4D] focus:ring-[#0E4EBD]"
+                />
+                <div className="text-xs leading-relaxed">
+                  <span className="block font-bold text-[#001A4D]">Organization Web Portal Access</span>
+                  <span className="block text-gray-600 mt-0.5">
+                    When enabled, this officer can log in to the Web Portal for this organization and cannot be assigned to another organization.
+                  </span>
+                </div>
+              </label>
 
               <div className="flex gap-3 pt-2">
                 <button

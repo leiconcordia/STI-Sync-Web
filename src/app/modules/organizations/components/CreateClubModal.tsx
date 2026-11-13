@@ -253,6 +253,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const useExistingPerson = async (person: AdviserIdentity) => {
     setIsCheckingAdviser(true);
     try {
+      if (person.sourceType === 'student') throw new Error('Student accounts cannot be selected as a club adviser.');
       const account = await checkAdviserAccount(person.email || '');
       if (!account.exists || !account.eligible || !account.uid) throw new Error(account.reason || 'This person has no usable login account. SAS must complete their account setup first.');
       const fields = structuredNameFields(person.sourceType === 'account' && person.name === person.email ? adviserData : person);
@@ -290,10 +291,11 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       logoUrl: null,
       adviser: {
         ...adviserData,
+        temporaryPassword: adviserData.existingAccountUid ? undefined : adviserData.temporaryPassword,
         ...(adviserIdentity.verification ? { nameVerification: adviserIdentity.verification } : {}),
         departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : formData.department),
         title: 'Club Adviser',
-        requiresPasswordChange: true,
+        requiresPasswordChange: !adviserData.existingAccountUid,
       },
     };
 

@@ -4,6 +4,7 @@ import { isAdministratorSignatory } from './signatory-filter.mjs';
 import { formatPersonName } from '../../../utils/name.utils';
 
 export type AccountKind = 'advisers' | 'students' | 'signatories';
+export type AccountTabKind = 'all' | AccountKind;
 export interface AccountRow {
   id: string;
   name: string;
@@ -11,6 +12,7 @@ export interface AccountRow {
   email: string;
   status: string;
   requiresPasswordChange: boolean;
+  accountKind?: AccountKind;
 }
 
 const collections: Record<AccountKind, string> = {
@@ -19,7 +21,7 @@ const collections: Record<AccountKind, string> = {
   signatories: 'institutional_signatories',
 };
 
-export function toAccountRow(id: string, data: DocumentData): AccountRow {
+export function toAccountRow(id: string, data: DocumentData, accountKind?: AccountKind): AccountRow {
   const name = formatPersonName(data);
   return {
     id,
@@ -28,10 +30,19 @@ export function toAccountRow(id: string, data: DocumentData): AccountRow {
     email: data.email || '',
     status: data.isActive === false ? 'INACTIVE' : String(data.status || 'ACTIVE').toUpperCase(),
     requiresPasswordChange: Boolean(data.tempPass || data.requiresPasswordChange || data.requiresChangePassword || data.resetInProgress),
+    ...(accountKind ? { accountKind } : {}),
   };
 }
 
-export async function getAccounts(kind: AccountKind): Promise<AccountRow[]> {
+export async function getAccounts(kind: AccountTabKind): Promise<AccountRow[]> {
+  if (kind === 'all') {
+    const [advisers, students, signatories] = await Promise.all([
+      getAccounts('advisers'),
+      getAccounts('students'),
+      getAccounts('signatories'),
+    ]);
+    return [...advisers, ...students, ...signatories].sort((a, b) => a.name.localeCompare(b.name));
+  }
   // Admins can also appear in the signatory collection. Compare both the
   // linked UID and normalized email, including inactive admin profiles.
   const [snapshot, adminSnapshot] = await Promise.all([
@@ -43,6 +54,6 @@ export async function getAccounts(kind: AccountKind): Promise<AccountRow[]> {
   return snapshot.docs.filter((item) => {
     if (!adminSnapshot) return true;
     return !isAdministratorSignatory(item.id, item.data(), adminUids, adminEmails);
-  }).map((item) => toAccountRow(item.id, item.data()))
+  }).map((item) => toAccountRow(item.id, item.data(), kind))
     .sort((a, b) => a.name.localeCompare(b.name));
 }

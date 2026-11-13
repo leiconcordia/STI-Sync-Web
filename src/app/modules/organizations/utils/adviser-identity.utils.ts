@@ -54,10 +54,11 @@ export function collectAdviserIdentities(records: AdviserIdentity[], organizatio
     ...records.map((record) => ({ sourceType: 'adviser' as const, ...record })),
     ...organizations.filter((org) => org.adviser).map((org) => ({ ...org.adviser, sourceType: 'adviser' as const, id: `embedded:${org.id}`, organizationId: org.id, organizationName: org.name })),
   ];
-  const active = all.filter((record) => record.isActive !== false && !['inactive', 'revoked', 'deleted', 'archived'].includes(normalized(record.status))
+  const active = all.filter((record) => record.sourceType !== 'student'
+    && record.isActive !== false && !['inactive', 'revoked', 'deleted', 'archived'].includes(normalized(record.status))
     && (!excludeOrgId || record.organizationId !== excludeOrgId));
   const unique = new Map<string, AdviserIdentity>();
-  active.sort((a, b) => (a.sourceType === 'student' ? 0 : a.sourceType === 'adviser' ? 1 : 2) - (b.sourceType === 'student' ? 0 : b.sourceType === 'adviser' ? 1 : 2)).forEach((record) => {
+  active.sort((a, b) => (a.sourceType === 'adviser' ? 0 : 1) - (b.sourceType === 'adviser' ? 0 : 1)).forEach((record) => {
     const key = normalized(record.email) || normalized(record.employeeId) || record.authUid || record.id || JSON.stringify(parts(record));
     if (!unique.has(key)) unique.set(key, record);
   });

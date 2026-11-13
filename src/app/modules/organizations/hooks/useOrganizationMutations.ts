@@ -36,7 +36,11 @@ export const useOrganizationMutations = () => {
           existingAccount: Boolean(payload.adviser.existingAccountUid),
         })
           .then(() => {
-            toast.success(`Welcome email sent to adviser (${payload.adviser?.email})`);
+            toast.success(
+              payload.adviser?.existingAccountUid
+                ? `Adviser assignment notice sent to ${payload.adviser?.email}`
+                : `Welcome email sent to adviser (${payload.adviser?.email})`
+            );
           })
           .catch(err => {
             console.warn('[useOrganizationMutations] Could not send adviser welcome email:', err);

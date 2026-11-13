@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
-import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 import { buildCampusActivityRows, documentStatus } from '../utils/campus-activity-report';
 import type { useSignatoryDocuments } from './useSignatoryDocuments';
 
@@ -26,16 +25,16 @@ export function useCampusActivityData(documents: SignatoryDocuments, session: an
     pars: documents.allPARs, organizations, periods, pendingIds, now,
   }), [events, documents.allProposals, documents.allLiquidations, documents.allPARs, organizations, periods, pendingIds, now]);
   const inspectable = useMemo(() => {
-    const authorized = (records: any[], previouslyVisible: any[], workflow: 'proposal' | 'liquidation' | 'par') => new Set([
+    const authorized = (records: any[], previouslyVisible: any[]) => new Set([
       ...previouslyVisible,
-      ...(session && isSignatoryApplicableTo(session, workflow) ? records.filter((record) => documentStatus(record) === 'approved') : []),
+      ...records.filter((record) => documentStatus(record) === 'approved'),
     ].map((record) => record.id));
     return {
-      proposal: authorized(documents.allProposals, [...documents.pendingProposals, ...documents.endorsedProposals, ...documents.returnedProposals], 'proposal'),
-      liquidation: authorized(documents.allLiquidations, [...documents.pendingLiquidations, ...documents.endorsedLiquidations, ...documents.returnedLiquidations], 'liquidation'),
-      par: authorized(documents.allPARs, [...documents.pendingPARs, ...documents.endorsedPARs, ...documents.returnedPARs], 'par'),
+      proposal: authorized(documents.allProposals, [...documents.pendingProposals, ...documents.endorsedProposals, ...documents.returnedProposals]),
+      liquidation: authorized(documents.allLiquidations, [...documents.pendingLiquidations, ...documents.endorsedLiquidations, ...documents.returnedLiquidations]),
+      par: authorized(documents.allPARs, [...documents.pendingPARs, ...documents.endorsedPARs, ...documents.returnedPARs]),
     };
-  }, [documents, session]);
+  }, [documents]);
   return {
     rows, organizations, periods, inspectable,
     loading: documents.loading || eventsLoading || orgsLoading || periodsLoading,

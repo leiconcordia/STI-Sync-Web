@@ -18,7 +18,7 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
-import { format, subDays, parseISO, isValid } from 'date-fns';
+import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
 import type { ProposalFormData, ProposalTask } from '../../types/proposal.types';
 
 interface Step5Props {
@@ -30,14 +30,20 @@ interface Step5Props {
 export default function Step5TaskAllocation({ formData, onChange, errors = {} }: Step5Props) {
   const eventDate = formData.date || formData.sessions?.[0]?.date || '';
   const todayStr = useMemo(() => format(new Date(), 'yyyy-MM-dd'), []);
+  const standardMinDate = useMemo(() => format(addDays(new Date(), 15), 'yyyy-MM-dd'), []);
+  const isUrgent = Boolean(formData.isUrgent);
+  const minTaskDate = isUrgent ? todayStr : standardMinDate;
 
-  // The latest possible task date is strictly 1 day before the implementation date
+  // Latest task date: strictly 1 day before eventDate, except same-day urgent or day-15 boundary
   const maxTaskDate = useMemo(() => {
     if (!eventDate) return '';
     const parsed = parseISO(eventDate);
     if (!isValid(parsed)) return '';
+    if ((isUrgent && eventDate === todayStr) || (!isUrgent && eventDate === standardMinDate)) {
+      return eventDate;
+    }
     return format(subDays(parsed, 1), 'yyyy-MM-dd');
-  }, [eventDate]);
+  }, [eventDate, isUrgent, todayStr, standardMinDate]);
 
   const tasks: ProposalTask[] = formData.tasks && formData.tasks.length > 0
     ? formData.tasks
@@ -136,9 +142,15 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
       <div className="space-y-3">
         {tasks.map((task, index) => {
           const isDateMatchingOrExceedingEvent = Boolean(
-            eventDate && task.completionDate && task.completionDate >= eventDate
+            eventDate && maxTaskDate && task.completionDate && task.completionDate > maxTaskDate
           );
           const isDateInPast = Boolean(task.completionDate && task.completionDate < todayStr);
+          const isDateUnder15Days = Boolean(
+            !isUrgent &&
+            task.completionDate &&
+            task.completionDate >= todayStr &&
+            task.completionDate < standardMinDate
+          );
           const isPrecededByLaterTask = Boolean(
             index > 0 &&
             task.completionDate &&
@@ -150,7 +162,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             <div
               key={task.id || index}
               className={`p-4 bg-white border rounded-2xl shadow-xs transition-colors flex flex-col gap-3 ${
-                isDateMatchingOrExceedingEvent || isDateInPast
+                isDateMatchingOrExceedingEvent || isDateInPast || isDateUnder15Days
                   ? 'border-red-300 bg-red-50/10'
                   : 'border-slate-200 hover:border-slate-300'
               }`}
@@ -212,12 +224,12 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                   <div className="relative">
                     <input
                       type="date"
-                      min={todayStr}
+                      min={minTaskDate}
                       max={maxTaskDate || undefined}
                       value={task.completionDate}
                       onChange={(e) => updateTask(index, { completionDate: e.target.value })}
                       className={`w-full px-3 py-2 bg-slate-50/60 border rounded-xl text-xs focus:outline-none focus:ring-2 transition-all font-semibold ${
-                        isDateMatchingOrExceedingEvent || isDateInPast
+                        isDateMatchingOrExceedingEvent || isDateInPast || isDateUnder15Days
                           ? 'border-red-400 text-red-900 bg-red-50/30 focus:ring-red-500/20'
                           : 'border-slate-200 text-slate-800 focus:ring-indigo-500/20 focus:border-indigo-500'
                       }`}
@@ -252,6 +264,15 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                 <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>Completion date cannot be in the past ({task.completionDate}).</span>
+                </div>
+              )}
+
+              {isDateUnder15Days && (
+                <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  <span>
+                    Standard policy requires at least 15 calendar days before the initial task ({standardMinDate} or later). Enable Urgent Mode in Step 4 if filing expedited.
+                  </span>
                 </div>
               )}
 

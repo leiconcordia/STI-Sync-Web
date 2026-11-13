@@ -344,7 +344,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
                 ) : leadTimeDays >= 0 ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 text-xs font-semibold shadow-2xs">
                     <Zap className="w-3.5 h-3.5 text-amber-600" />
-                    <span>⚡ Urgent Fast-Track ({leadTimeDays} calendar days lead time — justification required)</span>
+                    <span>Urgent Fast-Track ({leadTimeDays} calendar days lead time — justification required)</span>
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-50 text-red-800 border border-red-300 text-xs font-semibold">

@@ -377,7 +377,12 @@ export async function exportActivityProposalPDF(
     renderField('Materials:', proposal.materials || '', { isBullets: true });
 
     // Row 8: Target market
-    renderField('Target market:', formatTargetMarket(proposal.targetAudience));
+    renderField(
+      'Target market:',
+      proposal.targetMarket?.trim() ||
+        proposal.targetAudience?.targetMarketSummary?.trim() ||
+        formatTargetMarket(proposal.targetAudience)
+    );
 
     // Row 9: Est. attendance
     const estAtt = proposal.estimatedAttendance || (proposal.estAttendanceCount ? `${proposal.estAttendanceCount} ${proposal.estAttendanceQualifier || 'Participants'}` : '');

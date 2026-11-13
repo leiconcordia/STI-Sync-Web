@@ -7,32 +7,27 @@
  * - Target academic tracks, programs, and year levels
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Smartphone,
   Upload,
-  Image as ImageIcon,
-  BookOpen,
   Check,
   Save,
-  Trash2,
-  Users,
   Lock,
-  ChevronDown,
-  ChevronUp,
-  CheckCircle2,
-  SlidersHorizontal,
-  CheckSquare,
 } from 'lucide-react';
 import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument } from '../types/event.types';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
-import { useTargetAudienceStructure, type DynamicProgram } from '../../academic';
-import { useStudents } from '../../students/hooks/useStudentStream';
 import { toast } from 'sonner';
+import OperationalAudienceSelector, {
+  buildOperationalAudiencePayload,
+  isSpecificFilterValid,
+  type OperationalAcademicLevel,
+  type OperationalAudienceScope,
+} from './OperationalAudienceSelector';
 
 interface PublishStudentFeedModalProps {
   isOpen: boolean;
@@ -52,134 +47,58 @@ export default function PublishStudentFeedModal({
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingBanner, setIsUploadingBanner] = useState(false);
 
-  // Fetch real programs / strands and year levels dynamically from database
-  const audienceStructure = useTargetAudienceStructure();
-  const { data: allStudentsData = [] } = useStudents();
-
-  // State
+  // Operational publishing target state (never inherits Form AP-01 targetMarket/targetAudience)
   const [bannerUrl, setBannerUrl] = useState<string>(activity.bannerImageUrl || '');
-  const [targetAcademicLevel, setTargetAcademicLevel] = useState<'COLLEGE' | 'SHS' | 'BOTH'>('BOTH');
+  const [targetAudienceScope, setTargetAudienceScope] = useState<OperationalAudienceScope>('all');
+  const [targetAcademicLevel, setTargetAcademicLevel] = useState<OperationalAcademicLevel>('BOTH');
   const [targetCourses, setTargetCourses] = useState<string[]>([]);
   const [targetYearLevels, setTargetYearLevels] = useState<string[]>([]);
-  const [showCustomAudience, setShowCustomAudience] = useState<boolean>(false);
+  const [targetSections, setTargetSections] = useState<string[]>([]);
 
-  // Pre-load / inherit settings directly from proposal (Zero re-selection required)
+  // Load existing operational publish/attendance filters if configured, otherwise default to All Campus Students
   useEffect(() => {
-    if (activity) {
-      setBannerUrl(activity.bannerImageUrl || '');
+    if (!activity) return;
+    setBannerUrl(activity.bannerImageUrl || '');
 
-      // Inherit academic division
-      let inheritedLevel: 'COLLEGE' | 'SHS' | 'BOTH' = 'BOTH';
-      if (activity.targetAcademicLevel) {
-        inheritedLevel = activity.targetAcademicLevel as any;
-      } else if ((activity as any).targetAudience?.academicLevels) {
-        const lvls: string[] = (activity as any).targetAudience.academicLevels;
-        if (lvls.includes('SHS') && lvls.includes('College')) inheritedLevel = 'BOTH';
-        else if (lvls.includes('SHS')) inheritedLevel = 'SHS';
-        else if (lvls.includes('College')) inheritedLevel = 'COLLEGE';
-      }
-      setTargetAcademicLevel(inheritedLevel);
+    const hasOperationalTarget = Boolean(
+      (activity as any).publishAudienceConfigured ||
+      (activity as any).attendanceAudienceConfigured
+    );
 
-      // Inherit courses / strands (empty array = wildcard)
-      const inheritedCourses: string[] =
-        activity.targetCourses && activity.targetCourses.length > 0
-          ? activity.targetCourses
-          : (activity as any).targetAudience?.courseCodes || [];
-      setTargetCourses(inheritedCourses);
+    if (!hasOperationalTarget) {
+      setTargetAudienceScope('all');
+      setTargetAcademicLevel('BOTH');
+      setTargetCourses([]);
+      setTargetYearLevels([]);
+      setTargetSections([]);
+      return;
+    }
 
-      // Inherit year levels (empty array = wildcard)
-      const inheritedYears: string[] =
-        activity.targetYearLevels && activity.targetYearLevels.length > 0
-          ? activity.targetYearLevels
-          : ((activity as any).targetAudience?.yearLevels || []).map(String);
-      setTargetYearLevels(inheritedYears);
+    const rawScope = (activity as any).targetAudienceScope;
+    const rawLevel = ((activity as any).targetAcademicLevel as OperationalAcademicLevel) || 'BOTH';
+    const rawCourses: string[] = Array.isArray((activity as any).targetCourses) ? (activity as any).targetCourses : [];
+    const rawYears: string[] = Array.isArray((activity as any).targetYearLevels) ? (activity as any).targetYearLevels.map(String) : [];
+    const rawSections: string[] = Array.isArray((activity as any).targetSections) ? (activity as any).targetSections : [];
+
+    setTargetAcademicLevel(rawLevel);
+    setTargetCourses(rawCourses);
+    setTargetYearLevels(rawYears);
+    setTargetSections(rawSections);
+
+    if (rawScope === 'members') {
+      setTargetAudienceScope('members');
+    } else if (
+      rawScope === 'specific' ||
+      rawLevel !== 'BOTH' ||
+      rawCourses.length > 0 ||
+      rawYears.length > 0 ||
+      rawSections.length > 0
+    ) {
+      setTargetAudienceScope('specific');
+    } else {
+      setTargetAudienceScope('all');
     }
   }, [activity]);
-
-  // Real-time calculation of eligible student reach from database
-  const calculatedReach = useMemo(() => {
-    if (!allStudentsData || allStudentsData.length === 0) return 0;
-    return allStudentsData.filter((s) => {
-      const sStatus = (s.status || 'ACTIVE').toUpperCase();
-      if (
-        (s as any).archived ||
-        sStatus === 'INACTIVE' ||
-        sStatus === 'ARCHIVED' ||
-        sStatus === 'RETURNED' ||
-        sStatus === 'DROPPED'
-      ) {
-        return false;
-      }
-
-      // Campus-Wide / All Students
-      if (targetAcademicLevel === 'BOTH' && targetCourses.length === 0 && targetYearLevels.length === 0) {
-        return true;
-      }
-
-      // Check SHS vs College
-      const y = String(s.yearLevel || '').toUpperCase();
-      const c = String(s.courseCode || '').toUpperCase();
-      const lvl = String(s.academicLevel || '').toUpperCase();
-      const isShs =
-        lvl === 'SHS' ||
-        (lvl !== 'COLLEGE' &&
-          (y.includes('11') ||
-            y.includes('12') ||
-            y.includes('GRADE 11') ||
-            y.includes('GRADE 12') ||
-            y.includes('G11') ||
-            y.includes('G12') ||
-            c.includes('SHS') ||
-            c.includes('STEM') ||
-            c.includes('ABM') ||
-            c.includes('HUMSS') ||
-            c.includes('GAS') ||
-            c.includes('TVL')));
-
-      if (targetAcademicLevel === 'SHS' && !isShs) return false;
-      if (targetAcademicLevel === 'COLLEGE' && isShs) return false;
-
-      // Year level filter (if empty -> wildcard)
-      if (targetYearLevels.length > 0) {
-        const sYear = String(s.yearLevel || '').trim().toLowerCase();
-        const sYearDigits = sYear.replace(/\D/g, '');
-        const matchesYear = targetYearLevels.some((tYear) => {
-          const t = tYear.trim().toLowerCase();
-          if (t === sYear) return true;
-          const tDigits = t.replace(/\D/g, '');
-          if (sYearDigits && tDigits && sYearDigits === tDigits) return true;
-          if ((t.includes('11') || t.includes('g11')) && (sYear.includes('11') || sYear.includes('g11'))) return true;
-          if ((t.includes('12') || t.includes('g12')) && (sYear.includes('12') || sYear.includes('g12'))) return true;
-          if (t.includes('1st') && (sYear.includes('1st') || sYear === '1')) return true;
-          if (t.includes('2nd') && (sYear.includes('2nd') || sYear === '2')) return true;
-          if (t.includes('3rd') && (sYear.includes('3rd') || sYear === '3')) return true;
-          if (t.includes('4th') && (sYear.includes('4th') || sYear === '4')) return true;
-          return false;
-        });
-        if (!matchesYear) return false;
-      }
-
-      // Course filter (if empty -> wildcard)
-      if (targetCourses.length > 0) {
-        const sCourseId = String(s.courseId || '').trim().toLowerCase();
-        const sCourseCode = String(s.courseCode || '').trim().toLowerCase();
-        const sCourseName = String(s.courseName || '').trim().toLowerCase();
-        const matchesCourse = targetCourses.some((code) => {
-          const tc = code.trim().toLowerCase();
-          return (
-            tc === sCourseCode ||
-            tc === sCourseId ||
-            tc === sCourseName ||
-            (sCourseCode && tc.includes(sCourseCode)) ||
-            (sCourseName && (tc.includes(sCourseName) || sCourseName.includes(tc)))
-          );
-        });
-        if (!matchesCourse) return false;
-      }
-
-      return true;
-    }).length;
-  }, [allStudentsData, targetAcademicLevel, targetCourses, targetYearLevels]);
 
   if (!isOpen) return null;
 
@@ -201,74 +120,22 @@ export default function PublishStudentFeedModal({
     }
   };
 
-  // Academic Division Change starts with empty arrays so all students in that level qualify by default
-  const handleAcademicLevelChange = (lvl: 'COLLEGE' | 'SHS' | 'BOTH') => {
-    setTargetAcademicLevel(lvl);
-    setTargetCourses([]);
-    setTargetYearLevels([]);
-  };
-
-  // Course Toggle
-  const handleToggleCourse = (courseCode: string) => {
-    setTargetCourses((prev) =>
-      prev.includes(courseCode)
-        ? prev.filter((c) => c !== courseCode)
-        : [...prev, courseCode]
-    );
-  };
-
-  // Year Level Toggle
-  const handleToggleYearLevel = (year: string) => {
-    setTargetYearLevels((prev) =>
-      prev.includes(year)
-        ? prev.filter((y) => y !== year)
-        : [...prev, year]
-    );
-  };
-
-  // Dynamic lists from database based on selected academic division
-  const availablePrograms = audienceStructure.getProgramsForAcademicLevel(targetAcademicLevel);
-  const availableYearLevels = audienceStructure.getYearLevelsForAcademicLevel(targetAcademicLevel);
-
-  const selectAllPrograms = () => {
-    setTargetCourses(availablePrograms.map((p) => p.code));
-  };
-
-  const clearAllPrograms = () => {
-    setTargetCourses([]);
-  };
-
-  const selectAllYearLevels = () => {
-    setTargetYearLevels(availableYearLevels);
-  };
-
-  const clearAllYearLevels = () => {
-    setTargetYearLevels([]);
-  };
-
   // Save Settings (Automatically publishes approved activity on save)
   const handleSave = async () => {
+    if (!isSpecificFilterValid(targetAudienceScope, targetAcademicLevel, targetCourses, targetYearLevels, targetSections)) {
+      toast.error('Please select at least one Division, Year Level, Program/Strand, or Section—or choose "All Campus Students".');
+      return;
+    }
+
     setIsSaving(true);
     try {
-      const isAllStudents =
-        targetAcademicLevel === 'BOTH' &&
-        targetCourses.length === 0 &&
-        targetYearLevels.length === 0;
-
-      const targetAudienceUpdated = {
-        ...((activity as any).targetAudience || {}),
-        allStudents: isAllStudents,
-        scope: isAllStudents ? 'all' : 'specific',
-        academicLevels:
-          targetAcademicLevel === 'BOTH'
-            ? ['College', 'SHS']
-            : targetAcademicLevel === 'SHS'
-            ? ['SHS']
-            : ['College'],
-        courseCodes: targetCourses,
-        courses: targetCourses,
-        yearLevels: targetYearLevels,
-      };
+      const audiencePayload = buildOperationalAudiencePayload({
+        audienceScope: targetAudienceScope,
+        academicLevel: targetAcademicLevel,
+        targetCourses,
+        targetYearLevels,
+        targetSections,
+      });
 
       const payload = {
         bannerImageUrl: bannerUrl || null,
@@ -277,12 +144,8 @@ export default function PublishStudentFeedModal({
         isPublished: true,
         lifecycleStatus: 'published',
         visibilityStart: null,
-        allStudents: isAllStudents,
-        targetAcademicLevel,
-        targetAudienceScope: isAllStudents ? 'all' : 'specific',
-        targetCourses,
-        targetYearLevels,
-        targetAudience: targetAudienceUpdated,
+        publishAudienceConfigured: true,
+        ...audiencePayload,
         updatedAt: serverTimestamp(),
       };
 
@@ -290,6 +153,8 @@ export default function PublishStudentFeedModal({
       await updateDoc(docRef, payload);
 
       // Dual-sync complete activity metadata to events collection for mobile app
+      // Do NOT treat AP's proposed schedule as operational attendance sessions unless configured in Attendance & Scanners
+      const hasConfiguredAttendance = Boolean((activity as any).attendanceSessionsConfigured);
       try {
         const eventDocRef = doc(db, 'events', activity.id);
         const eventPayload: Record<string, any> = {
@@ -298,12 +163,6 @@ export default function PublishStudentFeedModal({
           referenceId: activity.referenceId || (activity as any).referenceNo || '',
           title: activity.title || '',
           description: activity.description || '',
-          allStudents: isAllStudents,
-          targetAudienceScope: isAllStudents ? 'all' : 'specific',
-          targetCourses,
-          targetYearLevels,
-          targetAcademicLevel,
-          targetAudience: targetAudienceUpdated,
           date: activity.date || (activity as any).startDate || '',
           startDate: (activity as any).startDate || activity.date || '',
           startTime: (activity as any).startTime || '08:00',
@@ -313,7 +172,8 @@ export default function PublishStudentFeedModal({
           venueId: (activity as any).venueId || 'campus_venue',
           eventFormat: (activity as any).eventFormat || 'On-Campus',
           hostingOrgId: (activity as any).hostingOrgId || (activity as any).organizationId || '',
-          sessions: activity.sessions || [],
+          attendanceSessionsConfigured: hasConfiguredAttendance,
+          sessions: hasConfiguredAttendance ? (activity.sessions || []) : [],
           scanners: (activity as any).scanners || [],
           scannerUserIds: (activity as any).scannerUserIds || [],
           status: activity.status || 'approved',
@@ -476,276 +336,24 @@ export default function PublishStudentFeedModal({
             )}
           </div>
 
-          {/* Section 3: Target Audience Scope & Academic Filters (Pre-configured from Form AP-01 Proposal) */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100">
-              <div className="flex items-start gap-2.5">
-                <div className="w-7 h-7 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <CheckCircle2 className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                      Target Audience Scope & Academic Filters
-                    </h4>
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      Pre-Configured in Proposal
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    Target scope and academic eligibility criteria were established during proposal submission. No manual selection required.
-                  </p>
-                </div>
-              </div>
-
-              {!readOnly && (
-                <button
-                  type="button"
-                  onClick={() => setShowCustomAudience((prev) => !prev)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold transition-colors cursor-pointer self-start sm:self-auto"
-                >
-                  <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>{showCustomAudience ? 'Hide Advanced Filters' : 'Adjust Filters (Optional)'}</span>
-                  {showCustomAudience ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                </button>
-              )}
-            </div>
-
-            {/* Live Student Reach Pool Card */}
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 flex items-center justify-between shadow-2xs">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold">
-                  <Users className="w-4 h-4" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-900">
-                      Actual Eligible Reach
-                    </span>
-                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-blue-200/60 text-[#001A4D]">
-                      Live DB
-                    </span>
-                  </div>
-                  <div className="text-sm font-black text-[#001A4D]">
-                    {calculatedReach.toLocaleString()} <span className="text-xs font-semibold text-gray-500">students will see this in their mobile feed</span>
-                  </div>
-                </div>
-              </div>
-              <span className="text-[11px] font-bold text-blue-900 bg-white/90 px-2.5 py-1 rounded-lg border border-blue-200 shadow-2xs">
-                {targetAcademicLevel === 'BOTH' && targetCourses.length === 0 && targetYearLevels.length === 0
-                  ? 'Campus-Wide (All Students)'
-                  : `${targetAcademicLevel} Cohort`}
-              </span>
-            </div>
-
-            {/* Pre-Configured Audience Summary Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {/* Academic Division */}
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Academic Division</p>
-                <p className="text-xs font-bold text-slate-900 mt-1">
-                  {targetAcademicLevel === 'BOTH'
-                    ? 'Senior High & College'
-                    : targetAcademicLevel === 'SHS'
-                    ? 'Senior High School (SHS)'
-                    : 'College Division Only'}
-                </p>
-                <p className="text-[10px] text-slate-500 mt-0.5">
-                  {targetAcademicLevel === 'BOTH'
-                    ? 'Open to both collegiate and basic ed tracks'
-                    : `Restricted to ${targetAcademicLevel} students`}
-                </p>
-              </div>
-
-              {/* Eligible Programs / Strands */}
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Programs / Strands</p>
-                  <span className="text-[10px] font-mono text-slate-500">
-                    {targetCourses.length === 0 ? 'All' : `${targetCourses.length} selected`}
-                  </span>
-                </div>
-                {targetCourses.length === 0 ? (
-                  <p className="text-xs font-bold text-slate-900 mt-1">
-                    All Academic Programs & Strands
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
-                    {targetCourses.map((c) => (
-                      <span
-                        key={c}
-                        className="px-2 py-0.5 rounded-md bg-blue-100 text-[#001A4D] font-bold text-[10px]"
-                      >
-                        {c}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <p className="text-[10px] text-slate-500 mt-1">
-                  {targetCourses.length === 0 ? 'Campus-wide audience scope' : 'Restricted to selected academic programs'}
-                </p>
-              </div>
-
-              {/* Target Year Levels */}
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Target Year Levels</p>
-                  <span className="text-[10px] font-mono text-slate-500">
-                    {targetYearLevels.length === 0 ? 'All' : `${targetYearLevels.length} selected`}
-                  </span>
-                </div>
-                {targetYearLevels.length === 0 ? (
-                  <p className="text-xs font-bold text-slate-900 mt-1">
-                    All Year Levels In Scope
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
-                    {targetYearLevels.map((y) => (
-                      <span
-                        key={y}
-                        className="px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-900 font-bold text-[10px]"
-                      >
-                        {y}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <p className="text-[10px] text-slate-500 mt-1">
-                  {targetYearLevels.length === 0 ? 'Open across all academic year levels' : 'Designated cohort levels'}
-                </p>
-              </div>
-            </div>
-
-            {/* Optional Collapsible Filter Adjuster */}
-            {showCustomAudience && !readOnly && (
-              <div className="pt-4 border-t border-slate-200/70 space-y-4 animate-in fade-in duration-200">
-                <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-3 text-xs text-blue-900 flex items-center justify-between">
-                  <span className="text-[11px] font-medium">
-                    You can override the proposal's targeting filters below if specific adjustments are required before publishing.
-                  </span>
-                </div>
-
-                {/* Academic Division */}
-                <div>
-                  <label className="block text-[11px] font-bold text-slate-500 uppercase mb-1.5">
-                    Override Academic Division
-                  </label>
-                  <div className="grid grid-cols-3 gap-2.5">
-                    {(['COLLEGE', 'SHS', 'BOTH'] as const).map((lvl) => (
-                      <button
-                        key={lvl}
-                        type="button"
-                        onClick={() => handleAcademicLevelChange(lvl)}
-                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all text-center cursor-pointer ${
-                          targetAcademicLevel === lvl
-                            ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                            : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {lvl === 'BOTH' ? 'SHS & College' : lvl === 'SHS' ? 'Senior High (SHS)' : 'College Only'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* 1. Target Year Levels */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-[11px] font-bold text-slate-500 uppercase">
-                      Target Year Levels ({targetYearLevels.length === 0 ? 'All year levels in scope' : `${targetYearLevels.length} of ${availableYearLevels.length} selected`})
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={selectAllYearLevels}
-                        className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                      >
-                        <CheckSquare className="w-3.5 h-3.5" /> Select All ({availableYearLevels.length})
-                      </button>
-                      <span className="text-gray-300">|</span>
-                      <button
-                        type="button"
-                        onClick={clearAllYearLevels}
-                        className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {availableYearLevels.map((year) => {
-                      const isSelected = targetYearLevels.includes(year);
-                      return (
-                        <button
-                          key={year}
-                          type="button"
-                          onClick={() => handleToggleYearLevel(year)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer flex items-center gap-1.5 ${
-                            isSelected
-                              ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:border-[#001A4D] hover:bg-slate-100'
-                          }`}
-                        >
-                          <span>{year}</span>
-                          {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 2. Eligible Programs / Strands */}
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-[11px] font-bold text-slate-500 uppercase">
-                      Eligible Academic Programs / Strands ({targetCourses.length === 0 ? 'All programs in division eligible' : `${targetCourses.length} of ${availablePrograms.length} selected`})
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={selectAllPrograms}
-                        className="text-xs text-[#001A4D] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
-                      >
-                        <CheckSquare className="w-3.5 h-3.5" /> Select All ({availablePrograms.length})
-                      </button>
-                      <span className="text-gray-300">|</span>
-                      <button
-                        type="button"
-                        onClick={clearAllPrograms}
-                        className="text-xs text-gray-500 hover:text-gray-700 font-medium cursor-pointer"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {availablePrograms.map((p) => {
-                      const isSelected = targetCourses.includes(p.code);
-                      const isShs = p.academicLevel === 'SHS';
-                      return (
-                        <button
-                          key={p.id || p.code}
-                          type="button"
-                          onClick={() => handleToggleCourse(p.code)}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all flex items-center gap-1.5 cursor-pointer ${
-                            isSelected
-                              ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D] shadow-xs'
-                              : 'bg-slate-100 text-slate-700 border-slate-200 hover:border-[#001A4D] hover:bg-slate-200'
-                          }`}
-                        >
-                          <span>{p.code}</span>
-                          <span className="text-[10px] opacity-75 font-normal">
-                            ({isShs ? 'SHS' : 'College'}: {p.name})
-                          </span>
-                          {isSelected && <Check className="w-3 h-3 text-[#FFD41C]" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* Section 3: Required Target Participant Filters (Operational Mobile Feed Control) */}
+          <OperationalAudienceSelector
+            audienceScope={targetAudienceScope}
+            academicLevel={targetAcademicLevel}
+            targetCourses={targetCourses}
+            targetYearLevels={targetYearLevels}
+            targetSections={targetSections}
+            onChangeScope={setTargetAudienceScope}
+            onChangeAcademicLevel={setTargetAcademicLevel}
+            onChangeCourses={setTargetCourses}
+            onChangeYearLevels={setTargetYearLevels}
+            onChangeSections={setTargetSections}
+            readOnly={readOnly}
+            hasHostingOrg={Boolean((activity as any).hostingOrgId && (activity as any).hostingOrgId !== 'sas')}
+            title="Target Participant Filters"
+            subtitle="Choose which students will see and participate in this activity on the STI Sync Mobile App."
+            reachLabel="students will see this in their mobile feed"
+          />
         </div>
 
         {/* Footer */}

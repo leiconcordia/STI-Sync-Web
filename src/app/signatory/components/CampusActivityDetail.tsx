@@ -65,7 +65,7 @@ export default function CampusActivityDetail({ row, inspectable, session, onClos
               <div className="flex items-center gap-2 text-sm"><Icon className="h-4 w-4 text-blue-700" /><span>{label}</span><CampusStatusBadge status={status} /></div>
               {allowed(type, record) && !(type === 'liquidation' && row.exempt) && <button type="button" onClick={() => setDocumentType(type)} className="rounded-lg bg-[#001A4D] px-3 py-2 text-xs font-semibold text-white">View {type === 'proposal' ? 'Proposal' : type === 'par' ? 'PAR' : 'FL'}</button>}
             </div>)}
-          </div><p className="mt-2 text-xs text-slate-500">Document details are available for your authorized workflows once your review stage is reached, and for approved reports.</p></div>
+          </div><p className="mt-2 text-xs text-slate-500">Document details are available for approved campus documents and for documents at or past your review stage.</p></div>
         </div>
       </section>
     </div>

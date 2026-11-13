@@ -756,7 +756,8 @@ export default function Step2Schedule({ data, onUpdate, isOfficer, errors = {}, 
                     <div className="p-4 space-y-4">
                       <div>
                         <div className="flex items-center gap-1.5 mb-2">
-                          <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Time-In Window</p>
+                          <p className="text-xs font-semibold text-gray-700 uppercase tracking-wide">Proposed Time-In Reference</p>
+                          <span className="text-[11px] text-gray-400">(Actual scan sessions are set after publishing)</span>
                         </div>
 
                         <div className="grid grid-cols-2 gap-3">

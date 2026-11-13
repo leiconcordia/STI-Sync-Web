@@ -173,6 +173,11 @@ service cloud.firestore {
 
     match /system_settings/{id} { allow read: if isAuthenticated(); allow write: if isSasAdmin(); }
 
+    match /password_reset_requests/{docId} {
+      allow create: if request.resource.data.identifier is string && request.resource.data.status == 'pending';
+      allow read, update, delete: if isSasAdmin();
+    }
+
     // Fallback rule for all other documents
     match /{collectionId}/{document=**} {
       allow read, write: if !(collectionId in ['sas_admins', '_account_reset_locks', 'documents', 'report_archives', 'document_categories', '_edms_access', '_edms_jobs', '_report_archive_jobs', '_edms_counters', '_edms_reference_reservations', '_document_category_names', 'organization_officers', 'organization_advisers', 'institutional_signatories', 'events', 'activities', 'activity_proposals', 'liquidations', 'post_activity_reports']) && collectionId != 'system_settings';

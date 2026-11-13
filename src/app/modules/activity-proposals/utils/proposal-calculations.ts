@@ -79,7 +79,7 @@ export function check15DayRule(
 } {
   const dates: Date[] = [];
 
-  // 1. Prioritize explicit target implementation / event date
+  // 1. Collect target implementation / event date
   if (eventDate) {
     const parsed = parseISO(eventDate);
     if (isValid(parsed)) {
@@ -87,8 +87,8 @@ export function check15DayRule(
     }
   }
 
-  // 2. If no event date was specified, look at session dates
-  if (dates.length === 0 && sessions && sessions.length > 0) {
+  // 2. Collect session dates
+  if (sessions && sessions.length > 0) {
     sessions.forEach((s) => {
       if (s.date) {
         const parsed = parseISO(s.date);
@@ -97,8 +97,8 @@ export function check15DayRule(
     });
   }
 
-  // 3. Fallback to task completion dates ONLY if no target event or session date is specified
-  if (dates.length === 0 && tasks && tasks.length > 0) {
+  // 3. Collect task completion dates (15-day rule applies before the start of the initial task)
+  if (tasks && tasks.length > 0) {
     tasks.forEach((t) => {
       if (t.completionDate) {
         const parsed = parseISO(t.completionDate);

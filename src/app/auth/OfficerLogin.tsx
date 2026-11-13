@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { IdCard, Lock, Eye, EyeOff, LogIn, AlertCircle, Info } from 'lucide-react';
+import { IdCard, Lock, Eye, EyeOff, LogIn, AlertCircle, Info, KeyRound, X, CheckCircle2, Send } from 'lucide-react';
 import stiOrmocLogo from '../../imports/STI_ORMOC_LOGO.jpg';
 import stiSchoolPic from '../../imports/STI_SCHOOL_PIC.webp';
 
 import { useOfficerAuth } from './hooks/useOfficerAuth';
+import { submitPasswordResetRequest } from './services/password-reset-request.service';
 
 export default function OfficerLogin() {
   const navigate = useNavigate();
@@ -12,6 +13,40 @@ export default function OfficerLogin() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const { login, isLoggingIn, error } = useOfficerAuth();
+
+  // Forgot Password Request Modal State
+  const [showForgotModal, setShowForgotModal] = useState(false);
+  const [resetIdentifier, setResetIdentifier] = useState('');
+  const [isSubmittingReset, setIsSubmittingReset] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetSuccess, setResetSuccess] = useState(false);
+
+  const openForgotModal = () => {
+    setResetIdentifier(identifier.trim());
+    setResetError('');
+    setResetSuccess(false);
+    setShowForgotModal(true);
+  };
+
+  const handleSubmitResetRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetIdentifier.trim()) {
+      setResetError('Please enter your Student ID, Employee ID, or institutional email.');
+      return;
+    }
+    setIsSubmittingReset(true);
+    setResetError('');
+    try {
+      await submitPasswordResetRequest({
+        identifier: resetIdentifier,
+      });
+      setResetSuccess(true);
+    } catch (err: any) {
+      setResetError(err?.message || 'Unable to send reset request. Please try again.');
+    } finally {
+      setIsSubmittingReset(false);
+    }
+  };
 
   const handleLogin = async () => {
     if (!identifier.trim() || !password.trim()) return;
@@ -139,7 +174,11 @@ export default function OfficerLogin() {
 
           {/* Forgot Password */}
           <div className="text-right mb-4">
-            <button type="button" className="text-[#0E4EBD] text-[13px] font-semibold hover:underline">
+            <button
+              type="button"
+              onClick={openForgotModal}
+              className="text-[#0E4EBD] text-[13px] font-semibold hover:underline cursor-pointer"
+            >
               Forgot Password?
             </button>
           </div>
@@ -190,6 +229,96 @@ export default function OfficerLogin() {
           </div>
         </div>
       </div>
+
+      {/* Forgot Password Request Modal */}
+      {showForgotModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-gray-200 overflow-hidden">
+            <div className="bg-[#001A4D] px-5 py-4 flex items-center justify-between text-white">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-white/15 flex items-center justify-center text-[#FFD41C]">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Request Password Reset</h3>
+                  <p className="text-[11px] text-blue-100/80">
+                    SAS Administration will be notified to reset your account
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowForgotModal(false)}
+                className="p-1.5 rounded-lg text-white/75 hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {resetSuccess ? (
+              <div className="p-6 text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-[#001A4D] text-base">Reset Request Sent to SAS</h4>
+                  <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
+                    Your password reset request for <strong className="text-gray-900">{resetIdentifier}</strong> has been sent to the SAS Administration. Once reset, your new temporary password will be issued by SAS.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowForgotModal(false)}
+                  className="w-full py-2.5 rounded-xl bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold transition-colors cursor-pointer"
+                >
+                  Back to Portal Login
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitResetRequest} className="p-5 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-[#001A4D] mb-1.5">
+                    Student / Employee ID or Institutional Email *
+                  </label>
+                  <input
+                    type="text"
+                    value={resetIdentifier}
+                    onChange={(e) => setResetIdentifier(e.target.value)}
+                    placeholder="e.g., 20001234567 or name@ormoc.sti.edu.ph"
+                    className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-xs focus:border-[#0E4EBD] focus:ring-2 focus:ring-[#0E4EBD]/20 outline-none"
+                    required
+                  />
+                </div>
+
+                {resetError && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-2.5 flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <p className="text-xs text-red-700 font-medium">{resetError}</p>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotModal(false)}
+                    className="px-4 py-2 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingReset || !resetIdentifier.trim()}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#0E4EBD] hover:bg-[#001A4D] text-white transition-colors disabled:opacity-60 cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {isSubmittingReset ? 'Sending...' : 'Notify SAS Admin'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

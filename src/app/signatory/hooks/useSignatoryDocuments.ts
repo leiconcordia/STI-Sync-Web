@@ -75,9 +75,6 @@ export function useSignatoryDocuments(session: any) {
 
   // Filter Activity Proposals
   const { pendingProposals, endorsedProposals, returnedProposals } = useMemo(() => {
-    if (!canAccessProposal) {
-      return { pendingProposals: [], endorsedProposals: [], returnedProposals: [] };
-    }
     const pending: ActivityProposal[] = [];
     const endorsed: ActivityProposal[] = [];
     const returned: ActivityProposal[] = [];
@@ -107,7 +104,7 @@ export function useSignatoryDocuments(session: any) {
         (p as any).proposalStatus === 'pending_review' ||
         (p as any).proposalStatus === 'under_review');
 
-      if (isUnderReview) {
+      if (canAccessProposal && isUnderReview) {
         const currentStage = p.currentStageIndex ?? 1;
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
@@ -160,9 +157,6 @@ export function useSignatoryDocuments(session: any) {
 
   // Filter Financial Liquidations
   const { pendingLiquidations, endorsedLiquidations, returnedLiquidations } = useMemo(() => {
-    if (!canAccessLiquidation) {
-      return { pendingLiquidations: [], endorsedLiquidations: [], returnedLiquidations: [] };
-    }
     const pending: LiquidationDocument[] = [];
     const endorsed: LiquidationDocument[] = [];
     const returned: LiquidationDocument[] = [];
@@ -179,7 +173,7 @@ export function useSignatoryDocuments(session: any) {
         (l as any).isPendingSasVetting !== true &&
         (l.status === 'under_review' || l.status === 'pending');
 
-      if (isUnderReview) {
+      if (canAccessLiquidation && isUnderReview) {
         const currentStage = l.currentStageIndex ?? 1;
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
@@ -230,9 +224,6 @@ export function useSignatoryDocuments(session: any) {
 
   // Filter Post-Activity Reports
   const { pendingPARs, endorsedPARs, returnedPARs } = useMemo(() => {
-    if (!canAccessPAR) {
-      return { pendingPARs: [], endorsedPARs: [], returnedPARs: [] };
-    }
     const pending: PostActivityReportDocument[] = [];
     const endorsed: PostActivityReportDocument[] = [];
     const returned: PostActivityReportDocument[] = [];
@@ -251,7 +242,7 @@ export function useSignatoryDocuments(session: any) {
         par.status === 'pending' ||
         (par as any).reportStatus === 'submitted');
 
-      if (isUnderReview) {
+      if (canAccessPAR && isUnderReview) {
         const currentStage = par.currentStageIndex ?? 1;
         const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 

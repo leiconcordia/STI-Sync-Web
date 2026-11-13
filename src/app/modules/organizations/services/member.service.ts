@@ -374,8 +374,37 @@ export const appointAsOfficer = async (
     year?: string;
     department?: string;
     contactNumber?: string;
+    hasWebPortalAccess?: boolean;
   }
 ): Promise<void> => {
+  const wantWebAccess = Boolean(studentDetails?.hasWebPortalAccess);
+
+  // Enforce officer appointment & Web Portal access exclusivity across organizations
+  const existingActiveOfficersSnap = await getDocs(
+    query(
+      collection(db, 'organization_officers'),
+      where('studentId', '==', studentId),
+      where('isActive', '==', true)
+    )
+  );
+  const existingOtherOrgOfficers = existingActiveOfficersSnap.docs
+    .map((d) => d.data())
+    .filter((o) => o.organizationId !== organizationId);
+
+  if (existingActiveOfficersSnap.docs.some((d) => d.data().organizationId === organizationId)) {
+    throw new Error('This student is already an active officer in this organization.');
+  }
+  if (existingOtherOrgOfficers.some((o) => o.hasWebPortalAccess !== false)) {
+    throw new Error(
+      'This student already has Web Portal access as an officer in another organization and cannot be appointed to another organization.'
+    );
+  }
+  if (wantWebAccess && existingOtherOrgOfficers.length > 0) {
+    throw new Error(
+      'This student already holds an officer role in another organization and cannot be granted exclusive Web Portal access here.'
+    );
+  }
+
   const batch = writeBatch(db);
   
   // 1. Enforce that the student is already a registered active member of this organization
@@ -431,6 +460,7 @@ export const appointAsOfficer = async (
     resetInProgress: student?.resetInProgress === true,
     temporaryPassword: student?.tempPass || null,
     useStudentCredentials: true,
+    hasWebPortalAccess: wantWebAccess,
     isActive: true,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),

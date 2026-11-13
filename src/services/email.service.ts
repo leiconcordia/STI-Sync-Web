@@ -266,11 +266,51 @@ export async function sendAdviserWelcomeCredentialsEmail(params: {
 }): Promise<ResendResponse> {
   const loginUrl = params.loginUrl || `${window.location.origin}/portal/login`;
   if (params.existingAccount) {
-    const message = `You have been assigned as Club Adviser for ${params.orgName}. Sign in with your existing email and password, then choose Club Adviser from your workspaces. Your password has not changed.`;
-    return sendEmail({ to: params.to, subject: `[STI Sync] Club Adviser role added — ${params.orgName}`, recipientName: params.adviserName,
-      text: `Hello ${params.adviserName},\n\n${message}\n\nLogin: ${loginUrl}`,
-      html: `<div style="font-family:Arial,sans-serif"><h2>Club Adviser role added</h2><p>Hello ${escapeHtml(params.adviserName)},</p><p>${escapeHtml(message)}</p><p><a href="${escapeHtml(loginUrl)}">Open STI Sync</a></p></div>`,
-      templateParams: { to_email: params.to, to_name: params.adviserName, adviser_name: params.adviserName, org_name: params.orgName, login_url: loginUrl, message, temp_password: 'Use your existing password', temporary_password: 'Use your existing password', password: 'Use your existing password' },
+    const message = `You have been assigned as the Club Adviser for ${params.orgName} on STI Sync. Sign in using your existing email and password, then choose Club Adviser from your workspaces. Your existing password has not changed.`;
+    const html = `
+      <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 12px; overflow: hidden; background-color: #ffffff;">
+        <div style="background-color: #001A4D; padding: 24px; text-align: center;">
+          <h1 style="color: #FFD41C; margin: 0; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">STI SYNC</h1>
+          <p style="color: #ffffff; margin: 4px 0 0 0; font-size: 13px;">Student Affairs & Services — Organization Management</p>
+        </div>
+        <div style="padding: 32px;">
+          <h2 style="color: #001A4D; margin-top: 0; font-size: 20px;">Club Adviser Assignment</h2>
+          <p style="color: #333333; font-size: 15px; line-height: 1.6;">Hello <strong>${escapeHtml(params.adviserName)}</strong>,</p>
+          <p style="color: #333333; font-size: 15px; line-height: 1.6;">
+            You have been assigned as the official <strong>Club Adviser</strong> for <strong>${escapeHtml(params.orgName)}</strong> on the STI Sync Platform.
+          </p>
+          <div style="background-color: #f4f6fb; border: 1.5px solid #d0d7e8; padding: 18px 20px; margin: 22px 0; border-radius: 8px;">
+            <p style="margin: 0 0 8px 0; font-size: 14px; color: #001A4D; font-weight: 700;">How to access your new workspace</p>
+            <p style="margin: 0; font-size: 14px; color: #333333; line-height: 1.5;">
+              Sign in with your existing STI Sync email (<strong>${escapeHtml(params.to)}</strong>) and password, then choose <strong>Club Adviser (${escapeHtml(params.orgName)})</strong> on the workspace selection screen. No new password was generated.
+            </p>
+          </div>
+          <p style="margin: 20px 0 0 0;">
+            <a href="${escapeHtml(loginUrl)}" style="display: inline-block; background-color: #001A4D; color: #ffffff; text-decoration: none; font-weight: 700; font-size: 14px; padding: 12px 22px; border-radius: 8px;">Open STI Sync Portal</a>
+          </p>
+        </div>
+        <div style="background-color: #f9fafb; padding: 16px; text-align: center; border-top: 1px solid #e0e0e0; font-size: 12px; color: #888888;">
+          © STI Sync — Campus Event & Organization Management System
+        </div>
+      </div>
+    `;
+    return sendEmail({
+      to: params.to,
+      subject: `[STI Sync] Assigned as Club Adviser — ${params.orgName}`,
+      recipientName: params.adviserName,
+      text: `Hello ${params.adviserName},\n\n${message}\n\nOpen STI Sync: ${loginUrl}`,
+      html,
+      templateParams: {
+        to_email: params.to,
+        to_name: params.adviserName,
+        adviser_name: params.adviserName,
+        org_name: params.orgName,
+        login_url: loginUrl,
+        message,
+        temp_password: 'Use your existing password',
+        temporary_password: 'Use your existing password',
+        password: 'Use your existing password',
+      },
     });
   }
   const tempPass = params.temporaryPassword || 'Adv-2026!#';

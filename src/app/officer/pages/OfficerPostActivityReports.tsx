@@ -250,9 +250,9 @@ export default function OfficerPostActivityReports() {
         );
       case 'under_review':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200/80">
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-            Under Review
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/80">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+            Pending Review
           </span>
         );
       case 'returned':
@@ -274,29 +274,15 @@ export default function OfficerPostActivityReports() {
 
   return (
     <div className="space-y-5 w-full animate-fade-in">
-      {/* ── Header (Matching Officer Design Language) ── */}
+      {/* ── Header (Mirrors SAS Post-Activity Reports UI) ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <div className="text-gray-500 text-xs font-medium">Dashboard &gt; Post-Activity Reports</div>
-            {profile?.isAdviser ? (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                Adviser Authorized
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
-                <Lock className="w-3.5 h-3.5 text-amber-600" />
-                Student Officer Mode
-              </span>
-            )}
-          </div>
-          <p className="text-gray-500 text-sm mt-0.5 font-medium">
-            Submit post-mortem evaluations, attendance audits, and categorized recommendations for concluded events
+          <p className="text-gray-500 text-sm font-medium">
+            Submit and track post-activity reports, attendance audits, and financial summaries for {orgName}
           </p>
         </div>
 
-        {/* Solid Officer Button without gradients */}
+        {/* Solid Primary Button matching SAS */}
         <button
           onClick={() => {
             setEditingReport(null);
@@ -306,10 +292,10 @@ export default function OfficerPostActivityReports() {
           disabled={eligibleEvents.length === 0}
           title={
             eligibleEvents.length === 0
-              ? 'No concluded events with approved liquidations are awaiting a Post-Activity Report.'
-              : 'Create Post-Activity Report'
+              ? 'No concluded activities are awaiting a Post-Activity Report.'
+              : 'Create Post-Activity Report for concluded activity'
           }
-          className="flex items-center gap-2 px-4 py-2.5 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-xl text-sm font-bold shadow-xs transition-colors cursor-pointer self-start sm:self-auto disabled:opacity-50 disabled:cursor-not-allowed"
+          className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-sm px-4 py-2.5 rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer self-start sm:self-auto disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Plus className="w-4 h-4 text-[#FFD41C]" />
           New Post-Activity Report
@@ -321,25 +307,25 @@ export default function OfficerPostActivityReports() {
         </button>
       </div>
 
-      {/* ── 3 KPI Summary Cards (Matching Officer Format) ── */}
+      {/* ── Top 3 KPI Summary Cards (Uniform SAS Format) ── */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* Card 1: Pending Endorsement */}
+        {/* Card 1: Pending Review */}
         <div className="bg-white border border-[#E5E7EB] rounded-2xl p-4 shadow-xs flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600 flex-shrink-0">
             <FileText className="w-6 h-6" />
           </div>
           <div>
-            <div className="text-xs font-semibold text-gray-500">Pending Endorsement</div>
+            <div className="text-xs font-semibold text-gray-500">Pending SAS Clearance</div>
             <div className="text-xl font-bold text-gray-900 mt-0.5 tracking-tight">
               {counts.pending} {counts.pending === 1 ? 'report' : 'reports'}
             </div>
             <div className="text-[11px] text-amber-700 font-medium">
-              Awaiting institutional sign-offs
+              Awaiting institutional clearance
             </div>
           </div>
         </div>
 
-        {/* Card 2: Approved Spendings & Clearances */}
+        {/* Card 2: Approved & Cleared */}
         <div className="bg-white border border-[#E5E7EB] rounded-2xl p-4 shadow-xs flex items-center gap-4">
           <div className="w-12 h-12 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 flex-shrink-0">
             <CheckCircle2 className="w-6 h-6" />
@@ -350,7 +336,7 @@ export default function OfficerPostActivityReports() {
               {counts.approved} {counts.approved === 1 ? 'report' : 'reports'}
             </div>
             <div className="text-[11px] text-emerald-700 font-medium">
-              Fully approved and archived to EDMS
+              Auto-archived into EDMS
             </div>
           </div>
         </div>
@@ -366,66 +352,11 @@ export default function OfficerPostActivityReports() {
               {counts.returned} {counts.returned === 1 ? 'report' : 'reports'}
             </div>
             <div className="text-[11px] text-red-700 font-medium">
-              Requires update &amp; resubmission
+              Requires organizer update
             </div>
           </div>
         </div>
       </div>
-
-      {/* ── Concluded Activities Awaiting PAR (Queue & 15-Day Policy Banner) ── */}
-      {eligibleEvents.length > 0 && (
-        <div className="bg-amber-50/70 border border-amber-200/90 rounded-2xl p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-amber-700" />
-              <div>
-                <h3 className="text-sm font-black text-amber-950 uppercase tracking-wide">
-                  Concluded Activities Awaiting Post-Activity Report ({eligibleEvents.length})
-                </h3>
-                <p className="text-xs text-amber-800">
-                  Institutional policy compliance: Submit Post-Activity Report within fifteen (15) school days following event conclusion and financial liquidation clearance.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-1">
-            {eligibleEvents.map((ev) => (
-              <div
-                key={ev.id}
-                className="bg-white rounded-xl p-4 border border-amber-200 shadow-2xs flex flex-col justify-between hover:shadow-md transition-shadow"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full">
-                      Liquidation Cleared
-                    </span>
-                    <span className="text-xs text-gray-400 font-medium">
-                      {(ev as any).date || 'Concluded'}
-                    </span>
-                  </div>
-                  <h4 className="text-sm font-bold text-gray-900 line-clamp-1">{ev.title}</h4>
-                  <p className="text-xs text-gray-500 mt-1 line-clamp-2">
-                    {ev.description || 'Concluded organization event.'}
-                  </p>
-                </div>
-
-                <div className="pt-4 flex items-center justify-between border-t border-gray-100 mt-3">
-                  <span className="text-[11px] text-gray-500 font-medium">
-                    Venue: {(ev as any).venue || 'STI Campus'}
-                  </span>
-                  <button
-                    onClick={() => handleCreateForEvent(ev.id)}
-                    className="bg-[#001A4D] hover:bg-[#002D72] text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
-                  >
-                    Draft PAR <ArrowRight className="w-3.5 h-3.5 text-[#FFD41C]" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* ── Main Container: Tabs + Search + Table + Pagination ── */}
       <div className="bg-white border border-[#E5E7EB] rounded-2xl shadow-xs overflow-hidden">
@@ -435,7 +366,7 @@ export default function OfficerPostActivityReports() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
             {[
               { key: 'all', label: 'All', count: counts.all },
-              { key: 'pending', label: 'Pending', count: counts.pending },
+              { key: 'pending', label: 'Pending Review', count: counts.pending },
               { key: 'approved', label: 'Approved', count: counts.approved },
               { key: 'returned', label: 'Returned', count: counts.returned },
               { key: 'draft', label: 'Drafts', count: counts.draft },
@@ -555,7 +486,7 @@ export default function OfficerPostActivityReports() {
                 <th className="py-3 px-4">Event Title</th>
                 <th className="py-3 px-4">Conducted</th>
                 <th className="py-3 px-4 text-center">Verified Attendance</th>
-                <th className="py-3 px-4 text-right">Balance</th>
+                <th className="py-3 px-4 text-right">Liquidation Balance</th>
                 <th className="py-3 px-4 text-center">Status</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
@@ -604,7 +535,7 @@ export default function OfficerPostActivityReports() {
                           {r.attendanceSummary?.attendedCount || 0}
                         </span>
                         <span className="text-gray-400 text-[10px] block">
-                          / {r.attendanceSummary?.registeredCount || 0} registered
+                          / {r.attendanceSummary?.estimatedAttendance || r.attendanceSummary?.registeredCount || 0} est.
                         </span>
                       </td>
                       <td className="py-3 px-4 text-right font-bold text-gray-800">

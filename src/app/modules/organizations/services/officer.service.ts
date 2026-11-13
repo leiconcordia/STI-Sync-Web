@@ -13,6 +13,7 @@ export interface OfficerAssignmentData {
   department?: string;
   contactNumber?: string;
   password?: string;
+  hasWebPortalAccess?: boolean;
 }
 
 export const batchCreateOfficers = async (organizationId: string, officers: OfficerAssignmentData[]) => {
@@ -40,6 +41,7 @@ export const batchCreateOfficers = async (organizationId: string, officers: Offi
       tempPass: student?.tempPass || null,
       requiresPasswordChange: Boolean(student?.tempPass || student?.requiresPasswordChange || student?.requiresChangePassword),
       resetInProgress: student?.resetInProgress === true,
+      hasWebPortalAccess: officer.hasWebPortalAccess !== false,
       isActive: true,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),

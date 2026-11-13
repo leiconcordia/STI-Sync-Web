@@ -528,21 +528,14 @@ export default function ProposalEndorsementModal({
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               8. Target market
             </h3>
-            <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5">
-              <div>
-                <strong className="text-slate-700">Programs / Strands:</strong>{' '}
-                <span className="text-blue-900 font-medium">
-                  {proposal.targetAudience?.courseCodes?.length
+            <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl">
+              <span className="text-slate-800 font-semibold">
+                {proposal.targetMarket?.trim() ||
+                  proposal.targetAudience?.targetMarketSummary?.trim() ||
+                  (proposal.targetAudience?.courseCodes?.length
                     ? proposal.targetAudience.courseCodes.join(', ')
-                    : proposal.targetAudience?.departments?.join(', ') || 'All Programs'}
-                </span>
-              </div>
-              <div>
-                <strong className="text-slate-700">Year Levels:</strong>{' '}
-                <span className="text-slate-800">
-                  {proposal.targetAudience?.yearLevels?.join(', ') || 'All Levels'}
-                </span>
-              </div>
+                    : proposal.targetAudience?.departments?.join(', ') || 'All Campus Students')}
+              </span>
             </div>
           </div>
 

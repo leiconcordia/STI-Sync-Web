@@ -42,6 +42,12 @@ import {
   formatTime12Hour,
   addMinutesToTime,
 } from '../utils/event-validation';
+import OperationalAudienceSelector, {
+  buildOperationalAudiencePayload,
+  isSpecificFilterValid,
+  type OperationalAcademicLevel,
+  type OperationalAudienceScope,
+} from './OperationalAudienceSelector';
 
 export interface SessionTimeErrors {
   timeInOpen?: string;
@@ -137,6 +143,13 @@ export default function AttendanceScannersModal({
   // Search filter for officer roster
   const [officerSearch, setOfficerSearch] = useState('');
 
+  // Required operational target participant filters (controls offline scanner roster & eligibility; never reads Form AP-01 targetMarket/targetAudience)
+  const [targetAudienceScope, setTargetAudienceScope] = useState<OperationalAudienceScope>('all');
+  const [targetAcademicLevel, setTargetAcademicLevel] = useState<OperationalAcademicLevel>('BOTH');
+  const [targetCourses, setTargetCourses] = useState<string[]>([]);
+  const [targetYearLevels, setTargetYearLevels] = useState<string[]>([]);
+  const [targetSections, setTargetSections] = useState<string[]>([]);
+
   // Fetch active officers from organization / campus roster
   const orgIdToQuery =
     activity.hostingOrgId && activity.hostingOrgId !== 'sas'
@@ -163,7 +176,12 @@ export default function AttendanceScannersModal({
       );
       setAttendanceEnabled(data.attendanceEnabled !== false);
 
-      if (data.sessions && Array.isArray(data.sessions) && data.sessions.length > 0) {
+      const hasConfiguredSessions = Boolean(
+        data.attendanceSessionsConfigured ||
+        (Array.isArray(data.scanners) && data.scanners.length > 0)
+      );
+
+      if (hasConfiguredSessions && data.sessions && Array.isArray(data.sessions) && data.sessions.length > 0) {
         setSessions(
           data.sessions.map((s: any, idx: number) => ({
             id: s.id || `sess_${idx + 1}_${Date.now()}`,
@@ -182,23 +200,7 @@ export default function AttendanceScannersModal({
           }))
         );
       } else {
-        setSessions([
-          {
-            id: `sess_1_${Date.now()}`,
-            title: 'Main Session',
-            name: 'Main Session',
-            date: baseDate,
-            startTime: (data as any).startTime || '08:00',
-            endTime: (data as any).endTime || '12:00',
-            timeInOpen: '07:30',
-            timeInClose: '09:00',
-            isLateEnabled: false,
-            markLateAfter: '08:15',
-            hasTimeOut: false,
-            timeOutOpen: '',
-            timeOutClose: '',
-          },
-        ]);
+        setSessions([]);
       }
 
       setAssignedScanners(
@@ -210,6 +212,43 @@ export default function AttendanceScannersModal({
           assignedSessionIds: sc.assignedSessionIds || [],
         }))
       );
+
+      // Hydrate operational participant filters only if explicitly configured via Publishing or Attendance modals; otherwise default to All Campus Students
+      const hasOperationalTarget = Boolean(
+        data.publishAudienceConfigured || data.attendanceAudienceConfigured
+      );
+      if (!hasOperationalTarget) {
+        setTargetAudienceScope('all');
+        setTargetAcademicLevel('BOTH');
+        setTargetCourses([]);
+        setTargetYearLevels([]);
+        setTargetSections([]);
+      } else {
+        const rawScope = data.targetAudienceScope;
+        const rawLevel = (data.targetAcademicLevel as OperationalAcademicLevel) || 'BOTH';
+        const rawCourses: string[] = Array.isArray(data.targetCourses) ? data.targetCourses : [];
+        const rawYears: string[] = Array.isArray(data.targetYearLevels) ? data.targetYearLevels.map(String) : [];
+        const rawSections: string[] = Array.isArray(data.targetSections) ? data.targetSections : [];
+
+        setTargetAcademicLevel(rawLevel);
+        setTargetCourses(rawCourses);
+        setTargetYearLevels(rawYears);
+        setTargetSections(rawSections);
+
+        if (rawScope === 'members') {
+          setTargetAudienceScope('members');
+        } else if (
+          rawScope === 'specific' ||
+          rawLevel !== 'BOTH' ||
+          rawCourses.length > 0 ||
+          rawYears.length > 0 ||
+          rawSections.length > 0
+        ) {
+          setTargetAudienceScope('specific');
+        } else {
+          setTargetAudienceScope('all');
+        }
+      }
     };
 
     // 1. Initial hydration from activity prop
@@ -220,7 +259,11 @@ export default function AttendanceScannersModal({
       const unsub = onSnapshot(doc(db, ACTIVITIES_COLLECTION, activity.id), (snap) => {
         if (snap.exists()) {
           const fresh = snap.data();
-          if (fresh.sessions && fresh.sessions.length > 0) {
+          if (
+            (fresh.sessions && fresh.sessions.length > 0) ||
+            fresh.publishAudienceConfigured ||
+            fresh.attendanceAudienceConfigured
+          ) {
             populateFromData({ id: snap.id, ...fresh });
           }
         }
@@ -654,6 +697,11 @@ export default function AttendanceScannersModal({
 
   // Save Settings
   const handleSave = async () => {
+    if (!isSpecificFilterValid(targetAudienceScope, targetAcademicLevel, targetCourses, targetYearLevels, targetSections)) {
+      toast.error('Please select at least one Division, Year Level, Program/Strand, or Section—or choose "All Campus Students".');
+      return;
+    }
+
     if (assignedScanners.length > 0 && !isPublished) {
       toast.error('Validation Error: The event must be published to the student mobile app before assigning scanners.');
       return;
@@ -714,10 +762,21 @@ export default function AttendanceScannersModal({
         assignedSessionIds: sc.assignedSessionIds || [],
       }));
 
+      const audiencePayload = buildOperationalAudiencePayload({
+        audienceScope: targetAudienceScope,
+        academicLevel: targetAcademicLevel,
+        targetCourses,
+        targetYearLevels,
+        targetSections,
+      });
+
       const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
       const updates = {
         enableQRTickets,
         attendanceEnabled: enableQRTickets,
+        attendanceSessionsConfigured: true,
+        attendanceAudienceConfigured: true,
+        ...audiencePayload,
         sessions: sanitizedSessions,
         scanners: sanitizedScanners,
         scannerStaffNames: scannerNames,
@@ -846,6 +905,19 @@ export default function AttendanceScannersModal({
             </div>
           )}
 
+          {/* Publish Notice */}
+          {!activity.isPublished && (
+            <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 space-y-1 text-xs text-amber-950 shadow-xs">
+              <div className="flex items-center gap-2 font-bold text-amber-900">
+                <AlertCircle className="w-4 h-4 text-amber-600" />
+                <span>Activity Not Yet Published to Mobile App</span>
+              </div>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Attendance sessions are meant to be configured after publishing the activity to the student feed. You can still prepare sessions here, or publish to the mobile app first so eligible students can see the event.
+              </p>
+            </div>
+          )}
+
           {/* Section 1: QR Tickets Gate Toggle */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
@@ -871,6 +943,25 @@ export default function AttendanceScannersModal({
               </label>
             </div>
           </div>
+
+          {/* Required Target Participant & Offline Scanner Roster Filter */}
+          <OperationalAudienceSelector
+            audienceScope={targetAudienceScope}
+            academicLevel={targetAcademicLevel}
+            targetCourses={targetCourses}
+            targetYearLevels={targetYearLevels}
+            targetSections={targetSections}
+            onChangeScope={setTargetAudienceScope}
+            onChangeAcademicLevel={setTargetAcademicLevel}
+            onChangeCourses={setTargetCourses}
+            onChangeYearLevels={setTargetYearLevels}
+            onChangeSections={setTargetSections}
+            readOnly={readOnly}
+            hasHostingOrg={Boolean((activity as any).hostingOrgId && (activity as any).hostingOrgId !== 'sas')}
+            title="Required Target Participant & Scanner Roster Filter"
+            subtitle="Controls which enrolled students are downloaded to the offline scanner roster and permitted to check in."
+            reachLabel="eligible students in offline scanner roster"
+          />
 
           {/* Section 2: Multi-Session Scanning Windows */}
           <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
@@ -902,7 +993,27 @@ export default function AttendanceScannersModal({
             </div>
 
             <div className="space-y-4">
-              {sessions.map((sess, idx) => {
+              {sessions.length === 0 ? (
+                <div className="p-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 text-center space-y-3">
+                  <p className="text-xs font-bold text-slate-700">
+                    No attendance sessions created yet.
+                  </p>
+                  <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                    The Activity Proposal&apos;s proposed schedule is not automatically treated as an attendance session. Add an attendance session below to set Time-In/Time-Out scan windows and assign scanners.
+                  </p>
+                  {!readOnly && (
+                    <button
+                      type="button"
+                      onClick={handleAddSession}
+                      className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-[#FFD41C]" />
+                      <span>Add Attendance Session</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                sessions.map((sess, idx) => {
                 const isDateInvalid = Boolean(dateErrors[sess.id]);
                 const sErrors = sessionTimeErrors[sess.id] || {};
                 const hasSessionTimeErrors = Object.keys(sErrors).length > 0;
@@ -1309,7 +1420,8 @@ export default function AttendanceScannersModal({
                     </div>
                   </div>
                 );
-              })}
+              })
+              )}
             </div>
           </div>
 

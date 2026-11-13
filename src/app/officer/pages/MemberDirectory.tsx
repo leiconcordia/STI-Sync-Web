@@ -805,6 +805,15 @@ export default function MemberDirectory() {
                           <span className="px-3 py-1 bg-[#0E4EBD] text-white text-[11px] font-bold rounded-full uppercase tracking-wider">
                             {roleName}
                           </span>
+                          {officer.hasWebPortalAccess !== false ? (
+                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
+                              Web Portal
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded-full">
+                              In-Org Only
+                            </span>
+                          )}
                         </div>
 
                         <h3 className="text-[#001A4D] text-[16px] font-bold mb-1 truncate" title={fullName}>

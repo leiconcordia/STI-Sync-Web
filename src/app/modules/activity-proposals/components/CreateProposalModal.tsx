@@ -30,7 +30,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
-import { format, addDays } from 'date-fns';
+import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
 import { formatDateLong } from '../utils/proposal-calculations';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
@@ -779,13 +779,11 @@ export default function CreateProposalModal({
     }
 
     if (stepNumber === 3) {
+      if (!data.targetMarket?.trim() && !data.targetAudience?.targetMarketSummary?.trim()) {
+        errs.targetMarket = 'Target market description is required.';
+      }
       if (!data.estimatedAttendance?.toString().trim() && !data.estAttendanceCount) {
         errs.estimatedAttendance = 'Estimated attendance is required.';
-      }
-      const actualEligibleReach = Number(data.targetAudience?.actualEligibleReach) || 0;
-      const estCount = Number(data.estAttendanceCount) || (parseInt(String(data.estimatedAttendance || '0').replace(/\D/g, ''), 10) || 0);
-      if (actualEligibleReach > 0 && estCount > actualEligibleReach) {
-        errs.estimatedAttendance = `Estimated attendance (${estCount.toLocaleString()}) cannot exceed the actual eligible reach (${actualEligibleReach.toLocaleString()}).`;
       }
     }
 
@@ -820,6 +818,19 @@ export default function CreateProposalModal({
     if (stepNumber === 5) {
       const eventDate = data.date || data.sessions?.[0]?.date || '';
       const todayStr = format(new Date(), 'yyyy-MM-dd');
+      const standardMinDate = format(addDays(new Date(), 15), 'yyyy-MM-dd');
+      const isUrgent = Boolean(data.isUrgent);
+
+      let maxTaskDate = '';
+      if (eventDate) {
+        const parsedEvent = parseISO(eventDate);
+        if (isValid(parsedEvent)) {
+          maxTaskDate =
+            (isUrgent && eventDate === todayStr) || (!isUrgent && eventDate === standardMinDate)
+              ? eventDate
+              : format(subDays(parsedEvent, 1), 'yyyy-MM-dd');
+        }
+      }
 
       if (!data.tasks || data.tasks.length === 0) {
         errs.tasks = 'At least one task milestone is required.';
@@ -842,8 +853,16 @@ export default function CreateProposalModal({
             errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past.`;
             break;
           }
-          if (eventDate && t.completionDate >= eventDate) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot match or succeed the event date (${eventDate}). All preparatory tasks must be completed strictly prior to the implementation date.`;
+          if (!isUrgent && t.completionDate < standardMinDate) {
+            errs.tasks = `Task #${i + 1} (${t.taskName}) violates the 15-calendar-day rule (earliest allowed: ${formatDateLong(standardMinDate)}). Enable Urgent Mode in Step 4 if filing expedited.`;
+            break;
+          }
+          if (maxTaskDate && t.completionDate > maxTaskDate) {
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot exceed ${maxTaskDate}. All preparatory tasks must be completed prior to the implementation date (${eventDate}).`;
+            break;
+          }
+          if (i > 0 && data.tasks[i - 1]?.completionDate && t.completionDate < data.tasks[i - 1].completionDate) {
+            errs.tasks = `Task #${i + 1} (${t.taskName}) must be scheduled chronologically on or after Task #${i} (${data.tasks[i - 1].completionDate}).`;
             break;
           }
         }

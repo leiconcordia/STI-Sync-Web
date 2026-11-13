@@ -242,16 +242,35 @@ export async function syncProposalToEventsCollection(
           : (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
         semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
         schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
-        targetAcademicLevel,
+        // Operational targeting defaults to All Students unless explicitly configured during Publish / Attendance
+        targetAcademicLevel:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetAcademicLevel || 'BOTH'
+            : 'BOTH',
         allStudents:
-          proposal.targetAudience?.allStudents === true ||
-          proposal.targetAudience?.scope === 'all' ||
-          (targetAcademicLevel === 'BOTH' && (proposal.targetAudience?.courseCodes || []).length === 0),
-        targetAudienceScope: proposal.targetAudience?.scope || (proposal.targetAudience?.allStudents ? 'all' : 'specific'),
-        targetCourses: proposal.targetAudience?.courseCodes || [],
-        targetYearLevels: (proposal.targetAudience?.yearLevels || []).map(String),
-        targetAudience: proposal.targetAudience || null,
-        targetSections: proposal.targetAudience?.sections || [],
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? Boolean(existingData.allStudents)
+            : true,
+        targetAudienceScope:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetAudienceScope || 'all'
+            : 'all',
+        targetCourses:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetCourses || []
+            : [],
+        targetYearLevels:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetYearLevels || []
+            : [],
+        targetSections:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetSections || []
+            : [],
+        targetAudience:
+          existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
+            ? existingData.targetAudience || null
+            : null,
         date: proposal.date || existingData.date || '',
         startTime: proposal.startTime || existingData.startTime || '08:00',
         endTime: proposal.endTime || existingData.endTime || '12:00',
@@ -774,9 +793,11 @@ export async function submitProposalForReview(
       recipientRole: 'admin',
       type: 'document_submission',
       category: 'activity_proposal',
-      title: isResubmission
-        ? `Proposal Revised (v${currentVersion}.0): ${payload.title || 'Activity Proposal'}`
-        : `New Proposal Submitted: ${payload.title || 'Activity Proposal'}`,
+      title: `${payload.isUrgent ? '[URGENT] ' : ''}${
+        isResubmission
+          ? `Proposal Revised (v${currentVersion}.0): ${payload.title || 'Activity Proposal'}`
+          : `New Proposal Submitted: ${payload.title || 'Activity Proposal'}`
+      }`,
       message: `${orgDisplayName} submitted ${referenceNo} for institutional review.`,
       resourceId: docId,
       resourceType: 'event',

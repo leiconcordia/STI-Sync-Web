@@ -32,6 +32,7 @@ export interface TargetAudienceStructure {
   // Helper functions
   isShsCourse: (courseCodeOrId: string) => boolean;
   isCollegeCourse: (courseCodeOrId: string) => boolean;
+  isShsSection: (section: any) => boolean;
   getProgramByCode: (code: string) => DynamicProgram | undefined;
   getYearLevelsForAcademicLevel: (level: 'BOTH' | 'SHS' | 'COLLEGE') => string[];
   getProgramsForAcademicLevel: (level: 'BOTH' | 'SHS' | 'COLLEGE') => DynamicProgram[];
@@ -195,6 +196,25 @@ export function useTargetAudienceStructure(): TargetAudienceStructure {
       return prog?.academicLevel === 'COLLEGE';
     };
 
+    const isShsSection = (section: any): boolean => {
+      if (!section) return false;
+      const name = String(section.name || '').toUpperCase();
+      const y = Number(section.yearLevel);
+      if (section.academicLevel === 'SHS') return true;
+      if (section.academicLevel === 'COLLEGE') return false;
+      if (y === 11 || y === 12) return true;
+      if (y >= 1 && y <= 6) return false;
+      return (
+        name.includes('G11') ||
+        name.includes('G12') ||
+        name.includes('11-') ||
+        name.includes('12-') ||
+        name.includes('GRADE 11') ||
+        name.includes('GRADE 12') ||
+        shsCourseCodes.some((code) => name.includes(code))
+      );
+    };
+
     const getProgramByCode = (code: string) => {
       return programMap.get(code.trim().toUpperCase());
     };
@@ -233,6 +253,7 @@ export function useTargetAudienceStructure(): TargetAudienceStructure {
       allYearLevels,
       isShsCourse,
       isCollegeCourse,
+      isShsSection,
       getProgramByCode,
       getYearLevelsForAcademicLevel,
       getProgramsForAcademicLevel,

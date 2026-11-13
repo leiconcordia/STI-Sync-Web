@@ -31,7 +31,7 @@ export function useAdviserIdentityCheck(candidate: AdviserIdentity, organization
   const existing = useMemo(() => collectAdviserIdentities(records, organizations, excludeOrgId), [records, organizations, excludeOrgId]);
   const result = useMemo(() => inspectAdviserIdentity(candidate, existing), [candidate, existing]);
   const account = accountCheck?.email === candidate.email?.trim().toLowerCase() ? accountCheck.account : null;
-  const accountPerson: AdviserIdentity | null = account?.exists && !result.emailMatch ? { id: `account:${account.uid}`, authUid: account.uid, name: account.displayName || account.email, email: account.email, sourceType: 'account' } : null;
+  const accountPerson: AdviserIdentity | null = account?.exists && account.eligible !== false && !result.emailMatch ? { id: `account:${account.uid}`, authUid: account.uid, name: account.displayName || account.email, email: account.email, sourceType: 'account' } : null;
   const expected = adviserNameVerification(candidate, result.matches);
   const expectedKey = JSON.stringify(expected);
   useEffect(() => setConfirmedKey(''), [expectedKey]);

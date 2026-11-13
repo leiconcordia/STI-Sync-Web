@@ -79,15 +79,23 @@ export default function Step7ReviewSubmit({
     return () => unsubscribe();
   }, []);
 
-  // Compute 15-day compliance
+  // Compute 15-day compliance against TODAY for drafts/returned proposals (so stale drafts re-validate accurately)
   const ruleCheck = useMemo(() => {
+    const isAlreadySubmitted =
+      Boolean(formData.status) &&
+      !['draft', 'returned', 'returned_for_revision'].includes(String(formData.status));
+    const effectiveSubmissionDate =
+      isAlreadySubmitted && formData.submissionDate
+        ? formData.submissionDate
+        : new Date().toISOString();
+
     return check15DayRule(
-      formData.submissionDate || new Date().toISOString(),
+      effectiveSubmissionDate,
       formData.sessions || [],
       formData.tasks || [],
       formData.date
     );
-  }, [formData.submissionDate, formData.sessions, formData.tasks, formData.date]);
+  }, [formData.status, formData.submissionDate, formData.sessions, formData.tasks, formData.date]);
 
   // Proponents List (default to logged-in creator/maker)
   const proponents = useMemo(() => {
@@ -137,16 +145,11 @@ export default function Step7ReviewSubmit({
   const approvalChain: ProposalApprovalStep[] = formData.approvalChain || [];
 
   // Synchronize isUrgent flag with ruleCheck:
-  // If under 15 days, enable urgent mode. If compliant, clear urgent mode and any stale justification.
+  // If under 15 days (event or initial task), automatically enable urgent mode.
+  // Do NOT wipe an explicit Urgent choice or justification made by the user in Step 4.
   useEffect(() => {
-    if (!ruleCheck.isCompliant) {
-      if (!formData.isUrgent) {
-        onChange({ isUrgent: true });
-      }
-    } else {
-      if (formData.isUrgent) {
-        onChange({ isUrgent: false, urgentJustification: '' });
-      }
+    if (!ruleCheck.isCompliant && !formData.isUrgent) {
+      onChange({ isUrgent: true });
     }
   }, [ruleCheck.isCompliant, formData.isUrgent]);
 
@@ -432,118 +435,13 @@ export default function Step7ReviewSubmit({
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
               8. Target market
             </h3>
-            {formData.targetAudience?.allStudents ? (
-              <div className="p-4 bg-gradient-to-br from-blue-50/80 to-slate-50 border border-blue-200/80 rounded-2xl space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-blue-200/60 pb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
-                    <strong className="text-sm font-bold text-[#001A4D]">
-                      Campus-Wide Coverage: All Students (SHS & College)
-                    </strong>
-                  </div>
-                  {formData.targetAudience?.expectedReachPercentage && (
-                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#001A4D] text-[#FFD41C]">
-                      {formData.targetAudience.expectedReachPercentage}% Expected Reach
-                    </span>
-                  )}
-                </div>
-
-                {formData.targetAudience?.demographicBreakdown ? (
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                        <span className="text-[10px] text-gray-500 font-semibold block">Total Target Pool</span>
-                        <span className="text-sm font-black text-[#001A4D]">
-                          {formData.targetAudience.demographicBreakdown.totalPopulation?.toLocaleString() || '—'}
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                        <span className="text-[10px] text-amber-700 font-semibold block">Senior High School</span>
-                        <span className="text-sm font-black text-slate-800">
-                          {formData.targetAudience.demographicBreakdown.shsTotal?.toLocaleString() || '0'}
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                        <span className="text-[10px] text-blue-700 font-semibold block">Tertiary / College</span>
-                        <span className="text-sm font-black text-slate-800">
-                          {formData.targetAudience.demographicBreakdown.collegeTotal?.toLocaleString() || '0'}
-                        </span>
-                      </div>
-                      <div className="p-2.5 bg-white rounded-xl border border-slate-200 shadow-2xs">
-                        <span className="text-[10px] text-purple-700 font-semibold block">Faculty & Staff</span>
-                        <span className="text-sm font-black text-slate-800">
-                          {formData.targetAudience.demographicBreakdown.facultyTotal
-                            ? `${formData.targetAudience.demographicBreakdown.facultyTotal} included`
-                            : 'Excluded'}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Strands & Programs demographic tags */}
-                    <div className="space-y-1.5 pt-1">
-                      {formData.targetAudience.demographicBreakdown.strandsBreakdown &&
-                        Object.keys(formData.targetAudience.demographicBreakdown.strandsBreakdown).length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1">
-                              <School className="w-3 h-3 text-amber-600" /> SHS Strands:
-                            </span>
-                            {Object.entries(formData.targetAudience.demographicBreakdown.strandsBreakdown).map(
-                              ([code, count]) => (
-                                <span
-                                  key={code}
-                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-900 border border-amber-200"
-                                >
-                                  {code}: {count}
-                                </span>
-                              )
-                            )}
-                          </div>
-                        )}
-
-                      {formData.targetAudience.demographicBreakdown.programsBreakdown &&
-                        Object.keys(formData.targetAudience.demographicBreakdown.programsBreakdown).length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] font-bold text-gray-600 flex items-center gap-1">
-                              <GraduationCap className="w-3 h-3 text-blue-600" /> College Programs:
-                            </span>
-                            {Object.entries(formData.targetAudience.demographicBreakdown.programsBreakdown).map(
-                              ([code, count]) => (
-                                <span
-                                  key={code}
-                                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-blue-900 border border-blue-200"
-                                >
-                                  {code}: {count}
-                                </span>
-                              )
-                            )}
-                          </div>
-                        )}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-xs text-slate-600">
-                    All academic programs and strands across Senior High School and College departments are included.
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5">
-                <div>
-                  <strong className="text-slate-700">Programs / Strands:</strong>{' '}
-                  <span className="text-blue-900 font-medium">
-                    {formData.targetAudience?.courseCodes?.length
-                      ? formData.targetAudience.courseCodes.join(', ')
-                      : formData.targetAudience?.departments?.join(', ') || 'All Programs'}
-                  </span>
-                </div>
-                <div>
-                  <strong className="text-slate-700">Year Levels:</strong>{' '}
-                  <span className="text-slate-800">
-                    {formData.targetAudience?.yearLevels?.join(', ') || 'All Levels'}
-                  </span>
-                </div>
-              </div>
-            )}
+            <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl">
+              <p className="text-sm font-semibold text-slate-800">
+                {formData.targetMarket?.trim() ||
+                  formData.targetAudience?.targetMarketSummary?.trim() ||
+                  'All STI Students'}
+              </p>
+            </div>
           </div>
 
           {/* 10. Marketing plan & 11. Documentation */}

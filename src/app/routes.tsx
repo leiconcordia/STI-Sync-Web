@@ -31,6 +31,8 @@ import SignatoryProposalsPage from "./signatory/pages/SignatoryProposalsPage";
 import SignatoryLiquidationsPage from "./signatory/pages/SignatoryLiquidationsPage";
 import SignatoryPARsPage from "./signatory/pages/SignatoryPARsPage";
 import SignatoryReportsPage from "./signatory/pages/SignatoryReportsPage";
+import SignatoryCalendarPage from "./signatory/pages/SignatoryCalendarPage";
+import SignatorySignedDocumentsPage from "./signatory/pages/SignatorySignedDocumentsPage";
 import SignatoryAccountPage from "./signatory/pages/SignatoryAccountPage";
 
 // Officer Components
@@ -87,7 +89,9 @@ export const router = createBrowserRouter([
       { path: "proposals", Component: SignatoryProposalsPage },
       { path: "liquidations", Component: SignatoryLiquidationsPage },
       { path: "post-activity-reports", Component: SignatoryPARsPage },
+      { path: "calendar", Component: SignatoryCalendarPage },
       { path: "reports", Component: SignatoryReportsPage },
+      { path: "signed", Component: SignatorySignedDocumentsPage },
       { path: "account", Component: SignatoryAccountPage },
       // Backwards compatibility alias for endorsements
       { path: "endorsements", element: <Navigate to="/signatory/dashboard" replace /> },

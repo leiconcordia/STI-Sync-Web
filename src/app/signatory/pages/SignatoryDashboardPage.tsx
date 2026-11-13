@@ -164,18 +164,22 @@ export default function SignatoryDashboardPage() {
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => navigate('/signatory/signed')}
+          className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs flex items-center justify-between text-left hover:border-emerald-300 hover:bg-emerald-50/30 transition-colors cursor-pointer"
+        >
           <div className="space-y-1">
             <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
               Certified & Endorsed
             </span>
             <div className="text-3xl font-black text-emerald-600">{totalSigned}</div>
-            <p className="text-[11px] text-slate-500">Official stamps recorded</p>
+            <p className="text-[11px] text-slate-500">View documents I signed</p>
           </div>
           <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
             <CheckCircle2 className="w-6 h-6" />
           </div>
-        </div>
+        </button>
 
         <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs flex items-center justify-between">
           <div className="space-y-1">

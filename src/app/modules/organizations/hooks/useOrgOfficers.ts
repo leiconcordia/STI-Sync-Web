@@ -6,10 +6,12 @@ export interface OrganizationOfficerDocument {
   id: string;
   organizationId: string;
   roleId: string;
+  roleName?: string;
   studentId: string;
   studentName: string;
   email: string;
   isActive: boolean;
+  hasWebPortalAccess?: boolean;
   temporaryPassword?: string;
   createdAt: any;
   updatedAt: any;

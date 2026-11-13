@@ -274,7 +274,11 @@ export function useOfficerAuth() {
 
       const workspaces = await loadPortalWorkspaces();
       if (!workspaces.length) {
-        setError('No active organization or signatory role is available for this account. Contact SAS.');
+        if (officerRecords.length > 0 && officerRecords.every((record) => record.hasWebPortalAccess === false)) {
+          setError('Your officer appointment does not include Web Portal access. Please contact your Club Adviser or SAS Administrator, or use the STI Sync mobile app.');
+        } else {
+          setError('No active organization or signatory role is available for this account. Contact SAS.');
+        }
         return null;
       }
       localStorage.removeItem(SESSION_KEY);

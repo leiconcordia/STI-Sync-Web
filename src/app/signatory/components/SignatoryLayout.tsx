@@ -24,6 +24,7 @@ import {
   FileText,
   FileSpreadsheet,
   FileCheck2,
+  CalendarDays,
   BarChart3,
   UserCheck,
   LogOut,
@@ -215,9 +216,21 @@ export default function SignatoryLayout() {
       visible: canAccessPAR,
     },
     {
+      to: '/signatory/calendar',
+      label: 'Calendar of Activities',
+      icon: CalendarDays,
+      visible: true,
+    },
+    {
       to: '/signatory/reports',
       label: 'Campus Reports',
       icon: BarChart3,
+      visible: true,
+    },
+    {
+      to: '/signatory/signed',
+      label: 'Documents I Signed',
+      icon: CheckCircle2,
       visible: true,
     },
     {

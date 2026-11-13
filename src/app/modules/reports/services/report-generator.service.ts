@@ -1301,3 +1301,333 @@ export function generateMasterSystemLedgerReport(
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ORGANIZATION / OFFICER PORTAL FILTERED LEDGER & ROSTER REPORTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export function generateOrgOfficerListReport(
+  org: OrganizationDocument,
+  officers: Array<{
+    studentId: string;
+    studentName: string;
+    position: string;
+    courseYear: string;
+    email: string;
+    status: string;
+  }>,
+  filter: ReportFilterOptions,
+  officerName = 'Organization Officer',
+  presidentName = 'Club President',
+  adviserName = 'Faculty Adviser'
+): GeneratedReportData {
+  const rows = officers.map((o) => ({
+    studentId: o.studentId || '—',
+    studentName: o.studentName || '—',
+    position: o.position || 'Officer',
+    courseYear: o.courseYear || '—',
+    email: o.email || '—',
+    status: (o.status || 'Active').toUpperCase(),
+  }));
+
+  return {
+    id: 'OFFICER_OFFICERS_ROSTER',
+    title: `${org.acronym || org.name} — Official Officer Roster`,
+    category: 'ORGANIZATION',
+    metadata: {
+      title: `${org.acronym || org.name} — Official Officer Roster`,
+      subtitle: 'Certified roster of active student organization officers and executive board members.',
+      organizationName: org.name,
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: officerName,
+      adviserName,
+      presidentName,
+    },
+    kpis: [
+      { label: 'Total Officers', value: rows.length },
+      { label: 'Organization', value: org.acronym || org.name },
+      { label: 'Adviser', value: adviserName },
+    ],
+    columns: [
+      { key: 'studentId', header: 'Student ID' },
+      { key: 'studentName', header: 'Officer Name' },
+      { key: 'position', header: 'Position / Role' },
+      { key: 'courseYear', header: 'Course & Year' },
+      { key: 'email', header: 'Institutional Email' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: officerName, title: 'Organization Secretary / Officer' },
+      attestedBy: { name: presidentName, title: 'Club President' },
+      approvedBy: { name: adviserName, title: 'Faculty Club Adviser' },
+    },
+  };
+}
+
+export function generateOrgMemberListReport(
+  org: OrganizationDocument,
+  members: Array<{
+    studentId: string;
+    studentName: string;
+    courseYear: string;
+    email: string;
+    paymentStatus: string;
+    dateJoined: string;
+    status: string;
+  }>,
+  filter: ReportFilterOptions,
+  officerName = 'Organization Officer',
+  presidentName = 'Club President',
+  adviserName = 'Faculty Adviser'
+): GeneratedReportData {
+  const rows = members.map((m) => ({
+    studentId: m.studentId || '—',
+    studentName: m.studentName || '—',
+    courseYear: m.courseYear || '—',
+    email: m.email || '—',
+    paymentStatus: (m.paymentStatus || '—').toUpperCase(),
+    dateJoined: m.dateJoined || '—',
+    status: (m.status || 'Active').toUpperCase(),
+  }));
+
+  return {
+    id: 'OFFICER_MEMBERSHIP_DIRECTORY',
+    title: `${org.acronym || org.name} — Official Member Directory`,
+    category: 'ORGANIZATION',
+    metadata: {
+      title: `${org.acronym || org.name} — Official Member Directory`,
+      subtitle: 'Complete directory of registered organization members and membership standing.',
+      organizationName: org.name,
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: officerName,
+      adviserName,
+      presidentName,
+    },
+    kpis: [
+      { label: 'Total Members', value: rows.length },
+      { label: 'Active Members', value: rows.filter((r) => r.status === 'ACTIVE').length },
+      { label: 'Paid Dues', value: rows.filter((r) => r.paymentStatus === 'PAID').length },
+    ],
+    columns: [
+      { key: 'studentId', header: 'Student ID' },
+      { key: 'studentName', header: 'Member Name' },
+      { key: 'courseYear', header: 'Course & Year' },
+      { key: 'email', header: 'Institutional Email' },
+      { key: 'paymentStatus', header: 'Dues' },
+      { key: 'dateJoined', header: 'Date Joined' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: officerName, title: 'Organization Secretary / Officer' },
+      attestedBy: { name: presidentName, title: 'Club President' },
+      approvedBy: { name: adviserName, title: 'Faculty Club Adviser' },
+    },
+  };
+}
+
+export function generateOrgAPLedgerReport(
+  org: OrganizationDocument,
+  apRows: Array<{
+    referenceNo: string;
+    title: string;
+    fundingLabel: string;
+    dateVenue: string;
+    proposedBudget: number;
+    status: string;
+  }>,
+  filter: ReportFilterOptions,
+  fundingFilterLabel: string,
+  officerName = 'Organization Officer',
+  presidentName = 'Club President',
+  adviserName = 'Faculty Adviser'
+): GeneratedReportData {
+  const rows = apRows.map((r) => ({
+    referenceNo: r.referenceNo,
+    title: r.title,
+    fundingLabel: r.fundingLabel,
+    dateVenue: r.dateVenue,
+    proposedBudget: `₱${(r.proposedBudget || 0).toLocaleString()}`,
+    status: r.status.toUpperCase(),
+  }));
+
+  const totalBudget = apRows.reduce((s, r) => s + (r.proposedBudget || 0), 0);
+
+  return {
+    id: 'OFFICER_AP_LEDGER',
+    title: `${org.acronym || org.name} — Activity Proposals Ledger (${fundingFilterLabel})`,
+    category: 'ORGANIZATION',
+    metadata: {
+      title: `${org.acronym || org.name} — Activity Proposals Ledger`,
+      subtitle: `Filtered by Funding Source: ${fundingFilterLabel}`,
+      organizationName: org.name,
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: officerName,
+      adviserName,
+      presidentName,
+    },
+    kpis: [
+      { label: 'Total Proposals', value: rows.length },
+      { label: 'Funding Filter', value: fundingFilterLabel },
+      { label: 'Total Proposed Budget', value: `₱${totalBudget.toLocaleString()}` },
+    ],
+    columns: [
+      { key: 'referenceNo', header: 'AP Ref #' },
+      { key: 'title', header: 'Activity Title' },
+      { key: 'fundingLabel', header: 'Funding Source' },
+      { key: 'dateVenue', header: 'Date & Venue' },
+      { key: 'proposedBudget', header: 'Budget' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: officerName, title: 'Organization Officer' },
+      attestedBy: { name: presidentName, title: 'Club President' },
+      approvedBy: { name: adviserName, title: 'Faculty Club Adviser' },
+    },
+  };
+}
+
+export function generateOrgFLLedgerReport(
+  org: OrganizationDocument,
+  flRows: Array<{
+    referenceNo: string;
+    eventTitle: string;
+    fundingLabel: string;
+    approvedBudget: number;
+    actualSpend: number;
+    variance: number;
+    status: string;
+  }>,
+  filter: ReportFilterOptions,
+  fundingFilterLabel: string,
+  officerName = 'Organization Officer',
+  presidentName = 'Club President',
+  adviserName = 'Faculty Adviser'
+): GeneratedReportData {
+  const rows = flRows.map((r) => ({
+    referenceNo: r.referenceNo,
+    eventTitle: r.eventTitle,
+    fundingLabel: r.fundingLabel,
+    approvedBudget: `₱${(r.approvedBudget || 0).toLocaleString()}`,
+    actualSpend: `₱${(r.actualSpend || 0).toLocaleString()}`,
+    variance: r.variance >= 0 ? `+₱${r.variance.toLocaleString()}` : `-₱${Math.abs(r.variance).toLocaleString()}`,
+    status: r.status.toUpperCase(),
+  }));
+
+  const totalSpent = flRows.reduce((s, r) => s + (r.actualSpend || 0), 0);
+
+  return {
+    id: 'OFFICER_FL_LEDGER',
+    title: `${org.acronym || org.name} — Financial Liquidations Ledger (${fundingFilterLabel})`,
+    category: 'ORGANIZATION',
+    metadata: {
+      title: `${org.acronym || org.name} — Financial Liquidations Ledger`,
+      subtitle: `Filtered by Funding Source: ${fundingFilterLabel}`,
+      organizationName: org.name,
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: officerName,
+      adviserName,
+      presidentName,
+    },
+    kpis: [
+      { label: 'Total Liquidations', value: rows.length },
+      { label: 'Funding Filter', value: fundingFilterLabel },
+      { label: 'Total Actual Spend', value: `₱${totalSpent.toLocaleString()}` },
+    ],
+    columns: [
+      { key: 'referenceNo', header: 'LF Ref #' },
+      { key: 'eventTitle', header: 'Activity Title' },
+      { key: 'fundingLabel', header: 'Funding Source' },
+      { key: 'approvedBudget', header: 'Approved Budget' },
+      { key: 'actualSpend', header: 'Actual Spend' },
+      { key: 'variance', header: 'Variance' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: officerName, title: 'Organization Treasurer / Officer' },
+      attestedBy: { name: presidentName, title: 'Club President' },
+      approvedBy: { name: adviserName, title: 'Faculty Club Adviser' },
+    },
+  };
+}
+
+export function generateOrgPARLedgerReport(
+  org: OrganizationDocument,
+  parRows: Array<{
+    referenceNo: string;
+    eventTitle: string;
+    fundingLabel: string;
+    dateHeld: string;
+    turnout: string;
+    rating: string;
+    status: string;
+  }>,
+  filter: ReportFilterOptions,
+  fundingFilterLabel: string,
+  officerName = 'Organization Officer',
+  presidentName = 'Club President',
+  adviserName = 'Faculty Adviser'
+): GeneratedReportData {
+  const rows = parRows.map((r) => ({
+    referenceNo: r.referenceNo,
+    eventTitle: r.eventTitle,
+    fundingLabel: r.fundingLabel,
+    dateHeld: r.dateHeld,
+    turnout: r.turnout,
+    rating: r.rating,
+    status: r.status.toUpperCase(),
+  }));
+
+  return {
+    id: 'OFFICER_PAR_LEDGER',
+    title: `${org.acronym || org.name} — Post-Activity Reports Ledger (${fundingFilterLabel})`,
+    category: 'ORGANIZATION',
+    metadata: {
+      title: `${org.acronym || org.name} — Post-Activity Reports Ledger`,
+      subtitle: `Filtered by Funding Source: ${fundingFilterLabel}`,
+      organizationName: org.name,
+      academicYear: filter.academicYear,
+      semester: filter.semester,
+      scope: filter.scope,
+      generatedAt: new Date().toLocaleString(),
+      generatedBy: officerName,
+      adviserName,
+      presidentName,
+    },
+    kpis: [
+      { label: 'Total PARs', value: rows.length },
+      { label: 'Funding Filter', value: fundingFilterLabel },
+    ],
+    columns: [
+      { key: 'referenceNo', header: 'PAR Code' },
+      { key: 'eventTitle', header: 'Activity Title' },
+      { key: 'fundingLabel', header: 'Funding Source' },
+      { key: 'dateHeld', header: 'Date Held' },
+      { key: 'turnout', header: 'Turnout (Actual / Est.)' },
+      { key: 'rating', header: 'Rating' },
+      { key: 'status', header: 'Status' },
+    ],
+    rows,
+    signatories: {
+      preparedBy: { name: officerName, title: 'Organization Officer' },
+      attestedBy: { name: presidentName, title: 'Club President' },
+      approvedBy: { name: adviserName, title: 'Faculty Club Adviser' },
+    },
+  };
+}
+
+
