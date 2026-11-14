@@ -109,7 +109,9 @@ export function OrganizationDetailModal({ organization, isOpen, onClose }: Organ
     return r ? r.name : roleId || 'Officer';
   };
 
-  const activeMembers = members.filter(m => m.status === 'active');
+  const activeMembers = members.filter(
+    (m) => m.status === 'active' || m.status === 'pending_removal'
+  );
 
   return (
     <>
@@ -563,9 +565,15 @@ export function OrganizationDetailModal({ organization, isOpen, onClose }: Organ
                           <td className="p-3 text-[#0E4EBD] font-semibold">{m.course || '—'}</td>
                           <td className="p-3 text-gray-600">{m.year || '—'}</td>
                           <td className="p-3">
-                            <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-bold text-[10px]">
-                              Active
-                            </span>
+                            {m.status === 'pending_removal' ? (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-800 rounded-full font-bold text-[10px]">
+                                Removal Scheduled
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full font-bold text-[10px]">
+                                Active
+                              </span>
+                            )}
                           </td>
                         </tr>
                       ))}

@@ -50,6 +50,8 @@ export interface ExpenseLineItem {
   receiptPublicId?: string;
   receiptUrls?: string[]; // Multiple receipt URLs
   receiptFiles?: ReceiptAttachment[]; // Detailed receipt attachment objects
+  isLostReceipt?: boolean; // Flagged true when original OR is lost and substitute Affidavit/Certification is attached
+  lostReceiptReason?: string; // Mandatory explanation / affidavit note when original receipt is lost
   wasModifiedInRev?: boolean; // Flagged true if changed during revision cycle
   previousValues?: {
     quantity?: number;

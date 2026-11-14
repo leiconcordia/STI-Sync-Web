@@ -57,7 +57,7 @@ export default function OfficerPostActivityReports() {
 
   const orgId = profile?.activeOrganizationId || session?.activeOrganizationId || '';
   const orgName = activeOrgName || session?.activeOrgName || (profile?.studentName ? `${profile.studentName}'s Org` : 'Student Organization');
-  const userUid = profile?.studentId || session?.studentId || 'officer_user';
+  const userUid = profile?.uid || profile?.authUid || profile?.studentId || session?.uid || session?.studentId || 'officer_user';
   const userName = profile?.studentName || session?.studentName || 'Officer';
   const userEmail = profile?.email || session?.email || '';
 
@@ -623,6 +623,7 @@ export default function OfficerPostActivityReports() {
           name: userName,
           email: userEmail,
           role: profile?.isAdviser ? 'adviser' : 'officer',
+          roleTitle: profile?.isAdviser ? 'Organization Adviser' : 'Organization Officer',
           isAdviser: Boolean(profile?.isAdviser),
           organizationId: orgId,
           organizationName: orgName,

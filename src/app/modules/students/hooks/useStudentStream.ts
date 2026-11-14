@@ -3,6 +3,7 @@ import { collection, onSnapshot, query } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { STUDENTS_COLLECTION } from '../services/student.service';
 import type { StudentDocument } from '../types/student.types';
+import { registerSingletonResetter } from '../../../utils/createSingletonStream';
 
 // Global Singleton Cache for Students Stream
 // Prevents duplicate Firestore queries across 16+ components, slashing reads by >90%
@@ -52,6 +53,21 @@ function stopGlobalStudentSubscription() {
     tearDownTimer = null;
   }, 20000); // 20-second grace window to preserve cache across route transitions
 }
+
+registerSingletonResetter(() => {
+  if (tearDownTimer) {
+    clearTimeout(tearDownTimer);
+    tearDownTimer = null;
+  }
+  if (activeUnsubscribe) {
+    activeUnsubscribe();
+    activeUnsubscribe = null;
+  }
+  cachedStudents = [];
+  isLoaded = false;
+  globalError = null;
+  listeners.forEach((listener) => listener([], true, null));
+});
 
 export function useStudents() {
   const [data, setData] = useState<StudentDocument[]>(cachedStudents);

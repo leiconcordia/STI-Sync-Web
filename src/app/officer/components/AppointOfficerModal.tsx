@@ -13,6 +13,7 @@ interface AppointOfficerModalProps {
   organizationId: string;
   preselectedMember?: OrganizationMemberDocument | null;
   currentOfficers: OrganizationOfficerDocument[];
+  isAdviser?: boolean;
 }
 
 interface AppointCandidate {
@@ -33,6 +34,7 @@ export function AppointOfficerModal({
   organizationId,
   preselectedMember,
   currentOfficers,
+  isAdviser = false,
 }: AppointOfficerModalProps) {
   const { data: roles, loading: loadingRoles } = useRoles();
   const { members, loading: loadingMembers } = useOrgMembers(organizationId);
@@ -111,6 +113,11 @@ export function AppointOfficerModal({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isAdviser) {
+      setError('Only the appointed Club Adviser can appoint officers or grant Web Portal access.');
+      return;
+    }
+
     if (!selectedCandidate) {
       setError('Please select a student candidate first.');
       return;
@@ -183,7 +190,8 @@ export function AppointOfficerModal({
           department: selectedCandidate.department,
           contactNumber: selectedCandidate.contactNumber,
           hasWebPortalAccess: !selectedIsOfficerElsewhere && hasWebPortalAccess,
-        }
+        },
+        { isAdviser }
       );
 
       // Send appointment notification email asynchronously

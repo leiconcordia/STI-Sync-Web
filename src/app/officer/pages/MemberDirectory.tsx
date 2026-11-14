@@ -19,6 +19,9 @@ import {
   ArrowUpAZ,
   ArrowDownAZ,
   Coins,
+  CalendarClock,
+  RotateCcw,
+  Shield,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
@@ -31,6 +34,10 @@ import {
   approveMemberApplication,
   rejectMemberApplication,
   revokeOfficer,
+  updateOfficerWebPortalAccess,
+  cancelScheduledMemberRemoval,
+  reconcilePendingMemberRemovalsForOrg,
+  updateMemberStatus,
 } from '../../modules/organizations/services/member.service';
 import { MemberProfilePanel } from '../components/MemberProfilePanel';
 import { AddMemberModal } from '../components/AddMemberModal';
@@ -58,18 +65,28 @@ export default function MemberDirectory() {
   const { data: dbCourses = [] } = useCourses();
 
 
-  const [activeTab, setActiveTab] = useState<'members' | 'pending' | 'officers' | 'inactive'>(() => {
-    if (tabParam && ['members', 'pending', 'officers', 'inactive'].includes(tabParam)) {
+  const [activeTab, setActiveTab] = useState<'members' | 'pending' | 'officers' | 'inactive' | 'removed'>(() => {
+    if (tabParam && ['members', 'pending', 'officers', 'inactive', 'removed'].includes(tabParam)) {
       return tabParam as any;
     }
     return 'members';
   });
 
   useEffect(() => {
-    if (tabParam && ['members', 'pending', 'officers', 'inactive'].includes(tabParam)) {
+    if (tabParam && ['members', 'pending', 'officers', 'inactive', 'removed'].includes(tabParam)) {
       setActiveTab(tabParam as any);
     }
   }, [tabParam]);
+
+  // Auto-reconcile any scheduled removals whose signed-up upcoming activities have ended
+  useEffect(() => {
+    if (!activeOrgId) return;
+    const hasPendingRemoval = members.some((m) => m.status === 'pending_removal');
+    if (!hasPendingRemoval) return;
+    reconcilePendingMemberRemovalsForOrg(activeOrgId).catch((err) =>
+      console.warn('[MemberDirectory] Pending removal reconciliation notice:', err)
+    );
+  }, [activeOrgId, members.length]);
   
   // Filter & Sort State across ALL tabs
   const [searchQuery, setSearchQuery] = useState('');
@@ -182,9 +199,19 @@ export default function MemberDirectory() {
     return { fullName, photoUrl, studentDoc: sDoc };
   };
 
-  // Split members into raw lists
-  const rawActiveMembers = useMemo(() => members.filter((m) => m.status === 'active'), [members]);
-  const rawInactiveMembers = useMemo(() => members.filter((m) => m.status === 'inactive' || m.status === 'suspended'), [members]);
+  // Split members into raw lists (pending_removal stays in active club roster until signed-up activity ends)
+  const rawActiveMembers = useMemo(
+    () => members.filter((m) => m.status === 'active' || m.status === 'pending_removal'),
+    [members]
+  );
+  const rawInactiveMembers = useMemo(
+    () => members.filter((m) => m.status === 'inactive' || m.status === 'suspended'),
+    [members]
+  );
+  const rawRemovedMembers = useMemo(
+    () => members.filter((m) => m.status === 'removed'),
+    [members]
+  );
   const rawPendingMembers = useMemo(() => members.filter((m) => m.status === 'pending'), [members]);
 
   // Check if current user is an Adviser or Executive Officer
@@ -195,23 +222,30 @@ export default function MemberDirectory() {
   );
   const activeRoleDoc = roles.find((r) => r.id === profile?.activeRoleId);
   const activeRoleName = isAdviser ? 'adviser' : (activeRoleDoc?.name?.toLowerCase() || '');
-  const canAppointOfficers = isAdviser || ['president', 'vice president', 'secretary'].includes(activeRoleName);
+  // Strictly Adviser-only: only the Club Adviser can appoint officers, add Web Portal access, or revoke access
+  const canAppointOfficers = isAdviser;
+  const canManageOfficerAccess = isAdviser;
   const canManageMembers = isAdviser || ['president', 'vice president', 'secretary'].includes(activeRoleName);
   const [revokingOfficerId, setRevokingOfficerId] = useState<string | null>(null);
+  const [updatingAccessOfficerId, setUpdatingAccessOfficerId] = useState<string | null>(null);
 
   const handleRevokeOfficer = async (officer: any) => {
+    if (!isAdviser) {
+      alert('Only the appointed Club Adviser can revoke officer privileges or access.');
+      return;
+    }
     const { fullName } = getMemberDetails(officer);
     const roleDoc = roles.find((r) => r.id === officer.roleId);
     const roleName = roleDoc?.name || officer.roleName || 'Officer';
 
     const confirmed = window.confirm(
-      `Are you sure you want to revoke officer privileges for ${fullName} (${roleName})?`
+      `Are you sure you want to revoke officer privileges and portal access for ${fullName} (${roleName})?`
     );
     if (!confirmed) return;
 
     setRevokingOfficerId(officer.id);
     try {
-      await revokeOfficer(activeOrgId, officer.id, officer.studentId);
+      await revokeOfficer(activeOrgId, officer.id, officer.studentId, { isAdviser });
       setActionFeedback(`Revoked officer privileges for ${fullName}.`);
       setTimeout(() => setActionFeedback(null), 4000);
     } catch (err: any) {
@@ -219,6 +253,39 @@ export default function MemberDirectory() {
       alert(`Failed to revoke officer: ${err.message}`);
     } finally {
       setRevokingOfficerId(null);
+    }
+  };
+
+  const handleToggleOfficerWebAccess = async (officer: any, grantAccess: boolean) => {
+    if (!isAdviser) {
+      alert('Only the appointed Club Adviser can add or revoke Web Portal access.');
+      return;
+    }
+    const { fullName } = getMemberDetails(officer);
+    const roleDoc = roles.find((r) => r.id === officer.roleId);
+    const roleName = roleDoc?.name || officer.roleName || 'Officer';
+
+    const confirmed = window.confirm(
+      grantAccess
+        ? `Grant Organization Web Portal access to ${fullName} (${roleName})?`
+        : `Revoke Organization Web Portal access for ${fullName} (${roleName})? They will retain their In-Org Officer title without Web Portal login access.`
+    );
+    if (!confirmed) return;
+
+    setUpdatingAccessOfficerId(officer.id);
+    try {
+      await updateOfficerWebPortalAccess(activeOrgId, officer.id, grantAccess, { isAdviser });
+      setActionFeedback(
+        grantAccess
+          ? `Granted Web Portal access to ${fullName}.`
+          : `Revoked Web Portal access for ${fullName}.`
+      );
+      setTimeout(() => setActionFeedback(null), 4000);
+    } catch (err: any) {
+      console.error(err);
+      alert(`Failed to update Web Portal access: ${err.message}`);
+    } finally {
+      setUpdatingAccessOfficerId(null);
     }
   };
 
@@ -283,13 +350,16 @@ export default function MemberDirectory() {
   const filteredPendingMembers = useMemo(() => filterAndSortList(rawPendingMembers), [rawPendingMembers, searchQuery, filterDepartment, filterYear, sortBy, sortOrder, studentMap]);
   const filteredOfficers = useMemo(() => filterAndSortList(officers), [officers, searchQuery, filterDepartment, filterYear, sortBy, sortOrder, studentMap]);
   const filteredInactiveMembers = useMemo(() => filterAndSortList(rawInactiveMembers), [rawInactiveMembers, searchQuery, filterDepartment, filterYear, sortBy, sortOrder, studentMap]);
+  const filteredRemovedMembers = useMemo(() => filterAndSortList(rawRemovedMembers), [rawRemovedMembers, searchQuery, filterDepartment, filterYear, sortBy, sortOrder, studentMap]);
 
-  // Pagination State for Inactive Members Table (8 rows per page standard)
+  // Pagination State for Inactive & Removed Members Tables (8 rows per page standard)
   const PER_PAGE = 8;
   const [inactivePage, setInactivePage] = useState(1);
+  const [removedPage, setRemovedPage] = useState(1);
 
   useEffect(() => {
     setInactivePage(1);
+    setRemovedPage(1);
   }, [searchQuery, filterDepartment, filterYear]);
 
   const totalInactivePages = Math.max(1, Math.ceil(filteredInactiveMembers.length / PER_PAGE));
@@ -297,6 +367,32 @@ export default function MemberDirectory() {
     const start = (inactivePage - 1) * PER_PAGE;
     return filteredInactiveMembers.slice(start, start + PER_PAGE);
   }, [filteredInactiveMembers, inactivePage]);
+
+  const totalRemovedPages = Math.max(1, Math.ceil(filteredRemovedMembers.length / PER_PAGE));
+  const paginatedRemovedMembers = useMemo(() => {
+    const start = (removedPage - 1) * PER_PAGE;
+    return filteredRemovedMembers.slice(start, start + PER_PAGE);
+  }, [filteredRemovedMembers, removedPage]);
+
+  const handleCancelScheduledRemoval = async (member: OrganizationMemberDocument) => {
+    try {
+      await cancelScheduledMemberRemoval(member.id);
+      setActionFeedback(`Cancelled scheduled removal for ${getMemberDetails(member).fullName}.`);
+      setTimeout(() => setActionFeedback(null), 4000);
+    } catch (err: any) {
+      alert(`Failed to cancel scheduled removal: ${err?.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleRestoreMember = async (member: OrganizationMemberDocument) => {
+    try {
+      await updateMemberStatus(member.id, 'active', profile?.studentId || 'Officer');
+      setActionFeedback(`Restored ${getMemberDetails(member).fullName} to active club membership.`);
+      setTimeout(() => setActionFeedback(null), 4000);
+    } catch (err: any) {
+      alert(`Failed to restore member: ${err?.message || 'Unknown error'}`);
+    }
+  };
 
   const getInitials = (name: string) =>
     (name || 'Student')
@@ -424,6 +520,18 @@ export default function MemberDirectory() {
           <UserX className="w-4 h-4" />
           Inactive / Un-enrolled ({rawInactiveMembers.length})
         </button>
+
+        <button
+          onClick={() => setActiveTab('removed')}
+          className={`pb-3 text-sm font-bold border-b-2 transition-colors flex items-center gap-2 cursor-pointer ${
+            activeTab === 'removed'
+              ? 'border-[#0E4EBD] text-[#0E4EBD]'
+              : 'border-transparent text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <UserMinus className="w-4 h-4" />
+          Removed ({rawRemovedMembers.length})
+        </button>
       </div>
 
       {/* ─── DYNAMIC DATABASE-DRIVEN FILTER & SEARCH CONTROLS ───────────── */}
@@ -441,6 +549,8 @@ export default function MemberDirectory() {
                   ? 'Search pending applicants by name, ID, or course...'
                   : activeTab === 'officers'
                   ? 'Search officers by name, ID, or position...'
+                  : activeTab === 'removed'
+                  ? 'Search removed members by name, ID, or course...'
                   : 'Search inactive members by name, ID, or course...'
               }
               value={searchQuery}
@@ -598,7 +708,7 @@ export default function MemberDirectory() {
                               <Coins className="w-4 h-4 text-amber-600" /> Add Payable / Fine
                             </button>
                           )}
-                          {canAppointOfficers && !member.isOfficer && (
+                          {canAppointOfficers && !member.isOfficer && member.status === 'active' && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -610,15 +720,27 @@ export default function MemberDirectory() {
                               Appoint as Officer
                             </button>
                           )}
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setMemberToRemove(member);
-                            }}
-                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 font-medium border-t border-gray-100 flex items-center gap-2"
-                          >
-                            <UserMinus className="w-4 h-4" /> Remove Member
-                          </button>
+                          {member.status === 'pending_removal' ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCancelScheduledRemoval(member);
+                              }}
+                              className="w-full text-left px-4 py-2 text-sm text-amber-700 hover:bg-amber-50 font-medium border-t border-gray-100 flex items-center gap-2"
+                            >
+                              <RotateCcw className="w-4 h-4" /> Cancel Scheduled Removal
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMemberToRemove(member);
+                              }}
+                              className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 font-medium border-t border-gray-100 flex items-center gap-2"
+                            >
+                              <UserMinus className="w-4 h-4" /> Remove Member
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -631,6 +753,22 @@ export default function MemberDirectory() {
                     <p className="text-gray-700 text-[13px]">
                       {member.course || 'N/A'} {member.year ? `· ${member.year}` : ''}
                     </p>
+
+                    {member.status === 'pending_removal' && (
+                      <div className="mt-3 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900 space-y-1">
+                        <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                          <CalendarClock className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                          <span>Removal Scheduled</span>
+                        </div>
+                        <p className="leading-snug text-amber-800">
+                          Stays member until{' '}
+                          <strong>
+                            {member.scheduledRemovalActivityTitles?.join(', ') || 'upcoming activity'}
+                          </strong>{' '}
+                          ends. No access to new activities.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
@@ -753,7 +891,7 @@ export default function MemberDirectory() {
           <div className="flex justify-center p-12 text-gray-500">Loading officers...</div>
         ) : (
           <div className="space-y-6">
-            {canAppointOfficers && (
+            {canAppointOfficers ? (
               <div className="flex justify-end">
                 <button
                   onClick={() => setIsAppointOfficerOpen(true)}
@@ -761,6 +899,13 @@ export default function MemberDirectory() {
                 >
                   <Crown className="w-4 h-4" /> Appoint Officer
                 </button>
+              </div>
+            ) : (
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3 text-xs text-[#001A4D]">
+                <Shield className="w-5 h-5 text-[#0E4EBD] flex-shrink-0" />
+                <span>
+                  <strong>Adviser-Only Governance:</strong> Only the appointed Club Adviser can appoint officers, add or revoke Web Portal access, or revoke officer appointments.
+                </span>
               </div>
             )}
 
@@ -823,23 +968,42 @@ export default function MemberDirectory() {
                         <p className="text-[#001A4D] text-[13px]">{officer.email}</p>
                       </div>
 
-                      <div className="flex items-center gap-2 mt-4 pt-4 border-t border-[#E0E0E0]">
-                        <span className="text-xs text-gray-500 flex-1">
-                          Access:{' '}
+                      <div className="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-[#E0E0E0]">
+                        <span className="text-xs text-gray-500">
+                          Status:{' '}
                           {officer.isActive ? (
                             <span className="text-green-600 font-medium">Active</span>
                           ) : (
                             <span className="text-red-500 font-medium">Revoked</span>
                           )}
                         </span>
-                        {officer.isActive && canAppointOfficers && (
-                          <button
-                            onClick={() => handleRevokeOfficer(officer)}
-                            disabled={revokingOfficerId === officer.id}
-                            className="text-xs font-semibold text-red-600 hover:text-red-700 hover:underline cursor-pointer disabled:opacity-50"
-                          >
-                            {revokingOfficerId === officer.id ? 'Revoking...' : 'Revoke Access'}
-                          </button>
+                        {officer.isActive && canManageOfficerAccess && (
+                          <div className="flex items-center gap-2">
+                            {officer.hasWebPortalAccess === false ? (
+                              <button
+                                onClick={() => handleToggleOfficerWebAccess(officer, true)}
+                                disabled={updatingAccessOfficerId === officer.id || revokingOfficerId === officer.id}
+                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                {updatingAccessOfficerId === officer.id ? 'Updating...' : 'Add Access'}
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleToggleOfficerWebAccess(officer, false)}
+                                disabled={updatingAccessOfficerId === officer.id || revokingOfficerId === officer.id}
+                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                {updatingAccessOfficerId === officer.id ? 'Updating...' : 'Revoke Access'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleRevokeOfficer(officer)}
+                              disabled={revokingOfficerId === officer.id || updatingAccessOfficerId === officer.id}
+                              className="text-xs font-semibold text-red-600 hover:text-red-700 hover:underline cursor-pointer disabled:opacity-50"
+                            >
+                              {revokingOfficerId === officer.id ? 'Revoking...' : 'Revoke Officer'}
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
@@ -938,6 +1102,126 @@ export default function MemberDirectory() {
         </div>
       )}
 
+      {/* ─── TAB 5: REMOVED MEMBERS (RECORDS & PAYABLES PRESERVED) ─────────── */}
+      {activeTab === 'removed' && (
+        <div className="space-y-4">
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center gap-3 text-xs text-slate-700">
+            <UserMinus className="w-5 h-5 text-red-500 flex-shrink-0" />
+            <span>
+              These students have been <strong>removed from this club</strong>. Their member records,
+              attendance history, and existing club dues or fines remain saved, while access to new
+              club activities is revoked. Click any member row to inspect their saved record or
+              dues/fines.
+            </span>
+          </div>
+
+          {filteredRemovedMembers.length === 0 ? (
+            <div className="text-center p-12 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 bg-white">
+              No removed club members match your filter criteria.
+            </div>
+          ) : (
+            <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-50 border-b border-[#E0E0E0] text-xs font-bold text-gray-500 uppercase">
+                    <tr>
+                      <th className="px-5 py-3">Member</th>
+                      <th className="px-5 py-3">Course / Strand &amp; Year</th>
+                      <th className="px-5 py-3">Removed On</th>
+                      <th className="px-5 py-3">Status</th>
+                      <th className="px-5 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#E0E0E0] text-sm">
+                    {paginatedRemovedMembers.map((member) => {
+                      const { fullName, photoUrl } = getMemberDetails(member);
+
+                      return (
+                        <tr
+                          key={member.id}
+                          onClick={() => setSelectedMember(member)}
+                          className="hover:bg-gray-50/70 transition-colors cursor-pointer"
+                        >
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-3">
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (photoUrl) {
+                                    setPreviewImage({ url: photoUrl, name: fullName });
+                                  }
+                                }}
+                                className={`w-9 h-9 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0 overflow-hidden border border-gray-300 ${
+                                  photoUrl
+                                    ? 'cursor-pointer hover:opacity-90 hover:scale-105 transition-all'
+                                    : 'bg-gray-300 text-gray-600'
+                                }`}
+                              >
+                                {photoUrl ? (
+                                  <img
+                                    src={photoUrl}
+                                    alt={fullName}
+                                    className="w-full h-full object-cover"
+                                  />
+                                ) : (
+                                  getInitials(fullName)
+                                )}
+                              </div>
+                              <div>
+                                <p className="text-[#001A4D] font-bold text-sm">{fullName}</p>
+                                <p className="text-gray-400 text-xs font-mono">{member.studentId}</p>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-600 text-xs">
+                            {member.course} {member.year ? `· ${member.year}` : ''}
+                          </td>
+                          <td className="px-5 py-3.5 text-gray-500 text-xs">
+                            {member.removedAt
+                              ? formatTimestampDate(member.removedAt)
+                              : '—'}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className="px-2.5 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold inline-flex items-center gap-1">
+                              <UserMinus className="w-3.5 h-3.5 text-red-600" />
+                              Removed from Club
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-right">
+                            {canManageMembers && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRestoreMember(member);
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-semibold transition-colors"
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                                Restore
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* ── Standard Bottom Pagination Bar ── */}
+              <TablePagination
+                currentPage={removedPage}
+                totalPages={totalRemovedPages}
+                totalItems={filteredRemovedMembers.length}
+                itemsPerPage={PER_PAGE}
+                onPageChange={setRemovedPage}
+                itemName="removed members"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Profile & Action Modals */}
       {selectedMember && (
         <MemberProfilePanel
@@ -971,20 +1255,24 @@ export default function MemberDirectory() {
         addedBy={profile?.studentId || 'system'}
       />
 
-      <AppointOfficerModal
-        isOpen={isAppointOfficerOpen}
-        onClose={() => {
-          setIsAppointOfficerOpen(false);
-          setAppointPreselected(null);
-        }}
-        organizationId={activeOrgId}
-        preselectedMember={appointPreselected}
-        currentOfficers={officers}
-      />
+      {isAdviser && (
+        <AppointOfficerModal
+          isOpen={isAppointOfficerOpen}
+          onClose={() => {
+            setIsAppointOfficerOpen(false);
+            setAppointPreselected(null);
+          }}
+          organizationId={activeOrgId}
+          preselectedMember={appointPreselected}
+          currentOfficers={officers}
+          isAdviser={isAdviser}
+        />
+      )}
 
       <RemoveMemberModal
         member={memberToRemove}
         organizationId={activeOrgId}
+        removedBy={profile?.studentName || profile?.studentId || 'Officer'}
         isOpen={Boolean(memberToRemove)}
         onClose={() => setMemberToRemove(null)}
       />

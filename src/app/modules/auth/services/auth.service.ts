@@ -21,6 +21,7 @@ import {
   type UserCredential,
 } from 'firebase/auth';
 import { db, auth } from '../../../../services/firebase';
+import { resetAllSingletonStreams } from '../../../utils/createSingletonStream';
 import type { SasAdminDocument, SasAdminUpdatePayload } from '../types/adviser.types';
 
 // ─── Collection Constant ───────────────────────────────────────────────────────
@@ -45,6 +46,7 @@ export async function signInAdviser(
  * Sign out the currently authenticated user.
  */
 export async function signOutAdviser(): Promise<void> {
+  resetAllSingletonStreams();
   return firebaseSignOut(auth);
 }
 

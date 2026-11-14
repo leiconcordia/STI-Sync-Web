@@ -73,6 +73,69 @@ export function formatAppDate(date: any, fallback = '—'): string {
   }
 }
 
+function parseLongDateValue(date: any): Date | null {
+  if (typeof date === 'string') {
+    const trimmed = date.trim();
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+    if (ymd) {
+      const localDate = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+      return Number.isNaN(localDate.getTime()) ? null : localDate;
+    }
+  }
+  return parseDateSafe(date);
+}
+
+/**
+ * Formats a date as "Month d, yyyy" (e.g. "November 15, 2025").
+ */
+export function formatLongDate(date: any, fallback = '—'): string {
+  const parsed = parseLongDateValue(date);
+  if (!parsed) return fallback;
+  try {
+    return format(parsed, 'MMMM d, yyyy');
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Formats a date and time as "Month d, yyyy • h:mm a".
+ */
+export function formatLongDateTime(date: any, fallback = '—', separator = ' • '): string {
+  const parsed = parseLongDateValue(date);
+  if (!parsed) return fallback;
+  try {
+    return `${format(parsed, 'MMMM d, yyyy')}${separator}${format(parsed, 'h:mm a')}`;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Formats a pure date value or replaces YYYY-MM-DD substrings inside text
+ * (e.g. "2026-11-07, 08:00 – 12:00" -> "November 7, 2026, 08:00 – 12:00").
+ */
+export function formatTextWithLongDates(value: any, fallback = '—'): string {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return fallback;
+    if (/\b\d{4}-\d{2}-\d{2}\b/.test(trimmed)) {
+      return trimmed.replace(/\b(\d{4})-(\d{2})-(\d{2})\b/g, (match, y, m, d) => {
+        const localDate = new Date(Number(y), Number(m) - 1, Number(d));
+        if (Number.isNaN(localDate.getTime())) return match;
+        try {
+          return format(localDate, 'MMMM d, yyyy');
+        } catch {
+          return match;
+        }
+      });
+    }
+    return formatLongDate(trimmed, trimmed);
+  }
+  return formatLongDate(value, fallback);
+}
+
 /**
  * Checks if a deadline has passed relative to now.
  * For date-only strings (e.g. YYYY-MM-DD), checks whether now is past 23:59:59.999 of that date.

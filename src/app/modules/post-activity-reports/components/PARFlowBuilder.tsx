@@ -37,7 +37,7 @@ import {
   type InstitutionalSignatory,
   isSignatoryApplicableTo,
 } from '../../signatories/types/signatory.types';
-import { generateDefaultPARSignatoryChain } from '../services/par.service';
+import { generateDefaultPARSignatoryChain, enforceSinglePARApprover } from '../services/par.service';
 import { SIGNATORY_LABEL_OPTIONS, resolveSignatoryLabel, resolveActionTypeFromLabel } from '../../signatories/utils/signatory-label.utils';
 import { useSignatoryLabelsStream } from '../../signatories/hooks/useSignatoryLabelsStream';
 import { AddCustomLabelModal } from '../../signatories';
@@ -102,9 +102,14 @@ export default function PARFlowBuilder({
     return [{ stageIndex: 1 }];
   });
 
-  // Synchronize stage configs dynamically from approvalChain
+  // Synchronize stage configs and strictly enforce 1 approver invariant on loaded chain
   useEffect(() => {
     if (!approvalChain || approvalChain.length === 0) {
+      return;
+    }
+    const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    if (approverCount !== 1) {
+      onChange(normalizeApprovalStages(enforceSinglePARApprover(approvalChain)));
       return;
     }
     const maxIdx = Math.max(1, ...approvalChain.map((s) => s.stageIndex ?? 1));
@@ -148,10 +153,12 @@ export default function PARFlowBuilder({
 
   // Validation metrics
   const validation = useMemo(() => {
-    const hasApprover = approvalChain.some((s) => s.actionType === 'approve' || s.role === 'school_president');
+    const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    const hasApprover = approverCount === 1;
     const totalSignatories = approvalChain.length;
     const isSingleStage = stages.length <= 1;
     return {
+      approverCount,
       hasApprover,
       totalSignatories,
       isSingleStage,
@@ -292,7 +299,7 @@ export default function PARFlowBuilder({
     onChange(updated);
   };
 
-  // Remove signatory (permanent signatories cannot be removed)
+  // Remove signatory (permanent signatories and the sole remaining approver cannot be removed silently)
   const handleRemoveSignatory = (stepIdOrIndex: string | number) => {
     const stepToRemove = approvalChain.find((s) => {
       if (s.id && typeof stepIdOrIndex === 'string') {
@@ -312,7 +319,15 @@ export default function PARFlowBuilder({
       }
       return s.step !== stepIdOrIndex;
     });
-    const normalized = normalizeApprovalStages(filtered);
+    if (
+      stepToRemove?.actionType === 'approve' &&
+      filtered.length > 0 &&
+      !filtered.some((s) => s.actionType === 'approve')
+    ) {
+      alert('Please assign another signatory as the Final Approver before removing the current Approver.');
+      return;
+    }
+    const normalized = normalizeApprovalStages(enforceSinglePARApprover(filtered));
     const maxStage = Math.max(1, ...normalized.map((s) => s.stageIndex ?? 1));
     setStageConfigs(Array.from({ length: maxStage }, (_, i) => ({ stageIndex: i + 1 })));
     onChange(normalized);
@@ -334,26 +349,44 @@ export default function PARFlowBuilder({
     reindexAndPropagate(updated);
   };
 
-  // Set action type (endorse vs approve) for a specific step (Enforcing Single Approver Mutex)
+  // Set action type (endorse vs approve) for a specific step (Enforcing Strictly 1 Approver)
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: 'endorse' | 'approve') => {
+    const targetStep = approvalChain.find((s) => (s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex));
+    if (!targetStep) return;
+
+    const currentApproverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    if (newAction === 'endorse' && targetStep.actionType === 'approve' && currentApproverCount <= 1) {
+      // Strictly 1 Approver required; never allow demoting the sole Approver to 0
+      return;
+    }
+
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
       if (match) {
         return {
           ...s,
           actionType: newAction,
+          signatoryLabel:
+            newAction === 'approve'
+              ? 'Approved by:'
+              : s.signatoryLabel && !/approved by/i.test(s.signatoryLabel)
+              ? s.signatoryLabel
+              : 'Endorsed by:',
         };
       }
-      // If setting this step to approve, demote any other existing approver in the pipeline
       if (newAction === 'approve' && s.actionType === 'approve') {
         return {
           ...s,
           actionType: 'endorse' as const,
+          signatoryLabel:
+            s.signatoryLabel && !/approved by/i.test(s.signatoryLabel)
+              ? s.signatoryLabel
+              : 'Endorsed by:',
         };
       }
       return s;
     });
-    reindexAndPropagate(updated);
+    reindexAndPropagate(enforceSinglePARApprover(updated));
   };
 
   // Move signatory up or down within or across stages
@@ -508,12 +541,12 @@ export default function PARFlowBuilder({
             {validation.hasApprover ? (
               <span className="text-emerald-400 text-[11px] font-semibold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                Final Approver Configured
+                1 Final Approver Enforced
               </span>
             ) : (
               <span className="text-amber-300 text-[11px] font-semibold flex items-center gap-1">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                Note: Consider designating at least 1 Final Approver
+                1 Final Approver Required
               </span>
             )}
             <span className="text-slate-500">•</span>
@@ -660,11 +693,9 @@ export default function PARFlowBuilder({
                           step.role === 'school_administrator' ||
                           (matchedSig?.actionType === 'approver' && matchedSig?.canApprovePar !== false)
                         );
-                        const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
-                        const pipelineHasOtherApprover = Boolean(
-                          existingApprover && (step.id ? existingApprover.id !== step.id : existingApprover.step !== step.step)
-                        );
-                        const canSignerApprove = hasApprovalAuth && !pipelineHasOtherApprover;
+                        const approverSteps = approvalChain.filter((s) => s.actionType === 'approve');
+                        const isSoleApprover = step.actionType === 'approve' && approverSteps.length <= 1;
+                        const canSignerApprove = hasApprovalAuth;
 
                         return (
                           <div
@@ -712,11 +743,19 @@ export default function PARFlowBuilder({
                               <div className="flex items-center rounded-lg p-0.5 bg-slate-100 border border-slate-200">
                                 <button
                                   type="button"
+                                  disabled={isSoleApprover}
                                   onClick={() => handleSetActionType(step.id || step.step, 'endorse')}
-                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all cursor-pointer ${
+                                  title={
+                                    isSoleApprover
+                                      ? 'Exactly 1 Final Approver is required in the pipeline. Transfer Approver role to another executive first.'
+                                      : 'Set as Endorser'
+                                  }
+                                  className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
                                     step.actionType === 'endorse' || step.actionType === 'check' || !step.actionType
-                                      ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs'
-                                      : 'text-slate-600 hover:text-slate-900'
+                                      ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs cursor-pointer'
+                                      : isSoleApprover
+                                      ? 'text-slate-300 opacity-50 cursor-not-allowed'
+                                      : 'text-slate-600 hover:text-slate-900 cursor-pointer'
                                   }`}
                                 >
                                   Endorse
@@ -728,9 +767,7 @@ export default function PARFlowBuilder({
                                   title={
                                     !hasApprovalAuth
                                       ? 'This signatory is an Endorser Only for Post-Activity Reports and cannot be set as Approver.'
-                                      : pipelineHasOtherApprover
-                                      ? `Only 1 approver is allowed per pipeline. ${existingApprover?.signatoryName || 'Another signer'} is already the designated Approver.`
-                                      : 'Set as Approver'
+                                      : 'Designate as the single Final Approver (switches any prior Approver to Endorse)'
                                   }
                                   className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
                                     step.actionType === 'approve'

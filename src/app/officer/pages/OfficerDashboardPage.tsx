@@ -64,10 +64,11 @@ export default function OfficerDashboardPage() {
     return map;
   }, [students]);
 
-  // Resolve active enrolled members (excluding inactive, unapproved, or unenrolled students for this term)
+  // Resolve active enrolled members (excluding inactive, removed, unapproved, or unenrolled students for this term)
+  // Members with scheduled removal remain active club members until their signed-up upcoming activity ends
   const activeEnrolledMembersCount = useMemo(() => {
     return members.filter((m) => {
-      if (m.status !== 'active') return false;
+      if (m.status !== 'active' && m.status !== 'pending_removal') return false;
       const st =
         studentMap.get((m.studentId || '').trim().toLowerCase()) ||
         studentMap.get((m.email || '').trim().toLowerCase());

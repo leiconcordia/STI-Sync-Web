@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import { ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import ActivityCalendar from '../../modules/events/components/ActivityCalendar';
-import { formatAppDate } from '../../utils/date';
+import { formatLongDate } from '../../utils/date';
 import { campusActivityHighlights, campusActivitySummary, DEFAULT_CAMPUS_FILTERS, filterCampusActivityRows } from '../utils/campus-activity-report';
 import type { useCampusActivityData } from '../hooks/useCampusActivityData';
 
@@ -48,7 +48,7 @@ export default function CampusActivityOverview({ data }: { data: ReturnType<type
         {!highlights.length && <p className="col-span-full p-5 text-sm text-slate-500">No campus activities recorded yet.</p>}
         {highlights.map(({ row, message, priority }) => <button type="button" key={row.id} onClick={() => openActivity(row.id)} className="flex w-full items-start gap-3 border-b border-slate-100 p-4 text-left hover:bg-slate-50 sm:border-r">
           {priority < 3 ? <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" /> : <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />}
-          <span className="min-w-0"><strong className="block text-sm text-[#001A4D]">{row.title}</strong><span className="mt-1 block text-xs text-slate-600">{message}</span><span className="mt-1 block text-[11px] text-slate-400">{row.organizer}{row.dates.length ? ` · ${formatAppDate(row.dates.at(-1))}` : ''}</span>{row.overdue && <span className="mt-1 block text-xs font-semibold text-rose-700">FL {Math.abs(row.daysRemaining!)} days overdue</span>}</span>
+          <span className="min-w-0"><strong className="block text-sm text-[#001A4D]">{row.title}</strong><span className="mt-1 block text-xs text-slate-600">{message}</span><span className="mt-1 block text-[11px] text-slate-400">{row.organizer}{row.dates.length ? ` · ${formatLongDate(row.dates.at(-1))}` : ''}</span>{row.overdue && <span className="mt-1 block text-xs font-semibold text-rose-700">FL {Math.abs(row.daysRemaining!)} days overdue</span>}</span>
         </button>)}
       </div>
       <button type="button" onClick={() => navigate('/signatory/reports')} className="flex w-full items-center justify-between border-t p-4 text-xs font-bold text-blue-700 hover:bg-blue-50">View Campus Reports<ArrowRight className="h-4 w-4" /></button>

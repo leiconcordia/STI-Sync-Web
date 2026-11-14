@@ -1,9 +1,9 @@
 import { useState, useMemo } from 'react';
 import {
-  Users, Search, Eye, Edit2, KeyRound, UserX, X,
-  AlertTriangle, Check, Copy, Shield, Building, Loader2
+  Users, Search, Eye, KeyRound, X,
+  Check, Copy, Shield, Building, Loader2
 } from 'lucide-react';
-import { doc, updateDoc, deleteDoc, serverTimestamp, collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { toast } from 'sonner';
 import { db } from '../../../../services/firebase';
 import { resetAccountPassword } from '../../../modules/accounts/services/account-reset.service';
@@ -13,7 +13,7 @@ import {
   type OrganizationOfficerDocument
 } from '../../../modules/organizations/hooks/useOrgOfficers';
 import { useOrganizationStream } from '../../../modules/organizations/hooks/useOrganizationStream';
-import { useRoles, type OfficerRoleDocument } from '../../../modules/roles';
+import { useRoles } from '../../../modules/roles';
 
 interface OfficerManagementProps {
   onUnsavedChange: () => void;
@@ -28,17 +28,12 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedOrgFilter, setSelectedOrgFilter] = useState('All');
 
-  // Modals State
+  // Modals State (read-only details & password reset; appointment/access control is Adviser-only)
   const [viewOfficer, setViewOfficer] = useState<OrganizationOfficerDocument | null>(null);
-  const [editOfficer, setEditOfficer] = useState<OrganizationOfficerDocument | null>(null);
-  const [editRoleId, setEditRoleId] = useState('');
-  const [editWebPortalAccess, setEditWebPortalAccess] = useState(true);
   const [resetOfficer, setResetOfficer] = useState<OrganizationOfficerDocument | null>(null);
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [copiedPassword, setCopiedPassword] = useState(false);
   const [resetNotice, setResetNotice] = useState('');
-  const [revokeOfficer, setRevokeOfficer] = useState<OrganizationOfficerDocument | null>(null);
-  const [revokeConfirmation, setRevokeConfirmation] = useState('');
 
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -58,8 +53,6 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
     });
     return map;
   }, [roles]);
-
-  const activeRoles = useMemo(() => roles.filter((r) => !r.archived), [roles]);
 
   // Filtered Officers Roster
   const filteredOfficers = useMemo(() => {
@@ -91,51 +84,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
 
   // ─── Action Handlers ───────────────────────────────────────────────────────
 
-  // 1. Edit Role
-  const handleOpenEdit = (officer: OrganizationOfficerDocument) => {
-    setEditOfficer(officer);
-    setEditRoleId(officer.roleId || '');
-    setEditWebPortalAccess(officer.hasWebPortalAccess !== false);
-  };
-
-  const handleSaveRole = async () => {
-    if (!editOfficer || !editRoleId) return;
-    if (editWebPortalAccess) {
-      const otherOrgOfficer = officers.find(
-        (o) =>
-          o.id !== editOfficer.id &&
-          o.isActive &&
-          o.organizationId !== editOfficer.organizationId &&
-          o.studentId?.trim().toLowerCase() === editOfficer.studentId?.trim().toLowerCase()
-      );
-      if (otherOrgOfficer) {
-        toast.error(
-          `${editOfficer.studentName} is also an active officer in another organization and cannot be granted exclusive Web Portal access.`
-        );
-        return;
-      }
-    }
-    setIsProcessing(true);
-    try {
-      const newRole = activeRoles.find((r) => r.id === editRoleId);
-      await updateDoc(doc(db, 'organization_officers', editOfficer.id), {
-        roleId: editRoleId,
-        roleName: newRole?.name || '',
-        hasWebPortalAccess: editWebPortalAccess,
-        updatedAt: serverTimestamp(),
-      });
-      toast.success(`Position updated for ${editOfficer.studentName}.`);
-      onUnsavedChange();
-      setEditOfficer(null);
-    } catch (err: any) {
-      console.error('Failed to update officer role:', err);
-      toast.error(err?.message || 'Failed to update position.');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  // 2. Reset Officer Password & Email New Credentials
+  // Send Officer Password Reset Email
   const handleOpenReset = (officer: OrganizationOfficerDocument) => {
     setResetOfficer(officer);
     setGeneratedPassword(generateTemporaryPassword());
@@ -177,29 +126,6 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
     setTimeout(() => setCopiedPassword(false), 2000);
   };
 
-  // 3. Revoke Officer
-  const handleOpenRevoke = (officer: OrganizationOfficerDocument) => {
-    setRevokeOfficer(officer);
-    setRevokeConfirmation('');
-  };
-
-  const handleConfirmRevoke = async () => {
-    if (!revokeOfficer) return;
-    setIsProcessing(true);
-    try {
-      // Delete officer assignment or mark inactive
-      await deleteDoc(doc(db, 'organization_officers', revokeOfficer.id));
-      toast.success(`Officer assignment revoked for ${revokeOfficer.studentName}.`);
-      onUnsavedChange();
-      setRevokeOfficer(null);
-    } catch (err: any) {
-      console.error('Failed to revoke officer:', err);
-      toast.error(err?.message || 'Failed to revoke officer.');
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
   const isLoading = loadingOfficers || loadingOrgs || loadingRoles;
 
   return (
@@ -218,6 +144,14 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
             {officers.length} Active Officers
           </span>
         </div>
+      </div>
+
+      {/* Adviser-Only Officer Governance Notice */}
+      <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-start gap-3 text-xs text-[#001A4D]">
+        <Shield className="w-4 h-4 text-[#0E4EBD] flex-shrink-0 mt-0.5" />
+        <span>
+          <strong>Adviser-Exclusive Governance:</strong> Only each organization&apos;s appointed Club Adviser can appoint student officers, add or revoke Web Portal access, and revoke officer assignments. Administrators can view the active roster and assist with password resets.
+        </span>
       </div>
 
       {/* Main Roster Container */}
@@ -311,7 +245,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                     </div>
                   </div>
 
-                  {/* Actions Bar */}
+                  {/* Actions Bar (Read-Only View & Helpdesk Password Reset; Appointment/Access are Adviser-Only) */}
                   <div className="flex items-center gap-1.5 self-end sm:self-auto flex-shrink-0">
                     {/* 1. View Details */}
                     <button
@@ -323,17 +257,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                       <Eye className="w-4 h-4" />
                     </button>
 
-                    {/* 2. Edit Role */}
-                    <button
-                      type="button"
-                      title="Change Position / Role"
-                      onClick={() => handleOpenEdit(officer)}
-                      className="p-2 text-[#0E4EBD] hover:bg-[#0E4EBD]/10 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
-
-                    {/* 3. Send Password Reset Email */}
+                    {/* 2. Send Password Reset Email */}
                     <button
                       type="button"
                       title="Send Password Reset Email (Firebase Auth)"
@@ -341,16 +265,6 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                       className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors cursor-pointer"
                     >
                       <KeyRound className="w-4 h-4" />
-                    </button>
-
-                    {/* 4. Revoke Officer */}
-                    <button
-                      type="button"
-                      title="Revoke Officer Assignment"
-                      onClick={() => handleOpenRevoke(officer)}
-                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <UserX className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -428,89 +342,7 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════════
-          MODAL 2: EDIT ROLE / POSITION
-         ═══════════════════════════════════════════════════════════════════════ */}
-      {editOfficer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" onClick={() => setEditOfficer(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden z-10 text-left">
-            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between">
-              <h3 className="text-white font-bold text-lg">Change Officer Position</h3>
-              <button
-                type="button"
-                onClick={() => setEditOfficer(null)}
-                className="text-white/70 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Officer</label>
-                <div className="font-bold text-gray-900">{editOfficer.studentName}</div>
-                <div className="text-xs text-gray-500">
-                  {orgMap.get(editOfficer.organizationId)?.acronym} • {editOfficer.studentId}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1.5">
-                  Select New Position <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={editRoleId}
-                  onChange={(e) => setEditRoleId(e.target.value)}
-                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#001A4D]"
-                >
-                  <option value="">Select a role...</option>
-                  {activeRoles.map((role) => (
-                    <option key={role.id} value={role.id}>
-                      {role.name} {role.isRequired ? '(Required)' : ''}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <label className="flex items-start gap-3 p-3 rounded-xl border border-gray-200 bg-gray-50 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={editWebPortalAccess}
-                  onChange={(e) => setEditWebPortalAccess(e.target.checked)}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-[#001A4D] focus:ring-[#0E4EBD]"
-                />
-                <div className="text-xs leading-relaxed">
-                  <span className="block font-bold text-[#001A4D]">Organization Web Portal Access</span>
-                  <span className="block text-gray-600 mt-0.5">
-                    When enabled, this officer can log in to the Web Portal for this organization and cannot be assigned to another organization.
-                  </span>
-                </div>
-              </label>
-
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setEditOfficer(null)}
-                  disabled={isProcessing}
-                  className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSaveRole}
-                  disabled={isProcessing || !editRoleId}
-                  className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#001A4D]/90 disabled:opacity-40"
-                >
-                  {isProcessing ? 'Updating...' : 'Save Position'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════════════
-          MODAL 3: RESET CREDENTIALS / EMAIL NEW PASSWORD
+          MODAL 2: RESET CREDENTIALS / EMAIL NEW PASSWORD
          ═══════════════════════════════════════════════════════════════════════ */}
       {resetOfficer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -592,67 +424,6 @@ export default function OfficerManagement({ onUnsavedChange }: OfficerManagement
                   className="flex-1 py-2.5 bg-[#001A4D] hover:bg-[#001A4D]/90 text-white rounded-xl text-sm font-bold disabled:opacity-40"
                 >
                   {isProcessing ? 'Sending Email...' : 'Confirm & Email Password'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════════════
-          MODAL 4: REVOKE OFFICER CONFIRMATION
-         ═══════════════════════════════════════════════════════════════════════ */}
-      {revokeOfficer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" onClick={() => setRevokeOfficer(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden z-10 text-left">
-            <div className="bg-red-600 px-6 py-4 flex items-center justify-between">
-              <h3 className="text-white font-bold text-lg">Revoke Officer</h3>
-              <button
-                type="button"
-                onClick={() => setRevokeOfficer(null)}
-                className="text-white/70 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="flex items-start gap-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-red-700">
-                  Revoking <span className="font-bold">{revokeOfficer.studentName}</span> will immediately terminate their officer privileges and login access to the Officer Portal.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-gray-700 mb-1.5">
-                  Type <span className="font-mono font-bold text-red-600">REVOKE</span> to confirm
-                </label>
-                <input
-                  type="text"
-                  value={revokeConfirmation}
-                  onChange={(e) => setRevokeConfirmation(e.target.value)}
-                  placeholder="REVOKE"
-                  className="w-full px-3 py-2 border border-red-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-red-500"
-                />
-              </div>
-
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  onClick={() => setRevokeOfficer(null)}
-                  disabled={isProcessing}
-                  className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmRevoke}
-                  disabled={isProcessing || revokeConfirmation !== 'REVOKE'}
-                  className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-bold hover:bg-red-700 disabled:opacity-40"
-                >
-                  {isProcessing ? 'Revoking...' : 'Revoke Officer'}
                 </button>
               </div>
             </div>

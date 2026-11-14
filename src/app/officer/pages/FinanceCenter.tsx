@@ -1511,9 +1511,17 @@ function StudentCollectionsAndPayablesTab({
     setMembersPage(1);
   }, [searchQuery, memberStatusFilter]);
 
-  // Active club members lookup
+  // Active club members lookup (used for assigning new club-wide fees/dues)
   const activeMembers = useMemo(() => {
     return orgMembers.filter((m) => m && m.status === 'active');
+  }, [orgMembers]);
+
+  // Members shown in financial collections (active, scheduled-for-removal, plus removed/inactive members who still have recorded payables)
+  const collectionMembers = useMemo(() => {
+    return orgMembers.filter((m) => {
+      if (!m) return false;
+      return ['active', 'pending_removal', 'removed', 'inactive', 'suspended'].includes(m.status || 'active');
+    });
   }, [orgMembers]);
 
   const studentMap = useMemo(() => {
@@ -1527,45 +1535,63 @@ function StudentCollectionsAndPayablesTab({
     return map;
   }, [allStudents]);
 
-  // Build memberGroups strictly for active members of this club
+  // Build memberGroups for current members + removed/inactive members who still have dues or fines on record
   const memberGroups = useMemo(() => {
-    return activeMembers.map((m) => {
-      const sDoc =
-        studentMap.get((m.studentId || '').toLowerCase().trim()) ||
-        studentMap.get((m.id || '').toLowerCase().trim()) ||
-        studentMap.get((m.email || '').toLowerCase().trim());
+    return collectionMembers
+      .map((m) => {
+        const sDoc =
+          studentMap.get((m.studentId || '').toLowerCase().trim()) ||
+          studentMap.get((m.studentSchoolId || '').toLowerCase().trim()) ||
+          studentMap.get((m.authUid || '').toLowerCase().trim()) ||
+          studentMap.get((m.id || '').toLowerCase().trim()) ||
+          studentMap.get((m.email || '').toLowerCase().trim());
 
-      const possibleIds = new Set<string>();
-      if (m.studentId) possibleIds.add(m.studentId.toLowerCase().trim());
-      if (m.id) possibleIds.add(m.id.toLowerCase().trim());
-      if (sDoc?.id) possibleIds.add(sDoc.id.toLowerCase().trim());
-      if (sDoc?.authUid) possibleIds.add(sDoc.authUid.toLowerCase().trim());
-      if (sDoc?.studentId) possibleIds.add(sDoc.studentId.toLowerCase().trim());
+        const possibleIds = new Set<string>();
+        if (m.studentId) possibleIds.add(m.studentId.toLowerCase().trim());
+        if (m.studentSchoolId) possibleIds.add(m.studentSchoolId.toLowerCase().trim());
+        if (m.authUid) possibleIds.add(m.authUid.toLowerCase().trim());
+        if (m.id) possibleIds.add(m.id.toLowerCase().trim());
+        if (sDoc?.id) possibleIds.add(sDoc.id.toLowerCase().trim());
+        if (sDoc?.authUid) possibleIds.add(sDoc.authUid.toLowerCase().trim());
+        if (sDoc?.studentId) possibleIds.add(sDoc.studentId.toLowerCase().trim());
 
-      // Filter payables that belong to this member
-      const memberPayables = payables.filter((p) => {
-        const pStudentId = (p.studentId || '').toLowerCase().trim();
-        const pSchoolId = (p.studentSchoolId || '').toLowerCase().trim();
-        return (pStudentId && possibleIds.has(pStudentId)) || (pSchoolId && possibleIds.has(pSchoolId));
-      });
+        // Filter payables that belong to this member
+        const memberPayables = payables.filter((p) => {
+          const pStudentId = (p.studentId || '').toLowerCase().trim();
+          const pSchoolId = (p.studentSchoolId || '').toLowerCase().trim();
+          return (pStudentId && possibleIds.has(pStudentId)) || (pSchoolId && possibleIds.has(pSchoolId));
+        });
 
-      const officialName = sDoc
-        ? formatPersonName(sDoc)
-        : (m.studentName || 'Member');
-      const officialSchoolId = sDoc?.studentId || m.studentId || m.id;
-      const officialCourse = m.course || sDoc?.course || sDoc?.courseCode || '';
-      const officialYear = m.year || sDoc?.year || sDoc?.yearLevel || '';
+        // Keep active & pending_removal always; keep removed/inactive/suspended whenever they have dues or fines on record
+        const isCurrent = m.status === 'active' || m.status === 'pending_removal';
+        if (!isCurrent && memberPayables.length === 0) {
+          return null;
+        }
 
-      return {
-        studentId: m.studentId || m.id,
-        studentName: officialName,
-        schoolId: officialSchoolId,
-        courseCode: officialCourse,
-        yearLevel: officialYear,
-        payables: memberPayables,
-      };
-    });
-  }, [activeMembers, studentMap, payables]);
+        const officialName = sDoc
+          ? formatPersonName(sDoc)
+          : (m.studentName || 'Member');
+        const officialSchoolId = sDoc?.studentId || m.studentSchoolId || m.studentId || m.id;
+        const officialCourse = m.course || sDoc?.course || sDoc?.courseCode || '';
+        const officialYear = m.year || sDoc?.year || sDoc?.yearLevel || '';
+        const statusSuffix =
+          m.status === 'pending_removal'
+            ? ' (Removal Scheduled)'
+            : m.status === 'removed'
+              ? ' (Removed)'
+              : '';
+
+        return {
+          studentId: m.studentId || m.id,
+          studentName: `${officialName}${statusSuffix}`,
+          schoolId: officialSchoolId,
+          courseCode: officialCourse,
+          yearLevel: officialYear,
+          payables: memberPayables,
+        };
+      })
+      .filter((group): group is NonNullable<typeof group> => group !== null);
+  }, [collectionMembers, studentMap, payables]);
 
   // Overall financial calculations scoped strictly to club members
   const totalAssigned = useMemo(() => {

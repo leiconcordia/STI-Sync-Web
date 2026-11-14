@@ -31,7 +31,11 @@ import {
 import { toast } from 'sonner';
 import DigitalSignatureModal from '../../../signatory/components/DigitalSignatureModal';
 import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
-import { formatDateLong } from '../utils/proposal-calculations';
+import {
+  formatDateLong,
+  checkProjectedBalance,
+  PROJECTED_REVENUE_DEFICIT_WARNING,
+} from '../utils/proposal-calculations';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
 import type {
@@ -340,6 +344,13 @@ export default function CreateProposalModal({
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedReferenceNo, setSubmittedReferenceNo] = useState<string | null>(null);
+  const hasNotifiedAdviserDraftRef = useRef(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      hasNotifiedAdviserDraftRef.current = false;
+    }
+  }, [isOpen]);
 
   // Maker Signature State (Adviser / Submitter only — student officers never sign APs)
   const [makerSignatureUrl, setMakerSignatureUrl] = useState<string>(() => {
@@ -900,6 +911,9 @@ export default function CreateProposalModal({
           }
         }
       }
+      if (checkProjectedBalance(data.financialProjections, data.fundingSource).isDeficit) {
+        errs.projectedBalance = PROJECTED_REVENUE_DEFICIT_WARNING;
+      }
     }
 
     if (stepNumber === 7) {
@@ -1062,6 +1076,7 @@ export default function CreateProposalModal({
           ]
         : formData.approvalChain;
 
+      const shouldNotifyAdviser = isOfficerForm && !isAdviserMaker && !hasNotifiedAdviserDraftRef.current;
       const result = await saveProposalDraft(
         {
           ...formData,
@@ -1081,8 +1096,12 @@ export default function CreateProposalModal({
           ...(effectiveReturnedSnapshot ? { returnedSnapshot: effectiveReturnedSnapshot } : {}),
         },
         currentUser,
-        formData.id
+        formData.id,
+        { notifyAdviser: shouldNotifyAdviser }
       );
+      if (shouldNotifyAdviser) {
+        hasNotifiedAdviserDraftRef.current = true;
+      }
       updateFormData({
         id: result.id,
         referenceNo: result.referenceNo,
@@ -1226,7 +1245,14 @@ export default function CreateProposalModal({
     }
   };
 
+  const hasRevenueDeficit = useMemo(() => {
+    return checkProjectedBalance(formData.financialProjections, formData.fundingSource).isDeficit;
+  }, [formData.financialProjections, formData.fundingSource]);
+
   const canSubmitProposal = useMemo(() => {
+    if (hasRevenueDeficit) {
+      return false;
+    }
     if (formData.isUrgent && !(formData.urgentJustification || '').trim()) {
       return false;
     }
@@ -1247,7 +1273,7 @@ export default function CreateProposalModal({
       return false;
     }
     return true;
-  }, [formData.isUrgent, formData.urgentJustification, formData.title, formData.description, formData.approvalChain, isReturnedProposal, formData.resubmissionNote]);
+  }, [hasRevenueDeficit, formData.isUrgent, formData.urgentJustification, formData.title, formData.description, formData.fundingSource, formData.approvalChain, isReturnedProposal, formData.resubmissionNote]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/70 backdrop-blur-xs overflow-y-auto">
@@ -1695,9 +1721,11 @@ export default function CreateProposalModal({
                 }`}
                 title={
                   !canSubmitProposal
-                    ? formData.isUrgent && !(formData.urgentJustification || '').trim()
-                      ? 'Please return to Step 4 to provide an urgent submission justification.'
-                      : 'Please complete all required fields before submitting.'
+                    ? hasRevenueDeficit
+                      ? PROJECTED_REVENUE_DEFICIT_WARNING
+                      : formData.isUrgent && !(formData.urgentJustification || '').trim()
+                        ? 'Please return to Step 4 to provide an urgent submission justification.'
+                        : 'Please complete all required fields before submitting.'
                     : undefined
                 }
               >

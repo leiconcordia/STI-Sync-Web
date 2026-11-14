@@ -350,6 +350,8 @@ export default function PublishStudentFeedModal({
             onChangeSections={setTargetSections}
             readOnly={readOnly}
             hasHostingOrg={Boolean((activity as any).hostingOrgId && (activity as any).hostingOrgId !== 'sas')}
+            hostingOrgId={(activity as any).hostingOrgId || (activity as any).organizationId}
+            excludedMemberIds={(activity as any).excludedMemberIds}
             title="Target Participant Filters"
             subtitle="Choose which students will see and participate in this activity on the STI Sync Mobile App."
             reachLabel="students will see this in their mobile feed"

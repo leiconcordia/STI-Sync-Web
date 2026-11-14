@@ -28,6 +28,7 @@ import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.serv
 import { PAYABLES_COLLECTION } from '../../finance/services/payable.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { finalizeEventAttendance } from '../../attendance/services/attendance.service';
+import { reconcilePendingMemberRemovalsForOrg } from '../../organizations/services/member.service';
 import type { EventDocument, EventProposalHistoryLog } from '../types/event.types';
 import { getEventTimingStatus, areEventSessionsOver, canConcludeEvent, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { isEventLiquidationExempt } from '../utils/organization-display.utils';
@@ -225,6 +226,14 @@ export async function concludeEvent(
     updateDoc(doc(db, 'activities', eventId), updatePayload),
     updateDoc(doc(db, 'events', eventId), updatePayload),
   ]);
+
+  // Finalize any scheduled club member removals whose activity has now ended
+  const concludedOrgId = String(eventData.hostingOrgId || (eventData as any).organizationId || '').trim();
+  if (concludedOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(concludedOrgId.toLowerCase())) {
+    reconcilePendingMemberRemovalsForOrg(concludedOrgId).catch((err) => {
+      console.warn('[concludeEvent] Scheduled removal reconciliation warning:', err);
+    });
+  }
 
   try {
     await logAuditEvent({

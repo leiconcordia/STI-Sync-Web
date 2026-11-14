@@ -5,13 +5,14 @@ import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
   Filter, ChevronDown, RotateCcw, MapPin, Download,
   Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2,
-  FileText, SlidersHorizontal, Lock, Edit
+  FileText, SlidersHorizontal, Lock, Edit, AlertTriangle, ArrowRight
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import EventProposalReview from "../components/EventProposalReview";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
 import { getProposalById } from "../../modules/activity-proposals/services/proposal.service";
+import WithdrawConfirmModal from "../../modules/workflow/components/WithdrawConfirmModal";
 
 import { useAllEvents, useDraftEvents } from "../../modules/events/hooks/useEventStream";
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
@@ -49,7 +50,7 @@ import { TrashRepositoryViewer } from "../../modules/workflow/components/TrashRe
 
 const ITEMS_PER_PAGE = 8;
 
-type TabValue = "all" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "cancelled" | "trash";
+type TabValue = "all" | "urgent" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "cancelled" | "trash";
 type DateRangeOption = "all" | "this_week" | "this_month" | "custom";
 
 function isWithinDateRange(
@@ -262,7 +263,7 @@ export function EventApprovals() {
 
   useEffect(() => {
     const tabParam = searchParams.get("tab");
-    if (tabParam && ["all", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "cancelled", "trash"].includes(tabParam)) {
+    if (tabParam && ["all", "urgent", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "cancelled", "trash"].includes(tabParam)) {
       setActiveTab(tabParam as TabValue);
       setCurrentPage(1);
     }
@@ -392,6 +393,16 @@ export function EventApprovals() {
         const isApprovedStatus = !isCancelled && !isCancellationPending && ((hasChain && fullySigned) || (!isRet && (event.proposalStatus === "approved" || event.status === "approved" || (event as any).status === "approved_president" || (event as any).isApproved === true)));
         const effectiveIsRet = !isApprovedStatus && !isCancelled && isRet;
 
+        if (activeTab === "urgent") {
+          if (
+            !Boolean((event as any).isUrgent) ||
+            isApprovedStatus ||
+            effectiveIsRet ||
+            (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review" && event.proposalStatus !== "under_review")
+          ) {
+            return false;
+          }
+        }
         if (activeTab === "pending" && (isApprovedStatus || effectiveIsRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review" && event.proposalStatus !== "under_review"))) return false;
         if (activeTab === "returned") {
           if (!effectiveIsRet) return false;
@@ -447,7 +458,12 @@ export function EventApprovals() {
 
         return true;
       })
-      .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
+      .sort((a, b) => {
+        const aUrgent = Boolean((a as any).isUrgent) && (a.proposalStatus === "pending" || a.proposalStatus === "pending_review" || a.proposalStatus === "under_review");
+        const bUrgent = Boolean((b as any).isUrgent) && (b.proposalStatus === "pending" || b.proposalStatus === "pending_review" || b.proposalStatus === "under_review");
+        if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+        return getEventTimestamp(b) - getEventTimestamp(a);
+      });
   }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters]);
 
   // Filtered drafts list (Sorted LATEST FIRST)
@@ -486,11 +502,31 @@ export function EventApprovals() {
         if (q && !draft.title?.toLowerCase().includes(q) && !draft.referenceId?.toLowerCase().includes(q)) return false;
         return true;
       })
-      .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
+      .sort((a, b) => {
+        const aUrgent = Boolean((a as any).isUrgent) && (a.proposalStatus === "pending" || a.proposalStatus === "pending_review" || a.proposalStatus === "under_review");
+        const bUrgent = Boolean((b as any).isUrgent) && (b.proposalStatus === "pending" || b.proposalStatus === "pending_review" || b.proposalStatus === "under_review");
+        if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+        return getEventTimestamp(b) - getEventTimestamp(a);
+      });
   }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSchoolYear, filterSemester, searchQuery, semesters]);
 
   // Counts (excluding archived & soft-deleted from active tallies)
   const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
+  const urgentPendingEvents = useMemo(
+    () =>
+      events.filter(
+        (e) =>
+          Boolean((e as any).isUrgent) &&
+          (e.proposalStatus === "pending" || e.proposalStatus === "pending_review" || e.proposalStatus === "under_review") &&
+          e.status !== "cancelled" &&
+          !e.isArchived &&
+          !e.isDeleted &&
+          e.proposalStatus !== "approved" &&
+          !(e as any).isApproved
+      ),
+    [events]
+  );
+  const urgentCount = urgentPendingEvents.length;
   const pendingCount = events.filter((e) => (e.proposalStatus === "pending" || e.proposalStatus === "pending_review" || e.proposalStatus === "under_review") && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const approvedCount = events.filter((e) => e.proposalStatus === "approved" && e.status !== "completed" && !isEventPast(e) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const returnedCount = events.filter((e) => !isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
@@ -527,7 +563,9 @@ export function EventApprovals() {
     setIsProposalModalOpen(true);
   };
 
-  const handleWithdraw = async (event: EventDocument) => {
+  const [withdrawingEventTarget, setWithdrawingEventTarget] = useState<EventDocument | null>(null);
+
+  const handleWithdraw = (event: EventDocument) => {
     const withdrawCheck = canWithdrawProposal(event, 'admin', adviserProfile?.uid);
     if (!withdrawCheck.canWithdraw) {
       toast.error('Cannot withdraw proposal', {
@@ -536,26 +574,28 @@ export function EventApprovals() {
       return;
     }
 
-    const confirmWithdraw = window.confirm(
-      `Are you sure you want to withdraw "${event.title}"? The proposal will return to Draft status so you can make revisions before evaluations proceed.`
-    );
-    if (!confirmWithdraw) return;
+    setWithdrawingEventTarget(event);
+  };
 
-    setWithdrawingId(event.id);
+  const confirmWithdrawExecution = async () => {
+    if (!withdrawingEventTarget) return;
+    const targetEvent = withdrawingEventTarget;
+    setWithdrawingId(targetEvent.id);
     try {
       await withdrawProposal(
-        event.id,
+        targetEvent.id,
         adviserProfile?.uid || 'admin-user',
         adviserProfile?.displayName || 'SAS Admin'
       );
       toast.success('Proposal Withdrawn', {
-        description: `"${event.title}" has been returned to Draft status. Opening editor...`,
+        description: `"${targetEvent.title}" has been returned to Draft status. Opening editor...`,
       });
+      setWithdrawingEventTarget(null);
       try {
-        const fullProp = await getProposalById(event.id);
-        setResumeDraft(fullProp || { ...event, proposalStatus: 'draft', status: 'draft' });
+        const fullProp = await getProposalById(targetEvent.id);
+        setResumeDraft(fullProp || { ...targetEvent, proposalStatus: 'draft', status: 'draft' });
       } catch {
-        setResumeDraft({ ...event, proposalStatus: 'draft', status: 'draft' });
+        setResumeDraft({ ...targetEvent, proposalStatus: 'draft', status: 'draft' });
       }
       setIsProposalModalOpen(true);
     } catch (err: any) {
@@ -935,6 +975,7 @@ export function EventApprovals() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
             {[
               { key: "all", label: "All", count: allCount },
+              ...(urgentCount > 0 ? [{ key: "urgent", label: "Urgent", count: urgentCount }] : []),
               { key: "pending", label: "Pending", count: pendingCount },
               { key: "approved", label: "Approved", count: approvedCount },
               { key: "returned", label: "Returned", count: returnedCount },
@@ -1293,6 +1334,12 @@ export function EventApprovals() {
                         {/* Activity & Reference */}
                         <td className="py-3.5 px-4 max-w-[240px]">
                           <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
+                            {Boolean((event as any).isUrgent) && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-black bg-rose-100 text-rose-800 border border-rose-200 uppercase tracking-wider flex-shrink-0">
+                                <AlertTriangle className="w-2.5 h-2.5 text-rose-700" />
+                                Urgent
+                              </span>
+                            )}
                             <span className="truncate">{event.title}</span>
                           </div>
                           {event.tagline && (
@@ -1662,7 +1709,14 @@ export function EventApprovals() {
         />
       )}
 
-
+      {/* Withdraw Confirmation Modal */}
+      <WithdrawConfirmModal
+        isOpen={Boolean(withdrawingEventTarget)}
+        onClose={() => setWithdrawingEventTarget(null)}
+        onConfirm={confirmWithdrawExecution}
+        documentTitle={withdrawingEventTarget?.title}
+        documentTypeLabel="Activity Proposal"
+      />
     </div>
   );
 }

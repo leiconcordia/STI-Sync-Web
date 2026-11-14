@@ -3,34 +3,31 @@ import { collection, query, where, onSnapshot, doc } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { PayableDocument, StudentEventCollectionGroup } from '../types/payable.types';
 import { formatAppDate, formatAppDateTime } from '../../../utils/date';
+import { createSingletonStream } from '../../../utils/createSingletonStream';
 
-export function useAllPayables() {
-  const [data, setData] = useState<PayableDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
+const allPayablesStream = createSingletonStream<PayableDocument[]>({
+  initialData: [],
+  start: (emit, emitError) => {
     const q = collection(db, 'payables');
-    const unsubscribe = onSnapshot(
+    return onSnapshot(
       q,
       (snapshot) => {
         const docs = snapshot.docs.map((d) => ({
           id: d.id,
           ...d.data(),
         })) as PayableDocument[];
-        setData(docs);
-        setLoading(false);
+        emit(docs);
       },
       (err) => {
         console.error('Error fetching all payables:', err);
-        setError(err);
-        setLoading(false);
+        emitError(err);
       }
     );
-    return () => unsubscribe();
-  }, []);
+  },
+});
 
-  return { data, loading, error };
+export function useAllPayables() {
+  return allPayablesStream.use();
 }
 
 export function useOrgPayables(organizationId: string | null, semesterId?: string | null) {
@@ -388,8 +385,7 @@ export function useOrgCollectionsStream(organizationId: string | null, semesterI
 
     const qMembers = query(
       collection(db, 'organization_members'),
-      where('organizationId', '==', organizationId),
-      where('status', '==', 'active')
+      where('organizationId', '==', organizationId)
     );
 
     let currentPayables: PayableDocument[] = [];
@@ -399,7 +395,7 @@ export function useOrgCollectionsStream(organizationId: string | null, semesterI
       const groupsMap = new Map<string, StudentEventCollectionGroup>();
 
       for (const doc of currentPayables) {
-        // For non-event club payables (membership dues, club fines, custom dues), strictly require that the student is an active member
+        // For non-event club payables (membership dues, club fines, custom dues), include current and former club members so dues/fines remain collectible even after removal
         const isClubPayable = !doc.eventId || doc.type === 'membership_due' || doc.type === 'dues' || doc.type === 'custom' || doc.type === 'org_fine';
         if (isClubPayable && activeMemberIds.size > 0) {
           const sId = (doc.studentId || '').toLowerCase().trim();
@@ -527,8 +523,13 @@ export function useOrgCollectionsStream(organizationId: string | null, semesterI
         const set = new Set<string>();
         snapshot.docs.forEach((d) => {
           const m = d.data();
+          const status = (m.status || 'active') as string;
+          if (!['active', 'pending_removal', 'removed', 'inactive', 'suspended'].includes(status)) {
+            return;
+          }
           if (m.studentId) set.add(String(m.studentId).toLowerCase().trim());
           if (m.studentSchoolId) set.add(String(m.studentSchoolId).toLowerCase().trim());
+          if (m.authUid) set.add(String(m.authUid).toLowerCase().trim());
           if (d.id) set.add(d.id.toLowerCase().trim());
         });
         activeMemberIds = set;

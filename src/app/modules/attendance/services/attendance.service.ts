@@ -98,11 +98,32 @@ export function isStudentTargetedForEvent(
 ): boolean {
   if (!student || !event) return false;
 
+  // 0. Check excludedMemberIds stamped when new club activities were created
+  if (Array.isArray(event.excludedMemberIds) && event.excludedMemberIds.length > 0) {
+    const excludedSet = new Set(
+      event.excludedMemberIds
+        .map((id: any) => String(id || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const studentKeys = [
+      student.studentId,
+      student.schoolId,
+      student.id,
+      student.authUid,
+    ]
+      .filter(Boolean)
+      .map((v: any) => String(v).trim().toLowerCase());
+    if (studentKeys.some((k) => excludedSet.has(k))) {
+      return false;
+    }
+  }
+
   // 1. Target Audience Scope (Members only vs All campus students)
   if (event.targetAudienceScope === 'members') {
-    if (orgMembers && orgMembers.length > 0) {
+    if (Array.isArray(orgMembers)) {
+      const targetOrgId = event.hostingOrgId || event.organizationId;
       const isMember = orgMembers.some((m) => {
-        const matchOrg = m.organizationId === event.hostingOrgId;
+        const matchOrg = m.organizationId === targetOrgId;
         const matchStudent =
           (m.studentId &&
             student.studentId &&
@@ -113,7 +134,12 @@ export function isStudentTargetedForEvent(
           (m.studentSchoolId &&
             student.studentId &&
             m.studentSchoolId.trim().toLowerCase() === student.studentId.trim().toLowerCase());
-        return matchOrg && matchStudent && m.status === 'active';
+        const isEligibleForThisActivity =
+          m.status === 'active' ||
+          (m.status === 'pending_removal' &&
+            Array.isArray(m.scheduledRemovalActivityIds) &&
+            m.scheduledRemovalActivityIds.includes(event.id));
+        return matchOrg && matchStudent && isEligibleForThisActivity;
       });
       if (!isMember) return false;
     }

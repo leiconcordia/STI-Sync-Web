@@ -41,6 +41,7 @@ import stiOrmocLogo from '../../../imports/STI_ORMOC_LOGO.jpg';
 import { SIGNATORY_SESSION_KEY } from '../../auth/hooks/useOfficerAuth';
 import DigitalSignatureModal from './DigitalSignatureModal';
 import SignatoryChangePasswordModal from './SignatoryChangePasswordModal';
+import { NotificationDropdown } from '../../modules/notifications/components/NotificationDropdown';
 
 export default function SignatoryLayout() {
   const navigate = useNavigate();
@@ -256,6 +257,16 @@ export default function SignatoryLayout() {
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="bg-white rounded-xl shadow-xs">
+            <NotificationDropdown
+              role="signatory"
+              userId={
+                [session?.id, session?.uid, session?.employeeId, session?.email]
+                  .filter(Boolean)
+                  .join('|') || undefined
+              }
+            />
+          </div>
           <button
             type="button"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -387,6 +398,14 @@ export default function SignatoryLayout() {
           </div>
 
           <div className="flex items-center gap-4">
+            <NotificationDropdown
+              role="signatory"
+              userId={
+                [session?.id, session?.uid, session?.employeeId, session?.email]
+                  .filter(Boolean)
+                  .join('|') || undefined
+              }
+            />
             <div className="text-right text-xs">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
                 Session Active

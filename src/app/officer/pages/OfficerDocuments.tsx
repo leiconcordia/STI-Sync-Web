@@ -129,6 +129,59 @@ RECONCILIATION:
 Prepared By (Treasurer): __________________
 Audited By (Auditor): _____________________
 Certified Correct (President): ____________`;
+  } else if (name.includes('Post-Activity')) {
+    content = `STI COLLEGE ORMOC - STUDENT AFFAIRS SERVICES
+POST-ACTIVITY REPORT
+
+Date: ________________________
+
+Activity title: ____________________________________________________
+Description: _______________________________________________________
+Organizer/s: _______________________________________________________
+Mechanics (Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.):
+____________________________________________________________________
+Materials: _________________________________________________________
+Attendance (Attach attendance list, if available.):
+  How many attended? | _______________________________
+  Who attended?      | _______________________________
+Marketing: _________________________________________________________
+Documentation: _____________________________________________________
+Date & time: _______________________________________________________
+Venue: _____________________________________________________________
+
+Results of activity (Include assessment of success based on indicators. Attach a sheet, if necessary.):
+  1. Achievement of Objectives:
+  2. Key Learnings / Insights Gained:
+  3. Enrichment of Learning Beyond the Classroom:
+  4. Reason for Venue Selection:
+  5. Food / Logistics Assessment:
+  6. Schedule Compliance:
+  7. Issues / Problems Encountered and Actions Taken:
+
+Financial report (Attach supporting receipts and list of participants who have/haven't paid.):
+  Description | Unit Amount | Total Amount
+  Revenue:
+  Expenses:
+  TOTAL
+  Balance (Revenue less Expenses)
+
+Remarks (For future activity improvements.):
+  Based on the overall conduct of the activity, the following observations and recommendations are noted for future improvement and better implementation of similar initiatives:
+  1. Program Flow and Content (Observations / Recommendations)
+  2. Participant Engagement (Observations / Recommendations)
+  3. Technical Setup (Observations / Recommendations)
+  4. Participant Preparedness and Expectations (Observations / Recommendations)
+
+VIII. Attachments (if applicable)
+  [ ] Attendance Sheet
+  [ ] Photos of Activity
+  [ ] Program / Invitation
+  [ ] Feedback / Evaluation Summary
+  [ ] Copies of Certificates, Letters, etc
+
+Prepared by: _______________________    Noted by: _______________________
+
+Note: This report must be submitted to the Administrator within 15 school days from the date of activity completion.`;
   } else {
     content = `STI COLLEGE - STUDENT AFFAIRS SERVICES (SAS)
 STUDENT ORGANIZATION HANDBOOK & COMPLIANCE GUIDELINES
@@ -861,11 +914,12 @@ function SubmissionsTab({ orgId, orgName, orgAcronym, orgTypeId, officerName, of
         </div>
 
         {showTemplatesShelf && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 mt-3 pt-3 border-t border-blue-200/60">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5 mt-3 pt-3 border-t border-blue-200/60">
             {[
               { title: "Activity Proposal Template", ext: "DOCX", type: "docx" as const, desc: "Standard activity permit with signatory matrix", color: "border-blue-200 hover:border-[#0E4EBD] bg-white" },
               { title: "Off-Campus Parent Waiver", ext: "PDF", type: "pdf" as const, desc: "Mandatory liability release for off-campus events", color: "border-red-200 hover:border-red-500 bg-white" },
               { title: "Financial Liquidation Form", ext: "XLSX", type: "xlsx" as const, desc: "Expense reconciliation and receipt audit sheet", color: "border-green-200 hover:border-green-600 bg-white" },
+              { title: "Post-Activity Report Template", ext: "DOCX", type: "docx" as const, desc: "Official post-event assessment and attachments checklist", color: "border-amber-200 hover:border-amber-600 bg-white" },
               { title: "Student Org Handbook", ext: "PDF", type: "pdf" as const, desc: "A.Y. 2025–2026 campus guidelines and policies", color: "border-purple-200 hover:border-purple-600 bg-white" },
             ].map((tmpl) => (
               <div key={tmpl.title} className={`p-3 rounded-xl border transition-all flex flex-col justify-between ${tmpl.color}`}>

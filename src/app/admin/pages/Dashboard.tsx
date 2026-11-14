@@ -58,6 +58,7 @@ interface ApprovalItem {
   fundingBadgeClass: string;
   actionLabel: string;
   actionButtonClass: string;
+  isUrgent?: boolean;
 }
 
 function isOrganizationSubmission(
@@ -134,10 +135,13 @@ export function Dashboard() {
   const pendingActivities = useMemo(() => {
     return events.filter(
       (e) =>
-        e.proposalStatus === "pending_review" ||
-        e.proposalStatus === "pending" ||
-        (e as any).proposalStatus === "submitted" ||
-        (e as any).status === "pending"
+        !e.isArchived &&
+        !e.isDeleted &&
+        e.status !== "cancelled" &&
+        (e.proposalStatus === "pending_review" ||
+          e.proposalStatus === "pending" ||
+          (e as any).proposalStatus === "submitted" ||
+          (e as any).status === "pending")
     );
   }, [events]);
 
@@ -327,7 +331,7 @@ export function Dashboard() {
         timestampMs: ms,
         dateFormatted: formatTimestampDate((e as any).submittedAt || e.createdAt || (e as any).updatedAt),
         route: `/home/event-approvals?tab=pending&id=${e.id}`,
-        badgeColor: "bg-[#0E4EBD]",
+        badgeColor: (e as any).isUrgent ? "bg-rose-600" : "bg-[#0E4EBD]",
         fundingBadge: isSchoolFunded ? "School Funded" : "Club Funded",
         fundingBadgeClass: isSchoolFunded
           ? "bg-blue-50 text-[#003B73] border-blue-200"
@@ -336,6 +340,7 @@ export function Dashboard() {
         actionButtonClass: isSchoolFunded
           ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
           : "bg-emerald-600 hover:bg-emerald-700 text-white",
+        isUrgent: Boolean((e as any).isUrgent),
       });
     });
 
@@ -400,8 +405,13 @@ export function Dashboard() {
       });
     });
 
-    // Sort newest submission first (LIFO): last submission on top, earliest on bottom
-    items.sort((a, b) => b.timestampMs - a.timestampMs);
+    // Sort urgent submissions first, then newest submission first (LIFO)
+    items.sort((a, b) => {
+      if (Boolean(a.isUrgent) !== Boolean(b.isUrgent)) {
+        return a.isUrgent ? -1 : 1;
+      }
+      return b.timestampMs - a.timestampMs;
+    });
     return items;
   }, [pendingIncomingDocs, pendingActivities, pendingLiquidations, pendingPARs, orgMap, events]);
 
@@ -575,6 +585,12 @@ export function Dashboard() {
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-1.5">
                             <div className="flex items-center gap-1.5 min-w-0">
+                              {item.isUrgent && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-200 shrink-0">
+                                  <AlertTriangle className="w-2.5 h-2.5 text-rose-700" />
+                                  Urgent
+                                </span>
+                              )}
                               <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider truncate">
                                 {item.domainLabel}
                               </span>

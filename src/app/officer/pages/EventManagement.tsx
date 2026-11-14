@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import CreateProposalModal from '../../modules/activity-proposals/components/CreateProposalModal';
 import { getProposalById } from '../../modules/activity-proposals/services/proposal.service';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrgEvents } from '../../modules/events/hooks/useEventStream';
@@ -437,7 +438,9 @@ export default function EventManagement() {
     }
   };
 
-  const handleWithdraw = async (event: EventDocument) => {
+  const [withdrawingEventTarget, setWithdrawingEventTarget] = useState<EventDocument | null>(null);
+
+  const handleWithdraw = (event: EventDocument) => {
     if (!profile) return;
     const withdrawCheck = canWithdrawProposal(event, 'officer', profile.uid, activeOrgId);
     if (!withdrawCheck.canWithdraw) {
@@ -447,22 +450,24 @@ export default function EventManagement() {
       return;
     }
 
-    const confirmWithdraw = window.confirm(
-      `Are you sure you want to withdraw "${event.title}"? The proposal will return to Draft status so you can make revisions before SAO reviews it.`
-    );
-    if (!confirmWithdraw) return;
+    setWithdrawingEventTarget(event);
+  };
 
-    setWithdrawingId(event.id);
+  const confirmWithdrawExecution = async () => {
+    if (!profile || !withdrawingEventTarget) return;
+    const targetEvent = withdrawingEventTarget;
+    setWithdrawingId(targetEvent.id);
     try {
-      await withdrawProposal(event.id, profile.uid, profile.studentName);
+      await withdrawProposal(targetEvent.id, profile.uid, profile.studentName);
       toast.success('Proposal Withdrawn', {
-        description: `"${event.title}" has been returned to Draft status. Opening editor...`,
+        description: `"${targetEvent.title}" has been returned to Draft status. Opening editor...`,
       });
+      setWithdrawingEventTarget(null);
       try {
-        const prop = await getProposalById(event.id);
-        setApInitialData(prop || { ...event, proposalStatus: 'draft', status: 'draft' });
+        const prop = await getProposalById(targetEvent.id);
+        setApInitialData(prop || { ...targetEvent, proposalStatus: 'draft', status: 'draft' });
       } catch {
-        setApInitialData({ ...event, proposalStatus: 'draft', status: 'draft' });
+        setApInitialData({ ...targetEvent, proposalStatus: 'draft', status: 'draft' });
       }
       setIsApModalOpen(true);
     } catch (err: any) {
@@ -1414,7 +1419,14 @@ export default function EventManagement() {
         />
       )}
 
-
+      {/* Withdraw Confirmation Modal */}
+      <WithdrawConfirmModal
+        isOpen={Boolean(withdrawingEventTarget)}
+        onClose={() => setWithdrawingEventTarget(null)}
+        onConfirm={confirmWithdrawExecution}
+        documentTitle={withdrawingEventTarget?.title}
+        documentTypeLabel="Activity Proposal"
+      />
     </div>
   );
 }

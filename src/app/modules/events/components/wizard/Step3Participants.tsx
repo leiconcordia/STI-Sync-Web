@@ -306,16 +306,36 @@ export default function Step3Participants({ data, onUpdate, isOfficer, errors = 
     updateField('targetSections', []);
   };
 
-  // Build member ID sets for fast lookup
+  // Build active member ID sets and excluded member ID sets for fast lookup
   const memberStudentIds = useMemo(() => {
     const set = new Set<string>();
-    orgMembers.forEach(m => {
-      if (m.studentId) set.add(m.studentId);
-      if (m.studentSchoolId) set.add(m.studentSchoolId);
-      if (m.authUid) set.add(m.authUid);
-    });
+    orgMembers
+      .filter((m) => m.status === 'active')
+      .forEach((m) => {
+        if (m.studentId) set.add(String(m.studentId).trim().toLowerCase());
+        if (m.studentSchoolId) set.add(String(m.studentSchoolId).trim().toLowerCase());
+        if (m.authUid) set.add(String(m.authUid).trim().toLowerCase());
+      });
     return set;
   }, [orgMembers]);
+
+  const excludedMemberIds = useMemo(() => {
+    const set = new Set<string>();
+    const rawExcluded = Array.isArray((data as any).excludedMemberIds)
+      ? (data as any).excludedMemberIds
+      : [];
+    rawExcluded.forEach((id: any) => {
+      if (id) set.add(String(id).trim().toLowerCase());
+    });
+    orgMembers
+      .filter((m) => m.status === 'pending_removal' || m.status === 'removed')
+      .forEach((m) => {
+        if (m.studentId) set.add(String(m.studentId).trim().toLowerCase());
+        if (m.studentSchoolId) set.add(String(m.studentSchoolId).trim().toLowerCase());
+        if (m.authUid) set.add(String(m.authUid).trim().toLowerCase());
+      });
+    return set;
+  }, [orgMembers, (data as any).excludedMemberIds]);
 
   // Calculate actual matching students based on Active status, Audience Scope, Courses, Year Levels, and Sections
   const matchingStudents = useMemo(() => {
@@ -324,12 +344,18 @@ export default function Step3Participants({ data, onUpdate, isOfficer, errors = 
       const isActive = !s.archived && (s.status === 'ACTIVE' || (!s.status && !s.archived) || s.status?.toUpperCase() === 'ACTIVE') && s.status !== 'INACTIVE' && s.status !== 'ARCHIVED' && s.status !== 'RETURNED' && s.status !== 'DROPPED';
       if (!isActive) return false;
 
-      // 2. If scope is members only (officer option), constrain to org members
+      const sKeys = [s.studentId, s.id, s.authUid]
+        .filter(Boolean)
+        .map((v) => String(v).trim().toLowerCase());
+
+      // Exclude members already removed or scheduled for removal from newly created club activities
+      if (excludedMemberIds.size > 0 && sKeys.some((k) => excludedMemberIds.has(k))) {
+        return false;
+      }
+
+      // 2. If scope is members only (officer option), constrain strictly to active org members
       if (isOfficer && selectedScope === 'members') {
-        const isOrgMember =
-          memberStudentIds.size > 0
-            ? memberStudentIds.has(s.studentId) || memberStudentIds.has(s.id) || (s.authUid && memberStudentIds.has(s.authUid))
-            : true;
+        const isOrgMember = sKeys.some((k) => memberStudentIds.has(k));
         if (!isOrgMember) return false;
       }
 
@@ -367,8 +393,13 @@ export default function Step3Participants({ data, onUpdate, isOfficer, errors = 
     });
   }, [students, isOfficer, selectedScope, selectedCourses, selectedYears, selectedSections, activeCourses, memberStudentIds]);
 
-  // Sync expectedParticipantCount to data
+  // Sync expectedParticipantCount to data only when not anchored by a linked Activity Proposal's estimated attendance
   useEffect(() => {
+    const hasApEstimate =
+      Boolean((data as any).isActivityProposal) ||
+      Boolean((data as any).proposalId) ||
+      Boolean((data as any).estAttendanceCount && Number((data as any).estAttendanceCount) > 0);
+    if (hasApEstimate) return;
     const count = matchingStudents.length;
     updateField('expectedParticipantCount', count);
   }, [matchingStudents.length]);

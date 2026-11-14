@@ -51,16 +51,14 @@ function PasswordStrength({ password }: { password: string }) {
         {[1, 2, 3, 4].map((i) => (
           <div
             key={i}
-            className={`h-1 flex-1 rounded-full transition-all ${
-              i <= score ? colors[score] : 'bg-gray-200'
-            }`}
+            className={`h-1 flex-1 rounded-full transition-all ${i <= score ? colors[score] : 'bg-gray-200'
+              }`}
           />
         ))}
       </div>
       {score > 0 && (
-        <p className={`text-[11px] font-medium ${
-          score === 1 ? 'text-red-500' : score === 2 ? 'text-amber-500' : score === 3 ? 'text-blue-500' : 'text-green-600'
-        }`}>
+        <p className={`text-[11px] font-medium ${score === 1 ? 'text-red-500' : score === 2 ? 'text-amber-500' : score === 3 ? 'text-blue-500' : 'text-green-600'
+          }`}>
           {labels[score]} password
         </p>
       )}
@@ -305,7 +303,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
           const parsed = JSON.parse(rawSession);
           parsed.signatureUrl = finalUrl;
           localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
-        } catch {}
+        } catch { }
       }
 
       setSignatureUrl(finalUrl);
@@ -534,11 +532,10 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                 <button
                   key={key}
                   onClick={() => handleTabChange(key)}
-                  className={`w-full text-left px-4 py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-between ${
-                    activeSection === key
-                      ? 'bg-[#F0F6FF] text-[#0E4EBD] font-bold'
-                      : 'text-gray-600 hover:bg-gray-50 hover:text-[#001A4D]'
-                  }`}
+                  className={`w-full text-left px-4 py-2.5 rounded-lg text-[14px] font-medium transition-colors flex items-center justify-between ${activeSection === key
+                    ? 'bg-[#F0F6FF] text-[#0E4EBD] font-bold'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-[#001A4D]'
+                    }`}
                 >
                   <span className="flex items-center gap-2">
                     {key === 'signature' && <PenTool className="w-4 h-4 text-[#0E4EBD]" />}
@@ -546,9 +543,8 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                   </span>
                   {key === 'signature' && (
                     <span
-                      className={`w-2 h-2 rounded-full ${
-                        signatureUrl ? 'bg-emerald-500' : 'bg-amber-500'
-                      }`}
+                      className={`w-2 h-2 rounded-full ${signatureUrl ? 'bg-emerald-500' : 'bg-amber-500'
+                        }`}
                       title={signatureUrl ? 'Signature registered' : 'No signature registered'}
                     />
                   )}
@@ -1011,49 +1007,6 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                     'Update Password'
                   )}
                 </button>
-
-                {/* Active sessions */}
-                <div className="pt-6 border-t border-gray-100">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-[#0E4EBD]" />
-                      <h3 className="text-[#001A4D] text-[15px] font-bold">Active Sessions</h3>
-                    </div>
-                    <button type="button" className="text-[13px] text-red-500 hover:text-red-600 font-medium transition-colors">
-                      Sign out all other sessions
-                    </button>
-                  </div>
-                  <div className="space-y-2">
-                    {sessions.map((s, i) => (
-                      <div
-                        key={i}
-                        className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 bg-white border border-gray-200 rounded-lg flex items-center justify-center">
-                            <s.icon className="w-4 h-4 text-gray-500" />
-                          </div>
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="text-[#001A4D] text-[13px] font-medium">{s.device} · {s.browser}</p>
-                              {s.current && (
-                                <span className="px-1.5 py-0.5 bg-green-100 text-green-700 text-[10px] rounded font-medium">
-                                  This device
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[#888780] text-[11px] mt-0.5">{s.timestamp} · {s.location}</p>
-                          </div>
-                        </div>
-                        {!s.current && (
-                          <button type="button" className="p-1.5 text-gray-400 hover:text-red-500 transition-colors" title="Sign out">
-                            <LogOut className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </form>
             )}
 

@@ -5,6 +5,7 @@ import {
   Trash2,
   Upload,
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Loader2,
   DollarSign,
@@ -238,8 +239,10 @@ export default function OfficerLiquidationModal({
 
     resolveUserSignature({
       uid: userUid || officerProfile?.studentId,
-      email: officerProfile?.email,
-      role: userRole,
+      email: officerProfile?.email || (isSasCreator ? 'sao@ormoc.sti.edu.ph' : undefined),
+      name: userName,
+      organizationId: orgId,
+      role: isSasCreator ? 'sas_admin' : userRole,
       profile: officerProfile,
     }).then((sig) => {
       if (!isCancelled && sig) {
@@ -250,7 +253,7 @@ export default function OfficerLiquidationModal({
     return () => {
       isCancelled = true;
     };
-  }, [makerSignatureUrl, officerProfile?.signatureUrl, userSignatureUrl, userUid, userRole]);
+  }, [makerSignatureUrl, officerProfile?.signatureUrl, userSignatureUrl, userUid, userRole, userName, orgId, isSasCreator]);
 
   const { events: allEvents } = useAllEvents();
   const { liquidations: allLiquidations } = useAllLiquidations();
@@ -673,35 +676,20 @@ export default function OfficerLiquidationModal({
     }
   };
 
-  const handleResetEmployeeName = () => {
-    if (detectedAdviserName) {
-      setEmployeeName(detectedAdviserName);
-      toast.info(`Reset Employee Name to detected: ${detectedAdviserName}`);
-    }
-  };
-
-  // Pre-populate Form LF-01 Header Information
+  // Pre-populate Form LF-01 Header Information (Read-only & Auto-populated)
   useEffect(() => {
     if (!selectedEvent) return;
 
-    // 1. If editing an existing report with stored header values, prioritize them:
     const targetReport = effectiveReport || editingReport;
-    if (targetReport) {
-      if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
-      if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
-      if (targetReport.purpose) setPurpose(targetReport.purpose);
-      if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
-      if (targetReport.dateReleased) setDateReleased(targetReport.dateReleased);
-      if (targetReport.activityEndDate) setActivityEndDate(targetReport.activityEndDate);
-      if (targetReport.submissionDeadline) setSubmissionDeadline(targetReport.submissionDeadline);
-      if (targetReport.dateSubmitted) setDateSubmitted(targetReport.dateSubmitted);
-      if (targetReport.daysLapsed) setDaysLapsed(targetReport.daysLapsed);
-      if (targetReport.orNumber) setOrNumber(targetReport.orNumber);
-      return;
-    }
-
-    // 2. Fresh Liquidation Report Defaults:
+    const attachedVoucher =
+      effectiveReport?.disbursementVoucher ||
+      editingReport?.disbursementVoucher ||
+      selectedEvent?.disbursementVoucher ||
+      null;
     const eventIsSas = isSasCreator || isSasInstitutionalActivity(selectedEvent);
+    const eventIsOrgFunds =
+      (selectedEvent as any)?.fundingSource === 'organization_funds' ||
+      targetReport?.fundingSource === 'organization_funds';
 
     // A. Employee Name: Club Adviser for club events, Admin for SAS events
     let detectedName = '';
@@ -723,9 +711,16 @@ export default function OfficerLiquidationModal({
       }
     }
 
-    // Query organization if student club adviser is not yet detected on event
+    const initialEmployee = targetReport?.employeeName || detectedName;
+    if (initialEmployee) {
+      setDetectedAdviserName(detectedName || initialEmployee);
+      setEmployeeName(initialEmployee);
+    }
+    setDetectedEmployeeSource(detectedSource);
+
+    // Query organization if student club adviser is not yet detected on event or report
     const hostOrgId = selectedEvent.hostingOrgId || selectedEvent.organizationId || orgId;
-    if (!eventIsSas && !detectedName && hostOrgId && hostOrgId !== 'sas' && hostOrgId !== 'sao_admin') {
+    if (!eventIsSas && !initialEmployee && hostOrgId && hostOrgId !== 'sas' && hostOrgId !== 'sao_admin') {
       getDoc(doc(db, 'organizations', hostOrgId))
         .then((orgSnap) => {
           if (orgSnap.exists()) {
@@ -740,72 +735,108 @@ export default function OfficerLiquidationModal({
         .catch((err) => console.warn('[OfficerLiquidationModal] Org adviser fetch:', err));
     }
 
-    if (detectedName) {
-      setDetectedAdviserName(detectedName);
-      setEmployeeName((prev) => (prev ? prev : detectedName));
-      setDetectedEmployeeSource(detectedSource);
-    }
+    // B. Cheque Number from Disbursement Voucher (preferred) or stored report
+    const resolvedCheque =
+      attachedVoucher?.chequeNumber ||
+      targetReport?.chequeNumber ||
+      (eventIsOrgFunds ? 'N/A' : '');
+    setChequeNumber(resolvedCheque);
 
-    // B. Cheque Number & Disbursement Details from Official Voucher if present
-    const attachedVoucher = selectedEvent?.disbursementVoucher || effectiveReport?.disbursementVoucher;
-    if (attachedVoucher) {
-      if (attachedVoucher.chequeNumber) setChequeNumber((prev) => (prev ? prev : attachedVoucher.chequeNumber));
-      if (attachedVoucher.disbursementDate) setDateReleased((prev) => (prev ? prev : attachedVoucher.disbursementDate));
-      if (attachedVoucher.amountDisbursed) setAmountAdvanced((prev) => (prev > 0 ? prev : attachedVoucher.amountDisbursed));
-    }
+    // C. Purpose: Default to stored purpose or event title
+    setPurpose(targetReport?.purpose || selectedEvent.title || '');
 
-    // C. Purpose: Default to event title
-    setPurpose((prev) => (prev ? prev : selectedEvent.title || ''));
-
-    // D. Amount: Default to allocated budget
+    // D. Amount Advanced: Disbursement Voucher amount, stored report amount, or allocated budget
     const budget = calculateEventBudget(selectedEvent);
-    setAmountAdvanced((prev) => (prev > 0 ? prev : budget));
+    const resolvedAmountAdvanced =
+      Number(attachedVoucher?.amountDisbursed || 0) ||
+      Number(targetReport?.amountAdvanced || 0) ||
+      budget;
+    setAmountAdvanced(resolvedAmountAdvanced);
 
-    // E. Dates:
-    let relDateStr = '';
-    let endDateStr = '';
+    // E. Dates: Release date from Voucher -> report -> sessions/createdAt; End date from report -> last session
+    let sessionFirstDate = '';
+    let sessionLastDate = '';
 
     if (Array.isArray(selectedEvent.sessions) && selectedEvent.sessions.length > 0) {
       const validSessions = selectedEvent.sessions.filter((s: any) => s && s.date);
       if (validSessions.length > 0) {
         validSessions.sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
-        const firstSession = validSessions[0];
-        const lastSession = validSessions[validSessions.length - 1];
+        const pFirst = parseDateSafely(validSessions[0].date);
+        if (pFirst) sessionFirstDate = format(pFirst, 'yyyy-MM-dd');
 
-        const pFirst = parseDateSafely(firstSession.date);
-        if (pFirst) relDateStr = format(pFirst, 'yyyy-MM-dd');
-
-        const pLast = parseDateSafely(lastSession.date);
-        if (pLast) endDateStr = format(pLast, 'yyyy-MM-dd');
+        const pLast = parseDateSafely(validSessions[validSessions.length - 1].date);
+        if (pLast) sessionLastDate = format(pLast, 'yyyy-MM-dd');
       }
     }
 
-    if (!relDateStr) {
+    let resolvedDateReleased = '';
+    if (attachedVoucher?.disbursementDate) {
+      const pVoucherDate = parseDateSafely(attachedVoucher.disbursementDate);
+      resolvedDateReleased = pVoucherDate
+        ? format(pVoucherDate, 'yyyy-MM-dd')
+        : String(attachedVoucher.disbursementDate).slice(0, 10);
+    } else if (targetReport?.dateReleased) {
+      const pReportRel = parseDateSafely(targetReport.dateReleased);
+      resolvedDateReleased = pReportRel ? format(pReportRel, 'yyyy-MM-dd') : targetReport.dateReleased;
+    } else if (sessionFirstDate) {
+      resolvedDateReleased = sessionFirstDate;
+    } else {
       const pCreated = parseDateSafely(selectedEvent.createdAt);
-      if (pCreated) relDateStr = format(pCreated, 'yyyy-MM-dd');
+      if (pCreated) resolvedDateReleased = format(pCreated, 'yyyy-MM-dd');
     }
+    setDateReleased(resolvedDateReleased);
 
-    if (!endDateStr) {
+    let resolvedEndDate = '';
+    if (targetReport?.activityEndDate) {
+      const pReportEnd = parseDateSafely(targetReport.activityEndDate);
+      resolvedEndDate = pReportEnd ? format(pReportEnd, 'yyyy-MM-dd') : targetReport.activityEndDate;
+    } else if (sessionLastDate) {
+      resolvedEndDate = sessionLastDate;
+    } else {
       const pCompleted = parseDateSafely(selectedEvent.completedAt || selectedEvent.createdAt);
-      if (pCompleted) endDateStr = format(pCompleted, 'yyyy-MM-dd');
+      if (pCompleted) resolvedEndDate = format(pCompleted, 'yyyy-MM-dd');
     }
-
-    setDateReleased((prev) => (prev ? prev : relDateStr));
-    setActivityEndDate((prev) => (prev ? prev : endDateStr));
+    setActivityEndDate(resolvedEndDate);
 
     // F. Deadline (+15 days from activityEndDate)
-    if (endDateStr) {
-      const parsedEnd = parseDateSafely(endDateStr);
+    let resolvedDeadline = '';
+    if (targetReport?.submissionDeadline) {
+      const pDead = parseDateSafely(targetReport.submissionDeadline);
+      resolvedDeadline = pDead ? format(pDead, 'yyyy-MM-dd') : targetReport.submissionDeadline;
+    } else if (resolvedEndDate) {
+      const parsedEnd = parseDateSafely(resolvedEndDate);
       if (parsedEnd) {
         const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
-        const deadStr = format(deadDate, 'yyyy-MM-dd');
-        setSubmissionDeadline((prev) => (prev ? prev : deadStr));
-
-        const parsedSub = parseDateSafely(dateSubmitted) || new Date();
-        setDaysLapsed(calculateDaysLapse(parsedSub, deadDate));
+        resolvedDeadline = format(deadDate, 'yyyy-MM-dd');
       }
     }
-  }, [selectedEvent, effectiveReport, editingReport]);
+    setSubmissionDeadline(resolvedDeadline);
+
+    // G. Date Submitted & Auto-computed Days Lapsed
+    let resolvedDateSubmitted = todayStr;
+    if (targetReport && targetReport.status !== 'draft' && targetReport.dateSubmitted) {
+      const pSub = parseDateSafely(targetReport.dateSubmitted);
+      resolvedDateSubmitted = pSub ? format(pSub, 'yyyy-MM-dd') : targetReport.dateSubmitted;
+    } else if (targetReport?.dateSubmitted) {
+      const pSub = parseDateSafely(targetReport.dateSubmitted);
+      resolvedDateSubmitted = pSub ? format(pSub, 'yyyy-MM-dd') : targetReport.dateSubmitted;
+    }
+    setDateSubmitted(resolvedDateSubmitted);
+
+    const parsedSub = parseDateSafely(resolvedDateSubmitted) || new Date();
+    const parsedDead = parseDateSafely(resolvedDeadline);
+    if (parsedDead) {
+      setDaysLapsed(calculateDaysLapse(parsedSub, parsedDead));
+    } else if (targetReport?.daysLapsed) {
+      setDaysLapsed(targetReport.daysLapsed);
+    } else {
+      setDaysLapsed('-o-');
+    }
+
+    if (targetReport?.orNumber) {
+      setOrNumber(targetReport.orNumber);
+    }
+  }, [selectedEvent, effectiveReport, editingReport, userRole, userName, effectiveIsAdviser, isSasCreator, orgId, todayStr]);
 
   // Extract proposed baseline items from selected event
   const proposedBaselineItems = useMemo(() => {
@@ -1015,6 +1046,8 @@ export default function OfficerLiquidationModal({
                 receiptUrl: '',
                 receiptUrls: [],
                 receiptFiles: [],
+                isLostReceipt: false,
+                lostReceiptReason: '',
               }
             : i
         )
@@ -1334,8 +1367,27 @@ export default function OfficerLiquidationModal({
         showValidationError('All expense receipts must have a valid amount greater than ₱0.00.');
         return;
       }
+      const missingLostReason = meaningfulItems.some(
+        (item) => item.isLostReceipt && !(item.lostReceiptReason || '').trim()
+      );
+      if (missingLostReason) {
+        showValidationError('Please provide an explanation/reason for every item flagged as a Lost / Missing Receipt.');
+        return;
+      }
+      const missingSubstituteProof = meaningfulItems.some(
+        (item) =>
+          item.isLostReceipt &&
+          (!item.receiptFiles || item.receiptFiles.length === 0) &&
+          (!item.receiptUrls || item.receiptUrls.length === 0) &&
+          !item.receiptUrl
+      );
+      if (missingSubstituteProof) {
+        showValidationError('For items flagged as Lost Receipt, please attach a signed Affidavit of Loss, Sworn Expense Certification, or alternative proof file.');
+        return;
+      }
       const missingReceipts = meaningfulItems.some(
         (item) =>
+          !item.isLostReceipt &&
           (!item.receiptFiles || item.receiptFiles.length === 0) &&
           (!item.receiptUrls || item.receiptUrls.length === 0) &&
           !item.receiptUrl
@@ -1757,15 +1809,18 @@ export default function OfficerLiquidationModal({
 
           {/* Form LF-01 Official Header & Cheque Details */}
           <div className="p-4 bg-white border border-gray-200 rounded-xl shadow-2xs space-y-3">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-2">
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="w-4 h-4 text-[#0E4EBD]" />
                 <h4 className="text-xs font-bold text-gray-800 uppercase tracking-wider">
                   Official Disbursement Header
                 </h4>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold">
+                  <Lock className="w-2.5 h-2.5" /> Read-Only • Auto-Populated
+                </span>
               </div>
               <span className="text-[11px] text-gray-500">
-                Official header information exported to STI Financial Liquidation
+                Auto-synced from Disbursement Voucher &amp; Activity Record
               </span>
             </div>
 
@@ -1807,24 +1862,14 @@ export default function OfficerLiquidationModal({
                   <label className="block text-xs font-semibold text-gray-700">
                     Disbursing Employee Name <span className="text-red-500">*</span>
                   </label>
-                  {detectedAdviserName && (
-                    <button
-                      type="button"
-                      onClick={handleResetEmployeeName}
-                      className="text-[10px] text-[#0E4EBD] hover:underline flex items-center gap-0.5 cursor-pointer"
-                      title="Reset to detected default"
-                    >
-                      <RotateCcw className="w-2.5 h-2.5" /> Reset
-                    </button>
-                  )}
                 </div>
                 <input
                   type="text"
                   value={employeeName}
-                  disabled={isEffectiveReadOnly}
-                  onChange={(e) => setEmployeeName(e.target.value)}
-                  placeholder="Enter employee / adviser name"
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  readOnly
+                  disabled
+                  placeholder="Auto-populated adviser / admin name"
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <div className="mt-1 flex items-center gap-1 text-[10px]">
                   {detectedEmployeeSource === 'club_adviser' ? (
@@ -1839,21 +1884,21 @@ export default function OfficerLiquidationModal({
                 </div>
               </div>
 
-              {/* Cheque Number (Manually inputted, no default value) */}
+              {/* Cheque Number (Auto-populated from Disbursement Voucher) */}
               <div>
                 <label className="block text-xs font-semibold text-gray-700 mb-1">
-                  Cheque Number <span className="text-gray-400 font-normal">(Manual Input)</span>
+                  Cheque Number <span className="text-gray-400 font-normal">(From Voucher)</span>
                 </label>
                 <input
                   type="text"
                   value={chequeNumber}
-                  disabled={isEffectiveReadOnly}
-                  onChange={(e) => setChequeNumber(e.target.value)}
-                  placeholder="Enter Cheque / Check No."
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  readOnly
+                  disabled
+                  placeholder={isOrgFunds ? 'N/A (Organization Funds)' : 'Auto-populated from Disbursement Voucher'}
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
-                  Enter official cheque number issued for this disbursement
+                  Synced from verified Disbursement Voucher
                 </span>
               </div>
 
@@ -1865,18 +1910,9 @@ export default function OfficerLiquidationModal({
                 <input
                   type="date"
                   value={dateReleased}
-                  disabled={isEffectiveReadOnly}
-                  max={todayStr}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (val > todayStr) {
-                      toast.error('Date Released cannot be in the future. Please select today or an earlier date.');
-                      setDateReleased(todayStr);
-                    } else {
-                      setDateReleased(val);
-                    }
-                  }}
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none font-mono"
+                  readOnly
+                  disabled
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
                   Date funds or cheque was released
@@ -1893,9 +1929,9 @@ export default function OfficerLiquidationModal({
                 <input
                   type="date"
                   value={activityEndDate}
-                  disabled={isEffectiveReadOnly}
-                  onChange={(e) => handleActivityEndDateChange(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  readOnly
+                  disabled
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
                   End date of scheduled sessions
@@ -1910,9 +1946,9 @@ export default function OfficerLiquidationModal({
                 <input
                   type="date"
                   value={submissionDeadline}
-                  disabled={isEffectiveReadOnly}
-                  onChange={(e) => setSubmissionDeadline(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  readOnly
+                  disabled
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
                   Standard 15-day liquidation policy
@@ -1927,12 +1963,12 @@ export default function OfficerLiquidationModal({
                 <input
                   type="date"
                   value={dateSubmitted}
-                  disabled={isEffectiveReadOnly}
-                  onChange={(e) => handleDateSubmittedChange(e.target.value)}
-                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
+                  readOnly
+                  disabled
+                  className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                 />
                 <span className="text-[10px] text-gray-500 mt-1 block">
-                  Defaults to today
+                  Auto-recorded submission date
                 </span>
               </div>
 
@@ -1945,9 +1981,9 @@ export default function OfficerLiquidationModal({
                   <input
                     type="text"
                     value={daysLapsed}
-                    disabled={isEffectiveReadOnly}
-                    onChange={(e) => setDaysLapsed(e.target.value)}
-                    className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-bold font-mono bg-gray-50"
+                    readOnly
+                    disabled
+                    className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-bold font-mono text-gray-700 bg-gray-100/90 cursor-not-allowed select-none focus:outline-none"
                   />
                   <span
                     className={`px-2 py-1 rounded text-[11px] font-bold whitespace-nowrap ${
@@ -2229,15 +2265,27 @@ export default function OfficerLiquidationModal({
                               Needs Revision
                             </span>
                           )}
+                          {item.isLostReceipt && (
+                            <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-amber-700" />
+                              Flagged: Lost Receipt
+                            </span>
+                          )}
                           {attachedFiles.length > 0 ? (
-                            <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded flex items-center gap-1">
-                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              Receipt Attached ({attachedFiles.length})
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 border ${
+                                item.isLostReceipt
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                  : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              }`}
+                            >
+                              <CheckCircle2 className={`w-3 h-3 ${item.isLostReceipt ? 'text-amber-600' : 'text-emerald-600'}`} />
+                              {item.isLostReceipt ? `Affidavit / Proof Attached (${attachedFiles.length})` : `Receipt Attached (${attachedFiles.length})`}
                             </span>
                           ) : (
                             <span className="text-[10px] font-bold px-2 py-0.5 bg-rose-50 text-rose-700 border border-rose-200 rounded flex items-center gap-1">
                               <AlertCircle className="w-3 h-3 text-rose-600" />
-                              Receipt Proof Required
+                              {item.isLostReceipt ? 'Affidavit / Substitute Proof Required' : 'Receipt Proof Required'}
                             </span>
                           )}
                         </div>
@@ -2312,7 +2360,7 @@ export default function OfficerLiquidationModal({
                               value={item.receiptNumber || ''}
                               disabled={isEffectiveReadOnly}
                               onChange={(e) => handleLineItemChange(realIndex, 'receiptNumber', e.target.value)}
-                              placeholder="e.g. OR #10234"
+                              placeholder={item.isLostReceipt ? 'N/A (Lost Original OR)' : 'e.g. OR #10234'}
                               className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm font-mono bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none"
                             />
                           </div>
@@ -2336,13 +2384,95 @@ export default function OfficerLiquidationModal({
                             </div>
                           </div>
                         </div>
+
+                        {/* Lost Receipt Toggle & Substitute Proof Guidance */}
+                        <div
+                          className={`rounded-xl border p-3 space-y-2.5 transition-colors ${
+                            item.isLostReceipt
+                              ? 'bg-amber-50/80 border-amber-300'
+                              : 'bg-slate-50/70 border-slate-200'
+                          }`}
+                        >
+                          <label
+                            className={`flex items-center justify-between gap-3 ${
+                              isEffectiveReadOnly ? 'cursor-default' : 'cursor-pointer'
+                            }`}
+                          >
+                            <div className="flex items-start gap-2.5">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(item.isLostReceipt)}
+                                disabled={isEffectiveReadOnly}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  const updated = [...lineItems];
+                                  updated[realIndex] = {
+                                    ...updated[realIndex],
+                                    isLostReceipt: checked,
+                                    receiptNumber:
+                                      checked && !(updated[realIndex].receiptNumber || '').trim()
+                                        ? 'LOST-RECEIPT'
+                                        : !checked && updated[realIndex].receiptNumber === 'LOST-RECEIPT'
+                                          ? ''
+                                          : updated[realIndex].receiptNumber,
+                                  };
+                                  setLineItems(updated);
+                                }}
+                                className="mt-0.5 w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
+                              />
+                              <div>
+                                <div className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                                  <AlertTriangle
+                                    className={`w-3.5 h-3.5 ${
+                                      item.isLostReceipt ? 'text-amber-600' : 'text-gray-400'
+                                    }`}
+                                  />
+                                  <span>Flag for Lost / Missing Official Receipt</span>
+                                </div>
+                                <p className="text-[11px] text-gray-600 mt-0.5">
+                                  Enable if the original paper OR was lost. Requires an explanation and a signed Affidavit of Loss or Expense Certification below.
+                                </p>
+                              </div>
+                            </div>
+                            <span
+                              className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${
+                                item.isLostReceipt
+                                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                  : 'bg-white text-slate-500 border-slate-200'
+                              }`}
+                            >
+                              {item.isLostReceipt ? 'Lost Receipt Flagged' : 'Original OR'}
+                            </span>
+                          </label>
+
+                          {item.isLostReceipt && (
+                            <div className="pt-2 border-t border-amber-200/80 space-y-1.5">
+                              <label className="block text-xs font-bold text-amber-950">
+                                Lost Receipt Explanation / Affidavit Summary <span className="text-red-500">*</span>
+                              </label>
+                              <textarea
+                                rows={2}
+                                value={item.lostReceiptReason || ''}
+                                disabled={isEffectiveReadOnly}
+                                onChange={(e) => handleLineItemChange(realIndex, 'lostReceiptReason', e.target.value)}
+                                placeholder="Explain how the receipt was lost and specify the substitute proof uploaded below (e.g., Signed Affidavit of Loss by Club Adviser & Treasurer)..."
+                                className="w-full px-3 py-2 border border-amber-300 rounded-lg text-xs bg-white text-gray-900 focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 outline-none resize-y"
+                              />
+                              <p className="text-[11px] text-amber-900 leading-relaxed">
+                                <strong>Audit Policy:</strong> Upload a signed Affidavit of Loss, Sworn Expense Certification (co-signed by Club Adviser/Treasurer), or official merchant acknowledgment receipt in the file section below.
+                              </p>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Multi-file Receipt Proof Attachments */}
                       <div className="pt-2 border-t border-gray-100">
                         <div className="flex items-center justify-between mb-1.5">
                           <label className="block text-xs font-semibold text-gray-700">
-                            Receipts &amp; Proof Documents ({attachedFiles.length})
+                            {item.isLostReceipt
+                              ? `Substitute Proof Documents — Affidavit / Signed Certification (${attachedFiles.length})`
+                              : `Receipts & Proof Documents (${attachedFiles.length})`}
                           </label>
                           <span className="text-[11px] text-gray-500">
                             Allowed: Images (PNG/JPG), PDF, Word, Excel/CSV, Text
@@ -2455,7 +2585,13 @@ export default function OfficerLiquidationModal({
                         )}
 
                         {!isEffectiveReadOnly && (
-                          <label className="cursor-pointer flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed border-gray-300 hover:border-[#1E70E8] rounded-xl hover:bg-blue-50/40 text-xs font-semibold text-gray-700 transition-colors">
+                          <label
+                            className={`cursor-pointer flex items-center justify-center gap-2 px-4 py-2.5 border border-dashed rounded-xl text-xs font-semibold transition-colors ${
+                              item.isLostReceipt
+                                ? 'border-amber-400 bg-amber-50/40 hover:border-amber-500 hover:bg-amber-50/80 text-amber-950'
+                                : 'border-gray-300 hover:border-[#1E70E8] hover:bg-blue-50/40 text-gray-700'
+                            }`}
+                          >
                             {uploadingIndex === realIndex ? (
                               <>
                                 <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
@@ -2463,9 +2599,15 @@ export default function OfficerLiquidationModal({
                               </>
                             ) : (
                               <>
-                                <Upload className="w-4 h-4 text-[#1E70E8]" />
+                                <Upload className={`w-4 h-4 ${item.isLostReceipt ? 'text-amber-600' : 'text-[#1E70E8]'}`} />
                                 <span>
-                                  {attachedFiles.length > 0 ? '+ Upload Additional Receipts / Files' : 'Upload Receipt Files (Select multiple files)'}
+                                  {item.isLostReceipt
+                                    ? attachedFiles.length > 0
+                                      ? '+ Upload Additional Substitute Proof / Affidavit Files'
+                                      : 'Upload Signed Affidavit of Loss / Expense Certification (Required)'
+                                    : attachedFiles.length > 0
+                                      ? '+ Upload Additional Receipts / Files'
+                                      : 'Upload Receipt Files (Select multiple files)'}
                                 </span>
                               </>
                             )}

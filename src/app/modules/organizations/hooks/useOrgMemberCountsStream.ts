@@ -1,43 +1,49 @@
-import { useState, useEffect } from 'react';
+import { useMemo } from 'react';
 import { collection, query, where, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import type { OrganizationMemberDocument } from '../types/member.types';
+import { createSingletonStream } from '../../../utils/createSingletonStream';
 
-export function useOrgMemberCountsStream() {
-  const [countsMap, setCountsMap] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
+const activeMembershipsStream = createSingletonStream<OrganizationMemberDocument[]>({
+  initialData: [],
+  start: (emit, emitError) => {
     const q = query(
       collection(db, 'organization_members'),
-      where('status', '==', 'active')
+      where('status', 'in', ['active', 'pending_removal'])
     );
-
-    const unsubscribe = onSnapshot(
+    return onSnapshot(
       q,
       (snapshot) => {
-        const counts: Record<string, number> = {};
-        snapshot.docs.forEach((doc) => {
-          const data = doc.data();
-          const orgId = data.organizationId;
-          if (orgId) {
-            counts[orgId] = (counts[orgId] || 0) + 1;
-          }
-        });
-
-        setCountsMap(counts);
-        setLoading(false);
-        setError(null);
+        emit(
+          snapshot.docs.map(
+            (doc) => ({ id: doc.id, ...doc.data() } as OrganizationMemberDocument)
+          )
+        );
       },
       (err) => {
         console.error('[useOrgMemberCountsStream] Error fetching member counts:', err);
-        setError(err);
-        setLoading(false);
+        emitError(err);
       }
     );
+  },
+});
 
-    return () => unsubscribe();
-  }, []);
+export function useAllActiveMemberships() {
+  return activeMembershipsStream.use();
+}
+
+export function useOrgMemberCountsStream() {
+  const { data: memberships, loading, error } = activeMembershipsStream.use();
+
+  const countsMap = useMemo(() => {
+    const counts: Record<string, number> = {};
+    memberships.forEach((m) => {
+      if (m.organizationId) {
+        counts[m.organizationId] = (counts[m.organizationId] || 0) + 1;
+      }
+    });
+    return counts;
+  }, [memberships]);
 
   return { countsMap, loading, error };
 }

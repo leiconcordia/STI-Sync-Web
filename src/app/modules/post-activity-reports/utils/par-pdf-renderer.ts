@@ -1,16 +1,15 @@
 /**
- * src/app/modules/post-activity-reports/utils/par-pdf-exporter.ts
+ * src/app/modules/post-activity-reports/utils/par-pdf-renderer.ts
  *
- * Official Institutional Post-Activity Report (PAR) PDF Exporter.
- * Matches the exact template of "PAR - Cybersecurity.docx":
- * - NO outer table border or vertical divider column borders.
- * - Labels in Column 0 are strictly RIGHT-ALIGNED.
- * - Horizontal dividing lines appear ONLY under Column 1 (detail column).
- * - Smooth pagination with clean margin buffers (no double-rendering or chopped text).
- * - Generous, balanced spacing between sections and around lines.
- * - Nested attendance lines with value underlines.
- * - Nested financial table with internal/external cell borders.
- * - Multi-page section splitting: Results and Remarks flow cleanly across pages.
+ * Official Institutional Post-Activity Report (PAR) PDF Renderer.
+ * Mirrors the exact paper structure of the STI Post-Activity Report:
+ * - US Letter (215.9mm x 279.4mm), 25.4mm left/right margins
+ * - STI College Ormoc logo on left + underlined "Date:" on right + centered "Post-Activity Report"
+ * - Borderless 2-column layout with right-aligned sans-serif labels (Col 0) and serif content (Col 1)
+ * - Italic helper prompts inside Col 1 above the entry/table, matching the paper template
+ * - Nested underline-style Attendance block and bordered 3-column Financial Report table
+ * - Exact Results of the Activity (7 subsections), Remarks, and VIII. Attachments checklist
+ * - Clear aspect-preserved signature images for Prepared by and signed signatories (no extra timestamps/footers)
  */
 
 import { jsPDF } from 'jspdf';
@@ -18,25 +17,90 @@ import type { PostActivityReportDocument, PARApprovalStep } from '../types/par.t
 import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import { STI_LOGO_BASE64 } from '../../activity-proposals/utils/sti-logo-asset';
 
-function formatPdfCurrency(amount: number | undefined | null): string {
-  if (amount === undefined || amount === null || isNaN(amount)) return '0.00';
-  return new Intl.NumberFormat('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(amount);
+interface LoadedImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+  format: 'PNG' | 'JPEG';
 }
 
-async function loadImageAsDataUrl(url?: string): Promise<string | null> {
-  if (!url || typeof url !== 'string' || !url.trim()) return null;
-  if (url.startsWith('data:image/')) return url;
+function formatPdfAmount(amount: number | undefined | null): string {
+  if (amount === undefined || amount === null || isNaN(amount)) return '0.00';
+  const abs = Math.abs(amount);
+  const formatted = new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(abs);
+  return amount < 0 ? `(${formatted})` : formatted;
+}
+
+function formatPdfDate(raw?: any): string {
+  if (!raw) {
+    return new Date().toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+  try {
+    if (typeof raw?.toDate === 'function') {
+      return raw.toDate().toLocaleDateString('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    }
+    const parsed = new Date(raw);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    }
+  } catch {}
+  return String(raw);
+}
+
+/**
+ * Loads an external or data-URI image via fetch -> blob -> FileReader first
+ * (avoids CORS tainted-canvas failures on Storage/Cloudinary), with an
+ * HTMLImageElement + canvas fallback.
+ */
+async function defaultLoadImageAsDataUrl(url?: string): Promise<string | null> {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed || trimmed.includes('[base64-')) return null;
+  if (/^data:image\//i.test(trimmed)) return trimmed.replace(/\s+/g, '');
+  if (/^(iVBORw0KGgo|\/9j\/|R0lGOD|UklGR)/i.test(trimmed)) {
+    const prefix = trimmed.startsWith('/9j/') ? 'data:image/jpeg;base64,' : 'data:image/png;base64,';
+    return prefix + trimmed.replace(/\s+/g, '');
+  }
+
+  try {
+    const res = await fetch(trimmed, { mode: 'cors' });
+    if (res.ok) {
+      const blob = await res.blob();
+      const dataUrl = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl && dataUrl.startsWith('data:image/')) {
+        return dataUrl;
+      }
+    }
+  } catch {}
+
   return new Promise((resolve) => {
     const img = new Image();
-    img.crossOrigin = 'Anonymous';
+    img.crossOrigin = 'anonymous';
     img.onload = () => {
       try {
         const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = img.naturalWidth || img.width || 300;
+        canvas.height = img.naturalHeight || img.height || 100;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve(null);
@@ -49,1171 +113,935 @@ async function loadImageAsDataUrl(url?: string): Promise<string | null> {
       }
     };
     img.onerror = () => resolve(null);
-    img.src = url;
+    img.src = trimmed;
   });
+}
+
+async function resolveImageWithMetadata(
+  url: string | undefined,
+  loader: (url?: string) => Promise<string | null>
+): Promise<LoadedImage | null> {
+  const rawDataUrl = await loader(url);
+  if (!rawDataUrl || !rawDataUrl.startsWith('data:image/')) return null;
+
+  const isNativePng = rawDataUrl.startsWith('data:image/png');
+  const isNativeJpeg =
+    rawDataUrl.startsWith('data:image/jpeg') || rawDataUrl.startsWith('data:image/jpg');
+
+  const loaded = await new Promise<{ dataUrl: string; w: number; h: number; format: 'PNG' | 'JPEG' }>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth || img.width || 300;
+      const h = img.naturalHeight || img.height || 100;
+      // Convert WebP/SVG/GIF data URLs to PNG so jsPDF.addImage never fails
+      if (!isNativePng && !isNativeJpeg) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve({ dataUrl: canvas.toDataURL('image/png'), w, h, format: 'PNG' });
+            return;
+          }
+        } catch {}
+      }
+      resolve({
+        dataUrl: rawDataUrl,
+        w,
+        h,
+        format: isNativeJpeg ? 'JPEG' : 'PNG',
+      });
+    };
+    img.onerror = () =>
+      resolve({
+        dataUrl: rawDataUrl,
+        w: 300,
+        h: 100,
+        format: isNativeJpeg ? 'JPEG' : 'PNG',
+      });
+    img.src = rawDataUrl;
+  });
+
+  return {
+    dataUrl: loaded.dataUrl,
+    width: loaded.w,
+    height: loaded.h,
+    format: loaded.format,
+  };
+}
+
+function fitDimensions(
+  naturalW: number,
+  naturalH: number,
+  maxW: number,
+  maxH: number
+): { w: number; h: number } {
+  if (!naturalW || !naturalH) return { w: maxW, h: maxH };
+  const ratio = Math.min(maxW / naturalW, maxH / naturalH);
+  return {
+    w: Math.max(1, naturalW * ratio),
+    h: Math.max(1, naturalH * ratio),
+  };
+}
+
+function drawCheckbox(doc: jsPDF, x: number, y: number, checked: boolean) {
+  const size = 2.8;
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.25);
+  doc.rect(x, y - size + 0.4, size, size);
+  if (checked) {
+    doc.setLineWidth(0.4);
+    doc.line(x + 0.5, y - 0.9, x + 1.2, y - 0.15);
+    doc.line(x + 1.2, y - 0.15, x + 2.4, y - 2.0);
+    doc.setLineWidth(0.22);
+  }
 }
 
 export async function buildPostActivityReportPDF(
   rawReport: PostActivityReportDocument,
   proposalData: any = null,
   liquidationData: any = null,
-  imageLoader: (url?: string) => Promise<string | null> = loadImageAsDataUrl
+  imageLoader: (url?: string) => Promise<string | null> = defaultLoadImageAsDataUrl
 ): Promise<jsPDF> {
-  // Extract Organizers
-  const organizersList: string[] =
-    rawReport.proposalOrganizers && rawReport.proposalOrganizers.length > 0
-      ? rawReport.proposalOrganizers
-      : Array.isArray(proposalData?.organizers) && proposalData.organizers.length > 0
-      ? proposalData.organizers
-      : [rawReport.organizerName || proposalData?.organizerName || rawReport.organizationName || 'Not specified'];
-
-  // Extract Mechanics
-  let mechanicsItems: string[] = [];
-  if (rawReport.actualMechanics && rawReport.actualMechanics.trim()) {
-    mechanicsItems = rawReport.actualMechanics
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  } else if (rawReport.proposedMechanics && rawReport.proposedMechanics.length > 0) {
-    mechanicsItems = rawReport.proposedMechanics;
-  } else if (Array.isArray(proposalData?.mechanics) && proposalData.mechanics.length > 0) {
-    mechanicsItems = proposalData.mechanics;
-  } else {
-    mechanicsItems = [
-      'Not provided.',
-    ];
-  }
-
-  // Extract Materials
-  const materialsList: string[] =
-    rawReport.proposalMaterials && rawReport.proposalMaterials.length > 0
-      ? rawReport.proposalMaterials
-      : rawReport.materialsUtilized && rawReport.materialsUtilized.length > 0
-      ? rawReport.materialsUtilized
-      : Array.isArray(proposalData?.materials) && proposalData.materials.length > 0
-      ? proposalData.materials
-      : [
-          'Computer Unit and projector/TV',
-          'Sound system and microphone',
-          'Internet connection',
-          'Printed certificates',
-          'Tarpaulin / digital poster',
-          'Attendance sheets',
-        ];
-
-  // Extract Marketing Plan
-  const marketingList: string[] =
-    rawReport.proposalMarketingPlan && rawReport.proposalMarketingPlan.length > 0
-      ? rawReport.proposalMarketingPlan
-      : rawReport.marketingConducted && rawReport.marketingConducted.length > 0
-      ? rawReport.marketingConducted
-      : Array.isArray(proposalData?.marketingPlan) && proposalData.marketingPlan.length > 0
-      ? proposalData.marketingPlan
-      : [
-          'Posting of digital posters on official pages',
-          'Announcement through class advisers',
-          'Display of tarpaulin at the campus lobby',
-          'Inclusion in College Fair announcements (Nov. 20–22, 2025)',
-        ];
-
-  // Extract Documentation Plan
-  const documentationList: string[] =
-    rawReport.proposalDocumentationPlan && rawReport.proposalDocumentationPlan.length > 0
-      ? rawReport.proposalDocumentationPlan
-      : rawReport.documentationPlan && rawReport.documentationPlan.length > 0
-      ? rawReport.documentationPlan
-      : Array.isArray(proposalData?.documentationPlan) && proposalData.documentationPlan.length > 0
-      ? proposalData.documentationPlan
-      : [
-          'Photos and videos of the event',
-          'Attendance summary',
-          'Post-evaluation forms',
-        ];
-
-  // Extract Financial Figures (Sourced from PAR or Form AP-01 baseline)
-  const revenue = Number(
-    rawReport.financialSummary?.totalRevenue ||
-      proposalData?.totalApprovedBudget ||
-      proposalData?.allocatedBudget ||
-      liquidationData?.actualRevenueTotal ||
-      liquidationData?.allocatedBudget ||
-      0
-  );
-
-  let financialItems: Array<{ description: string; unitAmount: number; totalAmount: number }> = [];
-  if (rawReport.financialSummary?.lineItems && rawReport.financialSummary.lineItems.length > 0) {
-    financialItems = rawReport.financialSummary.lineItems;
-  } else if (Array.isArray(proposalData?.lineItems) && proposalData.lineItems.length > 0) {
-    financialItems = proposalData.lineItems.map((li: any) => ({
-      description: li.item || li.particulars || li.description || 'Budget Item',
-      unitAmount: Number(li.unitCost || li.unitPrice || 0),
-      totalAmount: Number(
-        li.totalCost ||
-          li.total ||
-          (Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0)) ||
-          0
-      ),
-    }));
-  } else if (Array.isArray(liquidationData?.lineItems) && liquidationData.lineItems.length > 0) {
-    financialItems = liquidationData.lineItems.map((li: any) => ({
-      description: li.particulars || li.description || li.item || 'Expense Item',
-      unitAmount: Number(li.unitCost || li.unitPrice || li.actualCost || 0),
-      totalAmount: Number(
-        li.totalCost ||
-          li.total ||
-          li.actualCost ||
-          li.totalAmount ||
-          (Number(li.quantity || 1) * Number(li.unitCost || li.unitPrice || 0)) ||
-          0
-      ),
-    }));
-  }
-
-  const computedExpenses = financialItems.reduce((acc, it) => acc + (it.totalAmount || it.unitAmount || 0), 0);
-  const totalExpenses = Number(
-    rawReport.financialSummary?.totalDisbursed ||
-      liquidationData?.totalDisbursed ||
-      liquidationData?.totalExpenses ||
-      computedExpenses
-  );
-  const netBalance = revenue - totalExpenses;
-
-  // Extract Results & Remarks
-  const achievementNarrative =
-    rawReport.results?.achievementNarrative ||
-    'The objectives were partially achieved as the 2nd objectives “To educate participants on data privacy principles and safe digital practices.” The speaker clarified that data privacy—especially discussions involving RA 10173 (Data Privacy Act)—falls under legal expertise and should ideally be handled by a lawyer. As a result, this portion of the objective was not covered.\n➤ Action: A follow-up seminar will be organized specifically on data privacy, handled by a qualified legal professional.';
-
-  const keyLearnings: string[] =
-    rawReport.results?.keyLearnings && rawReport.results.keyLearnings.length > 0
-      ? rawReport.results.keyLearnings
-      : [
-          'A deeper understanding of how cybersecurity threats occur and how attackers exploit human behavior.',
-          'Increased awareness of the role of digital first responders, including ethical considerations in handling digital evidence.',
-          'Recognition of the importance of personal responsibility in maintaining digital safety, especially in today’s interconnected environment.',
-        ];
-
-  const classroomEnrichment =
-    rawReport.results?.classroomEnrichment ||
-    'Reinforcing the value of ethical decision-making—an essential theme in both professional practice and academic training.';
-
-  const venueAssessment =
-    rawReport.results?.venueAssessment ||
-    'It provided convenient and immediate access for IT students who were the primary audience of the seminar.\nThe setup supported the required audio‑visual presentations and ensured a conducive learning environment.';
-
-  const foodLogisticsAssessment =
-    rawReport.results?.foodAssessment ||
-    rawReport.results?.logisticsAssessment ||
-    'The food provided during the activity was:\nAdequate in quantity\nAcceptable in quality\nServed on time and properly coordinated\nThe logistics were well-handled, with materials, equipment, and support personnel readily available as needed.';
-
-  const scheduleCompliance =
-    rawReport.results?.scheduleCompliance ||
-    'The program followed as planned even the classes are suspended and many students cannot attend the activity due to heavy rains.';
-
-  const issuesEncountered =
-    rawReport.results?.issuesEncountered || 'No major issues encountered';
-
-  // Extract Categorized Recommendations (4 STI Areas)
-  const recommendations = {
-    programFlow: {
-      observations:
-        rawReport.recommendations?.programFlow?.observations ||
-        'The program generally followed the planned schedule; however, minor delays occurred at the start of the event due to heavy rain. As a result, both the participants and the speaker arrived later than expected, which caused the initial sessions to be pushed back slightly.',
-      recommendations:
-        rawReport.recommendations?.programFlow?.recommendations ||
-        'Consider adjusting call time or having a flexible buffer period in future events, especially during seasons with unpredictable weather.\nProvide early announcements or reminders to participants regarding possible delays due to weather conditions so they can adjust travel time accordingly.',
-    },
-    participantEngagement: {
-      observations:
-        rawReport.recommendations?.participantEngagement?.observations ||
-        'Students showed high interest, especially during discussions on digital forensics, cybersecurity careers, and ethical decision-making.\nHands-on or scenario-based portions received the strongest engagement.',
-      recommendations:
-        rawReport.recommendations?.participantEngagement?.recommendations ||
-        'Consider integrating more interactive components such as short demos, simulations, or quick-response activities.\nInclude structured Q&A portions after each section to maximize learning while maintaining order.\nUse digital tools (QR polls, live questions, etc.) to encourage real-time interaction.',
-    },
-    technicalSetup: {
-      observations:
-        rawReport.recommendations?.technicalSetup?.observations ||
-        'Audio-visual equipment was generally functional, though minor adjustments to sound clarity were noted.\nSeating arrangements accommodated participants well, but visibility from the back rows was occasionally a challenge.',
-      recommendations:
-        rawReport.recommendations?.technicalSetup?.recommendations ||
-        'Conduct a full technical run-through at least an hour before the program to validate visuals, audio, and connectivity and used a well function speaker and microphone.\nAssign a technical support team to stand by throughout the event.\nConsider improving screen visibility through additional displays or adjusted seating layout.',
-    },
-    participantPreparedness: {
-      observations:
-        rawReport.recommendations?.participantPreparedness?.observations ||
-        'Majority of students arrived on time and were well-oriented about the seminar’s objective.',
-      recommendations:
-        rawReport.recommendations?.participantPreparedness?.recommendations ||
-        'Encourage students to prepare questions beforehand to enrich discussions.',
-    },
-  };
-
-  // Pre-load signatures in parallel
-  const rawMakerSig =
-    rawReport.preparedBy?.signatureUrl ||
-    (rawReport as any).submittedBySignatureUrl ||
-    (rawReport as any).signatureUrl ||
-    undefined;
-  const officerSigUrl = await imageLoader(rawMakerSig);
-
-  const approvalChain: PARApprovalStep[] = rawReport.approvalChain || [];
-  const signatorySigUrls = await Promise.all(
-    approvalChain.map((step) => imageLoader(step.signatureUrl))
-  );
-
-  // Pre-load photos
-  const photoAttachments = Array.isArray(rawReport.photos) ? rawReport.photos : [];
-  const photoDataUrls = await Promise.all(
-    photoAttachments.map(async (p) => ({
-      caption: p.caption || 'Event Documentation',
-      dataUrl: await imageLoader(p.url),
-    }))
-  );
-
-  // ─── Step 2: Initialize jsPDF Document ───
-  const docPdf = new jsPDF({
+  const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
-    format: 'a4',
+    format: 'letter',
   });
 
-  const pageWidth = docPdf.internal.pageSize.getWidth(); // 210mm
-  const pageHeight = docPdf.internal.pageSize.getHeight(); // 297mm
-  const marginX = 18;
-  const marginTop = 20; // Increased top margin for breathing room
-  const marginBottom = 20; // Increased bottom margin so nothing gets cut
-  const contentWidth = pageWidth - marginX * 2; // 174mm
+  const pageWidth = doc.internal.pageSize.getWidth(); // 215.9mm
+  const pageHeight = doc.internal.pageSize.getHeight(); // 279.4mm
+  const marginX = 25.4; // 1.0 inch margins
+  const topMargin = 18;
+  const bottomLimit = pageHeight - 18;
 
-  // Layout metrics matching docx template:
-  // Col 0: Right-aligned labels ending at startX1 - 3mm
-  // Col 1: Detail content from startX1 to endX
-  const col0Width = 30; // 30mm
-  const startX1 = marginX + col0Width; // 48mm
-  const endX = pageWidth - marginX; // 192mm
-  const col1Width = endX - startX1; // 144mm
+  const col0Width = 31.0;
+  const col0RightEdge = marginX + col0Width - 2.0;
+  const col1X = marginX + col0Width + 1.2;
+  const col1Width = pageWidth - marginX - col1X; // ~132.9mm
 
-  let currentY = marginTop;
+  let cursorY = topMargin;
 
-  /**
-   * Safe page break check:
-   * Moves to a new page only if the required block will not fit within the printable bounds.
-   */
-  const ensurePageSpace = (neededHeight: number): boolean => {
-    if (currentY + neededHeight > pageHeight - marginBottom) {
-      docPdf.addPage();
-      currentY = marginTop;
+  const checkPageBreak = (neededHeight: number) => {
+    if (cursorY + neededHeight > bottomLimit) {
+      doc.addPage();
+      cursorY = topMargin;
       return true;
     }
     return false;
   };
 
-  // ─── Step 3: Draw Top Header ───
-  // STI Logo (Left)
-  try {
-    if (STI_LOGO_BASE64) {
-      docPdf.addImage(STI_LOGO_BASE64, 'PNG', marginX, currentY, 36, 10);
-    }
-  } catch {}
-
-  // Top-Right Date Block (with underline strictly under date value)
-  const dateFormatted = rawReport.submittedAt
-    ? new Date(
-        typeof (rawReport.submittedAt as any).toDate === 'function'
-          ? (rawReport.submittedAt as any).toDate()
-          : rawReport.submittedAt
-      ).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-    : new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-
-  docPdf.setFont('helvetica', 'bold');
-  docPdf.setFontSize(8);
-  docPdf.setTextColor(0, 0, 0);
-  const dateLabelX = pageWidth - marginX - 55;
-  docPdf.text('Date:', dateLabelX, currentY + 7);
-
-  docPdf.setFont('helvetica', 'normal');
-  docPdf.setFontSize(9.5);
-  docPdf.text(dateFormatted, dateLabelX + 11, currentY + 7);
-  // Bottom underline for date value
-  docPdf.setDrawColor(0, 0, 0);
-  docPdf.setLineWidth(0.2);
-  docPdf.line(dateLabelX + 10, currentY + 8.5, endX, currentY + 8.5);
-
-  currentY += 18; // Generous space before title
-
-  // Document Title (Centered, Bold, 12pt)
-  docPdf.setFont('helvetica', 'bold');
-  docPdf.setFontSize(12);
-  docPdf.setTextColor(0, 0, 0);
-  docPdf.text('Post-Activity Report', pageWidth / 2, currentY, { align: 'center' });
-  currentY += 8; // Clean space before form sections
-
-  // ─── Step 4: Draw Sections (Borderless Table with Col 1 Horizontal Lines) ───
-
-  /** Helper to measure multi-line text height without drawing */
-  const measureTextLinesHeight = (text: string, fontSize: number, width: number, lineH: number): number => {
-    if (!text) return 0;
-    docPdf.setFontSize(fontSize);
-    const lines = docPdf.splitTextToSize(text, width);
-    return lines.length * lineH;
-  };
-
-  /** Helper to measure bullet list height without drawing */
-  const measureBulletListHeight = (items: string[], fontSize: number, width: number, lineH: number): number => {
-    if (!items || items.length === 0) return 0;
-    docPdf.setFontSize(fontSize);
-    let total = 0;
-    items.forEach((item) => {
-      const lines = docPdf.splitTextToSize(item, width - 12);
-      total += lines.length * lineH + 1.0;
+  const drawCol0Label = (label: string, y: number) => {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.2);
+    doc.setTextColor(0, 0, 0);
+    const lines: string[] = doc.splitTextToSize(label, col0Width - 1.5);
+    let ly = y;
+    lines.forEach((line) => {
+      doc.text(line, col0RightEdge, ly, { align: 'right' });
+      ly += 3.5;
     });
-    return total;
+    return ly;
   };
 
-  /** Helper to draw clean indented bullet lists matching template */
-  const drawBulletList = (items: string[], x: number, y: number, w: number, lineH = 4.2): number => {
-    let curY = y;
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.setFontSize(9);
-    docPdf.setTextColor(0, 0, 0);
-
-    items.forEach((item) => {
-      docPdf.text('•', x + 5, curY + 3.0);
-      const lines = docPdf.splitTextToSize(item, w - 12);
-      docPdf.text(lines, x + 10, curY + 3.0);
-      curY += lines.length * lineH + 1.0;
+  const drawCol1HelperNote = (note: string) => {
+    doc.setFont('times', 'italic');
+    doc.setFontSize(8.5);
+    doc.setTextColor(0, 0, 0);
+    const noteLines: string[] = doc.splitTextToSize(note, col1Width - 1);
+    noteLines.forEach((nl) => {
+      if (cursorY + 3.6 > bottomLimit) {
+        doc.addPage();
+        cursorY = topMargin;
+      }
+      doc.text(nl, col1X, cursorY);
+      cursorY += 3.6;
     });
-
-    return curY - y;
   };
 
-  /**
-   * Standalone Section Drawer:
-   * - Measures height cleanly first (NO accidental pre-drawing).
-   * - Checks page space and breaks to new page if needed.
-   * - Draws right-aligned label on Column 0.
-   * - Executes Column 1 drawing.
-   * - Draws horizontal separator line ONLY across Column 1 (startX1 to endX).
-   * - Adds balanced vertical padding.
-   */
-  const drawStandaloneSection = (
+  const drawCol1Divider = (spaceAfter = 4.2) => {
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.22);
+    doc.line(col1X, cursorY, col1X + col1Width, cursorY);
+    cursorY += spaceAfter;
+  };
+
+  const renderFieldRow = (
     label: string,
-    measuredHeight: number,
-    renderContent: (x: number, y: number, w: number) => void,
-    options?: {
-      hasBottomLine?: boolean;
-      col0Note?: string;
-      paddingTop?: number;
-      paddingBottom?: number;
-      spaceAfterLine?: number;
+    bodyLines: string[],
+    opts?: {
+      helperNote?: string;
+      drawRule?: boolean;
     }
   ) => {
-    const padTop = options?.paddingTop ?? 1.0;
-    const padBottom = options?.paddingBottom ?? 2.5;
-    const lineSpace = options?.spaceAfterLine ?? 3.5;
-    const totalNeeded = measuredHeight + padTop + padBottom + (options?.hasBottomLine !== false ? 3.0 : 0);
+    const cleanLines: string[] = [];
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
 
-    ensurePageSpace(totalNeeded);
+    bodyLines.forEach((p) => {
+      const text = (p || '').trim();
+      if (!text) return;
+      const split: string[] = doc.splitTextToSize(text, col1Width - 1.5);
+      cleanLines.push(...split);
+    });
 
-    const yStart = currentY + padTop;
+    const approxH = (opts?.helperNote ? 4.5 : 0) + Math.max(1, cleanLines.length) * 3.8 + 4;
+    checkPageBreak(Math.min(approxH, 24));
 
-    // Draw Column 0 Label (RIGHT-ALIGNED)
-    if (label) {
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(0, 0, 0);
-      docPdf.text(label, startX1 - 3.0, yStart + 3.0, { align: 'right' });
+    const labelEndY = drawCol0Label(label, cursorY);
+
+    if (opts?.helperNote) {
+      drawCol1HelperNote(opts.helperNote);
+      cursorY += 0.4;
     }
 
-    if (options?.col0Note) {
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(0, 0, 0);
-      const noteLines = docPdf.splitTextToSize(options.col0Note, col0Width - 4);
-      docPdf.text(noteLines, startX1 - 3.0, yStart + measuredHeight - 1.0, { align: 'right' });
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+
+    if (cleanLines.length === 0) {
+      cursorY = Math.max(cursorY + 1.2, labelEndY - 2.0);
+    } else {
+      for (const line of cleanLines) {
+        if (cursorY + 3.8 > bottomLimit) {
+          doc.addPage();
+          cursorY = topMargin;
+          drawCol0Label(`${label} (cont.)`, cursorY);
+          doc.setFont('times', 'normal');
+          doc.setFontSize(9.5);
+          doc.setTextColor(0, 0, 0);
+        }
+        doc.text(line, col1X, cursorY);
+        cursorY += 3.8;
+      }
+      cursorY -= 2.4;
     }
 
-    // Draw Column 1 Content
-    renderContent(startX1, yStart, col1Width);
-
-    currentY = yStart + measuredHeight + padBottom;
-
-    // Draw horizontal separator line ONLY across Column 1
-    if (options?.hasBottomLine !== false) {
-      docPdf.setDrawColor(0, 0, 0);
-      docPdf.setLineWidth(0.2);
-      docPdf.line(startX1, currentY, endX, currentY);
-      currentY += lineSpace; // Relaxed space after the line
+    if (opts?.drawRule !== false) {
+      drawCol1Divider(4.4);
+    } else {
+      cursorY += 3.0;
     }
   };
 
-  // ─── Row 1: Activity title ───
-  const titleText = (rawReport.eventTitle || proposalData?.title || 'ACTIVITY TITLE').toUpperCase();
-  const titleH = measureTextLinesHeight(titleText, 9.5, col1Width, 4.4);
-  drawStandaloneSection(
-    'Activity title:',
-    titleH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9.5);
-      docPdf.setTextColor(0, 0, 0);
-      const lines = docPdf.splitTextToSize(titleText, w);
-      docPdf.text(lines, x, y + 3.0);
-    },
-    { hasBottomLine: true }
-  );
+  // Preload STI Logo aspect ratio + maker & signatory signatures in parallel
+  const preparedSigUrl = rawReport.preparedBy?.signatureUrl || rawReport.submittedBySignatureUrl || '';
+  const chainSteps = Array.isArray(rawReport.approvalChain) ? rawReport.approvalChain : [];
 
-  // ─── Row 2: Description ───
-  const descText = rawReport.eventDescription || proposalData?.description || 'No description provided.';
-  const descH = measureTextLinesHeight(descText, 9, col1Width, 4.2);
-  drawStandaloneSection(
-    'Description:',
-    descH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9);
-      docPdf.setTextColor(0, 0, 0);
-      const lines = docPdf.splitTextToSize(descText, w);
-      docPdf.text(lines, x, y + 3.0);
-    },
-    { hasBottomLine: true }
-  );
+  const [logoImg, preparedSigImg, ...stepSigImgs] = await Promise.all([
+    resolveImageWithMetadata(STI_LOGO_BASE64, imageLoader),
+    preparedSigUrl ? resolveImageWithMetadata(preparedSigUrl, imageLoader) : Promise.resolve(null),
+    ...chainSteps.map((step) => {
+      const isSigned =
+        step.status === 'endorsed' ||
+        step.status === 'approved' ||
+        Boolean(step.signedAt);
+      if (!isSigned || !step.signatureUrl) return Promise.resolve(null);
+      return resolveImageWithMetadata(step.signatureUrl, imageLoader);
+    }),
+  ]);
 
-  // ─── Row 3: Organizer/s ───
-  const orgsText = organizersList.join(', ');
-  const orgsH = measureTextLinesHeight(orgsText, 9, col1Width, 4.2);
-  drawStandaloneSection(
-    'Organizer/s:',
-    orgsH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9);
-      docPdf.setTextColor(0, 0, 0);
-      const lines = docPdf.splitTextToSize(orgsText, w);
-      docPdf.text(lines, x, y + 3.0);
-    },
-    { hasBottomLine: true }
-  );
+  // ==========================================
+  // DOCUMENT HEADER (Logo + Date + Title ONLY)
+  // ==========================================
+  if (logoImg) {
+    const fittedLogo = fitDimensions(logoImg.width, logoImg.height, 36, 12.5);
+    try {
+      doc.addImage(logoImg.dataUrl, logoImg.format, marginX, cursorY - 2, fittedLogo.w, fittedLogo.h);
+    } catch {}
+  } else {
+    try {
+      doc.addImage(STI_LOGO_BASE64, 'PNG', marginX, cursorY - 2, 34, 11);
+    } catch {}
+  }
 
-  // ─── Row 4 & 5: Mechanics (Prompt + Bullet Items + Bottom Line) ───
-  const mechAttachNote = rawReport.mechanicsAttachmentName
-    ? `Attached sheet: ${rawReport.mechanicsAttachmentName}`
-    : '';
-  const mechListH = measureBulletListHeight(mechanicsItems, 9, col1Width, 4.2);
-  const totalMechH = 5.5 + mechListH + (mechAttachNote ? 4.5 : 0);
-  drawStandaloneSection(
-    'Mechanics:',
-    totalMechH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'italic');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(60, 60, 60);
-      docPdf.text('(Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)', x, y + 3.0);
+  // Date: on right side with underline beneath the date value
+  const dateLabel = 'Date:';
+  const reportDateText = formatPdfDate(rawReport.submittedAt || rawReport.updatedAt || rawReport.createdAt);
+  const dateLineWidth = 38;
+  const dateLineStartX = pageWidth - marginX - dateLineWidth;
+  const dateLabelX = dateLineStartX - 2;
+  const dateTextY = cursorY + 7;
 
-      drawBulletList(mechanicsItems, x, y + 5.5, w, 4.2);
-      if (mechAttachNote) {
-        docPdf.setFont('helvetica', 'italic');
-        docPdf.setFontSize(7.5);
-        docPdf.setTextColor(40, 40, 40);
-        docPdf.text(mechAttachNote, x, y + 5.5 + mechListH + 2.5);
-      }
-    },
-    { hasBottomLine: true }
-  );
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text(dateLabel, dateLabelX, dateTextY, { align: 'right' });
 
-  // ─── Row 6: Materials (Bullet Items + Bottom Line) ───
-  const matsH = measureBulletListHeight(materialsList, 9, col1Width, 4.2);
-  drawStandaloneSection(
-    'Materials:',
-    matsH,
-    (x, y, w) => {
-      drawBulletList(materialsList, x, y, w, 4.2);
-    },
-    { hasBottomLine: true }
-  );
+  doc.setFont('times', 'normal');
+  doc.setFontSize(9.5);
+  doc.text(reportDateText, dateLineStartX + dateLineWidth / 2, dateTextY, { align: 'center' });
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.22);
+  doc.line(dateLineStartX, dateTextY + 1.1, dateLineStartX + dateLineWidth, dateTextY + 1.1);
 
-  // ─── Row 7 & 8: Attendance (Prompt + Nested Lines with Underlines) ───
-  const howMany =
+  cursorY += 13.5;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(0, 0, 0);
+  doc.text('Post-Activity Report', pageWidth / 2, cursorY, { align: 'center' });
+  cursorY += 7.0;
+
+  // ==========================================
+  // CORE FORM FIELDS
+  // ==========================================
+  const activityTitle = rawReport.eventTitle || proposalData?.title || '';
+  renderFieldRow('Activity title:', [activityTitle]);
+
+  const descriptionText = rawReport.eventDescription || proposalData?.description || '';
+  renderFieldRow('Description:', [descriptionText]);
+
+  const organizersList =
+    Array.isArray(rawReport.proposalOrganizers) && rawReport.proposalOrganizers.length > 0
+      ? rawReport.proposalOrganizers
+      : Array.isArray(proposalData?.organizers) && proposalData.organizers.length > 0
+      ? proposalData.organizers
+      : [rawReport.organizerName || rawReport.organizationName || ''];
+  renderFieldRow('Organizer/s:', [organizersList.filter(Boolean).join(', ')]);
+
+  const proposedMechanicsText = (rawReport.proposedMechanics || []).join('\n').trim();
+  const trimmedActualMechanics = (rawReport.actualMechanics || '').trim();
+  const didMechanicsDiffer =
+    typeof rawReport.mechanicsDiffered === 'boolean'
+      ? rawReport.mechanicsDiffered && Boolean(trimmedActualMechanics)
+      : Boolean(
+          trimmedActualMechanics &&
+            trimmedActualMechanics.toLowerCase() !== 'same as proposed.' &&
+            trimmedActualMechanics !== proposedMechanicsText
+        );
+
+  const mechanicsBody = didMechanicsDiffer
+    ? trimmedActualMechanics.split('\n').filter(Boolean)
+    : ['Same as proposed.'];
+  renderFieldRow('Mechanics:', mechanicsBody, {
+    helperNote: '(Fill up only if actual mechanics differed from proposed. Attach a sheet, if necessary.)',
+  });
+
+  const materialsList =
+    Array.isArray(rawReport.proposalMaterials) && rawReport.proposalMaterials.length > 0
+      ? rawReport.proposalMaterials
+      : Array.isArray(rawReport.materialsUtilized) && rawReport.materialsUtilized.length > 0
+      ? rawReport.materialsUtilized
+      : Array.isArray(proposalData?.materials) && proposalData.materials.length > 0
+      ? proposalData.materials
+      : [];
+  renderFieldRow('Materials:', materialsList.length > 0 ? [materialsList.join(', ')] : []);
+
+  // ==========================================
+  // ATTENDANCE (Nested underline-only layout)
+  // ==========================================
+  checkPageBreak(22);
+  drawCol0Label('Attendance:', cursorY);
+  drawCol1HelperNote('(Attach attendance list, if available.)');
+  cursorY += 2.2;
+
+  const attLabelX = col1X + 4;
+  const attValueX = col1X + 42;
+  const attValueW = col1X + col1Width - attValueX;
+
+  const howManyDisplay =
     rawReport.attendanceSummary?.howManyAttended ||
     (rawReport.attendanceSummary?.attendedCount
       ? `${rawReport.attendanceSummary.attendedCount} Attendees`
-      : '—');
-
-  const who =
+      : '');
+  const whoAttendedDisplay =
     rawReport.attendanceSummary?.whoAttended ||
     rawReport.attendanceSummary?.targetAudience ||
-    proposalData?.targetAudienceText ||
-    '—';
+    '';
 
-  const attListLabel = rawReport.attendanceSummary?.attendanceListName
-    ? `(Attach attendance list, if available.) Attached: ${rawReport.attendanceSummary.attendanceListName}`
-    : '(Attach attendance list, if available.)';
+  const drawAttendanceSubRow = (subLabel: string, value: string) => {
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
+    const valLines: string[] = value.trim()
+      ? doc.splitTextToSize(value.trim(), attValueW - 2)
+      : [''];
+    checkPageBreak(valLines.length * 3.8 + 4);
 
-  const attH = 6.0 + 7.5 + 7.5;
-  drawStandaloneSection(
-    'Attendance:',
-    attH,
-    (x, y, w) => {
-      let offset = 0;
-      docPdf.setFont('helvetica', 'italic');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(60, 60, 60);
-      docPdf.text(attListLabel, x, y + 3.0);
-      offset += 6.5;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.2);
+    doc.setTextColor(0, 0, 0);
+    doc.text(subLabel, attLabelX, cursorY);
 
-      const valStartX = x + 40;
-
-      // Line 1: How many attended?
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(0, 0, 0);
-      docPdf.text('How many attended?', x + 2, y + offset + 3.0);
-
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9);
-      docPdf.text(howMany, valStartX + 2, y + offset + 3.0);
-      docPdf.setDrawColor(0, 0, 0);
-      docPdf.setLineWidth(0.2);
-      docPdf.line(valStartX, y + offset + 4.5, endX, y + offset + 4.5);
-
-      offset += 7.5;
-
-      // Line 2: Who attended?
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.text('Who attended?', x + 2, y + offset + 3.0);
-
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9);
-      docPdf.text(who, valStartX + 2, y + offset + 3.0);
-      docPdf.line(valStartX, y + offset + 4.5, endX, y + offset + 4.5);
-    },
-    { hasBottomLine: false, spaceAfterLine: 2.0 }
-  );
-
-  // ─── Row 9: Marketing (Bullet Items + Bottom Line) ───
-  const mktH = measureBulletListHeight(marketingList, 9, col1Width, 4.2);
-  drawStandaloneSection(
-    'Marketing:',
-    mktH,
-    (x, y, w) => {
-      drawBulletList(marketingList, x, y, w, 4.2);
-    },
-    { hasBottomLine: true }
-  );
-
-  // ─── Row 10: Documentation (Bullet Items + Bottom Line) ───
-  const docuH = measureBulletListHeight(documentationList, 9, col1Width, 4.2);
-  drawStandaloneSection(
-    'Documentation:',
-    docuH,
-    (x, y, w) => {
-      drawBulletList(documentationList, x, y, w, 4.2);
-    },
-    { hasBottomLine: true }
-  );
-
-  // ─── Row 11: Date & time (Bold + Bottom Line) ───
-  const dateStr =
-    rawReport.eventDateFormatted ||
-    (proposalData?.date
-      ? `${proposalData.date}${proposalData.startTime ? `, ${proposalData.startTime} – ${proposalData.endTime || ''}` : ''}`
-      : 'November 24, 2025, 9:00 AM – 3:00 PM');
-  const dateH = measureTextLinesHeight(dateStr, 9.5, col1Width, 4.4);
-  drawStandaloneSection(
-    'Date & time:',
-    dateH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(9.5);
-      docPdf.setTextColor(0, 0, 0);
-      const lines = docPdf.splitTextToSize(dateStr, w);
-      docPdf.text(lines, x, y + 3.0);
-    },
-    { hasBottomLine: true }
-  );
-
-  // ─── Row 12: Venue (Text + Bottom Line) ───
-  const venueStr = rawReport.eventVenue || proposalData?.venueName || proposalData?.venue || 'STI College Ormoc – NEW ROOMS';
-  const venueH = measureTextLinesHeight(venueStr, 9.5, col1Width, 4.4);
-  drawStandaloneSection(
-    'Venue:',
-    venueH,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(9.5);
-      docPdf.setTextColor(0, 0, 0);
-      const lines = docPdf.splitTextToSize(venueStr, w);
-      docPdf.text(lines, x, y + 3.0);
-    },
-    { hasBottomLine: true }
-  );
-
-  // ─── Results of Activity (Multi-part Sub-sections to guarantee zero cutoff) ───
-  // Prompt + Header
-  drawStandaloneSection(
-    'Results of activity:',
-    12.0,
-    (x, y, w) => {
-      docPdf.setFont('helvetica', 'italic');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(60, 60, 60);
-      docPdf.text('(Include assessment of success based on indicators. Attach a sheet, if necessary.)', x, y + 3.0);
-
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(11);
-      docPdf.setTextColor(0, 0, 0);
-      docPdf.text('Results of the Activity', x, y + 9.5);
-    },
-    { hasBottomLine: false, paddingBottom: 1.0 }
-  );
-
-  // Sub-section helper
-  const drawResultSubSection = (
-    title: string,
-    prompt: string,
-    body: string,
-    bullets?: string[],
-    isLast = false
-  ) => {
-    let measured = 4.5;
-    if (prompt) measured += measureTextLinesHeight(prompt, 8, col1Width, 3.6) + 1.0;
-    if (body) measured += measureTextLinesHeight(body, 9, col1Width, 4.2) + 2.0;
-    if (bullets && bullets.length > 0) {
-      bullets.forEach((b) => {
-        measured += measureTextLinesHeight(`•  ${b}`, 9, col1Width - 6, 4.2) + 1.0;
-      });
-    }
-
-    drawStandaloneSection(
-      '',
-      measured,
-      (x, y, w) => {
-        let off = 0;
-        docPdf.setFont('helvetica', 'bold');
-        docPdf.setFontSize(9);
-        docPdf.setTextColor(0, 0, 0);
-        docPdf.text(title, x, y + off + 3.0);
-        off += 4.5;
-
-        if (prompt) {
-          docPdf.setFont('helvetica', 'italic');
-          docPdf.setFontSize(8);
-          docPdf.setTextColor(80, 80, 80);
-          const pLines = docPdf.splitTextToSize(prompt, w);
-          docPdf.text(pLines, x, y + off + 2.5);
-          off += pLines.length * 3.6 + 1.0;
-        }
-
-        if (body) {
-          docPdf.setFont('helvetica', 'normal');
-          docPdf.setFontSize(9);
-          docPdf.setTextColor(0, 0, 0);
-          const tLines = docPdf.splitTextToSize(body, w);
-          docPdf.text(tLines, x, y + off + 2.5);
-          off += tLines.length * 4.2 + 2.0;
-        }
-
-        if (bullets && bullets.length > 0) {
-          docPdf.setFont('helvetica', 'normal');
-          docPdf.setFontSize(9);
-          docPdf.setTextColor(0, 0, 0);
-          bullets.forEach((b) => {
-            const bLines = docPdf.splitTextToSize(`•  ${b}`, w - 6);
-            docPdf.text(bLines, x + 2, y + off + 2.5);
-            off += bLines.length * 4.2 + 1.0;
-          });
-        }
-      },
-      { hasBottomLine: isLast, paddingBottom: isLast ? 3.0 : 1.5 }
-    );
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
+    valLines.forEach((vl, i) => {
+      if (vl) doc.text(vl, attValueX, cursorY + i * 3.8);
+    });
+    const lineBottom = cursorY + Math.max(1, valLines.length) * 3.8 - 2.3;
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.22);
+    doc.line(attValueX, lineBottom, attValueX + attValueW, lineBottom);
+    cursorY = lineBottom + 4.0;
   };
 
-  drawResultSubSection('Achievement of Objectives:', '', achievementNarrative);
-  drawResultSubSection('Key Learnings / Insights Gained:', '', '', keyLearnings);
-  drawResultSubSection(
-    'Enrichment of Learning Beyond the Classroom:',
-    '(Explain how the activity complemented or enhanced classroom learning)',
-    classroomEnrichment
-  );
-  drawResultSubSection(
-    'Reason for Venue Selection:',
-    '(State justification if questioned or compared to another venue)',
-    venueAssessment
-  );
-  drawResultSubSection('Food / Logistics Assessment:', '', foodLogisticsAssessment);
-  drawResultSubSection(
-    'Schedule Compliance:',
-    '(State if program followed as planned; mention delays or adjustments if any)',
-    scheduleCompliance
-  );
-  drawResultSubSection(
-    'Issues / Problems Encountered and Actions Taken:',
-    '(If none, state “No major issues encountered.”)',
-    issuesEncountered,
-    undefined,
-    true
-  );
+  drawAttendanceSubRow('How many attended?', howManyDisplay);
+  drawAttendanceSubRow('Who attended?', whoAttendedDisplay);
+  cursorY += 0.8;
 
-  // ─── Financial Report (Prompt + Bordered Nested Table) ───
-  const finTableRowsCount = financialItems.length > 0 ? financialItems.length : 1;
-  const finAttachments = rawReport.financialSummary?.attachments || [];
-  const finAttachH = finAttachments.length > 0 ? 5.0 + finAttachments.length * 4.0 : 0;
-  const estimatedFinH = 6.0 + 5.0 + 5.0 + finTableRowsCount * 5.0 + 5.0 + 2.0 + 6.0 + finAttachH;
+  // ==========================================
+  // MARKETING, DOCUMENTATION, DATE & TIME, VENUE
+  // ==========================================
+  const marketingList =
+    Array.isArray(rawReport.proposalMarketingPlan) && rawReport.proposalMarketingPlan.length > 0
+      ? rawReport.proposalMarketingPlan
+      : Array.isArray(rawReport.marketingConducted) && rawReport.marketingConducted.length > 0
+      ? rawReport.marketingConducted
+      : Array.isArray(proposalData?.marketingPlan)
+      ? proposalData.marketingPlan
+      : [];
+  renderFieldRow('Marketing:', marketingList.length > 0 ? [marketingList.join(', ')] : []);
 
-  drawStandaloneSection(
-    'Financial report:',
-    estimatedFinH,
-    (x, y, w) => {
-      let offset = 0;
-      docPdf.setFont('helvetica', 'italic');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(60, 60, 60);
-      docPdf.text(
-        '(Attach supporting receipts and list of participants who have/haven’t paid.) Attached also the liquidation.',
-        x,
-        y + 3.0
-      );
-      offset += 6.0;
+  const docPlanList =
+    Array.isArray(rawReport.proposalDocumentationPlan) && rawReport.proposalDocumentationPlan.length > 0
+      ? rawReport.proposalDocumentationPlan
+      : Array.isArray(proposalData?.documentationPlan)
+      ? proposalData.documentationPlan
+      : [];
+  renderFieldRow('Documentation:', docPlanList.length > 0 ? [docPlanList.join(', ')] : []);
 
-      // Nested Financial Table (Bordered sub-table matching Word docx Table 4)
-      const colDescW = w - 64; // ~80mm
-      const colUnitW = 32; // 32mm
-      const colTotW = 32; // 32mm
+  renderFieldRow('Date & time:', [rawReport.eventDateFormatted || proposalData?.proposedDate || '']);
+  renderFieldRow('Venue:', [rawReport.eventVenue || proposalData?.venueName || proposalData?.venue || '']);
 
-      let curFinY = y + offset;
+  // ==========================================
+  // RESULTS OF ACTIVITY (Exact 7 Subsections)
+  // ==========================================
+  checkPageBreak(22);
+  drawCol0Label('Results of activity:', cursorY);
+  drawCol1HelperNote('(Include assessment of success based on indicators. Attach a sheet, if necessary.)');
+  cursorY += 3.5;
 
-      // Header row
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.setTextColor(0, 0, 0);
+  doc.setFont('times', 'bold');
+  doc.setFontSize(10.5);
+  doc.setTextColor(0, 0, 0);
+  doc.text('Results of the Activity', col1X, cursorY);
+  cursorY += 5.5;
 
-      docPdf.rect(x, curFinY, colDescW, 5.2);
-      docPdf.rect(x + colDescW, curFinY, colUnitW, 5.2);
-      docPdf.rect(x + colDescW + colUnitW, curFinY, colTotW, 5.2);
-
-      docPdf.text('Description', x + 2, curFinY + 3.6);
-      docPdf.text('Unit Amount', x + colDescW + colUnitW - 2, curFinY + 3.6, { align: 'right' });
-      docPdf.text('Total Amount', x + w - 2, curFinY + 3.6, { align: 'right' });
-      curFinY += 5.2;
-
-      // Revenue Sub-row
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.rect(x, curFinY, colDescW + colUnitW, 5.2);
-      docPdf.rect(x + colDescW + colUnitW, curFinY, colTotW, 5.2);
-      docPdf.text(`Revenue:  PHP ${formatPdfCurrency(revenue)}`, x + 2, curFinY + 3.6);
-      curFinY += 5.2;
-
-      // Line items
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(8);
-
-      if (financialItems.length === 0) {
-        docPdf.rect(x, curFinY, colDescW, 5.0);
-        docPdf.rect(x + colDescW, curFinY, colUnitW, 5.0);
-        docPdf.rect(x + colDescW + colUnitW, curFinY, colTotW, 5.0);
-        docPdf.text('Program & Activity Expenses', x + 2, curFinY + 3.5);
-        docPdf.text(`PHP ${formatPdfCurrency(totalExpenses)}`, x + colDescW + colUnitW - 2, curFinY + 3.5, {
-          align: 'right',
-        });
-        docPdf.text(`PHP ${formatPdfCurrency(totalExpenses)}`, x + w - 2, curFinY + 3.5, { align: 'right' });
-        curFinY += 5.0;
-      } else {
-        financialItems.forEach((item) => {
-          const itemH = 4.8;
-          docPdf.rect(x, curFinY, colDescW, itemH);
-          docPdf.rect(x + colDescW, curFinY, colUnitW, itemH);
-          docPdf.rect(x + colDescW + colUnitW, curFinY, colTotW, itemH);
-
-          const descLines = docPdf.splitTextToSize(item.description, colDescW - 3);
-          docPdf.text(descLines[0] || item.description, x + 2, curFinY + 3.4);
-          docPdf.text(formatPdfCurrency(item.unitAmount), x + colDescW + colUnitW - 2, curFinY + 3.4, {
-            align: 'right',
-          });
-          docPdf.text(formatPdfCurrency(item.totalAmount || item.unitAmount), x + w - 2, curFinY + 3.4, {
-            align: 'right',
-          });
-          curFinY += itemH;
-        });
-      }
-
-      // TOTAL row
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(8);
-      docPdf.rect(x, curFinY, colDescW, 5.2);
-      docPdf.rect(x + colDescW, curFinY, colUnitW, 5.2);
-      docPdf.rect(x + colDescW + colUnitW, curFinY, colTotW, 5.2);
-      docPdf.text('TOTAL', x + 2, curFinY + 3.6);
-      docPdf.text(`PHP ${formatPdfCurrency(totalExpenses)}`, x + colDescW + colUnitW - 2, curFinY + 3.6, {
-        align: 'right',
-      });
-      docPdf.text(`PHP ${formatPdfCurrency(totalExpenses)}`, x + w - 2, curFinY + 3.6, { align: 'right' });
-      curFinY += 5.2;
-
-      // Spacer row
-      curFinY += 2.0;
-
-      // Balance row
-      docPdf.rect(x, curFinY, w, 5.5);
-      const balLabel = `Balance (Revenue less Expenses)  PHP ${formatPdfCurrency(netBalance)}`;
-      docPdf.text(balLabel, x + 2, curFinY + 3.8);
-      curFinY += 5.5;
-
-      if (finAttachments.length > 0) {
-        curFinY += 2.0;
-        docPdf.setFont('helvetica', 'italic');
-        docPdf.setFontSize(7.5);
-        docPdf.setTextColor(60, 60, 60);
-        docPdf.text('Attached Supporting Files:', x, curFinY + 2.5);
-        curFinY += 4.0;
-        finAttachments.forEach((att) => {
-          docPdf.text(`• ${att.name}`, x + 3, curFinY + 2.5);
-          curFinY += 4.0;
-        });
-      }
-    },
-    { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.0 }
-  );
-
-  // ─── Remarks (4 Categorized Areas with Smooth Page Breaks) ───
-  const formatRemarksField = (val: any, listVal?: any): string => {
-    if (Array.isArray(listVal) && listVal.length > 0) {
-      return listVal.filter(Boolean).map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
-    }
-    if (Array.isArray(val) && val.length > 0) {
-      return val.filter(Boolean).map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
-    }
-    if (typeof val === 'string' && val.trim()) {
-      const lines = val.split('\n').map((s) => s.trim()).filter(Boolean);
-      if (lines.length > 1) {
-        return lines.map((s) => (s.startsWith('•') ? s : `•  ${s}`)).join('\n');
-      }
-      return val;
-    }
-    return '';
-  };
-
-  const remarkAreas = [
+  const resultSubsections: Array<{ num: string; title: string; body: string[] }> = [
     {
-      num: '1',
-      title: 'Program Flow and Time Management',
-      obs: formatRemarksField(recommendations.programFlow?.observations, (recommendations.programFlow as any)?.observationsList),
-      rec: formatRemarksField(recommendations.programFlow?.recommendations, (recommendations.programFlow as any)?.recommendationsList),
+      num: '1.',
+      title: 'Achievement of Objectives:',
+      body: [rawReport.results?.achievementNarrative || ''],
     },
     {
-      num: '2',
-      title: 'Participant Engagement and Interaction',
-      obs: formatRemarksField(recommendations.participantEngagement?.observations, (recommendations.participantEngagement as any)?.observationsList),
-      rec: formatRemarksField(recommendations.participantEngagement?.recommendations, (recommendations.participantEngagement as any)?.recommendationsList),
+      num: '2.',
+      title: 'Key Learnings / Insights Gained:',
+      body:
+        Array.isArray(rawReport.results?.keyLearnings) && rawReport.results.keyLearnings.length > 0
+          ? rawReport.results.keyLearnings.map((k) => `• ${k}`)
+          : [],
     },
     {
-      num: '3',
-      title: 'Technical Setup and Venue Preparation',
-      obs: formatRemarksField(recommendations.technicalSetup?.observations, (recommendations.technicalSetup as any)?.observationsList),
-      rec: formatRemarksField(recommendations.technicalSetup?.recommendations, (recommendations.technicalSetup as any)?.recommendationsList),
+      num: '3.',
+      title: 'Enrichment of Learning Beyond the Classroom:',
+      body: [rawReport.results?.classroomEnrichment || ''],
     },
     {
-      num: '4',
-      title: 'Participant Preparedness and Expectations',
-      obs: formatRemarksField(recommendations.participantPreparedness?.observations, (recommendations.participantPreparedness as any)?.observationsList),
-      rec: formatRemarksField(recommendations.participantPreparedness?.recommendations, (recommendations.participantPreparedness as any)?.recommendationsList),
+      num: '4.',
+      title: 'Reason for Venue Selection:',
+      body: [rawReport.results?.venueAssessment || ''],
+    },
+    {
+      num: '5.',
+      title: 'Food / Logistics Assessment:',
+      body: [rawReport.results?.foodAssessment || rawReport.results?.logisticsAssessment || ''],
+    },
+    {
+      num: '6.',
+      title: 'Schedule Compliance:',
+      body: [rawReport.results?.scheduleCompliance || ''],
+    },
+    {
+      num: '7.',
+      title: 'Issues / Problems Encountered and Actions Taken:',
+      body: [rawReport.results?.issuesEncountered || 'No major issues encountered.'],
     },
   ];
 
-  remarkAreas.forEach((area, aIdx) => {
-    let measured = 4.5 + 3.8 + measureTextLinesHeight(area.obs, 8.5, col1Width, 3.8) + 1.5;
-    measured += 3.8 + measureTextLinesHeight(area.rec, 8.5, col1Width, 3.8) + 2.0;
-    if (aIdx === 0) measured += 5.5; // prompt
-    if (aIdx === remarkAreas.length - 1) measured += 6.0; // please see attached
+  const subIndentX = col1X + 8.5;
+  const subTextWidth = col1X + col1Width - subIndentX;
 
-    const isLast = aIdx === remarkAreas.length - 1;
+  for (const sub of resultSubsections) {
+    checkPageBreak(10);
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(sub.num, col1X + 3, cursorY);
 
-    drawStandaloneSection(
-      aIdx === 0 ? 'Remarks:' : '',
-      measured,
-      (x, y, w) => {
-        let off = 0;
-        if (aIdx === 0) {
-          docPdf.setFont('helvetica', 'italic');
-          docPdf.setFontSize(8);
-          docPdf.setTextColor(60, 60, 60);
-          docPdf.text('(For future activity improvements.)', x, y + 3.0);
-          off += 5.5;
+    doc.setFont('times', 'bold');
+    doc.setFontSize(9.5);
+    doc.text(sub.title, subIndentX, cursorY);
+    cursorY += 3.9;
+
+    doc.setFont('times', 'normal');
+    doc.setFontSize(9.5);
+    const nonEmpty = sub.body.map((b) => b.trim()).filter(Boolean);
+    for (const paragraph of nonEmpty) {
+      const split: string[] = doc.splitTextToSize(paragraph, subTextWidth - 1);
+      for (const line of split) {
+        if (cursorY + 3.8 > bottomLimit) {
+          doc.addPage();
+          cursorY = topMargin;
         }
-
-        // Title
-        docPdf.setFont('helvetica', 'bold');
-        docPdf.setFontSize(9);
-        docPdf.setTextColor(0, 0, 0);
-        docPdf.text(`${area.num}. ${area.title}`, x, y + off + 3.0);
-        off += 4.5;
-
-        // Observations
-        docPdf.setFont('helvetica', 'bold');
-        docPdf.setFontSize(8.5);
-        docPdf.text('Observations:', x, y + off + 2.5);
-        off += 3.8;
-
-        docPdf.setFont('helvetica', 'normal');
-        docPdf.setFontSize(8.5);
-        const obsLines = docPdf.splitTextToSize(area.obs, w);
-        docPdf.text(obsLines, x, y + off + 2.5);
-        off += obsLines.length * 3.8 + 1.5;
-
-        // Recommendations
-        docPdf.setFont('helvetica', 'bold');
-        docPdf.setFontSize(8.5);
-        docPdf.text('Recommendations:', x, y + off + 2.5);
-        off += 3.8;
-
-        docPdf.setFont('helvetica', 'normal');
-        docPdf.setFontSize(8.5);
-        const recLines = docPdf.splitTextToSize(area.rec, w);
-        docPdf.text(recLines, x, y + off + 2.5);
-        off += recLines.length * 3.8 + 2.0;
-
-        if (isLast) {
-          docPdf.setFont('helvetica', 'normal');
-          docPdf.setFontSize(8.5);
-          docPdf.text('Please see attached documents.', x, y + off + 2.5);
-        }
-      },
-      {
-        col0Note: isLast ? 'VIII. Attachments\n(if applicable)' : undefined,
-        hasBottomLine: isLast,
-        paddingBottom: isLast ? 3.0 : 1.5,
+        doc.text(line, subIndentX, cursorY);
+        cursorY += 3.8;
       }
-    );
+    }
+    cursorY += 1.4;
+  }
+
+  cursorY += 1.0;
+  drawCol1Divider(4.6);
+
+  // ==========================================
+  // FINANCIAL REPORT (Bordered 3-col table)
+  // ==========================================
+  const totalRevenue = Number(
+    rawReport.financialSummary?.totalRevenue ?? liquidationData?.totalBudget ?? liquidationData?.totalRevenue ?? 0
+  );
+  const totalDisbursed = Number(
+    rawReport.financialSummary?.totalDisbursed ?? liquidationData?.totalActualSpending ?? 0
+  );
+  const netBalance = totalRevenue - totalDisbursed;
+  const lineItems = Array.isArray(rawReport.financialSummary?.lineItems)
+    ? rawReport.financialSummary.lineItems
+    : [];
+
+  checkPageBreak(36);
+  drawCol0Label('Financial report:', cursorY);
+  drawCol1HelperNote('(Attach supporting receipts and list of participants who have/haven’t paid.)');
+  cursorY += 1.5;
+
+  const finDescW = col1Width - 52;
+  const finUnitW = 26;
+  const finTotalW = 26;
+
+  const drawFinHeader = (y: number) => {
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.22);
+    doc.rect(col1X, y, finDescW, 5.8);
+    doc.rect(col1X + finDescW, y, finUnitW, 5.8);
+    doc.rect(col1X + finDescW + finUnitW, y, finTotalW, 5.8);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Description', col1X + 2, y + 4.0);
+    doc.text('Unit Amount', col1X + finDescW + finUnitW - 2, y + 4.0, { align: 'right' });
+    doc.text('Total Amount', col1X + col1Width - 2, y + 4.0, { align: 'right' });
+    return y + 5.8;
+  };
+
+  let fy = drawFinHeader(cursorY);
+
+  const drawFinRow = (
+    desc: string,
+    unitStr: string,
+    totalStr: string,
+    opts?: { bold?: boolean }
+  ) => {
+    doc.setFont('times', opts?.bold ? 'bold' : 'normal');
+    doc.setFontSize(9);
+    const descLines: string[] = doc.splitTextToSize(desc || '', finDescW - 4);
+    const rh = Math.max(5.5, descLines.length * 3.6 + 1.9);
+
+    if (fy + rh > bottomLimit) {
+      doc.addPage();
+      cursorY = topMargin;
+      drawCol0Label('Financial report:', cursorY);
+      fy = drawFinHeader(cursorY);
+    }
+
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.22);
+    doc.rect(col1X, fy, finDescW, rh);
+    doc.rect(col1X + finDescW, fy, finUnitW, rh);
+    doc.rect(col1X + finDescW + finUnitW, fy, finTotalW, rh);
+
+    doc.setFont('times', opts?.bold ? 'bold' : 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+    if (desc) doc.text(descLines, col1X + 2, fy + 3.8);
+    if (unitStr) {
+      doc.text(unitStr, col1X + finDescW + finUnitW - 2, fy + 3.8, { align: 'right' });
+    }
+    if (totalStr) {
+      doc.text(totalStr, col1X + col1Width - 2, fy + 3.8, { align: 'right' });
+    }
+    fy += rh;
+  };
+
+  drawFinRow('Revenue:', '', formatPdfAmount(totalRevenue), { bold: true });
+  drawFinRow('Expenses:', '', '', { bold: true });
+
+  if (lineItems.length > 0) {
+    lineItems.forEach((li) => {
+      drawFinRow(
+        li.description || 'Expense Item',
+        li.unitAmount ? formatPdfAmount(li.unitAmount) : '',
+        formatPdfAmount(li.totalAmount)
+      );
+    });
+  } else {
+    drawFinRow('Total Expenses', '', formatPdfAmount(totalDisbursed));
+  }
+
+  drawFinRow('TOTAL', '', formatPdfAmount(totalDisbursed), { bold: true });
+  drawFinRow('Balance (Revenue less Expenses)', '', formatPdfAmount(netBalance), { bold: true });
+
+  cursorY = fy + 5.0;
+
+  // ==========================================
+  // REMARKS + VIII. ATTACHMENTS (IF APPLICABLE)
+  // ==========================================
+  checkPageBreak(26);
+  drawCol0Label('Remarks:', cursorY);
+  drawCol1HelperNote('(For future activity improvements.)');
+  cursorY += 0.8;
+
+  const remarksIntro =
+    'This section highlights observations and recommendations that may help enhance the planning, coordination, and overall implementation of similar activities in the future. These remarks are based on actual experiences during the event, feedback from participants, and identified areas that can still be improved. The goal is to ensure better efficiency, higher participant satisfaction, and smoother execution in succeeding activities.';
+  doc.setFont('times', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(0, 0, 0);
+  const introLines: string[] = doc.splitTextToSize(remarksIntro, col1Width - 1);
+  for (const il of introLines) {
+    if (cursorY + 3.8 > bottomLimit) {
+      doc.addPage();
+      cursorY = topMargin;
+    }
+    doc.text(il, col1X, cursorY);
+    cursorY += 3.8;
+  }
+  cursorY += 2.2;
+
+  const recCats = [
+    { title: '1. Program Flow and Content', data: rawReport.recommendations?.programFlow },
+    { title: '2. Participant Engagement', data: rawReport.recommendations?.participantEngagement },
+    { title: '3. Technical Setup', data: rawReport.recommendations?.technicalSetup },
+    { title: '4. Participant Preparedness and Expectations', data: rawReport.recommendations?.participantPreparedness },
+  ];
+
+  const extractList = (val: any): string[] => {
+    if (Array.isArray(val)) return val.map((v) => String(v).trim()).filter(Boolean);
+    if (typeof val === 'string' && val.trim()) {
+      return val.split('\n').map((s) => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
+    }
+    return [];
+  };
+
+  for (const cat of recCats) {
+    const obs = extractList((cat.data as any)?.observationsList || cat.data?.observations);
+    const recs = extractList((cat.data as any)?.recommendationsList || cat.data?.recommendations);
+
+    checkPageBreak(12);
+    doc.setFont('times', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(0, 0, 0);
+    doc.text(cat.title, col1X, cursorY);
+    cursorY += 3.8;
+
+    const renderRemarkSublist = (subLabel: string, items: string[]) => {
+      doc.setFont('times', 'bold');
+      doc.setFontSize(9.2);
+      doc.text(subLabel, col1X + 4, cursorY);
+      cursorY += 3.7;
+
+      doc.setFont('times', 'normal');
+      doc.setFontSize(9.2);
+      for (const item of items) {
+        const split: string[] = doc.splitTextToSize(`• ${item}`, col1Width - 10);
+        for (const l of split) {
+          if (cursorY + 3.7 > bottomLimit) {
+            doc.addPage();
+            cursorY = topMargin;
+          }
+          doc.text(l, col1X + 6, cursorY);
+          cursorY += 3.7;
+        }
+      }
+      cursorY += 0.6;
+    };
+
+    if (obs.length > 0) renderRemarkSublist('Observations:', obs);
+    if (recs.length > 0) renderRemarkSublist('Recommendations:', recs);
+    cursorY += 1.2;
+  }
+
+  // VIII. Attachments (if applicable) — centered plain list matching PAR_updated1.docx
+  checkPageBreak(26);
+  cursorY += 1.5;
+  drawCol0Label('VIII. Attachments (if applicable)', cursorY);
+
+  const attachmentLabels = [
+    'Attendance Sheet',
+    'Photos of Activity',
+    'Program / Invitation',
+    'Feedback / Evaluation Summary',
+    'Copies of Certificates, Letters, etc',
+  ];
+
+  doc.setFont('times', 'normal');
+  doc.setFontSize(9.5);
+  doc.setTextColor(0, 0, 0);
+  const col1CenterX = col1X + col1Width / 2;
+  attachmentLabels.forEach((label) => {
+    doc.text(label, col1CenterX, cursorY, { align: 'center' });
+    cursorY += 4.2;
   });
 
-  // ─── Prepared by & Noted by (Guaranteed to Stay Together Cleanly) ───
-  const officerName = rawReport.preparedBy?.name || rawReport.createdByName || 'Organization Adviser';
-  const officerRole = rawReport.preparedBy?.roleTitle || (rawReport.isOfficerPar ? 'Organization Adviser' : 'SAS Administrator');
+  cursorY += 2.5;
 
-  const stepsToRender =
-    approvalChain.length > 0
-      ? approvalChain
-      : [
-          {
-            roleTitle: 'Organization Adviser',
-            signatoryName: 'Humabona L. Gonzales',
-            status: 'approved',
-          },
-          {
-            roleTitle: 'Program Head',
-            signatoryName: 'Engr. Sheena Joy S. Muyuela',
-            status: 'approved',
-          },
-          {
-            roleTitle: 'School Administrator',
-            signatoryName: 'Atty. Antonio R. Lucero Jr.',
-            status: 'approved',
-          },
-        ];
+  // ==========================================
+  // SIGNATORIES (Full-width Col 1 borders matching PAR_updated1.docx)
+  // ==========================================
+  const renderCol1SignatureSlot = (
+    x: number,
+    y: number,
+    slotWidth: number,
+    opts: {
+      name: string;
+      roleTitle?: string;
+      sigImg: LoadedImage | null;
+      isSigned: boolean;
+    }
+  ): number => {
+    const sigBoxH = 11.0;
+    if (opts.isSigned && opts.sigImg) {
+      const fitted = fitDimensions(
+        opts.sigImg.width,
+        opts.sigImg.height,
+        Math.min(34, slotWidth - 4),
+        sigBoxH - 1
+      );
+      const sigX = x + Math.max(0, (slotWidth - fitted.w) / 2);
+      const sigY = y + Math.max(0, sigBoxH - fitted.h - 0.5);
+      try {
+        doc.addImage(opts.sigImg.dataUrl, opts.sigImg.format, sigX, sigY, fitted.w, fitted.h);
+      } catch {}
+    }
 
-  // Combined height check: ensure signatory block has plenty of space or moves to new page together
-  const sigBlockH = 22.0 + 26.0 + 15.0; // Prepared by (22mm) + Noted by (26mm) + Note (15mm)
-  if (currentY + sigBlockH > pageHeight - marginBottom) {
-    docPdf.addPage();
-    currentY = marginTop;
-  }
+    let textY = y + sigBoxH + 1.5;
+    if (opts.name) {
+      doc.setFont('times', 'bold');
+      doc.setFontSize(9.2);
+      doc.setTextColor(0, 0, 0);
+      const nameLines: string[] = doc.splitTextToSize(opts.name, slotWidth);
+      nameLines.forEach((nl) => {
+        doc.text(nl, x + slotWidth / 2, textY, { align: 'center' });
+        textY += 3.5;
+      });
+    }
 
-  // Prepared by
-  drawStandaloneSection(
-    'Prepared by:',
-    20.0,
-    (x, y, w) => {
-      let off = 0;
-      if (officerSigUrl) {
-        try {
-          docPdf.addImage(officerSigUrl, 'PNG', x + 2, y + off, 28, 10);
-          off += 11;
-        } catch {}
+    if (opts.roleTitle) {
+      doc.setFont('times', 'normal');
+      doc.setFontSize(8.2);
+      doc.setTextColor(51, 65, 85);
+      const roleLines: string[] = doc.splitTextToSize(opts.roleTitle, slotWidth);
+      roleLines.forEach((rl) => {
+        doc.text(rl, x + slotWidth / 2, textY, { align: 'center' });
+        textY += 3.2;
+      });
+    }
+
+    return Math.max(y + sigBoxH + 1.0, textY - 0.8);
+  };
+
+  // Top horizontal border starting the Prepared by / Noted by table rows
+  checkPageBreak(26);
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.22);
+  doc.line(col1X, cursorY, col1X + col1Width, cursorY);
+  cursorY += 1.0;
+
+  // Prepared by:
+  const makerName = rawReport.preparedBy?.name || rawReport.submittedByName || rawReport.createdByName || '';
+  const makerRole = rawReport.preparedBy?.roleTitle || rawReport.submittedByRole || '';
+  const makerSigned = Boolean(preparedSigImg || rawReport.preparedBy?.signedAt || rawReport.submittedAt);
+
+  const preparedEndY = renderCol1SignatureSlot(col1X, cursorY, Math.min(68, col1Width), {
+    name: makerName,
+    roleTitle: makerRole,
+    sigImg: preparedSigImg,
+    isSigned: makerSigned,
+  });
+  drawCol0Label('Prepared by:', preparedEndY - 1.2);
+  cursorY = preparedEndY + 1.2;
+  doc.setDrawColor(0, 0, 0);
+  doc.setLineWidth(0.22);
+  doc.line(col1X, cursorY, col1X + col1Width, cursorY);
+  cursorY += 1.0;
+
+  // Noted by: / Endorsed by: Signatories with full-width Col 1 divider lines
+  if (chainSteps.length > 0) {
+    const groups: Array<{ label: string; items: Array<{ step: PARApprovalStep; img: LoadedImage | null }> }> = [];
+    chainSteps.forEach((step, idx) => {
+      const label = resolveSignatoryLabel(step) || 'Noted by:';
+      const lastGroup = groups[groups.length - 1];
+      const entry = { step, img: stepSigImgs[idx] || null };
+      if (lastGroup && lastGroup.label === label) {
+        lastGroup.items.push(entry);
       } else {
-        off += 5;
+        groups.push({ label, items: [entry] });
       }
-
-      docPdf.setFont('helvetica', 'bold');
-      docPdf.setFontSize(9.5);
-      docPdf.setTextColor(0, 0, 0);
-      docPdf.text(officerName, x + 2, y + off + 3.0);
-      off += 4.5;
-
-      docPdf.setFont('helvetica', 'normal');
-      docPdf.setFontSize(8.5);
-      docPdf.text(officerRole, x + 2, y + off + 2.5);
-    },
-    { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
-  );
-
-  // Dynamic Formal Signatories Groups
-  if (approvalChain.length > 0) {
-    const labelGroups: { label: string; stepsWithImgs: { step: PARApprovalStep; img?: string }[] }[] = [];
-    approvalChain.forEach((step, idx) => {
-      const isLast = idx === approvalChain.length - 1;
-      const formalLabel = step.signatoryLabel || resolveSignatoryLabel(step, 'par', isLast);
-      let existingGroup = labelGroups.find((g) => g.label.toLowerCase() === formalLabel.toLowerCase());
-      if (!existingGroup) {
-        existingGroup = { label: formalLabel, stepsWithImgs: [] };
-        labelGroups.push(existingGroup);
-      }
-      existingGroup.stepsWithImgs.push({ step, img: signatorySigUrls[idx] });
     });
 
-    for (const group of labelGroups) {
-      drawStandaloneSection(
-        group.label,
-        24.0,
-        (x, y, w) => {
-          let off = 0;
-          const colCount = Math.max(1, Math.min(group.stepsWithImgs.length, 3));
-          const sigColW = Math.floor(w / colCount);
+    for (const group of groups) {
+      for (let i = 0; i < group.items.length; i += 2) {
+        checkPageBreak(24);
 
-          group.stepsWithImgs.forEach((item, sIdx) => {
-            const col = sIdx % 3;
-            const row = Math.floor(sIdx / 3);
-            const sx = x + col * sigColW + 2;
-            let sOff = off + row * 22;
+        const slotW = group.items.length === 1 && i === 0 ? Math.min(68, col1Width) : (col1Width - 8) / 2;
+        const first = group.items[i];
+        const firstSigned =
+          first.step.status === 'endorsed' ||
+          first.step.status === 'approved' ||
+          Boolean(first.step.signedAt);
 
-            const sigImg = item.img;
-            if (sigImg && (item.step.status === 'endorsed' || item.step.status === 'approved')) {
-              try {
-                docPdf.addImage(sigImg, 'PNG', sx, y + sOff, 28, 10);
-                sOff += 11;
-              } catch {}
-            } else if (item.step.status === 'waived') {
-              docPdf.setFont('helvetica', 'italic');
-              docPdf.setFontSize(6.5);
-              docPdf.setTextColor(130, 130, 130);
-              docPdf.text('(Waived — Clearance Granted)', sx, y + sOff + 4.0);
-              sOff += 6;
-            } else {
-              sOff += 5;
-            }
+        const endA = renderCol1SignatureSlot(col1X, cursorY, slotW, {
+          name: first.step.signatoryName,
+          roleTitle: first.step.roleTitle || '',
+          sigImg: first.img,
+          isSigned: firstSigned,
+        });
 
-            docPdf.setFont('helvetica', 'bold');
-            docPdf.setFontSize(9);
-            docPdf.setTextColor(0, 0, 0);
-            const nameLines = docPdf.splitTextToSize(item.step.signatoryName || 'Signatory', sigColW - 4);
-            docPdf.text(nameLines, sx, y + sOff + 3.0);
-            sOff += nameLines.length * 4.0;
-
-            docPdf.setFont('helvetica', 'normal');
-            docPdf.setFontSize(8);
-            const titleLines = docPdf.splitTextToSize(item.step.roleTitle || 'Institutional Signatory', sigColW - 4);
-            docPdf.text(titleLines, sx, y + sOff + 2.5);
+        let endB = endA;
+        if (i + 1 < group.items.length) {
+          const second = group.items[i + 1];
+          const secondSigned =
+            second.step.status === 'endorsed' ||
+            second.step.status === 'approved' ||
+            Boolean(second.step.signedAt);
+          endB = renderCol1SignatureSlot(col1X + slotW + 8, cursorY, slotW, {
+            name: second.step.signatoryName,
+            roleTitle: second.step.roleTitle || '',
+            sigImg: second.img,
+            isSigned: secondSigned,
           });
-        },
-        { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
-      );
+        }
+
+        const rowEndY = Math.max(endA, endB);
+        if (i === 0) {
+          drawCol0Label(group.label, rowEndY - 1.2);
+        }
+        cursorY = rowEndY + 1.2;
+        doc.setDrawColor(0, 0, 0);
+        doc.setLineWidth(0.22);
+        doc.line(col1X, cursorY, col1X + col1Width, cursorY);
+        cursorY += 1.0;
+      }
     }
   } else {
-    // Default fallback if no chain configured
-    drawStandaloneSection(
-      'Noted by:',
-      24.0,
-      (x, y, w) => {
-        let off = 0;
-        const sigColW = Math.floor(w / 3);
-        stepsToRender.slice(0, 3).forEach((step, sIdx) => {
-          const sx = x + sIdx * sigColW + 2;
-          let sOff = off + 5;
-          docPdf.setFont('helvetica', 'bold');
-          docPdf.setFontSize(9);
-          docPdf.setTextColor(0, 0, 0);
-          const nameLines = docPdf.splitTextToSize(step.signatoryName || 'Signatory', sigColW - 4);
-          docPdf.text(nameLines, sx, y + sOff + 3.0);
-          sOff += nameLines.length * 4.0;
-          docPdf.setFont('helvetica', 'normal');
-          docPdf.setFontSize(8);
-          const titleLines = docPdf.splitTextToSize(step.roleTitle || 'Institutional Signatory', sigColW - 4);
-          docPdf.text(titleLines, sx, y + sOff + 2.5);
-        });
-      },
-      { hasBottomLine: true, paddingTop: 1.0, paddingBottom: 3.5 }
-    );
+    checkPageBreak(22);
+    const notedEndY = renderCol1SignatureSlot(col1X, cursorY, Math.min(68, col1Width), {
+      name: '',
+      sigImg: null,
+      isSigned: false,
+    });
+    drawCol0Label('Noted by:', notedEndY - 1.2);
+    cursorY = notedEndY + 1.2;
+    doc.setDrawColor(0, 0, 0);
+    doc.setLineWidth(0.22);
+    doc.line(col1X, cursorY, col1X + col1Width, cursorY);
+    cursorY += 1.0;
   }
 
-  // ─── Step 5: Bottom Policy Note ───
-  ensurePageSpace(10);
-  currentY += 4.0;
-  docPdf.setFont('helvetica', 'bold');
-  docPdf.setFontSize(8);
-  docPdf.setTextColor(0, 0, 0);
-  docPdf.text('Note:', marginX, currentY);
+  // Official 15-school-day Note directly below signatories (0.5in first-line indent matching PAR_updated1.docx)
+  checkPageBreak(12);
+  cursorY += 4.0;
+  const noteIndentX = marginX + 12.7; // 0.5 inch first-line indent (w:firstLine="720")
+  const maxRightX = pageWidth - marginX;
+  const noteBodyText = ' This report must be submitted to the Administrator within 15 school days from the date of activity completion.';
 
-  docPdf.setFont('helvetica', 'normal');
-  docPdf.setFontSize(8);
-  docPdf.text(
-    ' This report must be submitted to the Administrator within 15 school days from the date of activity completion.',
-    marginX + 8,
-    currentY
-  );
+  doc.setFont('helvetica', 'bolditalic');
+  doc.setFontSize(8.0);
+  doc.setTextColor(0, 0, 0);
+  doc.text('Note:', noteIndentX, cursorY);
+  const noteLabelW = doc.getTextWidth('Note:');
 
-  // ─── Step 6: Annex for Photo Documentation (if any photos uploaded) ───
-  if (photoDataUrls.length > 0 && photoDataUrls.some((p) => p.dataUrl)) {
-    docPdf.addPage();
-    let photoY = marginTop;
+  doc.setFont('helvetica', 'italic');
+  const firstLineMaxW = maxRightX - (noteIndentX + noteLabelW);
+  const words = noteBodyText.trim().split(' ');
+  let line1 = '';
+  let idx = 0;
+  while (idx < words.length) {
+    const candidate = line1 ? `${line1} ${words[idx]}` : ` ${words[idx]}`;
+    if (doc.getTextWidth(candidate) <= firstLineMaxW) {
+      line1 = candidate;
+      idx++;
+    } else {
+      break;
+    }
+  }
+  doc.text(line1, noteIndentX + noteLabelW, cursorY);
+  if (idx < words.length) {
+    cursorY += 3.6;
+    const remainingText = words.slice(idx).join(' ');
+    const remLines: string[] = doc.splitTextToSize(remainingText, maxRightX - marginX);
+    remLines.forEach((rl) => {
+      doc.text(rl, marginX, cursorY);
+      cursorY += 3.6;
+    });
+  }
 
-    docPdf.setFont('helvetica', 'bold');
-    docPdf.setFontSize(11);
-    docPdf.setTextColor(0, 0, 0);
-    docPdf.text('ANNEX: PHOTO DOCUMENTATION', marginX, photoY + 2);
-    photoY += 8;
-
-    docPdf.setFont('helvetica', 'normal');
-    docPdf.setFontSize(8.5);
-    docPdf.setTextColor(90, 90, 90);
-    docPdf.text(
-      `Activity Documentation for: ${rawReport.eventTitle} (${rawReport.referenceNo})`,
-      marginX,
-      photoY
+  // ==========================================
+  // APPENDED PHOTO DOCUMENTATION SHEETS (if any)
+  // ==========================================
+  const reportPhotos = Array.isArray(rawReport.photos) ? rawReport.photos : [];
+  if (reportPhotos.length > 0) {
+    const loadedPhotos = await Promise.all(
+      reportPhotos.map(async (p) => ({
+        caption: p.caption || '',
+        img: await resolveImageWithMetadata(p.url || (p as any).dataUrl, imageLoader),
+      }))
     );
-    photoY += 8;
+    const validPhotos = loadedPhotos.filter((p) => p.img !== null);
 
-    // Grid: 2 photos per row with smooth spacing
-    const cardW = (contentWidth - 8) / 2;
-    const cardH = 56;
+    if (validPhotos.length > 0) {
+      doc.addPage();
+      cursorY = topMargin;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(0, 0, 0);
+      doc.text('Photos of Activity', marginX, cursorY);
+      cursorY += 5.5;
 
-    for (let i = 0; i < photoDataUrls.length; i += 2) {
-      if (photoY + cardH > pageHeight - marginBottom) {
-        docPdf.addPage();
-        photoY = marginTop;
+      const slotW = (pageWidth - 2 * marginX - 6) / 2;
+      const slotH = 58;
+
+      for (let i = 0; i < validPhotos.length; i += 2) {
+        if (cursorY + slotH + 10 > pageHeight - 16) {
+          doc.addPage();
+          cursorY = topMargin;
+        }
+
+        const pair = [validPhotos[i], validPhotos[i + 1]].filter(Boolean);
+        pair.forEach((entry, idx) => {
+          const px = marginX + idx * (slotW + 6);
+          const photo = entry.img!;
+          doc.setDrawColor(148, 163, 184);
+          doc.setLineWidth(0.22);
+          doc.rect(px, cursorY, slotW, slotH);
+
+          const fitted = fitDimensions(photo.width, photo.height, slotW - 3, slotH - 10);
+          const ix = px + (slotW - fitted.w) / 2;
+          const iy = cursorY + (slotH - 8 - fitted.h) / 2 + 1;
+          try {
+            doc.addImage(photo.dataUrl, photo.format, ix, iy, fitted.w, fitted.h);
+          } catch {}
+
+          if (entry.caption) {
+            doc.setFont('times', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(0, 0, 0);
+            const capLines: string[] = doc.splitTextToSize(entry.caption, slotW - 4).slice(0, 2);
+            doc.text(capLines, px + slotW / 2, cursorY + slotH - 5, { align: 'center' });
+          }
+        });
+
+        cursorY += slotH + 6;
       }
-
-      // Left photo
-      const leftP = photoDataUrls[i];
-      if (leftP?.dataUrl) {
-        try {
-          docPdf.addImage(leftP.dataUrl, 'JPEG', marginX, photoY, cardW, 46);
-        } catch {}
-        docPdf.setDrawColor(200, 200, 200);
-        docPdf.rect(marginX, photoY, cardW, 46);
-        docPdf.setFont('helvetica', 'normal');
-        docPdf.setFontSize(8);
-        docPdf.setTextColor(40, 40, 40);
-        docPdf.text(leftP.caption, marginX + 1, photoY + 50);
-      }
-
-      // Right photo
-      const rightP = photoDataUrls[i + 1];
-      if (rightP?.dataUrl) {
-        const rightX = marginX + cardW + 8;
-        try {
-          docPdf.addImage(rightP.dataUrl, 'JPEG', rightX, photoY, cardW, 46);
-        } catch {}
-        docPdf.setDrawColor(200, 200, 200);
-        docPdf.rect(rightX, photoY, cardW, 46);
-        docPdf.setFont('helvetica', 'normal');
-        docPdf.setFontSize(8);
-        docPdf.setTextColor(40, 40, 40);
-        docPdf.text(rightP.caption, rightX + 1, photoY + 50);
-      }
-
-      photoY += cardH + 6;
     }
   }
 
-  // ─── Step 7: Save Generated PDF File ───
-  return docPdf;
+  return doc;
 }

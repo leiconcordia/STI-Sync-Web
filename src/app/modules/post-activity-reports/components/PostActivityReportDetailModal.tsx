@@ -350,20 +350,23 @@ export default function PostActivityReportDetailModal({
 
           {/* Section 1 & 2 Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Attendance Verification */}
+            {/* Attendance */}
             <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs">
               <div className="flex items-center gap-2 mb-3">
                 <Users className="w-4 h-4 text-blue-600" />
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Attendance Verification
+                  Attendance
                 </h4>
               </div>
               <div className="grid grid-cols-2 gap-3 text-center mb-3">
                 <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-                  <span className="text-[11px] text-slate-500 block">Registered</span>
+                  <span className="text-[11px] text-slate-500 block">Estimated Attendance</span>
                   <div className="flex items-center justify-center gap-1.5">
                     <span className="text-base font-black text-slate-800">
-                      {report.attendanceSummary?.registeredCount || 0}
+                      {(report.attendanceSummary as any)?.estimatedAttendanceLabel ||
+                        report.attendanceSummary?.estimatedAttendance ||
+                        report.attendanceSummary?.registeredCount ||
+                        0}
                     </span>
                     {diffByPath.get('attendanceSummary.registeredCount') && (
                       <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.registeredCount')} />
@@ -371,7 +374,7 @@ export default function PostActivityReportDetailModal({
                   </div>
                 </div>
                 <div className="bg-blue-50 p-2.5 rounded-lg border border-blue-200">
-                  <span className="text-[11px] text-blue-700 block font-semibold">Attended (Turnout)</span>
+                  <span className="text-[11px] text-blue-700 block font-semibold">How many attended?</span>
                   <div className="flex items-center justify-center gap-1.5">
                     <span className="text-base font-black text-blue-800">
                       {report.attendanceSummary?.attendedCount || 0}
@@ -389,11 +392,11 @@ export default function PostActivityReportDetailModal({
               </div>
               <div className="text-xs space-y-1 text-slate-600">
                 <p>
-                  <strong>Target:</strong> {report.attendanceSummary?.targetAudience || 'Enrolled Students'}
+                  <strong>Target Market:</strong> {report.attendanceSummary?.targetAudience || 'Enrolled Students'}
                 </p>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <p>
-                    <strong>Actual:</strong> {report.attendanceSummary?.whoAttended || 'College / SHS Students'}
+                    <strong>Who attended?:</strong> {report.attendanceSummary?.whoAttended || 'College / SHS Students'}
                   </p>
                   {diffByPath.get('attendanceSummary.whoAttended') && (
                     <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.whoAttended')} />
@@ -402,36 +405,38 @@ export default function PostActivityReportDetailModal({
               </div>
             </div>
 
-            {/* Financial Clearance Summary */}
+            {/* Financial report */}
             <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs">
               <div className="flex items-center gap-2 mb-3">
                 <DollarSign className="w-4 h-4 text-emerald-600" />
                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Financial Report (Approved Proposal Budget)
+                  Financial report
                 </h4>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center mb-3">
                 <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block">Total Budget</span>
+                  <span className="text-[10px] text-slate-500 block">Revenue</span>
                   <span className="text-xs font-bold text-slate-800">
                     {formatCurrency(report.financialSummary?.totalRevenue || 0)}
                   </span>
                 </div>
                 <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block">Disbursed</span>
+                  <span className="text-[10px] text-slate-500 block">Total Expenses</span>
                   <span className="text-xs font-bold text-slate-800">
                     {formatCurrency(report.financialSummary?.totalDisbursed || 0)}
                   </span>
                 </div>
                 <div className="bg-emerald-50 p-2 rounded-lg border border-emerald-200">
-                  <span className="text-[10px] text-emerald-700 block font-semibold">Balance</span>
+                  <span className="text-[10px] text-emerald-700 block font-semibold">Balance (Revenue less Expenses)</span>
                   <span className="text-xs font-bold text-emerald-800">
                     {formatVariance(netBalance)}
                   </span>
                 </div>
               </div>
               <p className="text-[11px] text-slate-500">
-                Financial allocations sourced directly from the approved Activity Proposal baseline.
+                {report.financialSummary?.copiedFromLiquidation
+                  ? 'Financial figures synced directly from the cleared Financial Liquidation.'
+                  : 'Financial figures sourced from the approved Activity Proposal.'}
               </p>
             </div>
           </div>
@@ -517,10 +522,10 @@ export default function PostActivityReportDetailModal({
             )}
           </div>
 
-          {/* Section 4: 4 Categorized Recommendations */}
+          {/* Remarks (For Future Activity Improvements) */}
           <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
             <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-              STI Categorized Recommendations (Post-Mortem)
+              Remarks (For Future Activity Improvements)
             </h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
               <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
@@ -581,6 +586,75 @@ export default function PostActivityReportDetailModal({
               </div>
             </div>
           </div>
+
+          {/* VIII. Attachments (if applicable) */}
+          {(report.attachmentsChecklist || (report.supportingDocuments && report.supportingDocuments.length > 0)) && (
+            <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                VIII. Attachments (if applicable)
+              </h4>
+              {report.attachmentsChecklist && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                  {[
+                    { label: 'Attendance Sheet', checked: Boolean(report.attachmentsChecklist.attendanceSheet) },
+                    {
+                      label: 'Photos of Activity',
+                      checked: Boolean(report.attachmentsChecklist.photosOfActivity || (report.photos?.length || 0) > 0),
+                    },
+                    { label: 'Program / Invitation', checked: Boolean(report.attachmentsChecklist.programInvitation) },
+                    {
+                      label: 'Feedback / Evaluation Summary',
+                      checked: Boolean(
+                        report.attachmentsChecklist.feedbackSummary ||
+                          report.attachmentsChecklist.feedbackEvaluationSummary
+                      ),
+                    },
+                    {
+                      label: 'Copies of Certificates, Letters, etc',
+                      checked: Boolean(
+                        report.attachmentsChecklist.certificatesLetters ||
+                          report.attachmentsChecklist.copiesOfCertificatesLetters
+                      ),
+                    },
+                  ].map((item) => (
+                    <div
+                      key={item.label}
+                      className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${
+                        item.checked
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-semibold'
+                          : 'bg-slate-50 border-slate-200 text-slate-400'
+                      }`}
+                    >
+                      <span className="font-mono text-xs">{item.checked ? '[✓]' : '[ ]'}</span>
+                      <span>{item.label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {report.supportingDocuments && report.supportingDocuments.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Uploaded Supporting Document{report.supportingDocuments.length > 1 ? 's' : ''}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {report.supportingDocuments.map((docFile) => (
+                      <a
+                        key={docFile.id}
+                        href={docFile.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 text-xs font-semibold transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-[#0E4EBD] shrink-0" />
+                        <span className="truncate max-w-[220px]">{docFile.name}</span>
+                        <Download className="w-3 h-3 text-[#0E4EBD] shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Section 5: Photo Gallery */}
           {report.photos && report.photos.length > 0 && (

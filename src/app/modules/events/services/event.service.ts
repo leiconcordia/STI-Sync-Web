@@ -41,6 +41,10 @@ import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cle
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
+import {
+  getExcludedMemberIdentifiersForOrg,
+  reconcilePendingMemberRemovalsForOrg,
+} from '../../organizations/services/member.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const EVENTS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -113,22 +117,36 @@ export async function generatePayablesForEvent(
       console.warn('[generatePayablesForEvent] Error fetching courses:', e);
     }
 
-    // If org members only, fetch active members of hosting org
+    // Build normalized exclusion list for members removed or scheduled for removal when this activity was created
+    const excludedMemberSet = new Set<string>(
+      (Array.isArray(eventData.excludedMemberIds) ? eventData.excludedMemberIds : [])
+        .map((id: any) => String(id || '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+
+    // If org members only, fetch active members (plus scheduled-for-removal members specifically signed up for this event)
     const memberStudentIds = new Set<string>();
-    if (eventData.targetAudienceScope === 'members' && eventData.hostingOrgId) {
+    const orgIdForMembers = eventData.hostingOrgId || (eventData as any).organizationId || '';
+    if (eventData.targetAudienceScope === 'members' && orgIdForMembers) {
       try {
         const orgMembersSnap = await getDocs(
           query(
             collection(db, 'organization_members'),
-            where('organizationId', '==', eventData.hostingOrgId),
-            where('status', '==', 'active')
+            where('organizationId', '==', orgIdForMembers)
           )
         );
         orgMembersSnap.docs.forEach((d) => {
           const m = d.data();
-          if (m.studentId) memberStudentIds.add(String(m.studentId).trim());
-          if (m.studentSchoolId) memberStudentIds.add(String(m.studentSchoolId).trim());
-          if (m.authUid) memberStudentIds.add(String(m.authUid).trim());
+          const status = (m.status || 'active') as string;
+          const isScheduledForThisEvent =
+            status === 'pending_removal' &&
+            Array.isArray(m.scheduledRemovalActivityIds) &&
+            m.scheduledRemovalActivityIds.includes(eventId);
+          if (status !== 'active' && !isScheduledForThisEvent) return;
+
+          if (m.studentId) memberStudentIds.add(String(m.studentId).trim().toLowerCase());
+          if (m.studentSchoolId) memberStudentIds.add(String(m.studentSchoolId).trim().toLowerCase());
+          if (m.authUid) memberStudentIds.add(String(m.authUid).trim().toLowerCase());
         });
       } catch (e) {
         console.warn('[generatePayablesForEvent] Error fetching org members:', e);
@@ -145,6 +163,19 @@ export async function generatePayablesForEvent(
       .filter((student: any) => {
         const studentIdentifier = student.id || student.authUid || student.studentId;
         const officialSchoolId = student.studentId || student.schoolId || '';
+
+        // Skip if excluded when activity was created (e.g., removed or pending_removal members)
+        const studentKeys = [
+          student.id,
+          student.authUid,
+          student.studentId,
+          student.schoolId,
+        ]
+          .filter(Boolean)
+          .map((v: any) => String(v).trim().toLowerCase());
+        if (studentKeys.some((k) => excludedMemberSet.has(k))) {
+          return false;
+        }
 
         // Skip if already charged
         if (
@@ -166,15 +197,10 @@ export async function generatePayablesForEvent(
 
         if (!isActive) return false;
 
-        // 2. Org Members constraint
+        // 2. Org Members constraint (strict — do not leak to campus students when an org has 0 eligible members)
         if (eventData.targetAudienceScope === 'members') {
-          if (memberStudentIds.size > 0) {
-            const isMember =
-              memberStudentIds.has(student.id) ||
-              memberStudentIds.has(student.authUid) ||
-              memberStudentIds.has(student.studentId);
-            if (!isMember) return false;
-          }
+          const isMember = studentKeys.some((k) => memberStudentIds.has(k));
+          if (!isMember) return false;
         }
 
         // 3. Course Filter
@@ -423,8 +449,25 @@ export const createEvent = async (
       : data.visibilityStart;
   }
 
+  const resolvedOrgId = String(data.hostingOrgId || (data as any).organizationId || '').trim();
+  const isClubHost = resolvedOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(resolvedOrgId.toLowerCase());
+  let resolvedExcludedMemberIds: string[] | undefined = Array.isArray((data as any).excludedMemberIds)
+    ? (data as any).excludedMemberIds
+    : Array.isArray(existingDocData?.excludedMemberIds)
+      ? existingDocData.excludedMemberIds
+      : undefined;
+  if (isClubHost && (!resolvedExcludedMemberIds || !draftId || existingDocData?.proposalStatus === 'draft')) {
+    try {
+      const currentExcluded = await getExcludedMemberIdentifiersForOrg(resolvedOrgId);
+      resolvedExcludedMemberIds = Array.from(new Set([...(resolvedExcludedMemberIds || []), ...currentExcluded]));
+    } catch (err) {
+      console.warn('[createEvent] Failed to resolve excluded members:', err);
+    }
+  }
+
   const eventPayload: Partial<EventDocument> = cleanUndefined({
     ...data,
+    ...(resolvedExcludedMemberIds !== undefined ? { excludedMemberIds: resolvedExcludedMemberIds } : {}),
     isVisible: isVisibleVal,
     visibleToStudents: isVisibleVal,
     visibilityStart: formattedVisibilityStart,
@@ -493,10 +536,12 @@ export const saveEventDraft = async (
   userName?: string
 ): Promise<string> => {
   let currentVersion = 1;
+  let existingDraftData: any = null;
   if (existingId) {
     const snap = await getDoc(doc(db, EVENTS_COLLECTION, existingId));
     if (snap.exists()) {
-      currentVersion = Number(snap.data()?.version || 1);
+      existingDraftData = snap.data();
+      currentVersion = Number(existingDraftData?.version || 1);
     }
   }
 
@@ -510,8 +555,25 @@ export const saveEventDraft = async (
       : data.visibilityStart;
   }
 
+  const resolvedOrgId = String(data.hostingOrgId || (data as any).organizationId || '').trim();
+  const isClubHost = resolvedOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(resolvedOrgId.toLowerCase());
+  let resolvedExcludedMemberIds: string[] | undefined = Array.isArray((data as any).excludedMemberIds)
+    ? (data as any).excludedMemberIds
+    : Array.isArray(existingDraftData?.excludedMemberIds)
+      ? existingDraftData.excludedMemberIds
+      : undefined;
+  if (isClubHost) {
+    try {
+      const currentExcluded = await getExcludedMemberIdentifiersForOrg(resolvedOrgId);
+      resolvedExcludedMemberIds = Array.from(new Set([...(resolvedExcludedMemberIds || []), ...currentExcluded]));
+    } catch (err) {
+      console.warn('[saveEventDraft] Failed to resolve excluded members:', err);
+    }
+  }
+
   const eventPayload: Partial<EventDocument> = cleanUndefined({
     ...data,
+    ...(resolvedExcludedMemberIds !== undefined ? { excludedMemberIds: resolvedExcludedMemberIds } : {}),
     isVisible: isVisibleVal,
     visibleToStudents: isVisibleVal,
     visibilityStart: formattedVisibilityStart,
@@ -1323,6 +1385,16 @@ export const cancelEventTransaction = async (
       }
     }
     await batch.commit();
+  }
+
+  // Finalize any scheduled club member removals whose only remaining upcoming activity was this event
+  if (!cancellationPendingApproval) {
+    const cancelledOrgId = String(eventData.hostingOrgId || (eventData as any).organizationId || '').trim();
+    if (cancelledOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(cancelledOrgId.toLowerCase())) {
+      reconcilePendingMemberRemovalsForOrg(cancelledOrgId).catch((err) => {
+        console.warn('[cancelEventTransaction] Scheduled removal reconciliation warning:', err);
+      });
+    }
   }
 
   // 7. Notify all designated signatories + SAS / Organization stakeholders

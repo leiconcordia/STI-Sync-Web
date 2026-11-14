@@ -16,7 +16,10 @@ import {
   Building,
   Send,
   PenTool,
+  AlertTriangle,
+  Calendar,
 } from 'lucide-react';
+import { formatLongDate } from '../../utils/date';
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { useCampusActivityData } from '../hooks/useCampusActivityData';
 import CampusActivityOverview from '../components/CampusActivityOverview';
@@ -61,7 +64,9 @@ export default function SignatoryDashboardPage() {
 
   const hasSignature = Boolean(session?.signatureUrl || session?.signatureDataUrl);
 
-  // Unified urgent queue
+  const urgentActivityProposals = pendingProposals.filter((p) => Boolean((p as any).isUrgent));
+
+  // Unified pending signature queue (urgent proposals prioritized first)
   const urgentQueue = [
     ...pendingProposals.map((p) => ({
       id: p.id,
@@ -71,6 +76,8 @@ export default function SignatoryDashboardPage() {
       org: p.organizationName || 'Student Organization',
       date: p.targetDate || (p as any).createdAt,
       stage: p.currentStageIndex ?? 1,
+      isUrgent: Boolean((p as any).isUrgent),
+      urgentJustification: (p as any).urgentJustification || '',
       raw: p,
     })),
     ...pendingLiquidations.map((l) => ({
@@ -81,6 +88,8 @@ export default function SignatoryDashboardPage() {
       org: l.organizationName || 'Student Organization',
       date: l.submittedAt || (l as any).createdAt,
       stage: l.currentStageIndex ?? 1,
+      isUrgent: false,
+      urgentJustification: '',
       raw: l,
     })),
     ...pendingPARs.map((par) => ({
@@ -91,9 +100,11 @@ export default function SignatoryDashboardPage() {
       org: par.organizationName || 'Student Organization',
       date: par.createdAt,
       stage: par.currentStageIndex ?? 1,
+      isUrgent: false,
+      urgentJustification: '',
       raw: par,
     })),
-  ];
+  ].sort((a, b) => Number(b.isUrgent) - Number(a.isUrgent));
 
   const handleOpenItem = (item: (typeof urgentQueue)[0]) => {
     if (item.docType === 'proposal') {
@@ -197,6 +208,85 @@ export default function SignatoryDashboardPage() {
 
       <CampusActivityOverview data={campusData} />
 
+      {/* Urgent Activity Proposals — Priority Endorsement Lane */}
+      {urgentActivityProposals.length > 0 && (
+        <div className="rounded-2xl border border-amber-300 bg-gradient-to-r from-amber-50/90 via-white to-rose-50/70 shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-amber-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-base font-extrabold text-[#001A4D]">
+                    Urgent Activity Proposals — Priority Endorsement Lane
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[10px] font-black uppercase tracking-wider">
+                    {urgentActivityProposals.length} Urgent Pending
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900 mt-0.5">
+                  Expedited activity proposals submitted under the 15-day advance rule requiring immediate signatory endorsement.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => navigate('/signatory/proposals')}
+              className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-xs transition-colors shrink-0 cursor-pointer self-start sm:self-center"
+            >
+              Open Proposals Hub
+            </button>
+          </div>
+
+          <div className="p-4 space-y-2.5">
+            {urgentActivityProposals.map((prop) => (
+              <div
+                key={prop.id}
+                className="p-4 bg-white border border-amber-200 rounded-xl shadow-2xs hover:border-amber-400 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+              >
+                <div className="space-y-1.5 flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-black uppercase tracking-wider">
+                      <AlertTriangle className="w-3 h-3 text-rose-700" />
+                      Urgent (&lt;15 Days)
+                    </span>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#001A4D] text-[#FFD41C]">
+                      {prop.referenceNo || 'Activity Proposal'}
+                    </span>
+                    <span className="text-xs font-bold text-slate-600 flex items-center gap-1">
+                      <Building className="w-3 h-3 text-slate-400" />
+                      {prop.organizationName || 'Student Organization'}
+                    </span>
+                    <span className="text-xs text-slate-500 flex items-center gap-1">
+                      <Calendar className="w-3 h-3 text-slate-400" />
+                      Target: {formatLongDate(prop.targetDate, 'TBD')}
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-extrabold text-[#001A4D] truncate">
+                    {prop.title || prop.activityTitle || 'Untitled Activity Proposal'}
+                  </h3>
+                  {(prop as any).urgentJustification && (
+                    <p className="text-xs text-amber-950 bg-amber-50 border border-amber-200/80 rounded-lg px-2.5 py-1.5">
+                      <strong className="text-amber-900">Justification:</strong> {(prop as any).urgentJustification}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedProposal(prop)}
+                  className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer whitespace-nowrap self-start sm:self-center shrink-0"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Review &amp; Sign Urgent</span>
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Urgent Action Queue: Items Pending My Turn */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden">
         <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between">
@@ -243,6 +333,12 @@ export default function SignatoryDashboardPage() {
               >
                 <div className="space-y-1.5 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
+                    {item.isUrgent && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 border border-rose-200">
+                        <AlertTriangle className="w-3 h-3 text-rose-700" />
+                        Urgent
+                      </span>
+                    )}
                     <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-[#001A4D] text-[#FFD41C]">
                       {item.badgeText}
                     </span>

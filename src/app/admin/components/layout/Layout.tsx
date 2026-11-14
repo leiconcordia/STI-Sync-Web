@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from "react-router";
 import { Sidebar } from "./Sidebar";
 import { TopNav } from "./TopNav";
 import { Toaster } from "../../../components/ui/sonner";
+import { UrgentProposalsAlertModal, URGENT_ALERT_SESSION_KEY } from "../UrgentProposalsAlertModal";
 
 const pageTitles: Record<string, string> = {
   "/home": "Dashboard",
@@ -30,6 +31,9 @@ export function Layout() {
   const [globalSearch, setGlobalSearch] = useState("");
 
   const handleLogout = () => {
+    try {
+      sessionStorage.removeItem(URGENT_ALERT_SESSION_KEY);
+    } catch {}
     navigate('/');
   };
 
@@ -53,6 +57,7 @@ export function Layout() {
         </main>
       </div>
       <Toaster position="bottom-right" richColors />
+      <UrgentProposalsAlertModal />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { formatAppDate } from '../../utils/date';
+import { formatLongDate } from '../../utils/date';
 import { CAMPUS_TIME_ZONE, campusDateKey } from '../../modules/events/utils/activity-compliance.utils';
 import { campusActivitySummary, STATUS_LABELS } from './campus-activity-report';
 import type { CampusActivityRow, CampusReportFilters } from './campus-activity-report';
@@ -16,14 +16,14 @@ export interface CampusReportSnapshot {
 }
 export function activityDateLabel(row: CampusActivityRow): string {
   if (!row.dates.length) return 'Not scheduled';
-  return row.dates.map((date) => formatAppDate(date)).join(', ');
+  return row.dates.map((date) => formatLongDate(date)).join(', ');
 }
 export function activityDeadlineLabel(row: CampusActivityRow): string {
   if (row.exempt) return 'FL exempt';
   if (!row.deadline) return 'Not available';
   const remaining = row.missingFL && row.daysRemaining !== null
     ? row.daysRemaining < 0 ? ` (${Math.abs(row.daysRemaining)} days overdue)` : ` (${row.daysRemaining} days remaining)` : '';
-  return `${formatAppDate(row.deadline)}${remaining}`;
+  return `${formatLongDate(row.deadline)}${remaining}`;
 }
 export function campusReportSnapshot(rows: CampusActivityRow[], filters: CampusReportFilters, periods: SemesterDocument[], organizations: any[], generatedBy: string, now = new Date()): CampusReportSnapshot {
   const quickLabels: Record<string, string> = { ALL: 'All', missing_par: 'Missing PAR', missing_fl: 'Missing FL', returned: 'Returned', my_signature: 'Awaiting my signature', cleared: 'Fully cleared', needs_action: 'Needs action', overdue: 'Overdue FL' };
@@ -32,7 +32,7 @@ export function campusReportSnapshot(rows: CampusActivityRow[], filters: CampusR
     : filters.period === 'ALL' ? 'All periods' : periods.find((item) => item.id === filters.period)?.label || filters.period;
   return {
     title: 'Campus Activity Status & Compliance Report',
-    generatedAt: new Intl.DateTimeFormat('en-PH', { timeZone: CAMPUS_TIME_ZONE, dateStyle: 'medium', timeStyle: 'short' }).format(now) + ' (Philippine time)',
+    generatedAt: new Intl.DateTimeFormat('en-PH', { timeZone: CAMPUS_TIME_ZONE, dateStyle: 'long', timeStyle: 'short' }).format(now) + ' (Philippine time)',
     generatedBy: generatedBy || 'Institutional Signatory', date: campusDateKey(now),
     filters: [
       `Academic period: ${period}`, `Academic year: ${filters.academicYear}`, `Term: ${filters.semester}`,

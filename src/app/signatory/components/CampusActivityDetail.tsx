@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, FileText, FileSpreadsheet, FileCheck2 } from 'lucide-react';
-import { formatAppDate, format12HourTime } from '../../utils/date';
+import { formatLongDate, format12HourTime } from '../../utils/date';
 import { formatCurrency } from '../../utils/currency';
 import type { CampusActivityRow } from '../utils/campus-activity-report';
 import CampusStatusBadge from './CampusStatusBadge';
@@ -46,10 +46,10 @@ export default function CampusActivityDetail({ row, inspectable, session, onClos
             <div><p className="text-xs text-slate-500">Verified attendees</p><p>{row.attendees === null ? 'Not available' : row.attendees.toLocaleString()}</p></div>
           </div>
           <div className="rounded-xl border bg-slate-50 p-4"><p className="font-semibold text-[#001A4D]">{row.fullyCleared ? 'Fully cleared' : 'Requirements'}</p><p className="mt-1 text-sm text-slate-700">{row.outstanding}</p>
-            {row.deadline && <p className={`mt-2 text-xs ${row.overdue ? 'text-rose-700' : 'text-slate-500'}`}>FL submission deadline: {formatAppDate(row.deadline)}{row.missingFL && row.daysRemaining !== null ? ` · ${row.daysRemaining < 0 ? `${Math.abs(row.daysRemaining)} days overdue` : `${row.daysRemaining} days remaining`}` : ''}</p>}
+            {row.deadline && <p className={`mt-2 text-xs ${row.overdue ? 'text-rose-700' : 'text-slate-500'}`}>FL submission deadline: {formatLongDate(row.deadline)}{row.missingFL && row.daysRemaining !== null ? ` · ${row.daysRemaining < 0 ? `${Math.abs(row.daysRemaining)} days overdue` : `${row.daysRemaining} days remaining`}` : ''}</p>}
           </div>
           <div><h3 className="mb-2 text-sm font-bold text-[#001A4D]">Activity sessions</h3>
-            {row.activity.sessions?.length ? <ul className="space-y-2 text-sm">{row.activity.sessions.map((session, index) => <li key={session.id || index} className="rounded-lg border p-3">{formatAppDate(session.date)} · {session.title || `Session ${index + 1}`}<span className="block text-xs text-slate-500">{[format12HourTime(session.startTime), format12HourTime(session.endTime)].filter(Boolean).join(' – ')}{session.venueName ? ` · ${session.venueName}` : ''}</span></li>)}</ul> : <p className="text-sm text-slate-500">{row.dates.map((date) => formatAppDate(date)).join(', ') || 'Schedule not available'}</p>}
+            {row.activity.sessions?.length ? <ul className="space-y-2 text-sm">{row.activity.sessions.map((session, index) => <li key={session.id || index} className="rounded-lg border p-3">{formatLongDate(session.date)} · {session.title || `Session ${index + 1}`}<span className="block text-xs text-slate-500">{[format12HourTime(session.startTime), format12HourTime(session.endTime)].filter(Boolean).join(' – ')}{session.venueName ? ` · ${session.venueName}` : ''}</span></li>)}</ul> : <p className="text-sm text-slate-500">{row.dates.map((date) => formatLongDate(date)).join(', ') || 'Schedule not available'}</p>}
           </div>
           {!row.exempt && <div><h3 className="mb-2 text-sm font-bold text-[#001A4D]">Recorded finances</h3><div className="grid gap-3 rounded-xl border p-4 text-sm sm:grid-cols-3">
             <div><p className="text-xs text-slate-500">Approved budget</p><p>{value(row.activity.totalApprovedBudget ?? row.liquidation?.allocatedBudget)}</p></div>

@@ -45,7 +45,19 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
         <NotificationDropdown
           role="officer"
           orgId={profile?.activeOrganizationId || undefined}
-          userId={profile?.studentId}
+          userId={
+            [
+              profile?.studentId,
+              profile?.uid,
+              profile?.email,
+              profile?.isAdviser && profile?.activeOrganizationId
+                ? `adviser:${profile.activeOrganizationId}`
+                : null,
+              profile?.isAdviser ? 'adviser' : null,
+            ]
+              .filter(Boolean)
+              .join('|') || undefined
+          }
         />
 
         {/* User Menu */}

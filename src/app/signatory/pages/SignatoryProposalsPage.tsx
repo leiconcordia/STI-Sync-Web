@@ -21,11 +21,13 @@ import {
   Filter,
   Layers,
   DollarSign,
+  AlertTriangle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
+import { formatLongDate } from '../../utils/date';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
 
@@ -56,14 +58,16 @@ export default function SignatoryProposalsPage() {
       ? endorsedProposals
       : returnedProposals;
 
-  const filteredList = currentList.filter((p) => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase();
-    const title = (p.title || p.activityTitle || '').toLowerCase();
-    const org = (p.organizationName || '').toLowerCase();
-    const ref = (p.referenceNo || '').toLowerCase();
-    return title.includes(q) || org.includes(q) || ref.includes(q);
-  });
+  const filteredList = currentList
+    .filter((p) => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      const title = (p.title || p.activityTitle || '').toLowerCase();
+      const org = (p.organizationName || '').toLowerCase();
+      const ref = (p.referenceNo || '').toLowerCase();
+      return title.includes(q) || org.includes(q) || ref.includes(q);
+    })
+    .sort((a, b) => Number(Boolean((b as any).isUrgent)) - Number(Boolean((a as any).isUrgent)));
 
   const handleDownloadPdf = async (e: React.MouseEvent, prop: ActivityProposal) => {
     e.stopPropagation();
@@ -190,14 +194,25 @@ export default function SignatoryProposalsPage() {
         ) : (
           filteredList.map((prop) => {
             const totalBudget = prop.budgetItems?.reduce((acc, b) => acc + (b.totalCost || 0), 0) || 0;
+            const isUrgent = Boolean((prop as any).isUrgent);
             return (
               <div
                 key={prop.id}
                 onClick={() => setSelectedProposal(prop)}
-                className="bg-white hover:bg-slate-50/80 rounded-2xl p-5 border border-slate-200/90 shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-4"
+                className={`rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col md:flex-row md:items-center justify-between gap-4 border ${
+                  isUrgent
+                    ? 'bg-amber-50/35 hover:bg-amber-50/70 border-amber-300'
+                    : 'bg-white hover:bg-slate-50/80 border-slate-200/90'
+                }`}
               >
                 <div className="space-y-2 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
+                    {isUrgent && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200 text-[10px] font-black uppercase tracking-wider">
+                        <AlertTriangle className="w-3 h-3 text-rose-700" />
+                        Urgent (&lt;15 Days)
+                      </span>
+                    )}
                     <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-[#001A4D] text-[#FFD41C]">
                       {prop.referenceNo || 'Proposal'}
                     </span>
@@ -220,9 +235,14 @@ export default function SignatoryProposalsPage() {
                   <div className="flex items-center gap-4 text-xs text-slate-500">
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                      Target Date: {prop.targetDate || 'TBD'}
+                      Target Date: {formatLongDate(prop.targetDate, 'TBD')}
                     </span>
                   </div>
+                  {isUrgent && (prop as any).urgentJustification && (
+                    <div className="text-xs text-amber-950 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                      <strong className="text-amber-900">Urgent Justification:</strong> {(prop as any).urgentJustification}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 self-start md:self-center">

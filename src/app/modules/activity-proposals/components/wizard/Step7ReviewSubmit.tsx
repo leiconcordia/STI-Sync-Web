@@ -40,7 +40,13 @@ import { toast } from 'sonner';
 import type { ProposalFormData, ProposalApprovalStep } from '../../types/proposal.types';
 import type { InstitutionalSignatory } from '../../../signatories/types/signatory.types';
 import { subscribeToSignatories } from '../../../signatories/services/signatory.service';
-import { check15DayRule, formatPHP, formatDateLong } from '../../utils/proposal-calculations';
+import {
+  check15DayRule,
+  checkProjectedBalance,
+  formatPHP,
+  formatDateLong,
+  PROJECTED_REVENUE_DEFICIT_WARNING,
+} from '../../utils/proposal-calculations';
 import { exportActivityProposalPDF } from '../../utils/proposal-pdf-exporter';
 import ProposalFlowBuilder from '../workflow/ProposalFlowBuilder';
 
@@ -160,7 +166,14 @@ export default function Step7ReviewSubmit({
     (formData as any).isReturned
   );
 
+  const hasRevenueDeficit = useMemo(() => {
+    return checkProjectedBalance(formData.financialProjections, formData.fundingSource).isDeficit;
+  }, [formData.financialProjections, formData.fundingSource]);
+
   const canSubmit = useMemo(() => {
+    if (hasRevenueDeficit) {
+      return false;
+    }
     if (formData.isUrgent && !(formData.urgentJustification || '').trim()) {
       return false;
     }
@@ -178,7 +191,7 @@ export default function Step7ReviewSubmit({
       return false;
     }
     return true;
-  }, [formData.isUrgent, formData.urgentJustification, formData.title, formData.description, approvalChain, isReturnedProposal, formData.resubmissionNote]);
+  }, [hasRevenueDeficit, formData.isUrgent, formData.urgentJustification, formData.title, formData.description, approvalChain, isReturnedProposal, formData.resubmissionNote]);
 
   return (
     <div className="space-y-6">
@@ -533,23 +546,15 @@ export default function Step7ReviewSubmit({
           {(() => {
             const revItems = formData.financialProjections?.revenues || [];
             const expItems = formData.financialProjections?.expenses || [];
-            const calculatedTotalRevenue = Number(formData.financialProjections?.totalRevenue) ||
-              revItems.reduce((s, r) => s + (Number(r.totalAmount) || Number(r.thisYearProposed) || 0), 0);
-            const calculatedTotalExpenses = Number(formData.financialProjections?.totalExpenses) ||
-              expItems.reduce((s, e) => s + (Number(e.totalAmount) || Number(e.thisYearProposed) || 0), 0);
-
-            const isInstitutionalAllocation =
-              (formData.fundingSource === 'school_budget' || formData.fundingSource === 'organization_funds') &&
-              calculatedTotalRevenue === 0 &&
-              calculatedTotalExpenses > 0;
-
-            const displayRevenue = isInstitutionalAllocation ? calculatedTotalExpenses : calculatedTotalRevenue;
-            const rawBalance = formData.financialProjections?.balance !== undefined && !isInstitutionalAllocation
-              ? Number(formData.financialProjections.balance)
-              : (displayRevenue - calculatedTotalExpenses);
+            const {
+              totalRevenue: calculatedTotalRevenue,
+              totalExpenses: calculatedTotalExpenses,
+              balance: rawBalance,
+              isDeficit,
+            } = checkProjectedBalance(formData.financialProjections, formData.fundingSource);
 
             const isNonMonetary = formData.fundingSource === 'zero_budget';
-            const hasCommercialRevenues = !isInstitutionalAllocation && !isNonMonetary && calculatedTotalRevenue > 0;
+            const showBalanceBreakdown = !isNonMonetary || calculatedTotalExpenses > 0 || calculatedTotalRevenue > 0;
 
             return (
               <div className="space-y-3 pb-6 border-b border-slate-100">
@@ -561,18 +566,18 @@ export default function Step7ReviewSubmit({
                     <span className="text-slate-600">
                       Total Asking Budget: <strong className="text-[#001A4D] font-mono">{formatPHP(calculatedTotalExpenses)}</strong>
                     </span>
-                    {hasCommercialRevenues && (
+                    {showBalanceBreakdown && (
                       <>
                         <span className="text-slate-300">|</span>
                         <span className="text-slate-600">
-                          Projected Balance: <strong className={`font-mono ${rawBalance >= 0 ? 'text-emerald-700' : 'text-amber-700'}`}>{formatPHP(rawBalance)}</strong>
+                          Projected Balance: <strong className={`font-mono ${rawBalance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{formatPHP(rawBalance)}</strong>
                         </span>
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
                           rawBalance === 0
                             ? 'bg-blue-100 text-blue-800'
                             : rawBalance > 0
                               ? 'bg-emerald-100 text-emerald-800'
-                              : 'bg-amber-100 text-amber-800'
+                              : 'bg-rose-100 text-rose-800'
                         }`}>
                           {rawBalance === 0 ? '✓ Balanced' : rawBalance > 0 ? '↑ Surplus' : '⚠ Deficit'}
                         </span>
@@ -581,7 +586,7 @@ export default function Step7ReviewSubmit({
                   </div>
                 </div>
 
-                {isNonMonetary ? (
+                {isNonMonetary && !isDeficit ? (
                   <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs flex items-center justify-between">
                     <div>
                       <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Funding Source</span>
@@ -592,39 +597,12 @@ export default function Step7ReviewSubmit({
                       ₱0.00 Non-Monetary
                     </span>
                   </div>
-                ) : isInstitutionalAllocation ? (
-                  <div className="p-4 bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-white border border-blue-200 rounded-xl text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-900">
-                          Total Asking Budget
-                        </span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-[#001A4D]">
-                          {formData.fundingSource === 'school_budget' ? 'School Budget' : 'Club Treasury'}
-                        </span>
-                      </div>
-                      <span className="text-xl font-black text-[#001A4D] font-mono block mt-1">
-                        {formatPHP(calculatedTotalExpenses)}
-                      </span>
-                      <span className="text-slate-500 block text-[11px] mt-0.5">
-                        {expItems.length} baseline category spending item(s) allocated from institutional funds
-                      </span>
-                    </div>
-                    <div className="text-left sm:text-right sm:border-l sm:border-blue-200/60 sm:pl-4">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                        Funding Allocation
-                      </span>
-                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 inline-block mt-1">
-                        ✓ 100% Covered
-                      </span>
-                    </div>
-                  </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
                     <div className="p-3 bg-emerald-50/60 border border-emerald-200/80 rounded-xl">
                       <span className="text-[10px] uppercase font-bold text-emerald-800 block">Total Proposed Revenues</span>
                       <span className="text-base font-bold text-emerald-900 font-mono">
-                        {formatPHP(displayRevenue)}
+                        {formatPHP(calculatedTotalRevenue)}
                       </span>
                       <span className="text-[11px] text-emerald-700 block mt-0.5">
                         {revItems.length} revenue line item(s)
@@ -638,6 +616,18 @@ export default function Step7ReviewSubmit({
                       <span className="text-[11px] text-rose-700 block mt-0.5">
                         {expItems.length} expense line item(s)
                       </span>
+                    </div>
+                  </div>
+                )}
+
+                {isDeficit && (
+                  <div className="p-3.5 bg-rose-50 border-2 border-rose-300 rounded-xl text-xs text-rose-950 flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <strong className="block text-rose-900">
+                        Revenue Deficit (Projected Balance: {formatPHP(rawBalance)})
+                      </strong>
+                      <span className="text-rose-800">{PROJECTED_REVENUE_DEFICIT_WARNING}</span>
                     </div>
                   </div>
                 )}
@@ -846,10 +836,22 @@ export default function Step7ReviewSubmit({
         </div>
 
         {!canSubmit && !isOfficerOnly && (
-          <div className="w-full sm:w-auto flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium">
-            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+          <div
+            className={`w-full sm:w-auto flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-medium ${
+              hasRevenueDeficit
+                ? 'bg-rose-50 border-rose-200 text-rose-800'
+                : 'bg-amber-50 border-amber-200 text-amber-800'
+            }`}
+          >
+            <AlertTriangle
+              className={`w-4 h-4 flex-shrink-0 ${
+                hasRevenueDeficit ? 'text-rose-600' : 'text-amber-600'
+              }`}
+            />
             <span>
-              {isReturnedProposal && !(formData.resubmissionNote || '').trim()
+              {hasRevenueDeficit
+                ? PROJECTED_REVENUE_DEFICIT_WARNING
+                : isReturnedProposal && !(formData.resubmissionNote || '').trim()
                 ? 'Please provide a summary of the revisions made above before resubmitting.'
                 : (formData.isUrgent || !ruleCheck.isCompliant) && !(formData.urgentJustification || '').trim()
                 ? 'Please return to Step 4 to provide an urgent submission justification before proceeding.'

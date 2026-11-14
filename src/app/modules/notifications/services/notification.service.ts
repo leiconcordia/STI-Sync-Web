@@ -19,6 +19,7 @@ import {
   getDocs,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import { createSingletonStream } from '../../../utils/createSingletonStream';
 import type {
   InAppNotification,
   CreateNotificationInput,
@@ -26,6 +27,24 @@ import type {
 } from '../types/notification.types';
 
 export const NOTIFICATIONS_COLLECTION = 'notifications';
+
+function matchesRecipientToken(
+  recipientId: string | null | undefined,
+  filterUserId: string | undefined
+): boolean {
+  if (!recipientId) return true;
+  if (!filterUserId) return false;
+  const targetTokens = recipientId
+    .split(/[|,]+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  const userTokens = filterUserId
+    .split(/[|,]+/)
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  if (targetTokens.length === 0 || userTokens.length === 0) return false;
+  return targetTokens.some((token) => userTokens.includes(token));
+}
 
 /**
  * Dispatch an in-app notification.
@@ -101,90 +120,112 @@ export async function markAllNotificationsAsRead(
   }
 }
 
+const rawNotificationsStream = createSingletonStream<InAppNotification[]>({
+  initialData: [],
+  start: (emit) => {
+    const notifsRef = collection(db, NOTIFICATIONS_COLLECTION);
+    const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(50));
+
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const items: InAppNotification[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          items.push({
+            id: docSnap.id,
+            recipientRole: data.recipientRole,
+            recipientId: data.recipientId,
+            targetOrgId: data.targetOrgId,
+            targetOrgName: data.targetOrgName,
+            type: data.type,
+            category: data.category,
+            title: data.title,
+            message: data.message,
+            resourceId: data.resourceId,
+            resourceType: data.resourceType,
+            actionRoute: data.actionRoute,
+            isRead: Boolean(data.isRead),
+            readAt: data.readAt,
+            isUrgent: Boolean(data.isUrgent),
+            urgencyTier: data.urgencyTier,
+            senderId: data.senderId,
+            senderName: data.senderName,
+            senderRoleTitle: data.senderRoleTitle,
+            createdAt: data.createdAt,
+          });
+        });
+        emit(items);
+      },
+      (err) => {
+        console.warn('[notification.service] subscribeToNotifications snapshot error:', err);
+        emit([]);
+      }
+    );
+  },
+});
+
+function filterNotificationsForScope(
+  rawItems: InAppNotification[],
+  filter: NotificationFilter
+): InAppNotification[] {
+  const items: InAppNotification[] = [];
+
+  for (const notif of rawItems) {
+    if (filter.role === 'admin') {
+      if (notif.recipientRole === 'admin' || notif.recipientRole === 'all') {
+        items.push(notif);
+      }
+    } else if (filter.role === 'officer') {
+      if (notif.recipientRole === 'all') {
+        items.push(notif);
+      } else if (notif.recipientRole === 'officer') {
+        const orgMatches =
+          !filter.orgId ||
+          !notif.targetOrgId ||
+          notif.targetOrgId.toLowerCase() === filter.orgId.toLowerCase();
+        if (notif.recipientId) {
+          if (orgMatches && matchesRecipientToken(notif.recipientId, filter.userId)) {
+            items.push(notif);
+          }
+        } else if (
+          orgMatches ||
+          (filter.userId && matchesRecipientToken(notif.recipientId, filter.userId))
+        ) {
+          items.push(notif);
+        }
+      }
+    } else if (filter.role === 'signatory') {
+      if (notif.recipientRole === 'all') {
+        items.push(notif);
+      } else if (notif.recipientRole === 'signatory') {
+        if (!notif.recipientId || matchesRecipientToken(notif.recipientId, filter.userId)) {
+          items.push(notif);
+        }
+      } else if (filter.userId && notif.recipientId && matchesRecipientToken(notif.recipientId, filter.userId)) {
+        items.push(notif);
+      }
+    } else {
+      items.push(notif);
+    }
+  }
+
+  return filter.unreadOnly ? items.filter((n) => !n.isRead) : items;
+}
+
 /**
  * Real-time subscription to notifications.
- * Queries recent notifications and applies client-side scope filtering
- * to avoid requiring complex composite Firestore indexes.
+ * Multiplexed via a shared singleton stream so multiple NotificationDropdown mounts
+ * (e.g. Signatory mobile + desktop bars) share a single 50-doc Firestore subscription.
  */
 export function subscribeToNotifications(
   filter: NotificationFilter,
   callback: (notifications: InAppNotification[]) => void
 ): () => void {
-  const notifsRef = collection(db, NOTIFICATIONS_COLLECTION);
-  const maxLimit = filter.limitCount || 100;
-  const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(maxLimit));
-
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const items: InAppNotification[] = [];
-
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        const notif: InAppNotification = {
-          id: docSnap.id,
-          recipientRole: data.recipientRole,
-          recipientId: data.recipientId,
-          targetOrgId: data.targetOrgId,
-          targetOrgName: data.targetOrgName,
-          type: data.type,
-          category: data.category,
-          title: data.title,
-          message: data.message,
-          resourceId: data.resourceId,
-          resourceType: data.resourceType,
-          actionRoute: data.actionRoute,
-          isRead: Boolean(data.isRead),
-          readAt: data.readAt,
-          isUrgent: Boolean(data.isUrgent),
-          urgencyTier: data.urgencyTier,
-          senderId: data.senderId,
-          senderName: data.senderName,
-          senderRoleTitle: data.senderRoleTitle,
-          createdAt: data.createdAt,
-        };
-
-        // Scope filter
-        if (filter.role === 'admin') {
-          // Admin receives admin-targeted and global notifications
-          if (notif.recipientRole === 'admin' || notif.recipientRole === 'all') {
-            items.push(notif);
-          }
-        } else if (filter.role === 'officer') {
-          // Officer receives officer-targeted notifications for their organization or user
-          if (notif.recipientRole === 'officer' || notif.recipientRole === 'all') {
-            if (
-              !filter.orgId ||
-              !notif.targetOrgId ||
-              notif.targetOrgId.toLowerCase() === filter.orgId.toLowerCase() ||
-              (filter.userId && notif.recipientId === filter.userId)
-            ) {
-              items.push(notif);
-            }
-          }
-        } else if (filter.role === 'signatory') {
-          if (
-            notif.recipientRole === 'signatory' ||
-            notif.recipientRole === 'all' ||
-            (filter.userId && notif.recipientId === filter.userId)
-          ) {
-            items.push(notif);
-          }
-        } else {
-          items.push(notif);
-        }
-      });
-
-      if (filter.unreadOnly) {
-        callback(items.filter((n) => !n.isRead));
-      } else {
-        callback(items);
-      }
-    },
-    (err) => {
-      console.warn('[notification.service] subscribeToNotifications snapshot error:', err);
-      callback([]);
+  return rawNotificationsStream.subscribe((state) => {
+    if (!state.loading) {
+      callback(filterNotificationsForScope(state.data, filter));
     }
-  );
+  });
 }
 

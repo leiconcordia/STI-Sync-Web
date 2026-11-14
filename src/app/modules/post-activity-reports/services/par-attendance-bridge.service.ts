@@ -5,6 +5,8 @@ import { ATTENDANCE_COLLECTION } from '../../attendance/services/attendance.serv
 export interface EventAttendanceBridgeResult {
   registeredCount: number;
   estimatedAttendance: number;
+  estimatedAttendanceLabel: string;
+  attendanceSource: 'proposal' | 'event' | 'none';
   attendedCount: number;
   hasAttendanceLogs: boolean;
   turnoutRate: number; // 0 to 100
@@ -74,12 +76,39 @@ export async function computeEventAttendanceSummary(
       '';
   }
 
-  // 1. Determine planned / expected target headcount
-  const expectedFromProposal = parseParticipantCount(proposalData?.estimatedAttendance);
-  const expectedFromEvent = parseParticipantCount(
-    eventData?.expectedParticipantCount ?? eventData?.expectedAttendees ?? eventData?.registeredCount
-  );
-  let expectedHeadcount = expectedFromProposal || expectedFromEvent || 0;
+  // 1. Determine planned / expected target headcount strictly connected to linked Activity Proposal
+  const proposalCount =
+    parseParticipantCount(proposalData?.estAttendanceCount) ||
+    parseParticipantCount(proposalData?.estimatedAttendance) ||
+    parseParticipantCount(proposalData?.targetAudience?.demographicBreakdown?.expectedAttendees) ||
+    parseParticipantCount(proposalData?.targetAudience?.expectedAttendees) ||
+    parseParticipantCount(proposalData?.expectedParticipantCount);
+
+  const eventCount =
+    parseParticipantCount(eventData?.estAttendanceCount) ||
+    parseParticipantCount(eventData?.estimatedAttendance) ||
+    parseParticipantCount(eventData?.expectedParticipantCount) ||
+    parseParticipantCount(eventData?.expectedAttendees);
+
+  const estimatedAttendance = proposalCount || eventCount || 0;
+  const attendanceSource: 'proposal' | 'event' | 'none' =
+    proposalCount > 0 ? 'proposal' : eventCount > 0 ? 'event' : 'none';
+
+  const rawQual =
+    (proposalCount > 0
+      ? proposalData?.estAttendanceQualifier ||
+        (typeof proposalData?.estimatedAttendance === 'string'
+          ? proposalData.estimatedAttendance.replace(/^\d+\s*/, '').trim()
+          : '')
+      : eventData?.estAttendanceQualifier ||
+        (typeof eventData?.estimatedAttendance === 'string'
+          ? eventData.estimatedAttendance.replace(/^\d+\s*/, '').trim()
+          : '')) || 'Pax';
+
+  const estimatedAttendanceLabel =
+    estimatedAttendance > 0 ? `${estimatedAttendance} ${rawQual}` : 'Not Specified';
+
+  let expectedHeadcount = estimatedAttendance;
 
   // 2. Fetch attendance records from Firestore
   const attendanceDocsMap = new Map<string, any>();
@@ -191,7 +220,9 @@ export async function computeEventAttendanceSummary(
 
   return {
     registeredCount: expectedHeadcount,
-    estimatedAttendance: expectedFromProposal || expectedFromEvent || 0,
+    estimatedAttendance,
+    estimatedAttendanceLabel,
+    attendanceSource,
     attendedCount: actualAttendedCount,
     hasAttendanceLogs,
     turnoutRate,

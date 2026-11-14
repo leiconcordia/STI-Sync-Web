@@ -15,7 +15,19 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { formatPersonName } from '../../../utils/name.utils';
-import type { AddMemberPayload, OrganizationMemberStatus } from '../types/member.types';
+import type {
+  AddMemberPayload,
+  OrganizationMemberDocument,
+  OrganizationMemberStatus,
+} from '../types/member.types';
+import {
+  extractExcludedMemberIdentifiers,
+  isActivityEndedOrCancelled,
+  isClubActivity,
+  isMemberCurrentlyInClub,
+  isStudentSignedUpForActivity,
+  normalizeMemberIdentifiers,
+} from '../utils/member-removal.utils';
 
 const COLLECTION = 'organization_members';
 
@@ -212,20 +224,39 @@ export const updateMemberStatus = async (
 ): Promise<void> => {
   const docRef = doc(db, COLLECTION, docId);
   const snap = await getDoc(docRef);
-  const prevData = snap.exists() ? snap.data() : null;
+  const prevData = snap.exists() ? (snap.data() as Partial<OrganizationMemberDocument>) : null;
   const prevStatus = prevData?.status;
   const orgId = prevData?.organizationId;
   const studentId = prevData?.studentId || docId;
   const studentName = prevData?.studentName || 'Student';
 
-  await updateDoc(docRef, {
+  const statusUpdates: Record<string, any> = {
     status,
-    dateJoined: status === 'active' && !prevData?.dateJoined ? serverTimestamp() : prevData?.dateJoined || serverTimestamp(),
+    dateJoined:
+      status === 'active' && !prevData?.dateJoined
+        ? serverTimestamp()
+        : prevData?.dateJoined || serverTimestamp(),
     updatedAt: serverTimestamp(),
-  });
+  };
+
+  // Clear scheduled/completed removal metadata when restored/reactivated
+  if (status === 'active') {
+    statusUpdates.removedAt = null;
+    statusUpdates.removedBy = null;
+    statusUpdates.removalReason = null;
+    statusUpdates.removalRequestedAt = null;
+    statusUpdates.removalRequestedBy = null;
+    statusUpdates.scheduledRemovalActivityIds = [];
+    statusUpdates.scheduledRemovalActivityTitles = [];
+  }
+
+  await updateDoc(docRef, statusUpdates);
 
   if (orgId && prevStatus !== status) {
-    if (prevStatus === 'active' && status !== 'active') {
+    const wasInClub = prevStatus ? isMemberCurrentlyInClub({ status: prevStatus }) : false;
+    const isNowInClub = isMemberCurrentlyInClub({ status });
+
+    if (wasInClub && !isNowInClub) {
       try {
         await updateDoc(doc(db, 'organizations', orgId), {
           memberCount: increment(-1),
@@ -234,7 +265,7 @@ export const updateMemberStatus = async (
       } catch (err) {
         console.warn('Could not decrement organization memberCount:', err);
       }
-    } else if (prevStatus !== 'active' && status === 'active') {
+    } else if (!wasInClub && isNowInClub) {
       try {
         await updateDoc(doc(db, 'organizations', orgId), {
           memberCount: increment(1),
@@ -337,27 +368,406 @@ export const updatePaymentStatus = async (
   });
 };
 
-export const removeMember = async (docId: string): Promise<void> => {
-  await updateMemberStatus(docId, 'inactive');
-};
+export interface UpcomingMemberActivityRef {
+  id: string;
+  title: string;
+  date: string;
+}
 
-export const deleteMember = async (docId: string, organizationId: string): Promise<void> => {
+export interface RemoveMemberResult {
+  outcome: 'removed' | 'scheduled';
+  activities: UpcomingMemberActivityRef[];
+}
+
+async function fetchClubActivitiesPool(organizationId: string): Promise<Array<Record<string, any>>> {
+  if (!organizationId) return [];
+  const mergedMap = new Map<string, Record<string, any>>();
+
+  const fetchCollection = async (colName: string) => {
+    try {
+      const [byHost, byOrg] = await Promise.all([
+        getDocs(query(collection(db, colName), where('hostingOrgId', '==', organizationId))).catch(() => null),
+        getDocs(query(collection(db, colName), where('organizationId', '==', organizationId))).catch(() => null),
+      ]);
+      for (const snap of [byHost, byOrg]) {
+        if (!snap) continue;
+        snap.docs.forEach((d) => {
+          const existing = mergedMap.get(d.id) || {};
+          mergedMap.set(d.id, { ...existing, ...d.data(), id: d.id });
+        });
+      }
+    } catch {}
+  };
+
+  await Promise.all([fetchCollection('activities'), fetchCollection('events')]);
+  return Array.from(mergedMap.values()).filter((act) => isClubActivity(act, organizationId));
+}
+
+async function fetchClubSignupEvidence(
+  organizationId: string,
+  activityIds: string[]
+): Promise<{
+  payables: Array<Record<string, any>>;
+  registrations: Array<Record<string, any>>;
+  attendanceRecords: Array<Record<string, any>>;
+}> {
+  const payables: Array<Record<string, any>> = [];
+  const registrations: Array<Record<string, any>> = [];
+  const attendanceRecords: Array<Record<string, any>> = [];
+
+  if (activityIds.length === 0) {
+    return { payables, registrations, attendanceRecords };
+  }
+
+  // Batch queries by up to 10 eventIds (Firestore 'in' limit)
+  const chunks: string[][] = [];
+  for (let i = 0; i < activityIds.length; i += 10) {
+    chunks.push(activityIds.slice(i, i + 10));
+  }
+
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const [paySnap, attSnap, regSnap1, regSnap2, regSnap3] = await Promise.all([
+        getDocs(query(collection(db, 'payables'), where('eventId', 'in', chunk))).catch(() => null),
+        getDocs(query(collection(db, 'attendance'), where('eventId', 'in', chunk))).catch(() => null),
+        getDocs(query(collection(db, 'event_registrations'), where('eventId', 'in', chunk))).catch(() => null),
+        getDocs(query(collection(db, 'registrations'), where('eventId', 'in', chunk))).catch(() => null),
+        getDocs(query(collection(db, 'activity_registrations'), where('eventId', 'in', chunk))).catch(() => null),
+      ]);
+
+      paySnap?.docs.forEach((d) => payables.push({ id: d.id, ...d.data() }));
+      attSnap?.docs.forEach((d) => attendanceRecords.push({ id: d.id, ...d.data() }));
+      for (const rSnap of [regSnap1, regSnap2, regSnap3]) {
+        rSnap?.docs.forEach((d) => registrations.push({ id: d.id, ...d.data() }));
+      }
+    })
+  );
+
+  // Also check org-level payables if eventId wasn't indexed yet
+  try {
+    const orgPaySnap = await getDocs(
+      query(collection(db, 'payables'), where('organizationId', '==', organizationId))
+    );
+    const seenIds = new Set(payables.map((p) => p.id));
+    orgPaySnap.docs.forEach((d) => {
+      if (!seenIds.has(d.id)) {
+        payables.push({ id: d.id, ...d.data() });
+      }
+    });
+  } catch {}
+
+  return { payables, registrations, attendanceRecords };
+}
+
+async function resolveStudentDocForMember(
+  member: Partial<OrganizationMemberDocument> & Record<string, any>
+): Promise<Record<string, any> | null> {
+  try {
+    if (member.studentId) {
+      const snap = await getDocs(
+        query(collection(db, 'students'), where('studentId', '==', member.studentId))
+      );
+      if (!snap.empty) {
+        return { id: snap.docs[0].id, ...snap.docs[0].data() };
+      }
+    }
+    if (member.email) {
+      const snap = await getDocs(
+        query(collection(db, 'students'), where('email', '==', member.email))
+      );
+      if (!snap.empty) {
+        return { id: snap.docs[0].id, ...snap.docs[0].data() };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Finds all non-ended, non-cancelled club activities that a member is already signed up for.
+ */
+export async function getMemberUpcomingActivitySignups(
+  organizationId: string,
+  member: Partial<OrganizationMemberDocument> & Record<string, any>
+): Promise<UpcomingMemberActivityRef[]> {
+  if (!organizationId || !member) return [];
+
+  const [clubActivities, studentDoc] = await Promise.all([
+    fetchClubActivitiesPool(organizationId),
+    resolveStudentDocForMember(member),
+  ]);
+
+  const upcomingActivities = clubActivities.filter((act) => !isActivityEndedOrCancelled(act));
+  if (upcomingActivities.length === 0) return [];
+
+  const { idSet } = normalizeMemberIdentifiers(member, studentDoc);
+  const evidence = await fetchClubSignupEvidence(
+    organizationId,
+    upcomingActivities.map((a) => a.id)
+  );
+
+  return upcomingActivities
+    .filter((act) => isStudentSignedUpForActivity(act, idSet, evidence))
+    .map((act) => ({
+      id: act.id,
+      title: String(act.title || act.name || 'Club Activity'),
+      date: String(act.date || act.startDate || act.sessions?.[0]?.date || ''),
+    }));
+}
+
+async function finalizeSingleMemberRemoval(
+  docId: string,
+  organizationId: string,
+  prevData: Partial<OrganizationMemberDocument> | null,
+  removedBy?: string,
+  reason?: string
+): Promise<void> {
   const docRef = doc(db, COLLECTION, docId);
-  const snap = await getDoc(docRef);
-  const data = snap.exists() ? snap.data() : null;
+  await updateDoc(docRef, {
+    status: 'removed',
+    isOfficer: false,
+    removedAt: serverTimestamp(),
+    removedBy: removedBy || prevData?.removalRequestedBy || 'Officer',
+    removalReason: reason || prevData?.removalReason || 'Removed from club',
+    scheduledRemovalActivityIds: [],
+    scheduledRemovalActivityTitles: [],
+    updatedAt: serverTimestamp(),
+  });
 
-  await deleteDoc(docRef);
-
-  if (organizationId && data?.status === 'active') {
+  if (organizationId && prevData && isMemberCurrentlyInClub(prevData)) {
     try {
       await updateDoc(doc(db, 'organizations', organizationId), {
         memberCount: increment(-1),
         updatedAt: serverTimestamp(),
       });
     } catch (err) {
-      console.warn('Could not decrement organization memberCount on delete:', err);
+      console.warn('[finalizeSingleMemberRemoval] Could not decrement organization memberCount:', err);
     }
   }
+
+  // Deactivate any active officer role in this organization while preserving record history
+  const studentId = prevData?.studentId;
+  if (organizationId && studentId) {
+    try {
+      const officerSnap = await getDocs(
+        query(
+          collection(db, 'organization_officers'),
+          where('organizationId', '==', organizationId),
+          where('studentId', '==', studentId),
+          where('isActive', '==', true)
+        )
+      );
+      if (!officerSnap.empty) {
+        const batch = writeBatch(db);
+        officerSnap.docs.forEach((oDoc) => {
+          batch.update(oDoc.ref, {
+            isActive: false,
+            updatedAt: serverTimestamp(),
+          });
+        });
+        await batch.commit();
+      }
+    } catch (offErr) {
+      console.warn('[finalizeSingleMemberRemoval] Could not deactivate officer assignment:', offErr);
+    }
+  }
+}
+
+/**
+ * Removes a member from the club while preserving their member record and keeping
+ * all existing dues and fines intact.
+ * - If the member is already signed up to an upcoming activity of the club, keeps them
+ *   in the club until that activity ends (`status: 'pending_removal'`), blocking them
+ *   from newly created activities in the meantime.
+ * - Otherwise completes removal immediately (`status: 'removed'`).
+ */
+export const removeMemberFromClub = async (
+  docId: string,
+  organizationId: string,
+  removedBy?: string,
+  reason?: string
+): Promise<RemoveMemberResult> => {
+  const docRef = doc(db, COLLECTION, docId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) {
+    throw new Error('Member record not found.');
+  }
+
+  const memberData = { id: snap.id, ...snap.data() } as OrganizationMemberDocument;
+  const resolvedOrgId = organizationId || memberData.organizationId;
+
+  if (memberData.status === 'removed') {
+    return { outcome: 'removed', activities: [] };
+  }
+
+  const upcomingActivities = await getMemberUpcomingActivitySignups(resolvedOrgId, memberData);
+
+  if (upcomingActivities.length > 0) {
+    await updateDoc(docRef, {
+      status: 'pending_removal',
+      removalRequestedAt: serverTimestamp(),
+      removalRequestedBy: removedBy || 'Officer',
+      removalReason:
+        reason ||
+        `Scheduled removal after upcoming activity: ${upcomingActivities.map((a) => a.title).join(', ')}`,
+      scheduledRemovalActivityIds: upcomingActivities.map((a) => a.id),
+      scheduledRemovalActivityTitles: upcomingActivities.map((a) => a.title),
+      updatedAt: serverTimestamp(),
+    });
+
+    return {
+      outcome: 'scheduled',
+      activities: upcomingActivities,
+    };
+  }
+
+  await finalizeSingleMemberRemoval(docId, resolvedOrgId, memberData, removedBy, reason);
+  return {
+    outcome: 'removed',
+    activities: [],
+  };
+};
+
+/**
+ * Cancels a scheduled removal before it takes effect, restoring full 'active' membership.
+ */
+export const cancelScheduledMemberRemoval = async (docId: string): Promise<void> => {
+  const docRef = doc(db, COLLECTION, docId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) {
+    throw new Error('Member record not found.');
+  }
+  const data = snap.data() as Partial<OrganizationMemberDocument>;
+  if (data.status !== 'pending_removal') {
+    await updateMemberStatus(docId, 'active');
+    return;
+  }
+
+  await updateDoc(docRef, {
+    status: 'active',
+    removalRequestedAt: null,
+    removalRequestedBy: null,
+    removalReason: null,
+    scheduledRemovalActivityIds: [],
+    scheduledRemovalActivityTitles: [],
+    updatedAt: serverTimestamp(),
+  });
+};
+
+/**
+ * Reconciles any 'pending_removal' members for an organization:
+ * Once all scheduled/signed-up upcoming activities have ended (completed, cancelled, or past end time),
+ * automatically completes their removal ('status: "removed"').
+ */
+export async function reconcilePendingMemberRemovalsForOrg(
+  organizationId: string
+): Promise<number> {
+  if (!organizationId) return 0;
+
+  try {
+    const qPending = query(
+      collection(db, COLLECTION),
+      where('organizationId', '==', organizationId),
+      where('status', '==', 'pending_removal')
+    );
+    const pendingSnap = await getDocs(qPending);
+    if (pendingSnap.empty) return 0;
+
+    const clubActivities = await fetchClubActivitiesPool(organizationId);
+    const activityMap = new Map<string, Record<string, any>>();
+    clubActivities.forEach((act) => activityMap.set(act.id, act));
+
+    const nonEndedActivities = clubActivities.filter((act) => !isActivityEndedOrCancelled(act));
+    const evidence = await fetchClubSignupEvidence(
+      organizationId,
+      nonEndedActivities.map((a) => a.id)
+    );
+
+    let finalizedCount = 0;
+
+    for (const mDoc of pendingSnap.docs) {
+      const mData = { id: mDoc.id, ...mDoc.data() } as OrganizationMemberDocument;
+      const scheduledIds: string[] = Array.isArray(mData.scheduledRemovalActivityIds)
+        ? mData.scheduledRemovalActivityIds
+        : [];
+
+      let stillWaitingActivities: UpcomingMemberActivityRef[] = [];
+
+      if (scheduledIds.length > 0) {
+        stillWaitingActivities = scheduledIds
+          .map((actId) => activityMap.get(actId))
+          .filter((act): act is Record<string, any> => Boolean(act && !isActivityEndedOrCancelled(act)))
+          .map((act) => ({
+            id: act.id,
+            title: String(act.title || act.name || 'Club Activity'),
+            date: String(act.date || act.startDate || act.sessions?.[0]?.date || ''),
+          }));
+      } else {
+        const studentDoc = await resolveStudentDocForMember(mData);
+        const { idSet } = normalizeMemberIdentifiers(mData, studentDoc);
+        stillWaitingActivities = nonEndedActivities
+          .filter((act) => isStudentSignedUpForActivity(act, idSet, evidence))
+          .map((act) => ({
+            id: act.id,
+            title: String(act.title || act.name || 'Club Activity'),
+            date: String(act.date || act.startDate || act.sessions?.[0]?.date || ''),
+          }));
+      }
+
+      if (stillWaitingActivities.length === 0) {
+        await finalizeSingleMemberRemoval(mDoc.id, organizationId, mData);
+        finalizedCount += 1;
+      } else if (
+        scheduledIds.length > 0 &&
+        stillWaitingActivities.length !== scheduledIds.length
+      ) {
+        await updateDoc(mDoc.ref, {
+          scheduledRemovalActivityIds: stillWaitingActivities.map((a) => a.id),
+          scheduledRemovalActivityTitles: stillWaitingActivities.map((a) => a.title),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    return finalizedCount;
+  } catch (err) {
+    console.warn('[reconcilePendingMemberRemovalsForOrg] Non-fatal reconciliation notice:', err);
+    return 0;
+  }
+}
+
+/**
+ * Returns student identifiers for all club members who are removed or scheduled for removal,
+ * used so newly created club activities permanently exclude them.
+ */
+export async function getExcludedMemberIdentifiersForOrg(
+  organizationId: string
+): Promise<string[]> {
+  if (!organizationId) return [];
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, COLLECTION),
+        where('organizationId', '==', organizationId),
+        where('status', 'in', ['pending_removal', 'removed'])
+      )
+    );
+    const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Partial<OrganizationMemberDocument>));
+    return extractExcludedMemberIdentifiers(docs);
+  } catch (err) {
+    console.warn('[getExcludedMemberIdentifiersForOrg] Non-fatal lookup warning:', err);
+    return [];
+  }
+}
+
+export const removeMember = async (docId: string): Promise<void> => {
+  const snap = await getDoc(doc(db, COLLECTION, docId));
+  const orgId = snap.exists() ? String(snap.data()?.organizationId || '') : '';
+  await removeMemberFromClub(docId, orgId);
+};
+
+export const deleteMember = async (docId: string, organizationId: string): Promise<void> => {
+  await removeMemberFromClub(docId, organizationId);
 };
 
 export const appointAsOfficer = async (
@@ -375,8 +785,14 @@ export const appointAsOfficer = async (
     department?: string;
     contactNumber?: string;
     hasWebPortalAccess?: boolean;
+  },
+  actor?: {
+    isAdviser?: boolean;
   }
 ): Promise<void> => {
+  if (actor && actor.isAdviser === false) {
+    throw new Error('Only appointed Club Advisers are authorized to appoint officers or grant Web Portal access.');
+  }
   const wantWebAccess = Boolean(studentDetails?.hasWebPortalAccess);
 
   // Enforce officer appointment & Web Portal access exclusivity across organizations
@@ -491,12 +907,19 @@ export const appointAsOfficer = async (
 export const revokeOfficer = async (
   organizationId: string,
   officerDocId: string,
-  studentId: string
+  studentId: string,
+  actor?: {
+    isAdviser?: boolean;
+  }
 ): Promise<void> => {
+  if (actor && actor.isAdviser === false) {
+    throw new Error('Only appointed Club Advisers are authorized to revoke officer access or appointments.');
+  }
   const batch = writeBatch(db);
   const officerRef = doc(db, 'organization_officers', officerDocId);
   batch.update(officerRef, {
     isActive: false,
+    hasWebPortalAccess: false,
     updatedAt: serverTimestamp(),
   });
 
@@ -527,4 +950,57 @@ export const revokeOfficer = async (
     console.error("Revoke officer failed:", error);
     throw new Error(`Revoke officer failed: ${error.message}`);
   }
+};
+
+/**
+ * Grants or revokes Organization Web Portal login access for an active officer.
+ * Restricted strictly to the appointed Club Adviser.
+ */
+export const updateOfficerWebPortalAccess = async (
+  organizationId: string,
+  officerDocId: string,
+  grantAccess: boolean,
+  actor?: {
+    isAdviser?: boolean;
+  }
+): Promise<void> => {
+  if (!actor || actor.isAdviser !== true) {
+    throw new Error('Only appointed Club Advisers are authorized to add or revoke Web Portal access.');
+  }
+
+  const officerRef = doc(db, 'organization_officers', officerDocId);
+  const officerSnap = await getDoc(officerRef);
+  if (!officerSnap.exists()) {
+    throw new Error('Officer record not found.');
+  }
+  const officerData = officerSnap.data();
+  if (officerData.organizationId !== organizationId) {
+    throw new Error('Officer does not belong to this organization.');
+  }
+  if (officerData.isActive === false) {
+    throw new Error('Cannot modify Web Portal access for a revoked officer.');
+  }
+
+  if (grantAccess && officerData.studentId) {
+    const existingActiveOfficersSnap = await getDocs(
+      query(
+        collection(db, 'organization_officers'),
+        where('studentId', '==', officerData.studentId),
+        where('isActive', '==', true)
+      )
+    );
+    const hasOtherOrgAssignment = existingActiveOfficersSnap.docs.some(
+      (d) => d.id !== officerDocId && d.data().organizationId !== organizationId
+    );
+    if (hasOtherOrgAssignment) {
+      throw new Error(
+        'This student already holds an active officer role in another organization and cannot be granted exclusive Web Portal access here.'
+      );
+    }
+  }
+
+  await updateDoc(officerRef, {
+    hasWebPortalAccess: grantAccess,
+    updatedAt: serverTimestamp(),
+  });
 };

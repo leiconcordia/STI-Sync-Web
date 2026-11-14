@@ -7,11 +7,26 @@
  * without redundant signature collection prompts.
  */
 
-import { doc, getDoc, setDoc, collection, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, getDocs, limit, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { getSasSignatoryConfig, getCachedSasSignatoryConfig, saveSasSignatoryConfig } from './sas-signatory.service';
 import { SIGNATORIES_COLLECTION, saveSignatorySignatureInDatabase } from './signatory.service';
 import { SAS_ADMINS_COLLECTION } from '../../auth/services/auth.service';
+
+function cleanSigValue(val?: unknown): string {
+  if (typeof val !== 'string') return '';
+  const trimmed = val.trim();
+  if (!trimmed || trimmed.includes('[base64-')) return '';
+  return trimmed;
+}
+
+function normalizeSigPersonName(val?: string | null): string {
+  return (val || '')
+    .toLowerCase()
+    .replace(/\b(engr|atty|dr|mr|ms|mrs|prof)\.?\s+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export interface UserSignatureIdentifier {
   uid?: string | null;
@@ -36,11 +51,11 @@ export function getFastCachedSignature(profile?: any): string {
     return '';
   }
 
-  if (profile?.signatureUrl && typeof profile.signatureUrl === 'string' && profile.signatureUrl.trim().length > 0) {
-    return profile.signatureUrl.trim();
+  if (cleanSigValue(profile?.signatureUrl)) {
+    return cleanSigValue(profile.signatureUrl);
   }
-  if (profile?.signatureDataUrl && typeof profile.signatureDataUrl === 'string' && profile.signatureDataUrl.trim().length > 0) {
-    return profile.signatureDataUrl.trim();
+  if (cleanSigValue(profile?.signatureDataUrl)) {
+    return cleanSigValue(profile.signatureDataUrl);
   }
 
   const profileEmail = (profile?.email || '').trim().toLowerCase();
@@ -48,6 +63,8 @@ export function getFastCachedSignature(profile?: any): string {
     profileRole === 'sas_admin' ||
     profileRole === 'admin' ||
     profileRole === 'sas_head' ||
+    profileRole.includes('sas') ||
+    profileRole.includes('student affairs') ||
     profileEmail.includes('sas') ||
     profileEmail.includes('sao');
 
@@ -124,6 +141,9 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
   const isSasOrAdmin =
     role === 'admin' ||
     role === 'sas_admin' ||
+    role === 'sas_head' ||
+    role.includes('sas') ||
+    role.includes('student affairs') ||
     email.includes('sas') ||
     email.includes('sao');
 
@@ -131,28 +151,44 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
   if (isSasOrAdmin) {
     try {
       const sasConfig = await getSasSignatoryConfig();
-      const sig = sasConfig.signatureUrl || sasConfig.signatureDataUrl;
-      if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-        return sig.trim();
+      const sig = cleanSigValue(sasConfig.signatureUrl) || cleanSigValue(sasConfig.signatureDataUrl);
+      if (sig) {
+        return sig;
       }
     } catch (e) {
       console.warn('[SignatureResolver] SAS config lookup warning:', e);
     }
   }
 
-  // 2. Direct UID check in sas_admins
-  if (uid) {
+  // 2. Direct UID / Email check in sas_admins
+  if (uid && uid !== 'sas_admin_user') {
     try {
       const adminSnap = await getDoc(doc(db, SAS_ADMINS_COLLECTION, uid));
       if (adminSnap.exists()) {
         const d = adminSnap.data();
-        const sig = d.signatureUrl || d.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(d.signatureUrl) || cleanSigValue(d.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
       console.warn('[SignatureResolver] sas_admins UID lookup warning:', e);
+    }
+  }
+
+  if (email) {
+    try {
+      const qAdmin = query(collection(db, SAS_ADMINS_COLLECTION), where('email', '==', email));
+      const adminQuerySnap = await getDocs(qAdmin);
+      for (const d of adminQuerySnap.docs) {
+        const data = d.data();
+        const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
+        if (sig) {
+          return sig;
+        }
+      }
+    } catch (e) {
+      console.warn('[SignatureResolver] sas_admins email lookup warning:', e);
     }
   }
 
@@ -162,9 +198,9 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const sigSnap = await getDoc(doc(db, SIGNATORIES_COLLECTION, uid));
       if (sigSnap.exists()) {
         const d = sigSnap.data();
-        const sig = d.signatureUrl || d.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(d.signatureUrl) || cleanSigValue(d.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
@@ -179,9 +215,9 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const querySnap = await getDocs(q);
       for (const d of querySnap.docs) {
         const data = d.data();
-        const sig = data.signatureUrl || data.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
@@ -195,9 +231,9 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const advSnap = await getDoc(doc(db, 'organization_advisers', uid));
       if (advSnap.exists()) {
         const d = advSnap.data();
-        const sig = d.signatureUrl || d.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(d.signatureUrl) || cleanSigValue(d.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
@@ -211,9 +247,9 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const advQuerySnap = await getDocs(qAdv);
       for (const d of advQuerySnap.docs) {
         const data = d.data();
-        const sig = data.signatureUrl || data.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
@@ -230,13 +266,37 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const orgQuerySnap = await getDocs(qOrg);
       for (const d of orgQuerySnap.docs) {
         const adv = d.data()?.adviser;
-        const sig = adv?.signatureUrl || adv?.signatureDataUrl;
-        if (sig && typeof sig === 'string' && sig.trim().length > 0) {
-          return sig.trim();
+        const sig = cleanSigValue(adv?.signatureUrl) || cleanSigValue(adv?.signatureDataUrl);
+        if (sig) {
+          return sig;
         }
       }
     } catch (e) {
       console.warn('[SignatureResolver] organizations embedded adviser lookup warning:', e);
+    }
+  }
+
+  // 7. Normalized name fallback across sas_admins, institutional_signatories, organization_advisers
+  const targetNormName = normalizeSigPersonName(identifier.name);
+  if (targetNormName) {
+    for (const colName of [SAS_ADMINS_COLLECTION, SIGNATORIES_COLLECTION, 'organization_advisers']) {
+      try {
+        const snap = await getDocs(query(collection(db, colName), limit(50)));
+        for (const d of snap.docs) {
+          const data = d.data();
+          const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
+          if (!sig) continue;
+          const candidateNames = [
+            data.displayName,
+            data.name,
+            [data.firstName, data.middleName, data.lastName].filter(Boolean).join(' '),
+            [data.firstName, data.lastName].filter(Boolean).join(' '),
+          ];
+          if (candidateNames.some((n) => normalizeSigPersonName(n) === targetNormName)) {
+            return sig;
+          }
+        }
+      } catch {}
     }
   }
 

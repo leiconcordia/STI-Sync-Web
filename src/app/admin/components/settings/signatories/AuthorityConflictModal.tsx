@@ -42,9 +42,9 @@ export function AuthorityConflictModal({
   onClose,
 }: AuthorityConflictModalProps) {
   const docLabels: Record<WorkflowDocumentType, { name: string; code: string; color: string }> = {
-    proposal: { name: 'Activity Proposals', code: 'AP-01', color: 'indigo' },
-    liquidation: { name: 'Financial Liquidations', code: 'FL-01', color: 'amber' },
-    par: { name: 'Post-Activity Reports', code: 'PAR-01', color: 'purple' },
+    proposal: { name: 'Activity Proposals', code: 'Proposal', color: 'indigo' },
+    liquidation: { name: 'Financial Liquidations', code: 'Liquidation', color: 'amber' },
+    par: { name: 'Post-Activity Reports', code: 'Post-Activity Report', color: 'purple' },
   };
 
   const docInfo = docLabels[docType] || { name: docType, code: docType.toUpperCase(), color: 'blue' };

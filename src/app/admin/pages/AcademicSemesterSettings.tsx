@@ -25,9 +25,9 @@ import {
   Info,
   Archive,
 } from "lucide-react";
-import { collection, query, onSnapshot } from "firebase/firestore";
-import { db } from "../../../services/firebase";
 import { useSemesters } from "../../modules/academic/hooks/useAcademicStream";
+import { useAllEvents } from "../../modules/events/hooks/useEventStream";
+import { useStudents } from "../../modules/students/hooks/useStudentStream";
 import {
   createSemester,
   updateSemester,
@@ -1365,52 +1365,29 @@ function SemesterHistoryModal({
   onClose: () => void;
 }) {
   const [tab, setTab] = useState<"overview" | "events" | "students">("overview");
-  const [events, setEvents] = useState<any[]>([]);
-  const [students, setStudents] = useState<any[]>([]);
-  const [loadingData, setLoadingData] = useState(true);
+  const { events: cachedAllEvents = [], loading: eventsLoading } = useAllEvents();
+  const { data: cachedAllStudents = [], loading: studentsLoading } = useStudents();
+  const loadingData = eventsLoading || studentsLoading;
 
   const academicTrack = semester.academicLevel || (String(semester.semester).includes("Trimester") ? "SHS" : "COLLEGE");
 
-  // Query events and students tied to this semester
-  useEffect(() => {
-    let unsubEvents: () => void = () => {};
-    let unsubStudents: () => void = () => {};
+  const events = useMemo(() => {
+    return cachedAllEvents.filter((e: any) =>
+      e.semesterId === semester.id ||
+      (e.schoolYear === semester.academicYear && (e.semester === semester.semester || e.term === semester.semester))
+    );
+  }, [cachedAllEvents, semester.id, semester.academicYear, semester.semester]);
 
-    try {
-      const eventsQ = query(collection(db, "events"));
-      unsubEvents = onSnapshot(eventsQ, (snap) => {
-        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const matchedEvents = docs.filter((e: any) =>
-          e.semesterId === semester.id ||
-          (e.schoolYear === semester.academicYear && (e.semester === semester.semester || e.term === semester.semester))
-        );
-        setEvents(matchedEvents);
-      });
-
-      const studentsQ = query(collection(db, "students"));
-      unsubStudents = onSnapshot(studentsQ, (snap) => {
-        const docs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const matchedStudents = docs.filter((s: any) => {
-          const sLevel = s.academicLevel || (s.yearLevel === "Grade 11" || s.yearLevel === "Grade 12" ? "SHS" : "COLLEGE");
-          return (
-            sLevel === academicTrack &&
-            s.schoolYear === semester.academicYear &&
-            (s.semester === semester.semester || s.term === semester.semester)
-          );
-        });
-        setStudents(matchedStudents);
-        setLoadingData(false);
-      });
-    } catch (err) {
-      console.warn("Error subscribing to semester history:", err);
-      setLoadingData(false);
-    }
-
-    return () => {
-      unsubEvents();
-      unsubStudents();
-    };
-  }, [semester.id, semester.academicYear, semester.semester, academicTrack]);
+  const students = useMemo(() => {
+    return cachedAllStudents.filter((s: any) => {
+      const sLevel = s.academicLevel || (s.yearLevel === "Grade 11" || s.yearLevel === "Grade 12" ? "SHS" : "COLLEGE");
+      return (
+        sLevel === academicTrack &&
+        s.schoolYear === semester.academicYear &&
+        (s.semester === semester.semester || s.term === semester.semester)
+      );
+    });
+  }, [cachedAllStudents, academicTrack, semester.academicYear, semester.semester]);
 
   // Export events CSV
   const handleExportEventsCSV = () => {

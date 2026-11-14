@@ -24,6 +24,7 @@ import {
   deleteField,
 } from 'firebase/firestore';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
+import { createSingletonStream } from '../../../utils/createSingletonStream';
 import type {
   ActivityProposal,
   ProposalFormData,
@@ -39,9 +40,14 @@ import { softDeleteDocument, restoreDocument } from '../../workflow/services/sof
 import { createNotification } from '../../notifications';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 import {
+  checkProjectedBalance,
+  PROJECTED_REVENUE_DEFICIT_WARNING,
+} from '../utils/proposal-calculations';
+import {
   archiveDocumentRevision,
   migrateLegacyVersionHistory,
 } from '../../workflow/services/revision-history.service';
+import { getExcludedMemberIdentifiersForOrg } from '../../organizations/services/member.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -271,6 +277,11 @@ export async function syncProposalToEventsCollection(
           existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
             ? existingData.targetAudience || null
             : null,
+        excludedMemberIds: Array.isArray((proposal as any).excludedMemberIds)
+          ? (proposal as any).excludedMemberIds
+          : Array.isArray(existingData.excludedMemberIds)
+            ? existingData.excludedMemberIds
+            : undefined,
         date: proposal.date || existingData.date || '',
         startTime: proposal.startTime || existingData.startTime || '08:00',
         endTime: proposal.endTime || existingData.endTime || '12:00',
@@ -423,8 +434,9 @@ export async function generateProposalReferenceNumber(prefix = 'SAS'): Promise<s
  */
 export async function saveProposalDraft(
   formData: ProposalFormData,
-  user: { uid: string; name: string; email: string; role?: string; organizationId?: string },
-  existingId?: string
+  user: { uid: string; name: string; email: string; role?: string; organizationId?: string; isAdviser?: boolean },
+  existingId?: string,
+  options?: { notifyAdviser?: boolean }
 ): Promise<{ success: boolean; id: string; referenceNo: string }> {
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
@@ -488,6 +500,21 @@ export async function saveProposalDraft(
     updatedAt: serverTimestamp(),
   };
 
+  if (!isSasSubmitter) {
+    const resolvedClubOrgId = String(payload.hostingOrgId || payload.organizationId || '').trim();
+    if (resolvedClubOrgId && !['sas', 'sas_admin', 'sao', 'admin', 'student_org'].includes(resolvedClubOrgId.toLowerCase())) {
+      try {
+        const currentExcluded = await getExcludedMemberIdentifiersForOrg(resolvedClubOrgId);
+        const existingExcluded = Array.isArray((formData as any).excludedMemberIds)
+          ? (formData as any).excludedMemberIds
+          : [];
+        payload.excludedMemberIds = Array.from(new Set([...existingExcluded, ...currentExcluded]));
+      } catch (err) {
+        console.warn('[saveProposalDraft] Failed to resolve excluded members:', err);
+      }
+    }
+  }
+
   if (Array.isArray(formData.approvalChain) && formData.approvalChain.length > 0) {
     payload.approvalChain = normalizeApprovalStages(formData.approvalChain);
   }
@@ -500,6 +527,67 @@ export async function saveProposalDraft(
 
   // Sync draft to events collection so it appears under "Drafts"
   await syncProposalToEventsCollection(payload, 'draft');
+
+  // Notify Club Adviser when a student officer creates or saves an AP draft
+  const isNewDraft = !existingId && !formData.id;
+  const isStudentOfficerDrafter =
+    isOfficer &&
+    !isSasSubmitter &&
+    normUserRole !== 'adviser' &&
+    !(user as any).isAdviser;
+
+  if (isStudentOfficerDrafter && (isNewDraft || options?.notifyAdviser)) {
+    try {
+      const targetOrgId = String(payload.hostingOrgId || payload.organizationId || '').trim();
+      if (targetOrgId && !['sas', 'sas_admin', 'sao', 'admin', 'student_org'].includes(targetOrgId.toLowerCase())) {
+        let orgAdviserEmail = '';
+        let orgAdviserUid = '';
+        try {
+          const orgSnap = await getDoc(doc(db, 'organizations', targetOrgId));
+          if (orgSnap.exists()) {
+            const oData = orgSnap.data() as any;
+            orgAdviserEmail = oData?.adviser?.email || oData?.adviserEmail || '';
+            orgAdviserUid = oData?.adviser?.uid || oData?.adviserUid || '';
+          }
+        } catch (_) {}
+
+        const adviserRecipientTokens = [
+          `adviser:${targetOrgId}`,
+          orgAdviserEmail,
+          orgAdviserUid,
+        ]
+          .filter(Boolean)
+          .join('|');
+
+        const cleanOrgName = formatCleanOrgDisplayName(
+          finalDraftOrganizers,
+          targetOrgId,
+          formData.organizationName,
+          true
+        );
+
+        await createNotification({
+          recipientRole: 'officer',
+          recipientId: adviserRecipientTokens,
+          targetOrgId,
+          targetOrgName: cleanOrgName,
+          type: 'document_submission',
+          category: 'activity_proposal',
+          title: `${payload.isUrgent ? '[URGENT] ' : ''}Officer AP Draft Saved: ${payload.title || 'Untitled Activity Proposal'}`,
+          message: `${user.name || 'A student officer'} saved an Activity Proposal draft (${referenceNo}) awaiting your Adviser review before submission.`,
+          resourceId: docId,
+          resourceType: 'event',
+          actionRoute: `/officer/events`,
+          isUrgent: Boolean(payload.isUrgent),
+          senderId: user.uid,
+          senderName: user.name,
+          senderRoleTitle: 'Organization Officer',
+        });
+      }
+    } catch (notifErr) {
+      console.warn('[saveProposalDraft] Adviser notification dispatch error:', notifErr);
+    }
+  }
 
   return { success: true, id: docId, referenceNo };
 }
@@ -516,6 +604,14 @@ export async function submitProposalForReview(
   user: { uid: string; name: string; email: string; role?: string; organizationId?: string },
   existingId?: string
 ): Promise<{ success: boolean; id: string; referenceNo: string }> {
+  const balanceCheck = checkProjectedBalance(
+    (formData as any).financialProjections,
+    formData.fundingSource
+  );
+  if (balanceCheck.isDeficit) {
+    throw new Error(PROJECTED_REVENUE_DEFICIT_WARNING);
+  }
+
   const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
   const docRef = doc(db, PROPOSALS_COLLECTION, docId);
 
@@ -630,6 +726,24 @@ export async function submitProposalForReview(
     sasVettedBy: null,
     organizationId: isSasAdmin ? 'sas' : (formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || 'student_org'),
     hostingOrgId: isSasAdmin ? 'sas' : (formData.hostingOrgId || formData.organizationId || (user as any).organizationId || 'student_org'),
+    excludedMemberIds: await (async () => {
+      if (isSasAdmin) return (formData as any).excludedMemberIds;
+      const resolvedClubOrgId = String(
+        formData.hostingOrgId || formData.organizationId || (user as any).organizationId || ''
+      ).trim();
+      const existingExcluded = Array.isArray((formData as any).excludedMemberIds)
+        ? (formData as any).excludedMemberIds
+        : [];
+      if (resolvedClubOrgId && !['sas', 'sas_admin', 'sao', 'admin', 'student_org'].includes(resolvedClubOrgId.toLowerCase())) {
+        try {
+          const currentExcluded = await getExcludedMemberIdentifiersForOrg(resolvedClubOrgId);
+          return Array.from(new Set([...existingExcluded, ...currentExcluded]));
+        } catch (err) {
+          console.warn('[submitProposalForReview] Failed to resolve excluded members:', err);
+        }
+      }
+      return existingExcluded.length > 0 ? existingExcluded : undefined;
+    })(),
     approvalChain: chain,
     currentStepIndex: 0,
     currentStageIndex: 1,
@@ -781,7 +895,7 @@ export async function submitProposalForReview(
   // Sync to events collection as pending review (must follow signatory pipeline)
   await syncProposalToEventsCollection(payload, 'pending');
 
-  // Real-time submission notification dispatched to SAS Admin
+  // Real-time submission notification dispatched to SAS Admin (and Stage 1 signers if SAS-direct)
   try {
     const orgDisplayName = formatCleanOrgDisplayName(
       finalSubmissionOrganizers,
@@ -809,6 +923,31 @@ export async function submitProposalForReview(
       senderName: user.name,
       senderRoleTitle: user.role || 'Officer',
     });
+
+    if (!requiresSasPreApprovalGate) {
+      const stage1Signers = chain.filter((s) => (s.stageIndex ?? 1) === 1 && s.status === 'current');
+      for (const signer of stage1Signers) {
+        const recipientTokens = [signer.signatoryUid, signer.signatoryEmail].filter(Boolean).join('|');
+        if (!recipientTokens) continue;
+        await createNotification({
+          recipientRole: 'signatory',
+          recipientId: recipientTokens,
+          type: 'document_submission',
+          category: 'activity_proposal',
+          title: `${payload.isUrgent ? '[URGENT] ' : ''}Awaiting Stage 1 Review: ${payload.title || 'Activity Proposal'}`,
+          message: `${orgDisplayName} submitted ${referenceNo} directly into Stage 1 for your signature.`,
+          resourceId: docId,
+          resourceType: 'event',
+          actionRoute: `/signatory/proposals`,
+          isUrgent: Boolean(payload.isUrgent),
+          targetOrgId: formData.hostingOrgId || undefined,
+          targetOrgName: orgDisplayName,
+          senderId: user.uid,
+          senderName: user.name,
+          senderRoleTitle: user.role || 'SAS Administrator',
+        });
+      }
+    }
   } catch (notifErr) {
     console.warn('[submitProposalForReview] Notification dispatch error:', notifErr);
   }
@@ -883,23 +1022,59 @@ export async function restoreProposal(
   await restoreDocument('activities', id, user);
 }
 
+const globalProposalsStream = createSingletonStream<ActivityProposal[]>({
+  initialData: [],
+  start: (emit, emitError) => {
+    const q = query(collection(db, PROPOSALS_COLLECTION), orderBy('updatedAt', 'desc'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: ActivityProposal[] = snapshot.docs
+          .map((docSnap) => ({
+            id: docSnap.id,
+            ...docSnap.data(),
+          }))
+          .filter((p: any) => p.isDeleted !== true) as ActivityProposal[];
+        emit(list);
+      },
+      (err) => {
+        console.error('[ProposalService] Subscription error:', err);
+        emitError(err);
+      }
+    );
+  },
+});
+
+export function peekCachedProposalById(id: string): ActivityProposal | null {
+  const { data, isLoaded } = globalProposalsStream.peekData();
+  if (!isLoaded) return null;
+  return data.find((p) => p.id === id) || null;
+}
+
 /**
- * Real-time subscription to proposals (filters out soft-deleted records)
+ * Real-time subscription to proposals (filters out soft-deleted records).
+ * Global stream (no creatorUid) shares one singleton Firestore listener across routes/components.
  */
 export function subscribeToProposals(
   callback: (proposals: ActivityProposal[]) => void,
   creatorUid?: string,
   onError?: (error: Error) => void
 ): () => void {
-  let q = query(collection(db, PROPOSALS_COLLECTION), orderBy('updatedAt', 'desc'));
-
-  if (creatorUid) {
-    q = query(
-      collection(db, PROPOSALS_COLLECTION),
-      where('createdByUid', '==', creatorUid),
-      orderBy('updatedAt', 'desc')
-    );
+  if (!creatorUid) {
+    return globalProposalsStream.subscribe((state) => {
+      if (state.error) {
+        onError?.(state.error);
+      } else if (!state.loading) {
+        callback(state.data);
+      }
+    });
   }
+
+  const q = query(
+    collection(db, PROPOSALS_COLLECTION),
+    where('createdByUid', '==', creatorUid),
+    orderBy('updatedAt', 'desc')
+  );
 
   return onSnapshot(
     q,
@@ -1228,10 +1403,39 @@ export async function endorseProposal(
         resourceId: proposalId,
         resourceType: 'event',
         actionRoute: `/officer/events`,
+        isUrgent: Boolean(data.isUrgent),
         senderId: userUid || signatory.uid,
         senderName: signerName,
         senderRoleTitle: signerRoleTitle,
       });
+    }
+
+    // Notify next-stage signatories when stage advances
+    if (stageAdvanced && !isFullyApproved) {
+      const nextStageSigners = sanitizedChain.filter(
+        (s: any) => (s.stageIndex ?? 1) === nextStageIndex && s.status === 'current'
+      );
+      for (const nextSigner of nextStageSigners) {
+        const recipientTokens = [nextSigner.signatoryUid, nextSigner.signatoryEmail].filter(Boolean).join('|');
+        if (!recipientTokens) continue;
+        await createNotification({
+          recipientRole: 'signatory',
+          recipientId: recipientTokens,
+          targetOrgId: orgId || undefined,
+          targetOrgName: cleanOrgName,
+          type: 'document_submission',
+          category: 'activity_proposal',
+          title: `${data.isUrgent ? '[URGENT] ' : ''}Stage ${nextStageIndex} Endorsement Needed: ${eventTitle}`,
+          message: `Proposal "${eventTitle}" was endorsed by ${signerName} and is now active in Stage ${nextStageIndex} for your review.`,
+          resourceId: proposalId,
+          resourceType: 'event',
+          actionRoute: '/signatory/proposals',
+          isUrgent: Boolean(data.isUrgent),
+          senderId: userUid || signatory.uid,
+          senderName: signerName,
+          senderRoleTitle: signerRoleTitle,
+        });
+      }
     }
   } catch (notifErr) {
     console.warn('[endorseProposal] Officer notification error:', notifErr);
@@ -1329,18 +1533,23 @@ export async function releaseProposalToSignatories(
   // Dispatch notifications to Stage 1 signers
   const stage1Signers = chain.filter((s) => (s.stageIndex ?? 1) === 1);
   for (const signer of stage1Signers) {
-    if (signer.signatoryUid || signer.signatoryEmail) {
+    const recipientTokens = [signer.signatoryUid, signer.signatoryEmail].filter(Boolean).join('|');
+    if (recipientTokens) {
       try {
+        const isProposalUrgent = Boolean(data.isUrgent);
         await createNotification({
           recipientRole: 'signatory',
-          recipientId: signer.signatoryUid || signer.signatoryEmail,
-          title: `Proposal Released: ${data.title || 'Activity Proposal'}`,
+          recipientId: recipientTokens,
+          title: `${isProposalUrgent ? '[URGENT] ' : ''}Proposal Released: ${data.title || 'Activity Proposal'}`,
           message: `Activity proposal "${data.title || 'Activity Proposal'}" has been cleared by SAS and is now awaiting your review in Stage 1.`,
           type: 'document_submission',
           category: 'activity_proposal',
           resourceId: proposalId,
           resourceType: 'event',
           actionRoute: '/signatory/proposals',
+          isUrgent: isProposalUrgent,
+          targetOrgId: data.hostingOrgId || undefined,
+          targetOrgName: data.organizationName || undefined,
           senderId: sasAdminUid,
           senderName: 'Student Affairs & Services',
           senderRoleTitle: 'Student Affairs & Services',

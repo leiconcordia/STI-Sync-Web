@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   Building2,
   Info,
-  Zap,
   AlertTriangle,
   Lock,
   Unlock,
@@ -283,7 +282,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
             Activity Target Schedule & Lead Time Policy
           </p>
           <p className="text-blue-800 leading-relaxed font-normal">
-            Official STI College policy requires proposals to be filed at least <strong>15 calendar days</strong> in advance. Dates below 15 days are automatically disabled on the date picker unless you activate the <strong>Urgent Activity Proposal</strong> slider below with an administrative justification.
+            Official STI College policy requires proposals to be filed at least <strong>15 calendar days</strong> in advance. Dates below 15 days are automatically disabled on the date picker unless you activate the <strong>Urgent Activity Proposal</strong> toggle above Target Implementation Date with an administrative justification.
           </p>
         </div>
       </div>
@@ -299,74 +298,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
       {/* Schedule & Venue Card */}
       <div className="border border-gray-200 rounded-2xl p-6 bg-white shadow-xs space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-12 gap-5">
-          {/* Target Implementation Date */}
-          <div className="md:col-span-12 space-y-2">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
-              <label className="block text-xs font-bold text-gray-800 flex items-center gap-1.5">
-                <Calendar className="w-4 h-4 text-blue-600" />
-                <span>Target Implementation Date <span className="text-red-500">*</span></span>
-              </label>
-              <span className="text-[11px] text-slate-500 font-medium">
-                {isUrgent ? (
-                  <span className="text-amber-700 font-semibold flex items-center gap-1">
-                    <Unlock className="w-3.5 h-3.5 text-amber-600" />
-                    Urgent Mode: Selectable from Today ({formatDateLong(todayStr)}) onwards
-                  </span>
-                ) : (
-                  <span className="text-slate-600 flex items-center gap-1">
-                    <Lock className="w-3.5 h-3.5 text-slate-400" />
-                    Standard Mode: Earliest allowed date is <strong>{formatDateLong(standardMinDate)}</strong> (15+ days)
-                  </span>
-                )}
-              </span>
-            </div>
-
-            <div className="relative">
-              <input
-                type="date"
-                min={effectiveMinDate}
-                value={date}
-                onChange={(e) => handleDateChange(e.target.value)}
-                className={`w-full px-3.5 py-2.5 bg-gray-50/50 border rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900 font-semibold transition-all ${
-                  errors.date ? 'border-red-400 bg-red-50/20' : 'border-gray-300'
-                }`}
-              />
-            </div>
-
-            {/* Live Feedback Badges for Selected Date */}
-            {leadTimeDays !== null && (
-              <div className="pt-1 flex items-center gap-2 flex-wrap">
-                {leadTimeDays >= 15 ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-semibold shadow-2xs">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>✓ 15-Day Policy Compliant ({leadTimeDays} calendar days advance notice)</span>
-                  </span>
-                ) : leadTimeDays >= 0 ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 text-xs font-semibold shadow-2xs">
-                    <Zap className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Urgent Fast-Track ({leadTimeDays} calendar days lead time — justification required)</span>
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-50 text-red-800 border border-red-300 text-xs font-semibold">
-                    <AlertCircle className="w-3.5 h-3.5 text-red-600" />
-                    <span>Invalid: Date is in the past</span>
-                  </span>
-                )}
-              </div>
-            )}
-
-            {errors.date && (
-              <p className="text-[11px] text-red-600 font-semibold flex items-center gap-1 mt-1">
-                <AlertCircle className="w-3.5 h-3.5" />
-                <span>{errors.date}</span>
-              </p>
-            )}
-            <p className="text-[11px] text-gray-500">
-              The proposed calendar date the activity is scheduled to take place on campus.
-            </p>
-          </div>
-
-          {/* ── URGENT PROPOSAL TOGGLE & JUSTIFICATION SECTION (TRANSFERRED FROM STEP 7) ── */}
+          {/* ── URGENT PROPOSAL TOGGLE & JUSTIFICATION SECTION (TOP BEFORE TARGET DATE) ── */}
           <div className="md:col-span-12">
             <div
               className={`p-4 rounded-2xl border transition-all ${
@@ -382,7 +314,7 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
                       isUrgent ? 'bg-amber-500 text-white shadow-xs' : 'bg-slate-200 text-slate-600'
                     }`}
                   >
-                    <Zap className="w-5 h-5" />
+                    <AlertTriangle className="w-5 h-5" />
                   </div>
                   <div>
                     <div className="flex items-center gap-2 flex-wrap">
@@ -453,6 +385,73 @@ export default function Step4SessionsScheduler({ formData, onChange, errors = {}
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Target Implementation Date */}
+          <div className="md:col-span-12 space-y-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+              <label className="block text-xs font-bold text-gray-800 flex items-center gap-1.5">
+                <Calendar className="w-4 h-4 text-blue-600" />
+                <span>Target Implementation Date <span className="text-red-500">*</span></span>
+              </label>
+              <span className="text-[11px] text-slate-500 font-medium">
+                {isUrgent ? (
+                  <span className="text-amber-700 font-semibold flex items-center gap-1">
+                    <Unlock className="w-3.5 h-3.5 text-amber-600" />
+                    Urgent Mode: Selectable from Today ({formatDateLong(todayStr)}) onwards
+                  </span>
+                ) : (
+                  <span className="text-slate-600 flex items-center gap-1">
+                    <Lock className="w-3.5 h-3.5 text-slate-400" />
+                    Standard Mode: Earliest allowed date is <strong>{formatDateLong(standardMinDate)}</strong> (15+ days)
+                  </span>
+                )}
+              </span>
+            </div>
+
+            <div className="relative">
+              <input
+                type="date"
+                min={effectiveMinDate}
+                value={date}
+                onChange={(e) => handleDateChange(e.target.value)}
+                className={`w-full px-3.5 py-2.5 bg-gray-50/50 border rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] text-gray-900 font-semibold transition-all ${
+                  errors.date ? 'border-red-400 bg-red-50/20' : 'border-gray-300'
+                }`}
+              />
+            </div>
+
+            {/* Live Feedback Badges for Selected Date */}
+            {leadTimeDays !== null && (
+              <div className="pt-1 flex items-center gap-2 flex-wrap">
+                {leadTimeDays >= 15 ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-300 text-xs font-semibold shadow-2xs">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>✓ 15-Day Policy Compliant ({leadTimeDays} calendar days advance notice)</span>
+                  </span>
+                ) : leadTimeDays >= 0 ? (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-300 text-xs font-semibold shadow-2xs">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Urgent Fast-Track ({leadTimeDays} calendar days lead time — justification required)</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-red-50 text-red-800 border border-red-300 text-xs font-semibold">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                    <span>Invalid: Date is in the past</span>
+                  </span>
+                )}
+              </div>
+            )}
+
+            {errors.date && (
+              <p className="text-[11px] text-red-600 font-semibold flex items-center gap-1 mt-1">
+                <AlertCircle className="w-3.5 h-3.5" />
+                <span>{errors.date}</span>
+              </p>
+            )}
+            <p className="text-[11px] text-gray-500">
+              The proposed calendar date the activity is scheduled to take place on campus.
+            </p>
           </div>
 
           {/* Operational Hours Toggle (Optional) */}

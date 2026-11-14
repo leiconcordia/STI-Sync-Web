@@ -13,7 +13,7 @@
  * 6. Remarks
  */
 
-import React, { useMemo, useEffect } from 'react';
+import React, { useMemo, useEffect, useState } from 'react';
 import {
   DollarSign,
   Plus,
@@ -24,6 +24,8 @@ import {
   CheckCircle2,
   ShieldCheck,
   Lock,
+  Calculator,
+  Users,
 } from 'lucide-react';
 import type {
   ProposalFormData,
@@ -32,7 +34,9 @@ import type {
 } from '../../types/proposal.types';
 import {
   calculateFinancialTotals,
+  checkProjectedBalance,
   formatPHP,
+  PROJECTED_REVENUE_DEFICIT_WARNING,
 } from '../../utils/proposal-calculations';
 import FundingSourceSelector from './FundingSourceSelector';
 import HistoricalBudgetPicker from './HistoricalBudgetPicker';
@@ -42,6 +46,11 @@ import {
   type HistoricalActivityMatch,
 } from '../../services/historical-budget.service';
 import { useOrgLedger } from '../../../finance/hooks/useFinanceStream';
+import { useTargetAudienceStructure } from '../../../academic';
+import { useStudents } from '../../../students/hooks/useStudentStream';
+import { filterActiveStudents } from '../../utils/student-reach.utils';
+import { QuickCalculatorModal } from './QuickCalculatorModal';
+import { StudentPopulationGuideModal } from './StudentPopulationGuideModal';
 
 interface Step6Props {
   formData: ProposalFormData;
@@ -50,6 +59,15 @@ interface Step6Props {
 }
 
 export default function Step6FinancialProjections({ formData, onChange, errors = {} }: Step6Props) {
+  const [showCalculatorModal, setShowCalculatorModal] = useState(false);
+  const [showStudentGuideModal, setShowStudentGuideModal] = useState(false);
+
+  const audienceStructure = useTargetAudienceStructure();
+  const { data: allStudentsData = [] } = useStudents();
+  const activeStudents = useMemo(
+    () => filterActiveStudents(allStudentsData),
+    [allStudentsData]
+  );
   const isSasProposal = Boolean(
     formData.creatorRole === 'sas_admin' ||
     formData.creatorRole === 'admin' ||
@@ -322,12 +340,12 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                 [
                   {
                     id: 'exp-zero',
-                    description: 'Zero Budget Activity (₱0)',
+                    description: '',
                     lastYearActual: 0,
                     thisYearProposed: 0,
                     totalAmount: 0,
                     adjustment: 0,
-                    remarks: 'Non-monetary activity',
+                    remarks: '',
                   },
                 ]
               );
@@ -354,7 +372,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                   currentProjections.revenues[0].description.includes('Non-Monetary'))
               ) {
                 const list = [...currentProjections.revenues];
-                list[0] = { ...list[0], description: 'School Budget Allocation' };
+                list[0] = { ...list[0], description: '' };
                 updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
               }
             }
@@ -408,12 +426,35 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       {/* ── SECTION A: REVENUES (Hidden if Non-Monetary) ── */}
       {!isNonMonetary && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
               <h3 className="text-sm font-bold text-slate-800">
                 A. Sources of Funds / Projected Revenues
               </h3>
+              <div className="flex items-center gap-1.5 ml-1">
+                <button
+                  type="button"
+                  onClick={() => setShowCalculatorModal(true)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 hover:border-emerald-300 text-slate-600 hover:text-emerald-700 text-[11px] font-semibold shadow-2xs transition-colors"
+                  title="Open Quick Calculator"
+                  aria-label="Open Quick Calculator"
+                >
+                  <Calculator className="w-3.5 h-3.5 text-emerald-600" />
+                  <span className="hidden sm:inline">Calculator</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowStudentGuideModal(true)}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50/70 hover:bg-blue-100/80 text-[#003575] text-[11px] font-semibold shadow-2xs transition-colors"
+                  title="Open Student Population Guide (with SHS/College/Program/Section filters)"
+                  aria-label="Open Student Population Guide"
+                >
+                  <Users className="w-3.5 h-3.5 text-[#004A98]" />
+                  <span>{activeStudents.length.toLocaleString()}</span>
+                  <span className="hidden sm:inline text-blue-700/80 font-medium">Students</span>
+                </button>
+              </div>
             </div>
             <button
               type="button"
@@ -480,8 +521,8 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                             )
                           }
                           className={`w-full px-2 py-1.5 border rounded-lg text-xs text-right ${item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
-                              ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
-                              : 'bg-slate-50/60 border-slate-200'
+                            ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
+                            : 'bg-slate-50/60 border-slate-200'
                             }`}
                           title={
                             item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
@@ -649,8 +690,8 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                             )
                           }
                           className={`w-full px-2 py-1.5 border rounded-lg text-xs text-right ${item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
-                              ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
-                              : 'bg-slate-50/60 border-slate-200'
+                            ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
+                            : 'bg-slate-50/60 border-slate-200'
                             }`}
                           title={
                             item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
@@ -746,58 +787,113 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       )}
 
       {/* ── FINANCIAL SUMMARY CARD: Total Asking Budget Highlight ── */}
-      <div className="p-4 rounded-2xl border transition-all bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-white border-blue-200 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[#001A4D] text-[#FFD41C] shadow-xs shrink-0">
-              <DollarSign className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h4 className="text-sm font-extrabold text-[#001A4D]">
-                  Total Asking Budget: {formatPHP(currentProjections.totalExpenses)}
-                </h4>
-                <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${isNonMonetary
-                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                    : formData.fundingSource === 'organization_funds'
-                      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                      : 'bg-sky-100 text-[#001A4D] border border-sky-200'
-                  }`}>
-                  {isNonMonetary ? 'NON-MONETARY (₱0)' : formData.fundingSource === 'organization_funds' ? 'CLUB TREASURY PROPOSAL' : 'SCHOOL BUDGET REQUEST'}
-                </span>
-              </div>
-              <p className="text-xs text-slate-600 mt-0.5">
-                {isNonMonetary
-                  ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from financial liquidation.'
-                  : formData.fundingSource === 'organization_funds'
-                    ? 'Proposed budget will be allocated from the official student organization treasury.'
-                    : 'Institutional budget allocation requested for school administration review and endorsement.'}
-              </p>
-            </div>
-          </div>
+      {(() => {
+        const balanceCheck = checkProjectedBalance(currentProjections, formData.fundingSource);
+        const showDeficitWarning = balanceCheck.isDeficit || Boolean(errors.projectedBalance);
+        return (
+          <>
+            <div
+              className={`p-4 rounded-2xl border transition-all shadow-xs ${showDeficitWarning
+                ? 'bg-gradient-to-br from-rose-50/90 via-red-50/50 to-white border-rose-300'
+                : 'bg-gradient-to-br from-blue-50/70 via-indigo-50/40 to-white border-blue-200'
+                }`}
+            >
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-10 h-10 rounded-xl flex items-center justify-center shadow-xs shrink-0 ${showDeficitWarning
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-[#001A4D] text-[#FFD41C]'
+                      }`}
+                  >
+                    <DollarSign className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-extrabold text-[#001A4D]">
+                        Total Asking Budget: {formatPHP(balanceCheck.totalExpenses)}
+                      </h4>
+                      <span
+                        className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full ${isNonMonetary
+                          ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                          : formData.fundingSource === 'organization_funds'
+                            ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                            : 'bg-sky-100 text-[#001A4D] border border-sky-200'
+                          }`}
+                      >
+                        {isNonMonetary
+                          ? 'NON-MONETARY (₱0)'
+                          : formData.fundingSource === 'organization_funds'
+                            ? 'CLUB TREASURY PROPOSAL'
+                            : 'SCHOOL BUDGET REQUEST'}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      {isNonMonetary
+                        ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from financial liquidation.'
+                        : formData.fundingSource === 'organization_funds'
+                          ? 'Proposed budget will be allocated from the official student organization treasury.'
+                          : 'Institutional budget allocation requested for school administration review and endorsement.'}
+                    </p>
+                  </div>
+                </div>
 
-          <div className="flex items-center gap-4 text-xs font-semibold self-end sm:self-center">
-            {currentProjections.totalRevenue > 0 && !isNonMonetary && (
-              <>
-                <div className="text-right">
-                  <span className="text-slate-400 block text-[10px]">TOTAL REVENUES</span>
-                  <span className="text-emerald-700 font-bold">{formatPHP(currentProjections.totalRevenue)}</span>
+                <div className="flex items-center gap-4 text-xs font-semibold self-end sm:self-center">
+                  {(!isNonMonetary || balanceCheck.totalExpenses > 0 || balanceCheck.totalRevenue > 0) && (
+                    <>
+                      <div className="text-right">
+                        <span className="text-slate-400 block text-[10px]">TOTAL REVENUES</span>
+                        <span className="text-emerald-700 font-bold">{formatPHP(balanceCheck.totalRevenue)}</span>
+                      </div>
+                      <div className="text-slate-300">|</div>
+                      <div className="text-right">
+                        <span className="text-slate-400 block text-[10px]">PROJECTED BALANCE</span>
+                        <span
+                          className={`font-bold ${balanceCheck.balance < 0 ? 'text-rose-700 font-black' : 'text-slate-700'
+                            }`}
+                        >
+                          {formatPHP(balanceCheck.balance)}
+                        </span>
+                      </div>
+                      <div className="text-slate-300">|</div>
+                    </>
+                  )}
+                  <div className="text-right">
+                    <span className="text-slate-400 block text-[10px]">TOTAL EXPENSES</span>
+                    <span className="text-[#0E4EBD] font-black text-sm">{formatPHP(balanceCheck.totalExpenses)}</span>
+                  </div>
                 </div>
-                <div className="text-slate-300">|</div>
-                <div className="text-right">
-                  <span className="text-slate-400 block text-[10px]">PROJECTED BALANCE</span>
-                  <span className="text-slate-700 font-bold">{formatPHP(currentProjections.balance)}</span>
-                </div>
-                <div className="text-slate-300">|</div>
-              </>
-            )}
-            <div className="text-right">
-              <span className="text-slate-400 block text-[10px]">TOTAL ASKING BUDGET</span>
-              <span className="text-[#0E4EBD] font-black text-sm">{formatPHP(currentProjections.totalExpenses)}</span>
+              </div>
             </div>
-          </div>
-        </div>
-      </div>
+
+            {showDeficitWarning && (
+              <div className="p-4 rounded-2xl bg-rose-50 border-2 border-rose-300 flex items-start gap-3 text-rose-950 shadow-xs">
+                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                <div className="text-xs space-y-1">
+                  <p className="font-bold text-rose-900">
+                    Revenue Deficit (Balance: {formatPHP(balanceCheck.balance)}) — Submission Blocked
+                  </p>
+                  <p className="text-rose-800 leading-relaxed">
+                    {errors.projectedBalance || PROJECTED_REVENUE_DEFICIT_WARNING}
+                  </p>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
+
+      {/* Financial Reference Popups */}
+      <QuickCalculatorModal
+        isOpen={showCalculatorModal}
+        onClose={() => setShowCalculatorModal(false)}
+      />
+      <StudentPopulationGuideModal
+        isOpen={showStudentGuideModal}
+        onClose={() => setShowStudentGuideModal(false)}
+        activeStudents={activeStudents}
+        structure={audienceStructure}
+      />
     </div>
   );
 }

@@ -234,7 +234,7 @@ export const BUILTIN_DEFAULT_WORKFLOWS: Record<WorkflowPipelineKey, WorkflowStep
       stageName: 'Stage 1 Signer',
       role: 'sas_head',
       roleTitle: 'Student Affairs & Services Head',
-      actionType: 'approve',
+      actionType: 'endorse',
       department: 'Student Affairs & Services',
       isMandatory: true,
       isPermanent: true,

@@ -8,6 +8,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useOutletContext } from 'react-router';
+import { formatLongDate, formatTextWithLongDates } from '../../utils/date';
 import {
   FileSignature,
   Clock,
@@ -468,7 +469,7 @@ export default function SignatoryEndorsementsPage() {
               <div className="divide-y divide-gray-100">
                 {activeProposalsList.map((proposal) => {
                   const totalSessions = proposal.sessions?.length || 0;
-                  const earliestDate = proposal.sessions?.[0]?.date || 'TBD';
+                  const earliestDate = formatLongDate(proposal.sessions?.[0]?.date, 'TBD');
 
                   return (
                     <div
@@ -855,7 +856,7 @@ export default function SignatoryEndorsementsPage() {
                           </div>
                           <div className="flex items-center gap-1.5">
                             <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                            <span>Conducted: {parDoc.eventDateFormatted}</span>
+                            <span>Conducted: {formatTextWithLongDates(parDoc.eventDateFormatted, '—')}</span>
                           </div>
                           <div className="flex items-center gap-1.5 text-blue-700 font-semibold">
                             <Users className="w-3.5 h-3.5 text-blue-600" />

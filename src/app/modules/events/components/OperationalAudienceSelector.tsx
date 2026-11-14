@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useTargetAudienceStructure } from '../../academic';
 import { useStudents } from '../../students/hooks/useStudentStream';
+import { useOrgMembers } from '../../organizations/hooks/useOrgMembers';
 
 export type OperationalAudienceScope = 'all' | 'members' | 'specific';
 export type OperationalAcademicLevel = 'COLLEGE' | 'SHS' | 'BOTH';
@@ -26,6 +27,8 @@ interface OperationalAudienceSelectorProps {
   onChangeSections: (sections: string[]) => void;
   readOnly?: boolean;
   hasHostingOrg?: boolean;
+  hostingOrgId?: string;
+  excludedMemberIds?: string[];
   title?: string;
   subtitle?: string;
   reachLabel?: string;
@@ -113,13 +116,49 @@ export default function OperationalAudienceSelector({
   onChangeSections,
   readOnly = false,
   hasHostingOrg = true,
+  hostingOrgId,
+  excludedMemberIds = [],
   title = 'Target Participant Scope & Academic Filters',
   subtitle = 'Required for mobile app visibility and scanner eligibility. Defaults to All Campus Students.',
   reachLabel = 'matching active students in registry',
 }: OperationalAudienceSelectorProps) {
   const audienceStructure = useTargetAudienceStructure();
   const { data: allStudentsData = [] } = useStudents();
+  const resolvedClubOrgId =
+    hostingOrgId && !['sas', 'sas_admin', 'sao', 'admin'].includes(hostingOrgId.toLowerCase())
+      ? hostingOrgId
+      : '';
+  const { members: orgMembers = [] } = useOrgMembers(resolvedClubOrgId);
   const [sectionSearch, setSectionSearch] = useState('');
+
+  const activeOrgMemberIds = useMemo(() => {
+    const set = new Set<string>();
+    orgMembers
+      .filter((m) => m.status === 'active')
+      .forEach((m) => {
+        if (m.studentId) set.add(String(m.studentId).trim().toLowerCase());
+        if (m.studentSchoolId) set.add(String(m.studentSchoolId).trim().toLowerCase());
+        if (m.authUid) set.add(String(m.authUid).trim().toLowerCase());
+      });
+    return set;
+  }, [orgMembers]);
+
+  const excludedOrgMemberIds = useMemo(() => {
+    const set = new Set<string>();
+    excludedMemberIds.forEach((id) => {
+      if (id) set.add(String(id).trim().toLowerCase());
+    });
+    if (resolvedClubOrgId) {
+      orgMembers
+        .filter((m) => m.status === 'pending_removal' || m.status === 'removed')
+        .forEach((m) => {
+          if (m.studentId) set.add(String(m.studentId).trim().toLowerCase());
+          if (m.studentSchoolId) set.add(String(m.studentSchoolId).trim().toLowerCase());
+          if (m.authUid) set.add(String(m.authUid).trim().toLowerCase());
+        });
+    }
+    return set;
+  }, [excludedMemberIds, orgMembers, resolvedClubOrgId]);
 
   const availablePrograms = audienceStructure.getProgramsForAcademicLevel(academicLevel);
   const availableYearLevels = audienceStructure.getYearLevelsForAcademicLevel(academicLevel);
@@ -185,7 +224,21 @@ export default function OperationalAudienceSelector({
         return false;
       }
 
-      if (audienceScope === 'all' || audienceScope === 'members') {
+      const studentKeys = [s.studentId, s.id, (s as any).authUid]
+        .filter(Boolean)
+        .map((v) => String(v).trim().toLowerCase());
+      if (excludedOrgMemberIds.size > 0 && studentKeys.some((k) => excludedOrgMemberIds.has(k))) {
+        return false;
+      }
+
+      if (audienceScope === 'members') {
+        if (resolvedClubOrgId) {
+          return studentKeys.some((k) => activeOrgMemberIds.has(k));
+        }
+        return true;
+      }
+
+      if (audienceScope === 'all') {
         return true;
       }
 

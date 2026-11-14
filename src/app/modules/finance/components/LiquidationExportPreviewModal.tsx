@@ -2,11 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   X,
   FileSpreadsheet,
-  Settings2,
   Eye,
-  FileText,
-  Sparkles,
-  RotateCcw,
   Download,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -17,13 +13,13 @@ import { ACTIVITIES_COLLECTION } from '../../events/services/event.service';
 import type { LiquidationDocument } from '../types/liquidation.types';
 import {
   exportOfficialStiLiquidationExcel,
-  exportOfficialStiLiquidationXlsx,
-  exportOfficialStiLiquidationXml,
+  enrichLiquidationSignatures,
+  groupLiquidationData,
+  resolveOfficialSignatories,
   type StiSignatory,
 } from '../utils/sti-liquidation-excel';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate, parseDateSafe } from '../../../utils/date';
-import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 
 interface LiquidationExportPreviewModalProps {
   isOpen: boolean;
@@ -73,21 +69,21 @@ export function LiquidationExportPreviewModal({
 
   // Metadata form state
   const [officerName, setOfficerName] = useState(
-    report.preparedBy?.name ||
-    (report as any).employeeName ||
     report.submittedByName ||
+    (report as any).employeeName ||
+    report.preparedBy?.name ||
     report.createdByName ||
     ''
   );
   const [chequeNumber, setChequeNumber] = useState(
-    (report as any).chequeNumber || (report as any).checkNumber || (report.id ? report.id.slice(0, 8).toUpperCase() : '')
+    (report as any).chequeNumber || (report as any).checkNumber || report.disbursementVoucher?.chequeNumber || ''
   );
   const [activityEndDate, setActivityEndDate] = useState('');
   const [submissionDeadline, setSubmissionDeadline] = useState('');
   const [dateSubmitted, setDateSubmitted] = useState('');
   const [dateReleased, setDateReleased] = useState('');
   const [amountAdvanced, setAmountAdvanced] = useState<number>(
-    report.allocatedBudget || (report as any).totalAllocatedBudget || report.totalActualSpending || 0
+    Number((report as any).amountAdvanced ?? report.allocatedBudget ?? (report as any).totalAllocatedBudget ?? 0)
   );
   const [daysLapsed, setDaysLapsed] = useState('-o-');
   const [orNumber, setOrNumber] = useState('');
@@ -97,32 +93,42 @@ export function LiquidationExportPreviewModal({
 
   const [activeTab, setActiveTab] = useState<'preview' | 'metadata'>('preview');
   const [isExporting, setIsExporting] = useState(false);
-  const [isAutoFilled, setIsAutoFilled] = useState(false);
+  const [enrichedReport, setEnrichedReport] = useState<LiquidationDocument>(report);
 
   // Synchronize and auto-fill headers from Report, Event, and Ledger
   useEffect(() => {
     if (!isOpen || !report) return;
 
     let isMounted = true;
+    setEnrichedReport(report);
+
+    enrichLiquidationSignatures(report)
+      .then((withSigs) => {
+        if (isMounted && withSigs) {
+          setEnrichedReport(withSigs);
+        }
+      })
+      .catch(() => {
+        // fallback cleanly to original report
+      });
 
     // 1. Initial direct population from saved liquidation report
     const initialOfficer =
-      report.preparedBy?.name ||
+      report.submittedByName ||
       (report as any).employeeName ||
       (report as any).officerName ||
-      report.submittedByName ||
+      report.preparedBy?.name ||
       report.createdByName ||
       '';
     const initialCheque =
       (report as any).chequeNumber ||
       (report as any).checkNumber ||
+      report.disbursementVoucher?.chequeNumber ||
       '';
     const initialAmount = Number(
-      (report as any).amountAdvanced ||
-      report.allocatedBudget ||
-      (report as any).totalAllocatedBudget ||
-      report.totalActualSpending ||
-      (report as any).totalActualSpent ||
+      (report as any).amountAdvanced ??
+      report.allocatedBudget ??
+      (report as any).totalAllocatedBudget ??
       0
     );
 
@@ -342,8 +348,6 @@ export function LiquidationExportPreviewModal({
             setDateReleased(format(finalReleased, 'MMM d, yyyy'));
           }
         }
-
-        setIsAutoFilled(true);
       } catch (err) {
         console.error('[LiquidationExportPreviewModal] Error fetching event details:', err);
       }
@@ -356,210 +360,45 @@ export function LiquidationExportPreviewModal({
     };
   }, [isOpen, report?.id, report?.eventId]);
 
-  // Handle dynamic Activity End Date change -> auto calculates deadline (+15 days) and lapse
-  const handleActivityEndDateChange = (val: string) => {
-    setActivityEndDate(val);
-    const parsed = parseLocalDate(val);
-    if (parsed) {
-      const newDeadline = new Date(parsed.getTime() + 15 * 24 * 60 * 60 * 1000);
-      const newDeadlineStr = format(newDeadline, 'MMM d, yyyy');
-      setSubmissionDeadline(newDeadlineStr);
+  // Group items matching the official two-sided layout
+  const groupedDisplayCategories = useMemo(
+    () =>
+      groupLiquidationData(report, {
+        amountAdvanced,
+        proposedBaselineCategories: baselineCategories,
+      }),
+    [report, baselineCategories, amountAdvanced]
+  );
 
-      const subParsed = parseLocalDate(dateSubmitted) || new Date();
-      setDaysLapsed(calculateDaysLapse(subParsed, newDeadline));
-    }
-  };
+  const totalCashAdvanceSum = useMemo(
+    () => groupedDisplayCategories.reduce((sum, g) => sum + Number(g.baselineAmount || 0), 0),
+    [groupedDisplayCategories]
+  );
 
-  // Handle dynamic Date Submitted change -> recalculates lapse
-  const handleDateSubmittedChange = (val: string) => {
-    setDateSubmitted(val);
-    const subParsed = parseLocalDate(val);
-    const deadParsed = parseLocalDate(submissionDeadline);
-    if (subParsed && deadParsed) {
-      setDaysLapsed(calculateDaysLapse(subParsed, deadParsed));
-    }
-  };
+  const totalActualSum = useMemo(
+    () =>
+      groupedDisplayCategories.reduce(
+        (sum, g) => sum + g.items.reduce((s, it) => s + Number(it.totalCost || 0), 0),
+        0
+      ),
+    [groupedDisplayCategories]
+  );
 
-  // Reset to auto-calculated STI standards
-  const handleResetToStandard = () => {
-    const parsedEnd = parseLocalDate(activityEndDate);
-    if (parsedEnd) {
-      const standardDeadline = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
-      const deadStr = format(standardDeadline, 'MMM d, yyyy');
-      setSubmissionDeadline(deadStr);
-      const subParsed = parseLocalDate(dateSubmitted) || new Date();
-      setDaysLapsed(calculateDaysLapse(subParsed, standardDeadline));
-      toast.info('Recalculated 15-day deadline and lapse from activity end date.');
-    }
-  };
+  // Resolve official signatories from live report submitter and approvalChain
+  const displaySignatories: StiSignatory[] = useMemo(
+    () =>
+      resolveOfficialSignatories(enrichedReport || report, {
+        officerName,
+        dateSubmitted,
+      }),
+    [enrichedReport, report, officerName, dateSubmitted]
+  );
 
-  // Group items matching the two-sided layout of LIQUIDATION-FORMAT_v1 (2) - Copy.xlsx
-  const groupedDisplayCategories = useMemo(() => {
-    const groups: Array<{
-      categoryTitle: string;
-      baselineAmount: number;
-      items: typeof report.lineItems;
-    }> = [];
-    const assignedIds = new Set<string>();
-
-    if (baselineCategories.length > 0) {
-      baselineCategories.forEach((cat) => {
-        const catTitle = cat.title.trim();
-        const matches = (report.lineItems || []).filter((it, idx) => {
-          const key = it.id || `item_${idx}`;
-          if (assignedIds.has(key)) return false;
-          const match =
-            it.proposedItemId === cat.id ||
-            (it.proposedItemTitle && it.proposedItemTitle.trim().toLowerCase() === catTitle.toLowerCase()) ||
-            (it.category && it.category.trim().toLowerCase() === catTitle.toLowerCase());
-          if (match) {
-            assignedIds.add(key);
-            return true;
-          }
-          return false;
-        });
-
-        groups.push({
-          categoryTitle: catTitle,
-          baselineAmount: Number(cat.baselineAmount || 0),
-          items: matches,
-        });
-      });
-    }
-
-    const unassigned = (report.lineItems || []).filter((it, idx) => !assignedIds.has(it.id || `item_${idx}`));
-    if (unassigned.length > 0) {
-      if (baselineCategories.length === 0) {
-        const dynamicMap = new Map<string, { baselineAmount: number; items: typeof report.lineItems }>();
-        unassigned.forEach((it) => {
-          const name = (it.proposedItemTitle || it.category || 'General Expenses').trim();
-          if (!dynamicMap.has(name)) {
-            dynamicMap.set(name, {
-              baselineAmount: Number(it.proposedBaselineAmount || it.allocatedCost || 0),
-              items: [],
-            });
-          }
-          dynamicMap.get(name)!.items.push(it);
-        });
-        dynamicMap.forEach((val, key) => {
-          groups.push({ categoryTitle: key, baselineAmount: val.baselineAmount, items: val.items });
-        });
-      } else {
-        groups.push({
-          categoryTitle: 'Other / Unplanned Expenses',
-          baselineAmount: 0,
-          items: unassigned,
-        });
-      }
-    }
-
-    if (groups.length === 0) {
-      groups.push({
-        categoryTitle: 'General Expenses',
-        baselineAmount: Number(amountAdvanced || report.allocatedBudget || 0),
-        items: [],
-      });
-    }
-
-    return groups;
-  }, [baselineCategories, report.lineItems, amountAdvanced, report.allocatedBudget]);
-
-  // Resolve official signatories for preview
-  const displaySignatories: StiSignatory[] = useMemo(() => {
-    const chain = report.approvalChain || [];
-    const findSigner = (predicate: (s: any) => boolean) => chain.find(predicate);
-
-    const accountantStep = findSigner(
-      (s) =>
-        s.role === 'accountant' ||
-        s.roleTitle?.toLowerCase().includes('accountant') ||
-        s.actionType === 'check'
-    );
-
-    const supervisorStep = findSigner(
-      (s) =>
-        s.role === 'adviser' ||
-        s.role === 'sas_head' ||
-        s.roleTitle?.toLowerCase().includes('adviser') ||
-        s.roleTitle?.toLowerCase().includes('supervisor')
-    );
-
-    const adminStep = findSigner(
-      (s) =>
-        s.role === 'school_administrator' ||
-        s.roleTitle?.toLowerCase().includes('administrator') ||
-        s.roleTitle?.toLowerCase().includes('principal')
-    );
-
-    const presidentStep = findSigner(
-      (s) =>
-        s.role === 'school_president' ||
-        s.roleTitle?.toLowerCase().includes('president')
-    );
-
-    const formatSignerDate = (step?: any) => {
-      if (!step) return '';
-      const rawDate = step.signedAt || step.approvedAt;
-      return rawDate ? formatAppDate(rawDate, '') : '';
-    };
-
-    const makerRole =
-      report.preparedBy?.roleTitle ||
-      (report.submittedByRole === 'sas_admin' || (report as any).createdByRole === 'sas_admin'
-        ? 'SAS Administrator'
-        : 'Organization Adviser');
-
-    return [
-      {
-        id: 'sig_sub',
-        type: 'Submitted By:',
-        name: officerName,
-        role: `(${makerRole})`,
-        date: dateSubmitted,
-      },
-      {
-        id: 'sig_chk',
-        type: 'Checked By:',
-        name: accountantStep?.signatoryName || 'Emily L. Rojas',
-        role: '(Accountant)',
-        date: formatSignerDate(accountantStep),
-      },
-      {
-        id: 'sig_ind',
-        type: 'Indorsed By:',
-        name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-        role: '(Supervisor)',
-        date: formatSignerDate(supervisorStep),
-      },
-      {
-        id: 'sig_rec',
-        type: 'Recommending Approval:',
-        name: supervisorStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-        role: '(Supervisor)',
-        date: formatSignerDate(supervisorStep),
-      },
-      {
-        id: 'sig_app',
-        type: 'Approved By:',
-        name: adminStep?.signatoryName || 'ENGR. SHEENA JOY MUYUELA',
-        role: '(Administrator)',
-        date: formatSignerDate(adminStep),
-      },
-      {
-        id: 'sig_not',
-        type: 'Noted By:',
-        name: presidentStep?.signatoryName || 'ATTY. ANTONIO R. LUCERO JR.',
-        role: '(President)',
-        date: formatSignerDate(presidentStep),
-      },
-    ];
-  }, [report.approvalChain, officerName, dateSubmitted]);
-
-  // Export Action (Default: Genuine Office Open XML .xlsx)
-  const handleExportXlsx = () => {
+  // Export Action (Genuine Office Open XML .xlsx)
+  const handleExportXlsx = async () => {
     setIsExporting(true);
     try {
-      exportOfficialStiLiquidationExcel(report, {
+      await exportOfficialStiLiquidationExcel(enrichedReport || report, {
         officerName,
         chequeNumber,
         activityEndDate,
@@ -613,6 +452,10 @@ export function LiquidationExportPreviewModal({
     }
   };
 
+  const eventTitleUpper = (report.eventTitle || (report as any).activityTitle || 'Event Activity').toUpperCase();
+  const effectiveAdvance = totalCashAdvanceSum > 0 ? totalCashAdvanceSum : Number(amountAdvanced || 0);
+  const netBalance = Number(amountAdvanced || effectiveAdvance) - totalActualSum;
+
   return (
     <div className="fixed inset-0 z-50 overflow-hidden flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-xs" onClick={onClose} />
@@ -627,7 +470,7 @@ export function LiquidationExportPreviewModal({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-extrabold text-base text-white tracking-tight">
-                  Official STI Liquidation Export Engine
+                  Official STI Financial Liquidation Export
                 </h3>
               </div>
             </div>
@@ -654,163 +497,181 @@ export function LiquidationExportPreviewModal({
                 }`}
             >
               <Eye className="w-3.5 h-3.5" />
-              <span>Template Preview</span>
+              <span>Export Preview</span>
             </button>
           </div>
 
           <div className="flex items-center gap-3 text-xs font-bold">
             <span className="text-gray-500">Total Actual Spent:</span>
             <span className="text-[#001A4D] font-mono text-sm">
-              {formatCurrency(report.totalActualSpending || (report as any).totalActualSpent || 0)}
+              {formatCurrency(totalActualSum)}
             </span>
           </div>
         </div>
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 bg-slate-100/70">
-          {/* TAB 1: CLEAN MONOCHROME STI FORMAT PREVIEW */}
+          {/* CLEAN MONOCHROME STI FORMAT PREVIEW */}
           {activeTab === 'preview' && (
-            <div className="space-y-6 max-w-4xl mx-auto">
-              <div className="bg-white border-2 border-gray-400 rounded-lg shadow-sm p-6 font-sans text-xs space-y-6">
-                {/* 1. Header Section */}
-                <div className="border-b-2 border-black pb-4">
-                  <div className="flex justify-between items-center mb-2">
-                    <h2 className="text-base font-bold text-black uppercase tracking-tight">
-                      LIQUIDATION REPORT FOR {(report.eventTitle || 'Event Activity').toUpperCase()}
-                    </h2>
-                  </div>
+            <div className="space-y-6 max-w-5xl mx-auto">
+              <div
+                className="bg-white border border-gray-400 rounded-lg shadow-sm p-6 text-black space-y-5"
+                style={{ fontFamily: 'Calibri, sans-serif' }}
+              >
+                {/* 1. Header Section (Calibri 12pt Bold Underline Title + Calibri 10pt Bold Underline Fields) */}
+                <div>
+                  <h2 className="text-center text-[15px] font-bold underline text-black uppercase tracking-tight mb-3">
+                    LIQUIDATION REPORT FOR {eventTitleUpper}
+                  </h2>
 
-                  <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 mt-3 text-[11px] text-black">
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Employee Name:</span>
-                      <span>{officerName || '—'}</span>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1 text-[12px] text-black font-bold">
+                    <div className="py-0.5 underline">
+                      Employee Name:&nbsp;&nbsp;&nbsp;{officerName || '—'}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Date Of Activity End:</span>
-                      <span>{activityEndDate || '—'}</span>
+                    <div className="py-0.5 underline">
+                      Date Of Activity End:&nbsp;&nbsp;&nbsp;{activityEndDate || '—'}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Cheque Number:</span>
-                      <span className="font-mono">{chequeNumber || '—'}</span>
+                    <div className="py-0.5 underline">
+                      Cheque Number:&nbsp;&nbsp;&nbsp;{chequeNumber || '—'}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Deadline For The Liquidation Submissions:</span>
-                      <span>{submissionDeadline || '—'}</span>
+                    <div className="py-0.5 underline">
+                      Deadline For The Liquidation Submissions:&nbsp;&nbsp;&nbsp;{submissionDeadline || '—'}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Purpose:</span>
-                      <span>{report.eventTitle}</span>
+                    <div className="py-0.5 underline">
+                      Purpose:&nbsp;&nbsp;&nbsp;{eventTitleUpper}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Date Submitted:</span>
-                      <span>{dateSubmitted || '—'}</span>
+                    <div className="py-0.5 underline">
+                      Date Submitted:&nbsp;&nbsp;&nbsp;{dateSubmitted || '—'}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">Amount:</span>
-                      <span className="font-bold font-mono">{formatCurrency(amountAdvanced)}</span>
+                    <div className="py-0.5 underline">
+                      Amount:&nbsp;&nbsp;&nbsp;{formatCurrency(amountAdvanced)}
                     </div>
-                    <div className="flex justify-between border-b border-gray-200 py-0.5">
-                      <span className="font-bold">No. Of Days Lapse:</span>
-                      <span>{daysLapsed}</span>
+                    <div className="py-0.5 underline">
+                      No. Of Days Lapse:&nbsp;&nbsp;&nbsp;{daysLapsed}
                     </div>
-                    {dateReleased && (
-                      <div className="flex justify-between border-b border-gray-200 py-0.5">
-                        <span className="font-bold">Date Released:</span>
-                        <span>{dateReleased}</span>
-                      </div>
-                    )}
+                    <div className="py-0.5 underline">
+                      Date Released:&nbsp;&nbsp;&nbsp;{dateReleased || '—'}
+                    </div>
                   </div>
                 </div>
 
                 {/* 2. Section Header */}
-                <div className="text-[11px] font-bold text-black uppercase">
-                  CHARGE TO EXPENSE/REFUNDABLE ACCOUNT:
+                <div className="flex items-center gap-3 text-[12px] font-bold text-black uppercase pt-1">
+                  <span className="underline">CHARGE TO EXPENSE/REFUNDABLE ACCOUNT:</span>
+                  <span className="inline-block min-w-[180px] border-b-2 border-black h-4" />
                 </div>
 
-                {/* 3. Expenses Breakdown Table (Monochrome Grid matching original template) */}
-                <div className="border border-black overflow-hidden">
-                  <table className="w-full text-left border-collapse text-[11px]">
+                {/* 3. Expenses Breakdown Table (Exact 7-Column Grid matching STI Template) */}
+                <div className="border-2 border-black overflow-x-auto">
+                  <table className="w-full text-left border-collapse text-[12px]">
                     <thead>
-                      <tr className="bg-white text-black font-bold text-center border-b border-black">
-                        <th className="p-2 border-r border-black w-[24%]">PARTICULAR</th>
-                        <th className="p-2 border-r border-black w-[14%]">AMOUNT</th>
-                        <th colSpan={3} className="p-2 border-r border-black">ACTUAL EXPENSES BREAKDOWN</th>
-                        <th className="p-2 w-[18%]">Remarks/Reference</th>
+                      <tr className="bg-white text-black font-bold text-center">
+                        <th className="px-2 py-1 border-r-2 border-black w-[24%]">PARTICULAR</th>
+                        <th className="px-2 py-1 border-r-2 border-black w-[11%]">AMOUNT</th>
+                        <th colSpan={3} className="px-2 py-1 border-r border-black">
+                          ACTUAL EXPENSES BREAKDOWN
+                        </th>
+                        <th className="px-2 py-1 border-r-2 border-black w-[10%]"></th>
+                        <th className="px-2 py-1 w-[16%]">Remarks/Reference</th>
                       </tr>
-                      <tr className="bg-white text-black font-bold text-[10px] text-center border-b border-black">
-                        <th className="p-1.5 border-r border-black font-normal">Breakdown For Cash Advances</th>
-                        <th className="p-1.5 border-r border-black"></th>
-                        <th className="p-1.5 border-r border-black">Amount</th>
-                        <th className="p-1.5 border-r border-black">Total Amount</th>
-                        <th className="p-1.5 border-r border-black">Variance</th>
-                        <th className="p-1.5"></th>
+                      <tr className="bg-white text-black font-bold text-[11px] text-center border-b-2 border-black">
+                        <th
+                          className="px-2 py-1 border-r-2 border-black font-bold"
+                          style={{ fontFamily: 'Arial, sans-serif' }}
+                        >
+                          Breakdown For Cash Advances
+                        </th>
+                        <th className="px-2 py-1 border-r-2 border-black"></th>
+                        <th className="px-2 py-1 w-[21%]"></th>
+                        <th className="px-2 py-1 w-[9%]">Amount</th>
+                        <th className="px-2 py-1 border-r border-black w-[9%]">Total Amount</th>
+                        <th className="px-2 py-1 border-r-2 border-black">Variance</th>
+                        <th className="px-2 py-1"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-gray-300 font-mono text-[11px]">
+                    <tbody className="divide-y divide-black/70 text-[12px]">
                       {groupedDisplayCategories.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-6 text-center text-gray-400 font-sans">
+                          <td colSpan={7} className="p-6 text-center text-gray-400">
                             No recorded liquidation line items.
                           </td>
                         </tr>
                       ) : (
                         groupedDisplayCategories.map((group, catIdx) => {
                           const letter = String.fromCharCode(65 + catIdx);
-                          const categoryParticular = `${letter}. ${group.categoryTitle}`;
-                          const baseline = group.baselineAmount;
+                          const hasLetterPrefix = /^[A-Za-z]\.\s+/.test(group.categoryTitle);
+                          const categoryParticular = hasLetterPrefix ? group.categoryTitle : `${letter}. ${group.categoryTitle}`;
+                          const baseline = Number(group.baselineAmount || 0);
 
                           if (group.items.length === 0) {
                             return (
-                              <tr key={`cat_${catIdx}`} className="hover:bg-gray-50/50">
-                                <td className="p-1.5 border-r border-black font-sans font-bold text-black">
+                              <tr key={`cat_${catIdx}`} className="border-b border-black/70">
+                                <td className="px-2 py-1.5 border-r border-black font-bold text-black">
                                   {categoryParticular}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black font-mono font-bold">
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
                                   {baseline > 0 ? formatCurrency(baseline) : '—'}
                                 </td>
-                                <td className="p-1.5 border-r border-black font-sans text-gray-400 italic">
+                                <td className="px-2 py-1.5 border-r border-black text-black font-bold">
                                   —
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
                                   ₱0.00
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
-                                  ₱0.00
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
+                                  0.00
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
-                                  {formatCurrency(baseline)}
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black">
+                                  {baseline.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
-                                <td className="p-1.5 text-gray-400 font-sans text-[10px]">—</td>
+                                <td className="px-2 py-1.5 text-black font-bold text-[13px]"></td>
                               </tr>
                             );
                           }
 
+                          const catActualSum = group.items.reduce((s, it) => s + Number(it.totalCost || 0), 0);
+                          const catVariance = baseline - catActualSum;
+
                           return group.items.map((item, itemIdx) => {
                             const isFirst = itemIdx === 0;
-                            const itemCost = Number(item.totalCost || 0);
+                            const hasQtyMultiplier = item.quantity > 1 && item.unitCost > 0;
+                            const displayDesc = hasQtyMultiplier
+                              ? `${item.description} (${item.quantity} x ₱${item.unitCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
+                              : item.description;
+                            const colDVal = hasQtyMultiplier ? item.unitCost : item.totalCost;
 
                             return (
-                              <tr key={item.id || `${catIdx}_${itemIdx}`} className="hover:bg-gray-50/50">
-                                <td className="p-1.5 border-r border-black font-sans font-bold text-black">
+                              <tr key={item.id || `${catIdx}_${itemIdx}`} className="border-b border-black/70">
+                                <td className="px-2 py-1.5 border-r border-black font-bold text-black">
                                   {isFirst ? categoryParticular : ''}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black font-mono font-bold">
-                                  {isFirst ? (baseline > 0 ? formatCurrency(baseline) : '—') : ''}
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
+                                  {isFirst ? (baseline > 0 ? formatCurrency(baseline) : '') : ''}
                                 </td>
-                                <td className="p-1.5 border-r border-black font-sans text-black">
-                                  {item.description || item.vendorName || '—'}
+                                <td
+                                  className={`px-2 py-1.5 border-r border-black text-black ${
+                                    isFirst ? 'font-bold' : 'font-bold italic'
+                                  }`}
+                                >
+                                  {displayDesc}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
-                                  {formatCurrency(itemCost)}
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
+                                  {formatCurrency(colDVal)}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-black font-mono">
-                                  {formatCurrency(itemCost)}
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black font-bold">
+                                  {item.totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </td>
-                                <td className="p-1.5 border-r border-black text-right text-gray-400 font-mono">
-                                  -
+                                <td className="px-2 py-1.5 border-r border-black text-right text-black">
+                                  {isFirst
+                                    ? catVariance < 0
+                                      ? `(${Math.abs(catVariance).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
+                                      : catVariance === 0
+                                        ? '-'
+                                        : catVariance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                                    : ''}
                                 </td>
-                                <td className="p-1.5 text-black font-sans text-[10px]">
-                                  {item.receiptNumber ? `OR #${item.receiptNumber}` : (item.vendorName || '—')}
+                                <td className="px-2 py-1.5 text-black font-bold text-[13px]">
+                                  {item.receiptNumber ? `OR #${item.receiptNumber}` : (item.vendorName || '')}
                                 </td>
                               </tr>
                             );
@@ -818,68 +679,97 @@ export function LiquidationExportPreviewModal({
                         })
                       )}
 
-                      {/* Totals Row */}
-                      <tr className="bg-white font-bold border-t-2 border-black text-black">
-                        <td className="p-2 border-r border-black font-sans">Total Cash Advance</td>
-                        <td className="p-2 border-r border-black text-right font-mono">
-                          {formatCurrency(amountAdvanced)}
+                      {/* Totals Row (7 aligned columns) */}
+                      <tr className="bg-white font-bold border-t border-black text-black">
+                        <td className="px-2 py-1.5 border-r border-black text-right font-bold italic">
+                          Total Cash Advance
                         </td>
-                        <td className="p-2 border-r border-black font-sans">Total Actual Expense</td>
-                        <td className="p-2 border-r border-black text-right font-mono">
-                          {formatCurrency(report.totalActualSpending || (report as any).totalActualSpent || 0)}
+                        <td className="px-2 py-1.5 border-r border-black text-right font-bold underline">
+                          {formatCurrency(totalCashAdvanceSum)}
                         </td>
-                        <td className="p-2 border-r border-black text-right font-mono">
-                          {formatCurrency(amountAdvanced - (report.totalActualSpending || (report as any).totalActualSpent || 0))}
+                        <td className="px-2 py-1.5 border-r border-black text-right font-bold italic">
+                          Total Actual Expense
                         </td>
-                        <td className="p-2 font-sans text-xs">—</td>
+                        <td className="px-2 py-1.5 border-r border-black"></td>
+                        <td className="px-2 py-1.5 border-r border-black text-right font-bold underline">
+                          {totalActualSum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-2 py-1.5 border-r border-black text-right font-bold underline">
+                          {formatCurrency(totalCashAdvanceSum - totalActualSum)}
+                        </td>
+                        <td className="px-2 py-1.5"></td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
 
                 {/* 4. Balance Summary Note Block */}
-                <div className="bg-white p-4 border border-black space-y-1 text-[11px] text-black">
-                  <div className="font-bold mb-1">Note: </div>
-                  <div className="flex justify-between w-72">
-                    <span className="font-medium">Amount Advanced:</span>
-                    <span className="font-mono font-bold">{formatCurrency(amountAdvanced)}</span>
-                  </div>
-                  <div className="flex justify-between w-72">
-                    <span className="font-medium">Total Actual Expense:</span>
-                    <span className="font-mono font-bold">
-                      {formatCurrency(report.totalActualSpending || (report as any).totalActualSpent || 0)}
+                <div className="pt-2 space-y-1 text-[12px] text-black">
+                  <div>Note:</div>
+                  <div className="flex items-center gap-4">
+                    <span className="font-bold text-right w-52">Amount Advanced:</span>
+                    <span className="font-bold text-right w-28">
+                      {formatCurrency(Number(amountAdvanced || effectiveAdvance))}
                     </span>
                   </div>
-                  <div className="flex justify-between w-72 pt-1 border-t border-black">
-                    <span className="font-bold">Balance: </span>
-                    <span className="font-mono font-bold underline">
-                      {formatCurrency(amountAdvanced - (report.totalActualSpending || (report as any).totalActualSpent || 0))}
+                  <div className="flex items-center gap-4">
+                    <span className="font-bold text-right w-52">Total Actual Expense</span>
+                    <span className="font-bold text-right w-28 border-b border-black pb-0.5">
+                      {totalActualSum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </span>
                   </div>
-                  {orNumber && (
-                    <div className="text-[10px] pt-1">
-                      OR NO: <strong>{orNumber}</strong>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-4">
+                    <span className="font-bold text-right w-52">Balance:</span>
+                    <span className="font-bold text-center w-28 border-t border-black border-b-4 border-double py-0.5">
+                      {formatCurrency(netBalance)}
+                    </span>
+                    <span
+                      className="font-bold italic text-[10px] pl-2"
+                      style={{ fontFamily: 'Arial, sans-serif' }}
+                    >
+                      OR NO: {orNumber}
+                    </span>
+                  </div>
                 </div>
 
-                {/* 5. Official Signatories Block matching Rows 55-76 */}
-                <div className="bg-white p-4 border border-black space-y-3 text-[11px] text-black">
-                  <div className="font-bold uppercase tracking-wider text-[10px] text-gray-500 border-b border-gray-200 pb-1">
-                    Official Signatory &amp; Audit Endorsements
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 pt-1">
-                    {displaySignatories.map((sig, sIdx) => (
-                      <div key={sig.id || sIdx} className="space-y-0.5">
-                        <span className="font-bold text-gray-800 text-[10px] uppercase block">{sig.type}</span>
-                        <div className="border-b border-black pb-0.5 flex justify-between items-end">
-                          <span className="font-bold text-black text-xs">{sig.name || '—'}</span>
-                          <span className="text-[10px] text-gray-600 font-mono">{sig.date || '(Date)'}</span>
+                {/* 5. Official Signatories Block matching Rows 51-76 (Arial 10pt) */}
+                <div
+                  className="pt-4 space-y-5 text-[12px] text-black"
+                  style={{ fontFamily: 'Arial, sans-serif' }}
+                >
+                  {displaySignatories.map((sig, sIdx) => {
+                    const isNoted = sig.type.toLowerCase().includes('noted');
+                    return (
+                      <div key={sig.id || sIdx} className="grid grid-cols-12 items-end gap-x-4">
+                        <div className="col-span-4 text-left pb-5">{sig.type}</div>
+                        <div className="col-span-5 text-center">
+                          {sig.signatureUrl && (
+                            <div className="flex justify-center mb-0.5">
+                              <img
+                                src={sig.signatureUrl}
+                                alt={`${sig.name || sig.type} signature`}
+                                className="h-9 max-w-[140px] object-contain"
+                              />
+                            </div>
+                          )}
+                          <div
+                            className={`border-b-2 border-black min-h-[20px] px-2 ${
+                              isNoted ? 'font-bold' : 'font-normal'
+                            }`}
+                          >
+                            {sig.name || ''}
+                          </div>
+                          <div className="italic pt-0.5">{sig.role}</div>
                         </div>
-                        <div className="text-[10px] text-gray-500">{sig.role}</div>
+                        <div className="col-span-3 text-center">
+                          <div className="border-b-2 border-black min-h-[20px] px-2">
+                            {sig.date || ''}
+                          </div>
+                          <div className="italic pt-0.5">(Date)</div>
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

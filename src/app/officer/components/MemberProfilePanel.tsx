@@ -22,6 +22,7 @@ import {
   Search,
   Maximize2,
   Shield,
+  CalendarClock,
 } from 'lucide-react';
 import { collection, query, where, onSnapshot, collectionGroup, limit } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -32,7 +33,10 @@ import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { formatCurrency } from '../../utils/currency';
 import { formatAppDate, formatAppDateTime } from '../../utils/date';
 import type { PayableDocument } from '../../modules/finance/types/payable.types';
-import { updateMemberStatus } from '../../modules/organizations/services/member.service';
+import {
+  cancelScheduledMemberRemoval,
+  updateMemberStatus,
+} from '../../modules/organizations/services/member.service';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
@@ -415,8 +419,16 @@ export function MemberProfilePanel({
                 )}
 
                 {member.status !== 'active' && (
-                  <span className="px-2 py-0.5 bg-red-500 text-white text-[10px] font-bold rounded-full uppercase">
-                    {member.status}
+                  <span
+                    className={`px-2 py-0.5 text-white text-[10px] font-bold rounded-full uppercase ${
+                      member.status === 'pending_removal' ? 'bg-amber-500' : 'bg-red-500'
+                    }`}
+                  >
+                    {member.status === 'pending_removal'
+                      ? 'Removal Scheduled'
+                      : member.status === 'removed'
+                      ? 'Removed from Club'
+                      : member.status}
                   </span>
                 )}
               </div>
@@ -439,6 +451,29 @@ export function MemberProfilePanel({
           <div className="p-3 bg-green-50 border-b border-green-200 flex items-center gap-2 text-xs font-semibold text-green-800 animate-in fade-in flex-shrink-0">
             <CheckCircle2 className="w-4 h-4 text-green-600 flex-shrink-0" />
             <span>{actionFeedback}</span>
+          </div>
+        )}
+
+        {/* Scheduled Removal / Removed Club Notice */}
+        {member.status === 'pending_removal' && (
+          <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-start gap-2.5 text-xs text-amber-950 flex-shrink-0">
+            <CalendarClock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <span>
+              <strong>Scheduled Removal:</strong> Remains a club member until{' '}
+              <strong>
+                {member.scheduledRemovalActivityTitles?.join(', ') || 'upcoming activity'}
+              </strong>{' '}
+              ends. Excluded from new club activities; existing dues and fines remain saved.
+            </span>
+          </div>
+        )}
+        {member.status === 'removed' && (
+          <div className="px-6 py-3 bg-red-50 border-b border-red-200 flex items-start gap-2.5 text-xs text-red-900 flex-shrink-0">
+            <UserMinus className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <span>
+              <strong>Removed from Club:</strong> This student has no access to club activities.
+              Member records and existing dues/fines remain preserved.
+            </span>
           </div>
         )}
 
@@ -728,10 +763,18 @@ export function MemberProfilePanel({
                     <span className="text-gray-500">Membership Status</span>
                     <span
                       className={`font-bold uppercase ${
-                        member.status === 'active' ? 'text-green-700' : 'text-red-600'
+                        member.status === 'active'
+                          ? 'text-green-700'
+                          : member.status === 'pending_removal'
+                          ? 'text-amber-700'
+                          : 'text-red-600'
                       }`}
                     >
-                      {member.status}
+                      {member.status === 'pending_removal'
+                        ? 'Removal Scheduled'
+                        : member.status === 'removed'
+                        ? 'Removed from Club'
+                        : member.status}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-gray-200">
@@ -811,21 +854,32 @@ export function MemberProfilePanel({
                           const scanTime = att.scannedAt
                             ? formatAppDateTime(att.scannedAt)
                             : att.checkIn || 'Logged';
+                          const statusLabel = att.status || 'Present';
+                          const statusLower = statusLabel.toLowerCase();
+                          const isAbsent = statusLower === 'absent' || statusLower === 'missed';
+                          const isLate = statusLower === 'late' || statusLower === 'flagged';
+                          const statusBadgeClass = isAbsent
+                            ? 'bg-red-100 text-red-700'
+                            : isLate
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-green-100 text-green-800';
 
                           return (
                             <tr key={att.id} className="hover:bg-gray-50 transition-colors">
                               <td className="px-5 py-3 font-semibold text-[#001A4D]">
                                 {att.eventName || att.event || 'Campus Event'}
                               </td>
-                              <td className="px-5 py-3 font-mono text-gray-600">{scanTime}</td>
+                              <td className={`px-5 py-3 font-mono ${isAbsent ? 'text-red-600 font-semibold' : 'text-gray-600'}`}>
+                                {scanTime}
+                              </td>
                               <td className="px-5 py-3">
                                 <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-[11px] font-medium uppercase">
                                   {att.gateType || 'Time In'}
                                 </span>
                               </td>
                               <td className="px-5 py-3 text-center">
-                                <span className="px-2.5 py-0.5 bg-green-100 text-green-800 rounded-full font-bold text-[10px]">
-                                  {att.status || 'Present'}
+                                <span className={`px-2.5 py-0.5 rounded-full font-bold text-[10px] ${statusBadgeClass}`}>
+                                  {statusLabel}
                                 </span>
                               </td>
                             </tr>
@@ -843,7 +897,35 @@ export function MemberProfilePanel({
         {/* Modal Footer Actions */}
         <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-wrap items-center justify-between gap-3 flex-shrink-0">
           <div className="flex items-center gap-2">
-            {member.status !== 'active' && (
+            {member.status === 'pending_removal' && (
+              <button
+                onClick={async () => {
+                  setIsUpdatingStatus(true);
+                  try {
+                    await cancelScheduledMemberRemoval(member.id);
+                    setActionFeedback(
+                      `Cancelled scheduled removal for ${fullNameWithMiddle}. Membership is fully Active again.`
+                    );
+                    setTimeout(() => setActionFeedback(null), 4000);
+                  } catch (err: any) {
+                    alert(`Failed to cancel scheduled removal: ${err?.message || 'Error'}`);
+                  } finally {
+                    setIsUpdatingStatus(false);
+                  }
+                }}
+                disabled={isUpdatingStatus}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs disabled:opacity-50"
+              >
+                {isUpdatingStatus ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RotateCcw className="w-3.5 h-3.5" />
+                )}
+                Cancel Scheduled Removal
+              </button>
+            )}
+
+            {member.status !== 'active' && member.status !== 'pending_removal' && (
               <button
                 onClick={handleReactivate}
                 disabled={isUpdatingStatus}
@@ -854,7 +936,7 @@ export function MemberProfilePanel({
                 ) : (
                   <UserCheck className="w-3.5 h-3.5 text-[#FFD41C]" />
                 )}
-                Reactivate Member
+                {member.status === 'removed' ? 'Restore to Club' : 'Reactivate Member'}
               </button>
             )}
 

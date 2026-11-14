@@ -8,6 +8,7 @@ import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { validateWizardStep, validateStep7 } from '../../modules/events/utils/event-validation';
 import { isEventEditable, canWithdrawProposal, isMajorFieldLocked } from '../../modules/events/utils/event-lifecycle.utils';
 import { withdrawProposal } from '../../modules/events/services/event.service';
+import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import type { EventDocument, EventFormData } from '../../modules/events/types/event.types';
 
 import Step1EventDetails from '../../modules/events/components/wizard/Step1EventDetails';
@@ -238,14 +239,15 @@ export default function OfficerEventProposalModal({ isOpen, onClose, initialDraf
   const isRestricted = Boolean(initialDraft && editCheck.lockLevel === 'restricted');
   const canWithdraw = Boolean(initialDraft && canWithdrawProposal(initialDraft, 'officer', profile?.uid, activeOrgId).canWithdraw);
   const [withdrawing, setWithdrawing] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
 
-  const handleWithdraw = async () => {
+  const handleWithdraw = () => {
     if (!initialDraft?.id || !profile) return;
-    const confirmWithdraw = window.confirm(
-      'Are you sure you want to withdraw this proposal? It will return to Draft status so you can make revisions before SAO reviews it.'
-    );
-    if (!confirmWithdraw) return;
+    setShowWithdrawModal(true);
+  };
 
+  const confirmWithdrawExecution = async () => {
+    if (!initialDraft?.id || !profile) return;
     setWithdrawing(true);
     try {
       await withdrawProposal(initialDraft.id, profile.uid, profile.studentName);
@@ -253,6 +255,7 @@ export default function OfficerEventProposalModal({ isOpen, onClose, initialDraf
         description: 'The proposal is now back in Draft status. You can edit and re-submit it anytime.',
         duration: 5000,
       });
+      setShowWithdrawModal(false);
       onClose();
     } catch (err: any) {
       toast.error('Failed to withdraw proposal', {
@@ -716,6 +719,14 @@ export default function OfficerEventProposalModal({ isOpen, onClose, initialDraf
           </div>
         </div>
       </div>
+
+      <WithdrawConfirmModal
+        isOpen={showWithdrawModal}
+        onClose={() => setShowWithdrawModal(false)}
+        onConfirm={confirmWithdrawExecution}
+        documentTitle={initialDraft?.title}
+        documentTypeLabel="Activity Proposal"
+      />
     </div>
   );
 }

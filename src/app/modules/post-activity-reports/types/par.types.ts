@@ -104,21 +104,22 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   proposalObjectives?: string[];
   proposalSuccessIndicators?: string[];
 
-  // ─── Section 2: Attendance Verification (Auto-Populated from Attendance Logs) ───
+  // ─── Section 2: Attendance (Auto-Populated from Attendance Logs & Proposal) ───
   attendanceSummary: {
     registeredCount: number;
     estimatedAttendance?: number;
+    estimatedAttendanceLabel?: string;
     attendedCount: number;
     turnoutRate?: number; // e.g. 93 (percent)
     targetAudience: string;
-    whoAttended: string; // e.g., "BSIT all year levels"
-    howManyAttended?: string; // e.g., "112 / 120 Expected Attendees (93% Turnout)"
+    whoAttended: string; // e.g., "BSIT all year level"
+    howManyAttended?: string; // e.g., "112 / 120 Attendees (93% Turnout)"
     attendanceMonitoringUsed?: boolean;
     attendanceListUrl?: string;
     attendanceListName?: string;
   };
 
-  // ─── Section 3: Financial Report (Copied from Actual Financial Liquidation LF-01) ───
+  // ─── Section 3: Financial Report (Copied from Financial Liquidation) ───
   financialSummary: {
     totalRevenue: number;
     totalDisbursed: number;
@@ -162,9 +163,19 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
     participantPreparedness: { observations: string; recommendations: string };
   };
 
-  // ─── Section 6: Photo Documentation Gallery ───
+  // ─── Section 6: Photos & Official Attachments Checklist (VIII. Attachments) ───
   photos: PARPhotoAttachment[];
+  supportingDocuments?: PARAttachmentFile[];
   evaluationSummaryUrl?: string;
+  attachmentsChecklist?: {
+    attendanceSheet?: boolean;
+    photosOfActivity?: boolean;
+    programInvitation?: boolean;
+    feedbackSummary?: boolean;
+    feedbackEvaluationSummary?: boolean;
+    certificatesLetters?: boolean;
+    copiesOfCertificatesLetters?: boolean;
+  };
 
   // ─── Section 7: Signatories & Endorsement Pipeline ───
   preparedBy: {
@@ -173,6 +184,7 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
     signatureUrl?: string;
     signedAt?: any;
   };
+  submittedBySignatureUrl?: string;
   approvalChain?: PARApprovalStep[];
   currentStageIndex?: number;
   currentStepIndex?: number;
@@ -214,8 +226,8 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
 export type PARFormData = Partial<PostActivityReportDocument>;
 
 export const PAR_SECTIONS_FOR_REVISION = [
-  { id: 'overview', key: 'overview', stepNumber: 1, label: '1. Event & Clearance Summary', description: 'Linked event details, target audience & attendance summary' },
-  { id: 'objectives', key: 'objectives', stepNumber: 2, label: '2. Results of the Activity', description: 'Achievement of objectives, key learnings, curriculum enrichment, venue, logistics, schedule, and issues' },
-  { id: 'recommendations', key: 'recommendations', stepNumber: 3, label: '3. Remarks', description: 'Program flow, participant engagement, technical setup, and participant preparedness remarks' },
-  { id: 'photos_signatories', key: 'photos_signatories', stepNumber: 4, label: '4. Photos & Pipeline', description: 'Activity documentation photos and institutional signatory endorsement route' },
+  { id: 'overview', key: 'overview', stepNumber: 1, label: '1. Activity Details, Attendance & Financial Report', description: 'Activity title, description, organizer/s, mechanics, materials, attendance, marketing, documentation, date & time, venue, and financial report' },
+  { id: 'objectives', key: 'objectives', stepNumber: 2, label: '2. Results of the Activity', description: 'Achievement of objectives, key learnings, classroom enrichment, venue selection, food/logistics, schedule compliance, and issues encountered' },
+  { id: 'recommendations', key: 'recommendations', stepNumber: 3, label: '3. Remarks & Attachments', description: 'Observations and recommendations for future activity improvements and attachments checklist' },
+  { id: 'photos_signatories', key: 'photos_signatories', stepNumber: 4, label: '4. Documentation & Signatories', description: 'Photos of activity and signatory pipeline (Prepared by / Noted by)' },
 ];

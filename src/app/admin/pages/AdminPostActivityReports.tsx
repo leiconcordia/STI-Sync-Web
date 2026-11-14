@@ -34,25 +34,47 @@ import { formatCurrency, formatVariance } from '../../utils/currency';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
+import {
+  getCachedSasSignatoryConfig,
+  subscribeToSasSignatoryConfig,
+  type SasSignatoryConfig,
+} from '../../modules/signatories/services/sas-signatory.service';
 import { toast } from 'sonner';
 
 type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'sas_internal' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 export default function AdminPostActivityReports() {
-  // Session / Profile
-  const [session] = useState(() => {
-    try {
-      const raw = localStorage.getItem('sti_sync_admin_session');
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  });
+  const { profile: adminProfile, user: firebaseUser } = useAdviserProfile();
+  const [sasConfig, setSasConfig] = useState<SasSignatoryConfig>(() => getCachedSasSignatoryConfig());
 
-  const adminUid = session?.uid || 'sas_admin_user';
-  const adminName = session?.name || 'Student Affairs Services';
-  const adminEmail = session?.email || 'sas@ormoc.sti.edu.ph';
+  useEffect(() => {
+    const unsub = subscribeToSasSignatoryConfig((cfg) => {
+      setSasConfig(cfg);
+    });
+    return () => unsub();
+  }, []);
+
+  const adminUid = adminProfile?.uid || firebaseUser?.uid || 'sas_admin_user';
+  const adminName =
+    adminProfile?.displayName ||
+    [adminProfile?.firstName, adminProfile?.lastName].filter(Boolean).join(' ').trim() ||
+    firebaseUser?.displayName ||
+    sasConfig.name ||
+    'Student Affairs Services';
+  const adminEmail = adminProfile?.email || firebaseUser?.email || sasConfig.email || 'sas@ormoc.sti.edu.ph';
+  const adminRoleTitle =
+    adminProfile?.signatoryRoleTitle ||
+    adminProfile?.position ||
+    sasConfig.roleTitle ||
+    'SAS Administrator';
+  const adminSignatureUrl =
+    adminProfile?.signatureUrl ||
+    adminProfile?.signatureDataUrl ||
+    sasConfig.signatureUrl ||
+    sasConfig.signatureDataUrl ||
+    null;
 
   // Streams
   const { pars, loading: parsLoading } = useAdminPARs();
@@ -653,9 +675,10 @@ export default function AdminPostActivityReports() {
           name: adminName,
           email: adminEmail,
           role: 'admin',
+          roleTitle: adminRoleTitle,
           organizationId: 'sao_admin',
           organizationName: 'Student Affairs Services (SAS)',
-          signatureUrl: session?.signatureUrl || session?.signatureDataUrl || null,
+          signatureUrl: adminSignatureUrl,
         }}
         isSasAdmin={true}
       />

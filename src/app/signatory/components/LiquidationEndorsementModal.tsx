@@ -62,7 +62,7 @@ import {
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
-import { formatAppDateTime } from '../../utils/date';
+import { formatLongDate, formatLongDateTime } from '../../utils/date';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
 
@@ -74,6 +74,7 @@ interface LiquidationEndorsementModalProps {
   onOpenSignaturePad: () => void;
   onLiquidationUpdated?: () => void;
   readOnly?: boolean;
+  zIndexClass?: string;
 }
 
 function normalizeItemAttachments(item: ExpenseLineItem | undefined): ReceiptAttachment[] {
@@ -110,6 +111,7 @@ export default function LiquidationEndorsementModal({
   onOpenSignaturePad,
   onLiquidationUpdated,
   readOnly = false,
+  zIndexClass = 'z-50',
 }: LiquidationEndorsementModalProps) {
   const [selectedItemIndex, setSelectedItemIndex] = useState(0);
   const [viewingDisbursementVoucher, setViewingDisbursementVoucher] = useState(false);
@@ -611,7 +613,7 @@ export default function LiquidationEndorsementModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950/80 backdrop-blur-xs overflow-hidden">
+    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center p-2 sm:p-4 bg-slate-950/80 backdrop-blur-xs overflow-hidden`}>
       <div className="relative w-full max-w-[1440px] h-[95vh] bg-white rounded-3xl shadow-2xl border border-slate-300 overflow-hidden flex flex-col">
         {/* ── TOP HEADER BAR ── */}
         <div className="bg-[#001A4D] text-white px-6 py-3.5 flex items-center justify-between flex-shrink-0 border-b border-blue-900/60">
@@ -780,7 +782,7 @@ export default function LiquidationEndorsementModal({
                       </h4>
                       <p className="text-[10px] text-slate-500">
                         Uploaded by <strong>{activeVoucher.uploadedByName}</strong> ({activeVoucher.uploadedByRole?.toUpperCase()})
-                        {activeVoucher.uploadedAt ? ` on ${formatAppDateTime(activeVoucher.uploadedAt)}` : ''}
+                        {activeVoucher.uploadedAt ? ` on ${formatLongDateTime(activeVoucher.uploadedAt)}` : ''}
                       </p>
                     </div>
                   </div>
@@ -821,7 +823,7 @@ export default function LiquidationEndorsementModal({
                   </div>
                   <div className="bg-white/80 p-2 rounded-xl border border-emerald-200/60">
                     <span className="text-[10px] text-slate-500 block font-sans">Date Released</span>
-                    <strong className="text-slate-900">{activeVoucher.disbursementDate || liquidation.dateReleased || 'N/A'}</strong>
+                    <strong className="text-slate-900">{formatLongDate(activeVoucher.disbursementDate || liquidation.dateReleased, 'N/A')}</strong>
                   </div>
                   <div className="bg-white/80 p-2 rounded-xl border border-emerald-200/60">
                     <span className="text-[10px] text-slate-500 block font-sans">Amount Disbursed</span>
@@ -1094,6 +1096,12 @@ export default function LiquidationEndorsementModal({
                                       ✏️ Revised
                                     </span>
                                   )}
+                                  {item.isLostReceipt && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 bg-amber-100 text-amber-900 rounded border border-amber-300">
+                                      <AlertTriangle className="w-3 h-3 text-amber-700" />
+                                      Lost Receipt (Substitute Proof)
+                                    </span>
+                                  )}
                                 </div>
 
                                 <div className="text-[11px] text-slate-500 mt-1 flex items-center gap-2 flex-wrap">
@@ -1109,6 +1117,12 @@ export default function LiquidationEndorsementModal({
                                     </>
                                   )}
                                 </div>
+
+                                {item.isLostReceipt && item.lostReceiptReason && (
+                                  <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-950 leading-snug">
+                                    <strong className="text-amber-900">Lost Receipt Reason:</strong> {item.lostReceiptReason}
+                                  </div>
+                                )}
 
                                 {item.allocatedCost !== undefined && item.allocatedCost > 0 && (
                                   <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-2">
@@ -1137,9 +1151,17 @@ export default function LiquidationEndorsementModal({
                               </span>
 
                               {hasReceipt ? (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                  {itemFiles.length} Receipt{itemFiles.length === 1 ? '' : 's'}
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                                    item.isLostReceipt
+                                      ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                      : 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                  }`}
+                                >
+                                  <CheckCircle2 className={`w-3 h-3 ${item.isLostReceipt ? 'text-amber-700' : 'text-emerald-600'}`} />
+                                  {item.isLostReceipt
+                                    ? `${itemFiles.length} Affidavit / Proof${itemFiles.length === 1 ? '' : 's'}`
+                                    : `${itemFiles.length} Receipt${itemFiles.length === 1 ? '' : 's'}`}
                                 </span>
                               ) : (
                                 <button
@@ -1207,7 +1229,7 @@ export default function LiquidationEndorsementModal({
                           {rem.authorName} ({rem.authorRole})
                         </span>
                         <span className="text-[10px] text-slate-400 font-mono">
-                          {formatAppDateTime(rem.timestamp)}
+                          {formatLongDateTime(rem.timestamp)}
                         </span>
                       </div>
                       <p className="text-slate-800 font-normal">{rem.comment}</p>
@@ -1348,7 +1370,7 @@ export default function LiquidationEndorsementModal({
                     </div>
                     <div className="text-[11px] text-slate-400 flex items-center gap-2">
                       <span>Check: <strong className="text-white">{activeVoucher.chequeNumber || 'N/A'}</strong></span>
-                      <span>• Date: <strong className="text-white">{activeVoucher.disbursementDate || 'N/A'}</strong></span>
+                      <span>• Date: <strong className="text-white">{formatLongDate(activeVoucher.disbursementDate, 'N/A')}</strong></span>
                     </div>
                   </div>
                   <button
@@ -1362,16 +1384,29 @@ export default function LiquidationEndorsementModal({
               ) : null}
 
               <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 space-y-1">
-                <div className="text-xs font-bold text-white truncate flex items-center gap-1.5">
-                  <span className="w-5 h-5 rounded-md bg-[#0E4EBD] text-white font-mono text-[10px] flex items-center justify-center shrink-0">
-                    #{selectedItemIndex + 1}
-                  </span>
-                  <span className="truncate">{selectedItem?.description || 'No item selected'}</span>
+                <div className="text-xs font-bold text-white truncate flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-5 h-5 rounded-md bg-[#0E4EBD] text-white font-mono text-[10px] flex items-center justify-center shrink-0">
+                      #{selectedItemIndex + 1}
+                    </span>
+                    <span className="truncate">{selectedItem?.description || 'No item selected'}</span>
+                  </div>
+                  {selectedItem?.isLostReceipt && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold shrink-0">
+                      <AlertTriangle className="w-3 h-3" />
+                      Lost Receipt
+                    </span>
+                  )}
                 </div>
                 <div className="text-[11px] text-slate-400 flex items-center justify-between gap-2">
                   <span>Vendor: <strong className="text-slate-200">{selectedItem?.vendorName || 'Not specified'}</strong></span>
                   <span className="font-mono">Ref OR: <strong className="text-slate-200">{selectedItem?.receiptNumber || 'None'}</strong></span>
                 </div>
+                {selectedItem?.isLostReceipt && selectedItem?.lostReceiptReason && (
+                  <div className="mt-1 px-2 py-1 rounded bg-amber-950/60 border border-amber-700/50 text-[11px] text-amber-200 leading-snug">
+                    <strong className="text-amber-300">Affidavit / Justification:</strong> {selectedItem.lostReceiptReason}
+                  </div>
+                )}
               </div>
 
               {/* Multiple Attachments Switcher Tabs */}

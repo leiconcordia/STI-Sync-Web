@@ -13,6 +13,66 @@ import type {
 } from '../types/proposal.types';
 
 /**
+ * Warning message shown when projected revenue is lower than projected expenses.
+ */
+export const PROJECTED_REVENUE_DEFICIT_WARNING =
+  'Projected revenue cannot be less than total expenses. Please add a funding source (e.g., Org Funds or Student Miscellaneous) or reduce expenses.';
+
+/**
+ * Compute authoritative Total Revenue, Total Expenses, Projected Balance, and whether
+ * projected revenue falls short of total expenses (Balance < 0).
+ */
+export function checkProjectedBalance(
+  financialProjections?: Partial<FinancialProjections> | null,
+  fundingSource?: string | null
+): {
+  totalRevenue: number;
+  totalExpenses: number;
+  balance: number;
+  isDeficit: boolean;
+} {
+  const revItems = Array.isArray(financialProjections?.revenues)
+    ? financialProjections.revenues
+    : [];
+  const rawExpItems = Array.isArray(financialProjections?.expenses)
+    ? financialProjections.expenses
+    : Array.isArray((financialProjections as any)?.expenditures)
+    ? (financialProjections as any).expenditures
+    : [];
+
+  const totalRevenue =
+    revItems.length > 0
+      ? revItems.reduce(
+          (sum: number, item: any) =>
+            sum + (Number(item?.totalAmount ?? item?.thisYearProposed) || 0),
+          0
+        )
+      : Number(financialProjections?.totalRevenue || 0);
+
+  const totalExpenses =
+    rawExpItems.length > 0
+      ? rawExpItems.reduce(
+          (sum: number, item: any) =>
+            sum + (Number(item?.totalAmount ?? item?.thisYearProposed) || 0),
+          0
+        )
+      : Number(financialProjections?.totalExpenses || 0);
+
+  const roundedRev = Math.round(totalRevenue * 100) / 100;
+  const roundedExp = Math.round(totalExpenses * 100) / 100;
+  const balance = Math.round((roundedRev - roundedExp) * 100) / 100;
+  const isDeficit =
+    fundingSource === 'zero_budget' ? roundedExp > 0 && balance < 0 : balance < 0;
+
+  return {
+    totalRevenue: roundedRev,
+    totalExpenses: roundedExp,
+    balance,
+    isDeficit,
+  };
+}
+
+/**
  * Recalculate line totals and balance for the formal 6-column STI financial matrix
  */
 export function calculateFinancialTotals(

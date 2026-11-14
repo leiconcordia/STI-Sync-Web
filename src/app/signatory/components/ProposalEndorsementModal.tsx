@@ -39,6 +39,7 @@ import {
   rejectProposal,
 } from '../../modules/activity-proposals/services/proposal.service';
 import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calculations';
+import { formatLongDate } from '../../utils/date';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionDiffViewerModal';
@@ -65,6 +66,7 @@ interface ProposalEndorsementModalProps {
   onOpenSignaturePad: () => void;
   onProposalUpdated?: () => void;
   readOnly?: boolean;
+  zIndexClass?: string;
 }
 
 export default function ProposalEndorsementModal({
@@ -75,6 +77,7 @@ export default function ProposalEndorsementModal({
   onOpenSignaturePad,
   onProposalUpdated,
   readOnly = false,
+  zIndexClass = 'z-50',
 }: ProposalEndorsementModalProps) {
   const [returnRemarks, setReturnRemarks] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
@@ -378,7 +381,7 @@ export default function ProposalEndorsementModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
+    <div className={`fixed inset-0 ${zIndexClass} flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs overflow-y-auto`}>
       <div className="relative w-full max-w-5xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]">
         {/* ── HEADER ── */}
         <div className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between flex-shrink-0">
@@ -646,7 +649,7 @@ export default function ProposalEndorsementModal({
               <div>
                 <span className="text-slate-400 block text-[10px] uppercase font-bold">Date</span>
                 <span className="font-semibold text-slate-800">
-                  {proposal.date || proposal.sessions?.[0]?.date || 'Date TBD'}
+                  {formatLongDate(proposal.date || proposal.sessions?.[0]?.date, 'Date TBD')}
                 </span>
               </div>
               <div>
@@ -685,7 +688,7 @@ export default function ProposalEndorsementModal({
                       <tr key={idx} className="hover:bg-slate-50">
                         <td className="p-2.5 font-medium">{t.taskName}</td>
                         <td className="p-2.5 text-slate-600">{t.assignedPerson}</td>
-                        <td className="p-2.5 text-slate-600">{t.completionDate || '—'}</td>
+                        <td className="p-2.5 text-slate-600">{formatLongDate(t.completionDate, '—')}</td>
                       </tr>
                     ))}
                   </tbody>

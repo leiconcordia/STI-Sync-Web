@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 import { resolveActivityName } from '../../modules/events/utils/activity-compliance.utils';
-import { formatAppDate } from '../../utils/date';
+import { formatLongDate } from '../../utils/date';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
@@ -261,7 +261,7 @@ export default function SignatorySignedDocumentsPage() {
                     </td>
                     <td className="px-4 py-3.5 text-slate-600">{entry.organization}</td>
                     <td className="px-4 py-3.5 text-slate-500 whitespace-nowrap">
-                      {entry.signedAt ? formatAppDate(entry.signedAt) : 'Recorded'}
+                      {entry.signedAt ? formatLongDate(entry.signedAt) : 'Recorded'}
                     </td>
                     <td className="px-4 py-3.5">
                       <CampusStatusBadge status={entry.status} />

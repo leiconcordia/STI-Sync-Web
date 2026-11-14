@@ -43,6 +43,8 @@ import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.serv
 import {
   saveOrSubmitPAR,
   generateDefaultPARSignatoryChain,
+  fetchLinkedActivityProposal,
+  enforceSinglePARApprover,
 } from '../services/par.service';
 import {
   resolveUserSignature,
@@ -88,6 +90,7 @@ interface PostActivityReportWizardModalProps {
     name: string;
     email: string;
     role?: string;
+    roleTitle?: string;
     isAdviser?: boolean;
     organizationId?: string;
     organizationName?: string;
@@ -249,7 +252,8 @@ export default function PostActivityReportWizardModal({
     resolveUserSignature({
       uid: currentUser?.uid,
       email: currentUser?.email,
-      role: currentUser?.role,
+      name: currentUser?.name,
+      role: currentUser?.roleTitle || currentUser?.role,
       profile: currentUser,
     }).then((sig) => {
       if (!isCancelled && sig) {
@@ -260,7 +264,15 @@ export default function PostActivityReportWizardModal({
     return () => {
       isCancelled = true;
     };
-  }, [currentUser?.uid, currentUser?.email, currentUser?.role, (currentUser as any)?.signatureUrl]);
+  }, [
+    currentUser?.uid,
+    currentUser?.email,
+    currentUser?.name,
+    currentUser?.role,
+    (currentUser as any)?.roleTitle,
+    (currentUser as any)?.isAdviser,
+    (currentUser as any)?.signatureUrl,
+  ]);
 
   const isReturnedReport = Boolean(
     initialReport?.status === 'returned' ||
@@ -342,8 +354,6 @@ export default function PostActivityReportWizardModal({
   const [liquidationRef, setLiquidationRef] = useState('');
   const [linkedLiquidationId, setLinkedLiquidationId] = useState('');
   const [copiedFromLiquidation, setCopiedFromLiquidation] = useState(false);
-  const [financialAttachments, setFinancialAttachments] = useState<PARAttachmentFile[]>([]);
-  const [isUploadingFinancialFile, setIsUploadingFinancialFile] = useState(false);
   const [financialLineItems, setFinancialLineItems] = useState<
     Array<{ description: string; unitAmount: number; totalAmount: number }>
   >([]);
@@ -422,17 +432,24 @@ export default function PostActivityReportWizardModal({
     return [''];
   };
 
-  // Section 5: Photos & Pipeline
+  // Section 5: Photos, Attachments Checklist & Pipeline
   const [photos, setPhotos] = useState<PARPhotoAttachment[]>([]);
+  const [supportingDocuments, setSupportingDocuments] = useState<PARAttachmentFile[]>([]);
+  const [isUploadingSupportingDoc, setIsUploadingSupportingDoc] = useState(false);
+  const [attachmentsChecklist, setAttachmentsChecklist] = useState({
+    attendanceSheet: false,
+    photosOfActivity: false,
+    programInvitation: false,
+    feedbackSummary: false,
+    certificatesLetters: false,
+  });
   const [approvalChain, setApprovalChain] = useState<PARApprovalStep[]>([]);
   const [activeSignatories, setActiveSignatories] = useState<InstitutionalSignatory[]>([]);
 
   // Attendance & Validation Engine States
   const [hasScannedAttendance, setHasScannedAttendance] = useState(false);
   const [estimatedAttendance, setEstimatedAttendance] = useState(0);
-  const [attendanceListUrl, setAttendanceListUrl] = useState('');
-  const [attendanceListName, setAttendanceListName] = useState('');
-  const [isUploadingAttendanceFile, setIsUploadingAttendanceFile] = useState(false);
+  const [estimatedAttendanceLabel, setEstimatedAttendanceLabel] = useState('');
   const [validationErrors, setValidationErrors] = useState<Record<string, boolean>>({});
 
   const handleAttendedCountChange = (val: number) => {
@@ -631,10 +648,14 @@ Output ONLY the paragraph text.
       setMechanicsAttachmentUrl(initialReport.mechanicsAttachmentUrl || '');
       setMechanicsAttachmentName(initialReport.mechanicsAttachmentName || '');
       setRegisteredCount(initialReport.attendanceSummary?.registeredCount || 0);
-      setEstimatedAttendance(
+      const estCount =
         initialReport.attendanceSummary?.estimatedAttendance ||
         initialReport.attendanceSummary?.registeredCount ||
-        0
+        0;
+      setEstimatedAttendance(estCount);
+      setEstimatedAttendanceLabel(
+        (initialReport.attendanceSummary as any)?.estimatedAttendanceLabel ||
+          (estCount > 0 ? `${estCount} Pax` : '')
       );
       setAttendedCount(initialReport.attendanceSummary?.attendedCount || 0);
       setTargetAudience(initialReport.attendanceSummary?.targetAudience || '');
@@ -644,8 +665,6 @@ Output ONLY the paragraph text.
           ? initialReport.attendanceSummary.attendanceMonitoringUsed
           : (initialReport.attendanceSummary?.attendedCount || 0) > 0
       );
-      setAttendanceListUrl(initialReport.attendanceSummary?.attendanceListUrl || '');
-      setAttendanceListName(initialReport.attendanceSummary?.attendanceListName || '');
       setHowManyAttended(
         initialReport.attendanceSummary?.howManyAttended ||
           (initialReport.attendanceSummary?.attendedCount
@@ -667,7 +686,6 @@ Output ONLY the paragraph text.
       setLiquidationRef(initialReport.liquidationRefNumber || '');
       setLinkedLiquidationId(initialReport.liquidationId || '');
       setCopiedFromLiquidation(Boolean(initialReport.financialSummary?.copiedFromLiquidation || initialReport.liquidationId));
-      setFinancialAttachments(initialReport.financialSummary?.attachments || []);
       setFinancialLineItems(initialReport.financialSummary?.lineItems || []);
 
       setObjectiveStatus(initialReport.results?.objectiveStatus || 'fully_achieved');
@@ -690,7 +708,23 @@ Output ONLY the paragraph text.
       setPrepRecList(parseRemarkList((initialReport.recommendations?.participantPreparedness as any)?.recommendationsList || initialReport.recommendations?.participantPreparedness?.recommendations));
 
       setPhotos(initialReport.photos || []);
-      setApprovalChain(initialReport.approvalChain || []);
+      setSupportingDocuments(initialReport.supportingDocuments || []);
+      setAttachmentsChecklist({
+        attendanceSheet: Boolean(initialReport.attachmentsChecklist?.attendanceSheet),
+        photosOfActivity: Boolean(
+          initialReport.attachmentsChecklist?.photosOfActivity ?? (initialReport.photos?.length || 0) > 0
+        ),
+        programInvitation: Boolean(initialReport.attachmentsChecklist?.programInvitation),
+        feedbackSummary: Boolean(
+          initialReport.attachmentsChecklist?.feedbackSummary ||
+            initialReport.attachmentsChecklist?.feedbackEvaluationSummary
+        ),
+        certificatesLetters: Boolean(
+          initialReport.attachmentsChecklist?.certificatesLetters ||
+            initialReport.attachmentsChecklist?.copiesOfCertificatesLetters
+        ),
+      });
+      setApprovalChain(enforceSinglePARApprover(initialReport.approvalChain || []));
 
       if (initialReport.attendanceSummary?.turnoutRate !== undefined) {
         setTurnoutRate(initialReport.attendanceSummary.turnoutRate);
@@ -717,29 +751,8 @@ Output ONLY the paragraph text.
         const evData = { id: evSnap.id, ...evSnap.data() } as EventDocument;
         setSelectedEvent(evData);
 
-        // Fetch linked Activity Proposal (Form AP-01) for 100% full auto-population
-        let proposalDoc: any = null;
-        const proposalId = (evData as any).proposalId || (evData as any).activityProposalId;
-        if (proposalId) {
-          try {
-            const pSnap = await getDoc(doc(db, 'activity_proposals', proposalId));
-            if (pSnap.exists()) {
-              proposalDoc = { id: pSnap.id, ...pSnap.data() };
-            }
-          } catch (pErr) {
-            console.warn('[PostActivityReportWizardModal] Proposal fetch by ID notice:', pErr);
-          }
-        }
-        if (!proposalDoc && evData.referenceId) {
-          try {
-            const pQuery = await getDocs(
-              query(collection(db, 'activity_proposals'), where('referenceNo', '==', evData.referenceId))
-            );
-            if (!pQuery.empty) {
-              proposalDoc = { id: pQuery.docs[0].id, ...pQuery.docs[0].data() };
-            }
-          } catch {}
-        }
+        // Fetch linked Activity Proposal via canonical resolver across collections
+        const proposalDoc: any = await fetchLinkedActivityProposal(evData, selectedEventId);
         setLinkedProposal(proposalDoc);
 
         // Auto-extract proposal fields
@@ -814,10 +827,11 @@ Output ONLY the paragraph text.
           });
         }
 
-        // Bridge real-time attendance logs + AP-01 Estimated Attendance & Target Market
+        // Bridge real-time attendance logs + Activity Proposal Estimated Attendance & Target Market
         try {
           const attResult = await computeEventAttendanceSummary(selectedEventId, evData, proposalDoc);
           setEstimatedAttendance(attResult.estimatedAttendance);
+          setEstimatedAttendanceLabel(attResult.estimatedAttendanceLabel || '');
           setAttendedCount(attResult.attendedCount);
           setRegisteredCount(attResult.registeredCount);
           setTurnoutRate(attResult.turnoutRate);
@@ -828,6 +842,7 @@ Output ONLY the paragraph text.
         } catch (attErr) {
           console.warn('[PostActivityReportWizardModal] Attendance bridge fallback:', attErr);
           setEstimatedAttendance(0);
+          setEstimatedAttendanceLabel('');
           setAttendedCount(0);
           setRegisteredCount(0);
           setTurnoutRate(0);
@@ -900,23 +915,28 @@ Output ONLY the paragraph text.
           setLiquidationRef(liquidationDoc.referenceNo || 'Financial Liquidation');
           setCopiedFromLiquidation(true);
         } else {
-          // Fallback: Form AP-01 projection
+          // Fallback: Activity Proposal projection
+          const fp = proposalDoc?.financialProjections || (evData as any).financialProjections;
           const pItems =
             Array.isArray(proposalDoc?.lineItems) && proposalDoc.lineItems.length > 0
               ? proposalDoc.lineItems
+              : Array.isArray(fp?.expenses) && fp.expenses.length > 0
+              ? fp.expenses
               : Array.isArray((evData as any).lineItems)
               ? (evData as any).lineItems
               : [];
 
           const rev = Number(
-            proposalDoc?.allocatedBudget ??
+            fp?.totalRevenue ??
+              proposalDoc?.allocatedBudget ??
               proposalDoc?.totalProposedBudget ??
               proposalDoc?.totalBudget ??
               evData.budget ??
               0
           );
           const exp = Number(
-            proposalDoc?.totalExpenseAmount ??
+            fp?.totalExpenses ??
+              proposalDoc?.totalExpenseAmount ??
               proposalDoc?.totalBudget ??
               evData.budget ??
               0
@@ -938,7 +958,7 @@ Output ONLY the paragraph text.
             }))
           );
           setLinkedLiquidationId('');
-          setLiquidationRef(proposalDoc?.referenceNo || evData.referenceId || 'AP-PROJECTION');
+          setLiquidationRef(proposalDoc?.referenceNo || evData.referenceId || 'Proposal Projection');
           setCopiedFromLiquidation(false);
         }
 
@@ -1006,8 +1026,17 @@ Output ONLY the paragraph text.
     if (!file) return;
     setIsUploadingMechanicsFile(true);
     try {
-      const res = await uploadToCloudinary(file, { folder: 'par_attachments/mechanics' });
-      setMechanicsAttachmentUrl(res.secure_url);
+      const res = await uploadToCloudinary(file, {
+        folder: 'par_attachments/mechanics',
+        acceptedTypes: [
+          'application/pdf',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          'image/*',
+        ],
+        maxBytes: 15 * 1024 * 1024,
+      });
+      setMechanicsAttachmentUrl(res.secureUrl || (res as any).secure_url);
       setMechanicsAttachmentName(file.name);
       toast.success(`Attached mechanics sheet: ${file.name}`);
     } catch (err: any) {
@@ -1018,48 +1047,62 @@ Output ONLY the paragraph text.
     }
   };
 
-  const handleAttendanceFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setIsUploadingAttendanceFile(true);
+  const handleSupportingDocUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploadingSupportingDoc(true);
+    const uploaded: PARAttachmentFile[] = [];
     try {
-      const res = await uploadToCloudinary(file, { folder: 'par_attachments/attendance' });
-      setAttendanceListUrl(res.secure_url);
-      setAttendanceListName(file.name);
-      toast.success(`Attached attendance list: ${file.name}`);
+      for (const file of Array.from(files)) {
+        const res = await uploadToCloudinary(file, {
+          folder: 'par_attachments/supporting_docs',
+          acceptedTypes: [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'text/plain',
+            'text/csv',
+            'image/*',
+          ],
+          maxBytes: 15 * 1024 * 1024,
+        });
+        uploaded.push({
+          id: `doc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          name: file.name,
+          url: res.secureUrl,
+          size: res.bytes || file.size,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+      if (uploaded.length > 0) {
+        setSupportingDocuments((prev) => [...prev, ...uploaded]);
+        toast.success(
+          `Uploaded ${uploaded.length} supporting document${uploaded.length > 1 ? 's' : ''}.`
+        );
+      }
     } catch (err: any) {
-      toast.error(err?.message || 'Failed to upload attendance list.');
+      toast.error(err?.message || 'Failed to upload document file.');
     } finally {
-      setIsUploadingAttendanceFile(false);
+      setIsUploadingSupportingDoc(false);
       e.target.value = '';
     }
   };
 
-  const handleFinancialFilesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    setIsUploadingFinancialFile(true);
-    try {
-      const uploaded: PARAttachmentFile[] = [];
-      for (const file of Array.from(files)) {
-        const res = await uploadToCloudinary(file, { folder: 'par_attachments/financial' });
-        uploaded.push({
-          id: `fin-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          name: file.name,
-          url: res.secure_url,
-          size: file.size,
-          uploadedAt: new Date().toISOString(),
-        });
-      }
-      setFinancialAttachments((prev) => [...prev, ...uploaded]);
-      toast.success(`Uploaded ${uploaded.length} financial supporting file(s)!`);
-    } catch (err: any) {
-      toast.error(err?.message || 'Failed to upload financial file(s).');
-    } finally {
-      setIsUploadingFinancialFile(false);
-      e.target.value = '';
-    }
+  const handleRemoveSupportingDoc = (id: string) => {
+    setSupportingDocuments((prev) => prev.filter((docFile) => docFile.id !== id));
   };
+
+  // Auto-check Photos of Activity attachment box when photos are uploaded
+  useEffect(() => {
+    if (photos.length > 0) {
+      setAttachmentsChecklist((prev) =>
+        prev.photosOfActivity ? prev : { ...prev, photosOfActivity: true }
+      );
+    }
+  }, [photos.length]);
 
   const handleMultipleFilesUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1117,86 +1160,132 @@ Output ONLY the paragraph text.
     setPhotos(photos.filter((p) => p.id !== id));
   };
 
+  const validateStep = (step: WizardTab): boolean => {
+    const errors: Record<string, boolean> = {};
+
+    if (step === 'overview') {
+      if (!selectedEventId) {
+        errors.selectedEventId = true;
+        setValidationErrors(errors);
+        toast.error('Please select a concluded event.');
+        return false;
+      }
+      if (mechanicsDiffered && !actualMechanics.trim()) {
+        errors.actualMechanics = true;
+        setValidationErrors(errors);
+        toast.error('Please enter the actual mechanics conducted (or switch back to "Same as Proposed").');
+        return false;
+      }
+      if (!attendedCount || attendedCount <= 0 || isNaN(attendedCount)) {
+        errors.attendedCount = true;
+        setValidationErrors(errors);
+        toast.error('Please provide a valid Actual Attended participant headcount (greater than 0).');
+        return false;
+      }
+      if (!whoAttended.trim()) {
+        errors.whoAttended = true;
+        setValidationErrors(errors);
+        toast.error('Please specify who attended the activity.');
+        return false;
+      }
+      setValidationErrors({});
+      return true;
+    }
+
+    if (step === 'objectives') {
+      if (!achievementNarrative.trim()) {
+        errors.achievementNarrative = true;
+        setValidationErrors(errors);
+        toast.error('Please provide 1. Achievement of Objectives narrative.');
+        return false;
+      }
+      if (keyLearnings.filter(Boolean).length === 0) {
+        errors.keyLearnings = true;
+        setValidationErrors(errors);
+        toast.error('Please provide at least 1 key learning for 2. Key Learnings / Insights Gained.');
+        return false;
+      }
+      setValidationErrors({});
+      return true;
+    }
+
+    if (step === 'recommendations') {
+      const hasProgFlowObs = progFlowObsList.some((s) => s.trim().length > 0);
+      const hasProgFlowRec = progFlowRecList.some((s) => s.trim().length > 0);
+      if (!hasProgFlowObs || !hasProgFlowRec) {
+        errors.progFlow = true;
+        setValidationErrors(errors);
+        toast.error('Please provide both Observations and Recommendations for 1. Program Flow and Content.');
+        return false;
+      }
+
+      const hasEngagementObs = engagementObsList.some((s) => s.trim().length > 0);
+      const hasEngagementRec = engagementRecList.some((s) => s.trim().length > 0);
+      if (!hasEngagementObs || !hasEngagementRec) {
+        errors.engagement = true;
+        setValidationErrors(errors);
+        toast.error('Please provide both Observations and Recommendations for 2. Participant Engagement.');
+        return false;
+      }
+
+      const hasTechSetupObs = techSetupObsList.some((s) => s.trim().length > 0);
+      const hasTechSetupRec = techSetupRecList.some((s) => s.trim().length > 0);
+      if (!hasTechSetupObs || !hasTechSetupRec) {
+        errors.techSetup = true;
+        setValidationErrors(errors);
+        toast.error('Please provide both Observations and Recommendations for 3. Technical Setup.');
+        return false;
+      }
+
+      const hasPrepObs = prepObsList.some((s) => s.trim().length > 0);
+      const hasPrepRec = prepRecList.some((s) => s.trim().length > 0);
+      if (!hasPrepObs || !hasPrepRec) {
+        errors.prep = true;
+        setValidationErrors(errors);
+        toast.error('Please provide both Observations and Recommendations for 4. Participant Preparedness and Expectations.');
+        return false;
+      }
+      setValidationErrors({});
+      return true;
+    }
+
+    return true;
+  };
+
+  const handleNavigateToTab = (targetTab: WizardTab) => {
+    const tabs: WizardTab[] = ['overview', 'objectives', 'recommendations', 'photos_signatories'];
+    const currentIdx = tabs.indexOf(activeTab);
+    const targetIdx = tabs.indexOf(targetTab);
+
+    if (targetIdx <= currentIdx) {
+      setActiveTab(targetTab);
+      return;
+    }
+
+    // Validate each intermediate step before advancing forward
+    for (let i = currentIdx; i < targetIdx; i++) {
+      if (!validateStep(tabs[i])) {
+        setActiveTab(tabs[i]);
+        return;
+      }
+    }
+    setActiveTab(targetTab);
+  };
+
   const validateFormForSubmission = (): boolean => {
     const errors: Record<string, boolean> = {};
 
     // Tab 1: Overview & Clearance
-    if (!selectedEventId) {
-      errors.selectedEventId = true;
-      setValidationErrors(errors);
+    if (!validateStep('overview')) {
       setActiveTab('overview');
-      toast.error('Please select a concluded event.');
       return false;
     }
-    if (!attendedCount || attendedCount <= 0 || isNaN(attendedCount)) {
-      errors.attendedCount = true;
-      setValidationErrors(errors);
-      setActiveTab('overview');
-      toast.error('Please provide a valid Actual Attended participant headcount (greater than 0).');
-      return false;
-    }
-    if (!whoAttended.trim()) {
-      errors.whoAttended = true;
-      setValidationErrors(errors);
-      setActiveTab('overview');
-      toast.error('Please specify the Actual Participant Profile (Who Attended).');
-      return false;
-    }
-
-    // Tab 2: Results of the Activity
-    if (!achievementNarrative.trim()) {
-      errors.achievementNarrative = true;
-      setValidationErrors(errors);
+    if (!validateStep('objectives')) {
       setActiveTab('objectives');
-      toast.error('Please provide 1. Achievement of Objectives narrative.');
       return false;
     }
-    if (keyLearnings.filter(Boolean).length === 0) {
-      errors.keyLearnings = true;
-      setValidationErrors(errors);
-      setActiveTab('objectives');
-      toast.error('Please provide at least 1 key learning for 2. Key Learnings / Insights Gained.');
-      return false;
-    }
-
-    // Tab 3: Remarks
-    const hasProgFlowObs = progFlowObsList.some((s) => s.trim().length > 0);
-    const hasProgFlowRec = progFlowRecList.some((s) => s.trim().length > 0);
-    if (!hasProgFlowObs || !hasProgFlowRec) {
-      errors.progFlow = true;
-      setValidationErrors(errors);
+    if (!validateStep('recommendations')) {
       setActiveTab('recommendations');
-      toast.error('Please provide both Observations and Recommendations for 1. Program Flow and Time Management.');
-      return false;
-    }
-
-    const hasEngagementObs = engagementObsList.some((s) => s.trim().length > 0);
-    const hasEngagementRec = engagementRecList.some((s) => s.trim().length > 0);
-    if (!hasEngagementObs || !hasEngagementRec) {
-      errors.engagement = true;
-      setValidationErrors(errors);
-      setActiveTab('recommendations');
-      toast.error('Please provide both Observations and Recommendations for 2. Participant Engagement and Interaction.');
-      return false;
-    }
-
-    const hasTechSetupObs = techSetupObsList.some((s) => s.trim().length > 0);
-    const hasTechSetupRec = techSetupRecList.some((s) => s.trim().length > 0);
-    if (!hasTechSetupObs || !hasTechSetupRec) {
-      errors.techSetup = true;
-      setValidationErrors(errors);
-      setActiveTab('recommendations');
-      toast.error('Please provide both Observations and Recommendations for 3. Technical Setup and Venue Preparation.');
-      return false;
-    }
-
-    const hasPrepObs = prepObsList.some((s) => s.trim().length > 0);
-    const hasPrepRec = prepRecList.some((s) => s.trim().length > 0);
-    if (!hasPrepObs || !hasPrepRec) {
-      errors.prep = true;
-      setValidationErrors(errors);
-      setActiveTab('recommendations');
-      toast.error('Please provide both Observations and Recommendations for 4. Participant Preparedness and Expectations.');
       return false;
     }
 
@@ -1214,6 +1303,19 @@ Output ONLY the paragraph text.
       setActiveTab('photos_signatories');
       toast.error('Please ensure the institutional signatory pipeline is configured.');
       return false;
+    }
+    if (!isOrgFunds) {
+      const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+      if (approverCount !== 1) {
+        setValidationErrors(errors);
+        setActiveTab('photos_signatories');
+        toast.error(
+          approverCount === 0
+            ? 'Signatory Pipeline: Assign 1 Final Approver before submitting.'
+            : 'Signatory Pipeline: Only 1 Final Approver is allowed on a Post-Activity Report.'
+        );
+        return false;
+      }
     }
     if (isReturnedReport && !resubmissionNote.trim()) {
       errors.resubmissionNote = true;
@@ -1267,6 +1369,11 @@ Output ONLY the paragraph text.
     try {
       const netBalance = totalRevenue - totalDisbursed;
 
+      const preservedSig =
+        effectiveSignature ||
+        initialReport?.preparedBy?.signatureUrl ||
+        initialReport?.submittedBySignatureUrl ||
+        '';
       const payload: PARFormData = {
         id: initialReport?.id,
         referenceNo: initialReport?.referenceNo,
@@ -1304,6 +1411,7 @@ Output ONLY the paragraph text.
         attendanceSummary: {
           registeredCount: estimatedAttendance || registeredCount || attendedCount,
           estimatedAttendance,
+          ...(estimatedAttendanceLabel ? { estimatedAttendanceLabel } : {}),
           attendedCount,
           turnoutRate,
           targetAudience,
@@ -1314,8 +1422,6 @@ Output ONLY the paragraph text.
               ? `${attendedCount} / ${estimatedAttendance} Estimated Attendees (${turnoutRate}% Turnout)`
               : `${attendedCount} Attendees`),
           attendanceMonitoringUsed: hasScannedAttendance,
-          attendanceListUrl,
-          attendanceListName,
         },
 
         financialSummary: {
@@ -1324,7 +1430,7 @@ Output ONLY the paragraph text.
           surplusOrDeficit: netBalance,
           copiedFromLiquidation,
           lineItems: financialLineItems,
-          attachments: financialAttachments,
+          attachments: initialReport?.financialSummary?.attachments || [],
         },
 
         results: {
@@ -1369,6 +1475,8 @@ Output ONLY the paragraph text.
         },
 
         photos,
+        supportingDocuments,
+        attachmentsChecklist,
         approvalChain: isOrgFunds
           ? [
               {
@@ -1386,14 +1494,20 @@ Output ONLY the paragraph text.
                 status: 'current' as const,
               },
             ]
-          : approvalChain,
+          : enforceSinglePARApprover(approvalChain),
         preparedBy: {
           name: currentUser.name,
-          roleTitle: isSasAdmin ? 'SAS Administrator' : 'Organization Adviser',
-          signatureUrl: effectiveSignature || '',
+          roleTitle:
+            currentUser.roleTitle ||
+            (isSasAdmin
+              ? 'SAS Administrator'
+              : currentUser.isAdviser
+              ? 'Organization Adviser'
+              : 'Organization Officer'),
+          signatureUrl: preservedSig,
           signedAt: new Date().toISOString(),
         },
-        ...(effectiveSignature ? { submittedBySignatureUrl: effectiveSignature } : {}),
+        ...(preservedSig ? { submittedBySignatureUrl: preservedSig } : {}),
         ...(submitForReview && isReturnedReport && resubmissionNote.trim()
           ? { resubmissionNote: resubmissionNote.trim() }
           : {}),
@@ -1482,20 +1596,21 @@ Output ONLY the paragraph text.
           </div>
         </div>
 
-        {/* Tab Navigation Navigation */}
+        {/* Tab Navigation */}
         <div className="flex border-b border-slate-200 bg-slate-50/70 px-6 gap-2 pt-2">
           {[
-            { id: 'overview', label: '1. Event & Clearance Summary', icon: FileText, isFlagged: isOverviewFlagged },
+            { id: 'overview', label: '1. Activity Details, Attendance & Financial Report', icon: FileText, isFlagged: isOverviewFlagged },
             { id: 'objectives', label: '2. Results of the Activity', icon: Sparkles, isFlagged: isObjectivesFlagged },
-            { id: 'recommendations', label: '3. Remarks', icon: ShieldCheck, isFlagged: isRecommendationsFlagged },
-            { id: 'photos_signatories', label: '4. Photos & Pipeline', icon: ImageIcon, isFlagged: isPhotosSignatoriesFlagged },
+            { id: 'recommendations', label: '3. Remarks & Attachments', icon: ShieldCheck, isFlagged: isRecommendationsFlagged },
+            { id: 'photos_signatories', label: '4. Documentation & Signatories', icon: ImageIcon, isFlagged: isPhotosSignatoriesFlagged },
           ].map((t) => {
             const Icon = t.icon;
             const isActive = activeTab === t.id;
             return (
               <button
                 key={t.id}
-                onClick={() => setActiveTab(t.id as WizardTab)}
+                type="button"
+                onClick={() => handleNavigateToTab(t.id as WizardTab)}
                 className={`flex items-center gap-2 py-3 px-4 text-xs font-bold border-b-2 transition-all rounded-t-lg cursor-pointer ${
                   isActive
                     ? 'border-[#0E4EBD] text-[#0E4EBD] bg-white shadow-sm'
@@ -1544,7 +1659,7 @@ Output ONLY the paragraph text.
                   <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
                   <div className="flex-1 text-xs">
                     <span className="font-bold text-amber-900 uppercase tracking-wider block mb-1">
-                      Reviewer Revision Feedback — Event & Clearance Summary
+                      Reviewer Revision Feedback — Activity Details, Attendance & Financial Report
                     </span>
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {initialReport?.stepRevisionRemarks?.['overview'] ||
@@ -1711,10 +1826,15 @@ Output ONLY the paragraph text.
                     </div>
 
                     {!mechanicsDiffered ? (
-                      <div className="bg-white border border-slate-200 rounded-lg p-3">
-                        <span className="text-[11px] font-bold text-slate-500 block mb-1">
-                          Proposed Mechanics (from Activity Proposal):
-                        </span>
+                      <div className="bg-white border border-slate-200 rounded-lg p-3 space-y-1.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-slate-500">
+                            Proposed Mechanics (from Activity Proposal):
+                          </span>
+                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                            No entry needed — exports as &quot;Same as proposed.&quot;
+                          </span>
+                        </div>
                         {proposedMechanics.length > 0 ? (
                           <ul className="list-disc pl-4 space-y-0.5 text-xs text-slate-700">
                             {proposedMechanics.map((m, idx) => (
@@ -1797,14 +1917,14 @@ Output ONLY the paragraph text.
                           (Attach attendance list, if available.)
                         </p>
 
-                        {/* AP-01 Basis: Estimated Attendance & Target Market */}
+                        {/* Proposal Basis: Estimated Attendance & Target Market */}
                         <div className="grid grid-cols-2 gap-2 mb-3">
                           <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
                             <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
                               <Lock className="w-3 h-3" /> Estimated Attendance (Proposal)
                             </span>
                             <span className="text-sm font-black text-slate-800 block mt-0.5">
-                              {estimatedAttendance > 0 ? `${estimatedAttendance} Pax` : 'Not Specified'}
+                              {estimatedAttendanceLabel || (estimatedAttendance > 0 ? `${estimatedAttendance} Pax` : 'Not Specified')}
                             </span>
                           </div>
                           <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
@@ -1868,44 +1988,11 @@ Output ONLY the paragraph text.
                               </span>
                             )}
                           </div>
-
-                          {/* Optional Attendance List Attachment */}
-                          <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
-                            <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-[11px] font-semibold text-slate-700 cursor-pointer">
-                              {isUploadingAttendanceFile ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />
-                              ) : (
-                                <Paperclip className="w-3.5 h-3.5 text-blue-600" />
-                              )}
-                              <span>{isUploadingAttendanceFile ? 'Uploading...' : 'Attach Attendance List (Optional)'}</span>
-                              <input
-                                type="file"
-                                className="hidden"
-                                accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg"
-                                onChange={handleAttendanceFileUpload}
-                                disabled={isUploadingAttendanceFile}
-                              />
-                            </label>
-                            {attendanceListUrl && (
-                              <div className="flex items-center gap-1.5 text-[11px] bg-blue-50 text-blue-800 px-2 py-1 rounded-md border border-blue-200">
-                                <a href={attendanceListUrl} target="_blank" rel="noreferrer" className="underline font-medium truncate max-w-[160px]">
-                                  {attendanceListName || 'Attendance List'}
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={() => { setAttendanceListUrl(''); setAttendanceListName(''); }}
-                                  className="text-red-500 hover:text-red-700 cursor-pointer"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            )}
-                          </div>
                         </div>
                       </div>
                     </div>
 
-                    {/* Financial Report (Copied from Actual Financial Liquidation LF-01) */}
+                    {/* Financial Report (Copied from Actual Financial Liquidation) */}
                     <div className="border border-slate-200 rounded-xl p-4 bg-slate-50/50 flex flex-col justify-between space-y-3">
                       <div>
                         <div className="flex items-center justify-between mb-1.5">
@@ -1924,12 +2011,12 @@ Output ONLY the paragraph text.
                           </span>
                         </div>
                         <p className="text-[11px] text-slate-500 italic mb-3">
-                          (Attach supporting receipts and list of participants who have/haven&apos;t paid.) Attached also the liquidation.
+                          (Attach supporting receipts and list of participants who have/haven&apos;t paid.)
                         </p>
 
                         <div className="grid grid-cols-3 gap-2 text-center mb-3">
                           <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                            <span className="text-[10px] text-slate-500 block">Revenue / Budget</span>
+                            <span className="text-[10px] text-slate-500 block">Revenue</span>
                             <span className="text-sm font-bold text-[#001A4D] font-mono">
                               {formatCurrency(totalRevenue)}
                             </span>
@@ -1945,7 +2032,7 @@ Output ONLY the paragraph text.
                               isSurplus ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
                             }`}
                           >
-                            <span className="text-[10px] block font-medium">Balance</span>
+                            <span className="text-[10px] block font-medium">Balance (Revenue less Expenses)</span>
                             <span className="text-sm font-bold font-mono">
                               {formatVariance(netBalance)}
                             </span>
@@ -1959,8 +2046,8 @@ Output ONLY the paragraph text.
                               <thead className="bg-slate-100 text-slate-600 font-bold sticky top-0">
                                 <tr>
                                   <th className="text-left px-2.5 py-1.5">Description</th>
-                                  <th className="text-right px-2 py-1.5">Unit</th>
-                                  <th className="text-right px-2.5 py-1.5">Total</th>
+                                  <th className="text-right px-2 py-1.5">Unit Amount</th>
+                                  <th className="text-right px-2.5 py-1.5">Total Amount</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
@@ -1973,48 +2060,6 @@ Output ONLY the paragraph text.
                                 ))}
                               </tbody>
                             </table>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Multi-file upload for supporting receipts, payment list, liquidation */}
-                      <div className="space-y-2 pt-2 border-t border-slate-200">
-                        <label className="flex items-center justify-center gap-2 w-full px-3 py-2 rounded-lg bg-white border border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer transition-colors">
-                          {isUploadingFinancialFile ? (
-                            <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
-                          ) : (
-                            <Upload className="w-4 h-4 text-blue-600" />
-                          )}
-                          <span>
-                            {isUploadingFinancialFile
-                              ? 'Uploading files...'
-                              : 'Upload Receipts, Participant Payment List, or Liquidation File(s)'}
-                          </span>
-                          <input
-                            type="file"
-                            multiple
-                            className="hidden"
-                            accept=".pdf,.xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg"
-                            onChange={handleFinancialFilesUpload}
-                            disabled={isUploadingFinancialFile}
-                          />
-                        </label>
-                        {financialAttachments.length > 0 && (
-                          <div className="space-y-1">
-                            {financialAttachments.map((att) => (
-                              <div key={att.id} className="flex items-center justify-between gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200 text-[11px]">
-                                <a href={att.url} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline font-medium truncate">
-                                  {att.name}
-                                </a>
-                                <button
-                                  type="button"
-                                  onClick={() => setFinancialAttachments((prev) => prev.filter((f) => f.id !== att.id))}
-                                  className="text-red-500 hover:text-red-700 shrink-0 cursor-pointer"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))}
                           </div>
                         )}
                       </div>
@@ -2091,11 +2136,6 @@ Output ONLY the paragraph text.
                           <span className="text-[#0E4EBD] font-bold shrink-0 mt-0.5">•</span>
                           <div className="flex-1">
                             <span className="font-semibold text-slate-800">{obj}</span>
-                            {proposalSuccessIndicators[i] && (
-                              <p className="text-[11px] text-slate-500 mt-0.5">
-                                <span className="font-medium text-slate-600">Target KPI: </span>{proposalSuccessIndicators[i]}
-                              </p>
-                            )}
                           </div>
                         </li>
                       ))}
@@ -2416,6 +2456,133 @@ Output ONLY the paragraph text.
                 errorObs={validationErrors.prep}
                 errorRec={validationErrors.prep}
               />
+
+              {/* VIII. Attachments (if applicable) */}
+              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                      <Paperclip className="w-4 h-4 text-[#0E4EBD]" />
+                      VIII. Attachments (if applicable)
+                    </h4>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Are there attachments? (Attendance Sheet, Photos of Activity, Program / Invitation, Feedback / Evaluation Summary, Copies of Certificates, Letters, etc)
+                    </p>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAttachmentsChecklist({
+                          attendanceSheet: false,
+                          photosOfActivity: false,
+                          programInvitation: false,
+                          feedbackSummary: false,
+                          certificatesLetters: false,
+                        })
+                      }
+                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${
+                        !Object.values(attachmentsChecklist).some(Boolean) && supportingDocuments.length === 0
+                          ? 'bg-white text-slate-800 shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      No
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAttachmentsChecklist((prev) => ({
+                          ...prev,
+                          attendanceSheet: true,
+                        }))
+                      }
+                      className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors ${
+                        Object.values(attachmentsChecklist).some(Boolean) || supportingDocuments.length > 0
+                          ? 'bg-[#0E4EBD] text-white shadow-2xs'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      Yes
+                    </button>
+                  </div>
+                </div>
+
+                {/* Optional Document File Upload (saved in system for review, omitted from PDF export) */}
+                {(Object.values(attachmentsChecklist).some(Boolean) || supportingDocuments.length > 0) && (
+                <div className="pt-3 border-t border-slate-100 space-y-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <span className="text-xs font-bold text-slate-700 block">
+                        Upload Supporting Document (Optional)
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        Attach optional PDF, Word, Excel, or image files for portal review (will not be shown in exported PDF).
+                      </span>
+                    </div>
+                    <label
+                      htmlFor="par-supporting-doc-file-input"
+                      className={`inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 transition-colors shrink-0 ${
+                        isUploadingSupportingDoc ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
+                      }`}
+                    >
+                      {isUploadingSupportingDoc ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0E4EBD]" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                      )}
+                      <span>{isUploadingSupportingDoc ? 'Uploading...' : 'Upload Doc File'}</span>
+                      <input
+                        id="par-supporting-doc-file-input"
+                        type="file"
+                        multiple
+                        accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.webp"
+                        onChange={handleSupportingDocUpload}
+                        disabled={isUploadingSupportingDoc}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+
+                  {supportingDocuments.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {supportingDocuments.map((docFile) => (
+                        <div
+                          key={docFile.id}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-200 text-xs text-[#001A4D]"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-[#0E4EBD] shrink-0" />
+                          <a
+                            href={docFile.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold underline truncate max-w-[220px]"
+                            title={docFile.name}
+                          >
+                            {docFile.name}
+                          </a>
+                          {docFile.size ? (
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              ({docFile.size >= 1024 * 1024
+                                ? `${(docFile.size / (1024 * 1024)).toFixed(1)} MB`
+                                : `${Math.max(1, Math.round(docFile.size / 1024))} KB`})
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSupportingDoc(docFile.id)}
+                            title="Remove document"
+                            className="text-red-500 hover:text-red-700 cursor-pointer ml-0.5"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -2585,8 +2752,8 @@ Output ONLY the paragraph text.
         </div>
 
         {/* Modal Footer */}
-        <div className="border-t border-slate-200 bg-slate-50 p-4 px-6 flex items-center justify-between">
-          <div className="flex gap-2">
+        <div className="border-t border-slate-200 bg-slate-50 p-4 px-6 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
             {activeTab !== 'overview' && (
               <button
                 type="button"
@@ -2595,33 +2762,20 @@ Output ONLY the paragraph text.
                   const curIdx = tabs.indexOf(activeTab);
                   if (curIdx > 0) setActiveTab(tabs[curIdx - 1]);
                 }}
-                className="px-3 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1 cursor-pointer"
+                className="px-3.5 py-2 text-xs font-bold text-slate-600 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1 cursor-pointer"
               >
                 <ChevronLeft className="w-4 h-4" /> Previous
               </button>
             )}
-            {activeTab !== 'photos_signatories' && (
-              <button
-                type="button"
-                onClick={() => {
-                  const tabs: WizardTab[] = ['overview', 'objectives', 'recommendations', 'photos_signatories'];
-                  const curIdx = tabs.indexOf(activeTab);
-                  if (curIdx < tabs.length - 1) setActiveTab(tabs[curIdx + 1]);
-                }}
-                className="px-3 py-2 text-xs font-bold text-slate-700 hover:text-slate-900 bg-white border border-slate-300 rounded-lg flex items-center gap-1 cursor-pointer"
-              >
-                Next <ChevronRight className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3">
             {!isAdviserOrAdmin && (
-              <div className="flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+              <div className="hidden sm:flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
                 <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                 <span><strong>Drafting Mode:</strong> Officers can save drafts. Only your Club Adviser can submit for endorsement.</span>
               </div>
             )}
+          </div>
+
+          <div className="flex items-center gap-3 ml-auto">
             <button
               type="button"
               disabled={isSubmitting}
@@ -2631,25 +2785,41 @@ Output ONLY the paragraph text.
               <Save className="w-4 h-4" />
               Save Draft
             </button>
-            {isAdviserOrAdmin && (
+            {activeTab !== 'photos_signatories' ? (
               <button
                 type="button"
-                disabled={isSubmitting}
-                onClick={() => handleSubmitOrDraft(true)}
-                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                onClick={() => {
+                  const tabs: WizardTab[] = ['overview', 'objectives', 'recommendations', 'photos_signatories'];
+                  const curIdx = tabs.indexOf(activeTab);
+                  if (curIdx < tabs.length - 1) {
+                    handleNavigateToTab(tabs[curIdx + 1]);
+                  }
+                }}
+                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
               >
-                {isSubmitting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Submitting...
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4 text-[#FFD41C]" />
-                    {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
-                  </>
-                )}
+                Next <ChevronRight className="w-4 h-4" />
               </button>
+            ) : (
+              isAdviserOrAdmin && (
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={() => handleSubmitOrDraft(true)}
+                  className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Submitting...
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4 text-[#FFD41C]" />
+                      {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
+                    </>
+                  )}
+                </button>
+              )
             )}
           </div>
         </div>

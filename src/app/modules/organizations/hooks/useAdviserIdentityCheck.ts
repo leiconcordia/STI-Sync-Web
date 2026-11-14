@@ -1,16 +1,46 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
 import {
   ADVISER_NAME_REVIEW_REQUIRED, adviserNameVerification, adviserCandidateKey, collectAdviserIdentities, inspectAdviserIdentity,
   type AdviserIdentity, type AdviserNameVerification,
 } from '../utils/adviser-identity.utils';
-import { ADVISER_IDENTITY_SOURCES, readAdviserIdentities } from '../services/adviser-identity.service';
+import { readAdviserIdentities } from '../services/adviser-identity.service';
 import { checkAdviserAccount, type AdviserAccountLookup } from '../services/adviser-account.service';
+import { registerSingletonResetter } from '../../../utils/createSingletonStream';
+
+// Short TTL cache prevents opening 3 live full-collection listeners every time a modal renders,
+// while validateBeforeNext() still fetches fresh records before saving.
+const IDENTITY_CACHE_TTL_MS = 60_000;
+let cachedIdentityRecords: AdviserIdentity[] | null = null;
+let cachedIdentityFetchedAt = 0;
+let inflightIdentityPromise: Promise<{ records: AdviserIdentity[]; organizations: any[] }> | null = null;
+
+registerSingletonResetter(() => {
+  cachedIdentityRecords = null;
+  cachedIdentityFetchedAt = 0;
+  inflightIdentityPromise = null;
+});
+
+async function getCachedAdviserIdentities() {
+  if (cachedIdentityRecords && Date.now() - cachedIdentityFetchedAt < IDENTITY_CACHE_TTL_MS) {
+    return { records: cachedIdentityRecords };
+  }
+  if (!inflightIdentityPromise) {
+    inflightIdentityPromise = readAdviserIdentities()
+      .then((res) => {
+        cachedIdentityRecords = res.records;
+        cachedIdentityFetchedAt = Date.now();
+        return res;
+      })
+      .finally(() => {
+        inflightIdentityPromise = null;
+      });
+  }
+  return inflightIdentityPromise;
+}
 
 export function useAdviserIdentityCheck(candidate: AdviserIdentity, organizations: any[], excludeOrgId?: string, enabled = true) {
-  const [records, setRecords] = useState<AdviserIdentity[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [records, setRecords] = useState<AdviserIdentity[]>(() => cachedIdentityRecords || []);
+  const [loading, setLoading] = useState(() => Boolean(enabled && !cachedIdentityRecords));
   const [error, setError] = useState<Error | null>(null);
   const [confirmedKey, setConfirmedKey] = useState('');
   const [accountCheck, setAccountCheck] = useState<{ email: string; account: AdviserAccountLookup } | null>(null);
@@ -18,15 +48,21 @@ export function useAdviserIdentityCheck(candidate: AdviserIdentity, organization
   const latestKey = useRef(currentKey); latestKey.current = currentKey;
   useEffect(() => {
     if (!enabled) { setLoading(false); return; }
-    setLoading(true);
-    const loaded = new Set<string>();
-    const failures = new Map<string, Error>();
-    const liveSources = ADVISER_IDENTITY_SOURCES.filter(([name]) => name !== 'students');
-    const unsubscribes = liveSources.map(([name, sourceType]) => onSnapshot(collection(db, name), (snapshot) => {
-      setRecords((previous) => [...previous.filter((record) => record.sourceType !== sourceType), ...snapshot.docs.map((record) => ({ ...record.data(), ...(sourceType === 'student' ? { employeeId: record.data().studentId } : {}), id: record.id, sourceType }))]);
-      loaded.add(name); failures.delete(name); setLoading(loaded.size !== liveSources.length); setError(failures.values().next().value || null);
-    }, (failure) => { loaded.add(name); failures.set(name, failure); setLoading(loaded.size !== liveSources.length); setError(failure); }));
-    return () => unsubscribes.forEach((unsubscribe) => unsubscribe());
+    let cancelled = false;
+    setLoading(!cachedIdentityRecords || Date.now() - cachedIdentityFetchedAt >= IDENTITY_CACHE_TTL_MS);
+    getCachedAdviserIdentities()
+      .then((res) => {
+        if (cancelled) return;
+        setRecords(res.records);
+        setError(null);
+        setLoading(false);
+      })
+      .catch((failure: any) => {
+        if (cancelled) return;
+        setError(failure);
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
   }, [enabled]);
   const existing = useMemo(() => collectAdviserIdentities(records, organizations, excludeOrgId), [records, organizations, excludeOrgId]);
   const result = useMemo(() => inspectAdviserIdentity(candidate, existing), [candidate, existing]);
@@ -43,6 +79,8 @@ export function useAdviserIdentityCheck(candidate: AdviserIdentity, organization
   const validateBeforeNext = async () => {
     const key = currentKey;
     const fresh = await readAdviserIdentities();
+    cachedIdentityRecords = fresh.records;
+    cachedIdentityFetchedAt = Date.now();
     const account = await checkAdviserAccount(candidate.email || '');
     if (latestKey.current !== key) return { valid: false, errors: { name: 'The adviser details changed during validation. Press Next again.' } };
     setRecords(fresh.records); setLoading(false); setError(null); setAccountCheck({ email: (candidate.email || '').trim().toLowerCase(), account });

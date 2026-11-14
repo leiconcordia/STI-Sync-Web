@@ -1,27 +1,22 @@
-import { useState, useEffect } from 'react';
 import { collection, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { OrganizationTypeDocument } from '../types/organization.types';
+import { createSingletonStream } from '../../../utils/createSingletonStream';
+
+const organizationTypesStream = createSingletonStream<OrganizationTypeDocument[]>({
+  initialData: [],
+  start: (emit, emitError) => {
+    const q = query(collection(db, 'organization_types'), orderBy('name', 'asc'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        emit(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as OrganizationTypeDocument)));
+      },
+      (err) => emitError(err)
+    );
+  },
+});
 
 export const useOrganizationTypes = () => {
-  const [data, setData] = useState<OrganizationTypeDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  useEffect(() => {
-    const q = query(collection(db, 'organization_types'), orderBy('name', 'asc'));
-    const unsubscribe = onSnapshot(q,
-      (snapshot) => {
-        setData(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as OrganizationTypeDocument)));
-        setLoading(false);
-      },
-      (err) => {
-        setError(err);
-        setLoading(false);
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  return { data, loading, error };
+  return organizationTypesStream.use();
 };

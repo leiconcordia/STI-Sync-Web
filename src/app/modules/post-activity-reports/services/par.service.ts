@@ -46,6 +46,121 @@ import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cle
 
 export const PAR_COLLECTION = 'post_activity_reports';
 
+const AP_COLLECTIONS = ['activities', 'activity_proposals', 'proposals'] as const;
+
+/**
+ * Fetches the canonical Activity Proposal linked to an event or PAR record across
+ * primary ('activities') and legacy ('activity_proposals', 'proposals') collections.
+ */
+export async function fetchLinkedActivityProposal(
+  eventData?: any,
+  eventId?: string
+): Promise<any | null> {
+  const candidateIds = Array.from(
+    new Set(
+      [
+        eventData?.proposalId,
+        eventData?.activityProposalId,
+        eventData?.activityId,
+        eventId,
+        eventData?.id,
+      ]
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    )
+  );
+
+  for (const col of AP_COLLECTIONS) {
+    for (const id of candidateIds) {
+      try {
+        const snap = await getDoc(doc(db, col, id));
+        if (snap.exists()) {
+          const data = snap.data() as any;
+          if (
+            data.title ||
+            data.objectives ||
+            data.estimatedAttendance ||
+            data.estAttendanceCount ||
+            data.financialProjections ||
+            data.referenceNo
+          ) {
+            return { id: snap.id, ...data };
+          }
+        }
+      } catch {}
+    }
+  }
+
+  const refNo =
+    eventData?.referenceId ||
+    eventData?.proposalReferenceNo ||
+    eventData?.eventReferenceId ||
+    eventData?.referenceNo;
+
+  if (typeof refNo === 'string' && refNo.trim().length > 0) {
+    for (const col of AP_COLLECTIONS) {
+      try {
+        const q = query(collection(db, col), where('referenceNo', '==', refNo.trim()));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          return { id: snap.docs[0].id, ...snap.docs[0].data() };
+        }
+      } catch {}
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Enforces the single-approver invariant for Post-Activity Report signatory pipelines:
+ * strictly 1 signatory has actionType === 'approve'; all other steps are 'endorse'.
+ */
+export function enforceSinglePARApprover(steps: PARApprovalStep[]): PARApprovalStep[] {
+  if (!Array.isArray(steps) || steps.length === 0) return [];
+
+  const copy = steps.map((s) => ({ ...s }));
+  let chosenIdx = -1;
+
+  // Prefer the last executive/existing approver in the chain
+  for (let i = copy.length - 1; i >= 0; i--) {
+    if (copy[i].actionType === 'approve') {
+      chosenIdx = i;
+      break;
+    }
+  }
+
+  if (chosenIdx === -1) {
+    for (let i = copy.length - 1; i >= 0; i--) {
+      if (copy[i].role === 'school_administrator' || copy[i].role === 'school_president') {
+        chosenIdx = i;
+        break;
+      }
+    }
+  }
+
+  if (chosenIdx === -1) {
+    chosenIdx = copy.length - 1;
+  }
+
+  return copy.map((step, idx) => {
+    const isApprover = idx === chosenIdx;
+    const actionType: 'endorse' | 'approve' = isApprover ? 'approve' : 'endorse';
+    const nextLabel = isApprover
+      ? step.signatoryLabel && !/endorsed by/i.test(step.signatoryLabel)
+        ? step.signatoryLabel
+        : resolveSignatoryLabel({ ...step, actionType } as any, 'par', true)
+      : step.signatoryLabel && !/approved by/i.test(step.signatoryLabel)
+      ? step.signatoryLabel
+      : resolveSignatoryLabel({ ...step, actionType } as any, 'par', false);
+
+    return {
+      ...step,
+      actionType,
+      signatoryLabel: nextLabel,
+    };
+  });
+}
+
 /**
  * Strips undefined values from Firestore payloads.
  */
@@ -196,7 +311,7 @@ export async function generateDefaultPARSignatoryChain(
     });
 
     if (chain.length > 0) {
-      return normalizeApprovalStages(chain);
+      return normalizeApprovalStages(enforceSinglePARApprover(chain));
     }
   }
 
@@ -207,7 +322,7 @@ export async function generateDefaultPARSignatoryChain(
 
   const accountedSignatoryIds = new Set<string>();
 
-  // 1. For Student Organizations: SAS Head Reviewer
+  // 1. For Student Organizations: SAS Head Reviewer (Endorser — strictly 1 Final Approver at end)
   if (!isSasCreator) {
     const sasConfig = getCachedSasSignatoryConfig();
     const sasSigner: InstitutionalSignatory = {
@@ -220,9 +335,9 @@ export async function generateDefaultPARSignatoryChain(
       isActive: true,
       isPermanentSigner: true,
       applicableScope: 'all',
-      actionType: 'approver',
+      actionType: 'endorser',
     };
-    stageSigners.push({ signer: sasSigner, action: 'approve' });
+    stageSigners.push({ signer: sasSigner, action: 'endorse' });
     accountedSignatoryIds.add(sasSigner.id);
   }
 
@@ -264,20 +379,29 @@ export async function generateDefaultPARSignatoryChain(
         (s.roleTitle && s.roleTitle.toLowerCase().includes('administrator')) ||
         (s.roleTitle && s.roleTitle.toLowerCase().includes('president')))
   );
-  executiveHeads.forEach((sig) => {
-    stageSigners.push({ signer: sig, action: 'approve' });
+  executiveHeads.forEach((sig, idx) => {
+    const isFinalExec = idx === executiveHeads.length - 1;
+    stageSigners.push({ signer: sig, action: isFinalExec ? 'approve' : 'endorse' });
     accountedSignatoryIds.add(sig.id);
   });
 
-  // Fallback: If no recognized roles matched, add remaining active signers
+  // Fallback: If no recognized roles matched, add remaining active signers (only final is approver)
   if (stageSigners.length === 0) {
-    activeSignatories.forEach((sig) => {
-      stageSigners.push({ signer: sig, action: 'approve' });
+    activeSignatories.forEach((sig, idx) => {
+      const isFinal = idx === activeSignatories!.length - 1;
+      stageSigners.push({ signer: sig, action: isFinal ? 'approve' : 'endorse' });
     });
   }
 
-  // Ensure there is at least one approver
-  if (!stageSigners.some((s) => s.action === 'approve') && stageSigners.length > 0) {
+  // Ensure there is strictly one approver
+  let foundApprover = false;
+  for (let i = stageSigners.length - 1; i >= 0; i--) {
+    if (stageSigners[i].action === 'approve') {
+      if (!foundApprover) foundApprover = true;
+      else stageSigners[i].action = 'endorse';
+    }
+  }
+  if (!foundApprover && stageSigners.length > 0) {
     stageSigners[stageSigners.length - 1].action = 'approve';
   }
 
@@ -305,7 +429,7 @@ export async function generateDefaultPARSignatoryChain(
     };
   });
 
-  return normalizeApprovalStages(chain);
+  return normalizeApprovalStages(enforceSinglePARApprover(chain));
 }
 
 /**
@@ -364,25 +488,23 @@ export async function saveOrSubmitPAR(
 
   const eventData = eventSnap.data() as any;
 
+  const lStatus = (eventData.lifecycleStatus || eventData.status || eventData.proposalStatus || '')
+    .toString()
+    .toLowerCase();
   const isEventConcluded =
-    eventData.lifecycleStatus === 'completed' ||
+    lStatus === 'completed' ||
+    lStatus === 'concluded' ||
     eventData.status === 'completed' ||
-    eventData.proposalStatus === 'completed';
+    eventData.proposalStatus === 'completed' ||
+    eventData.isConcluded === true ||
+    eventData.timingStatus === 'completed';
 
   if (!isEventConcluded) {
     throw new Error('A Post-Activity Report can only be created once the event has concluded.');
   }
 
-  // 1:1:1 Invariant: Liquidation clearance check
-  const liqStatus = ((eventData as any).liquidationStatus || '').toString().toLowerCase();
-  const isLiquidationSatisfied =
-    liqStatus === 'approved' ||
-    liqStatus === 'none_required' ||
-    (eventData as any).isLiquidated === true;
-
-  if (!isLiquidationSatisfied) {
-    throw new Error('A Post-Activity Report requires the financial liquidation report to be approved first.');
-  }
+  // Financial Liquidation (Form LF-01) is decoupled from PAR authoring/submission so both can proceed
+  // simultaneously (or use Proposal Fallback projections when liquidation has not yet been approved).
 
   // ── STRICT 1:1:1 LIFECYCLE INVARIANT ──
   // An activity proposal can have at most ONE Post-Activity Report.
@@ -481,10 +603,16 @@ export async function saveOrSubmitPAR(
     formData.referenceNo ||
     (await generatePARReferenceNumber(isOfficer));
 
-  // Generate dynamic approval chain if not provided
+  // Generate dynamic approval chain if not provided & strictly enforce 1 approver
   let approvalChain = formData.approvalChain;
   if (!approvalChain || approvalChain.length === 0) {
     approvalChain = await generateDefaultPARSignatoryChain(eventData.hostingOrgId, undefined, isSasEvent);
+  } else {
+    const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    if (submit && approverCount > 1) {
+      throw new Error('Only 1 Final Approver is permitted in the Post-Activity Report signatory pipeline.');
+    }
+    approvalChain = enforceSinglePARApprover(approvalChain);
   }
 
   const status: PostActivityReportStatus = submit ? 'under_review' : (formData.status || 'draft');

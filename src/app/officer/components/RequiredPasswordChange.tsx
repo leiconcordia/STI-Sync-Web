@@ -86,8 +86,9 @@ export function RequiredPasswordChange({ profile }: { profile: OfficerProfile })
   }
 
   async function logout() {
+    const { clearPortalSessions } = await import('../../auth/services/portal-workspace.service');
+    clearPortalSessions();
     await signOut(auth);
-    localStorage.removeItem('sti_sync_officer_session');
     window.location.assign('/portal/login');
   }
 

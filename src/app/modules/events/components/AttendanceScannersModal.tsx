@@ -958,6 +958,8 @@ export default function AttendanceScannersModal({
             onChangeSections={setTargetSections}
             readOnly={readOnly}
             hasHostingOrg={Boolean((activity as any).hostingOrgId && (activity as any).hostingOrgId !== 'sas')}
+            hostingOrgId={(activity as any).hostingOrgId || (activity as any).organizationId}
+            excludedMemberIds={(activity as any).excludedMemberIds}
             title="Required Target Participant & Scanner Roster Filter"
             subtitle="Controls which enrolled students are downloaded to the offline scanner roster and permitted to check in."
             reachLabel="eligible students in offline scanner roster"

@@ -1,5 +1,6 @@
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../../../services/firebase';
+import { resetAllSingletonStreams } from '../../utils/createSingletonStream';
 import { formatPersonName, structuredNameFields } from '../../utils/name.utils';
 import { getSignatoryAuthorizedWorkflows } from '../../modules/signatories/types/signatory.types';
 
@@ -110,6 +111,7 @@ export function readStoredPortalWorkspaces(): PortalWorkspace[] {
 
 export function activatePortalWorkspace(workspace: PortalWorkspace) {
   if (!auth.currentUser || workspace.session.authUid !== auth.currentUser.uid) throw new Error('This workspace does not belong to the signed-in account.');
+  resetAllSingletonStreams();
   localStorage.removeItem(OFFICER_KEY); localStorage.removeItem(SIGNATORY_KEY);
   if (workspace.kind === 'signatory') {
     localStorage.setItem(SIGNATORY_KEY, JSON.stringify(workspace.session));
@@ -119,5 +121,6 @@ export function activatePortalWorkspace(workspace: PortalWorkspace) {
 }
 
 export function clearPortalSessions() {
+  resetAllSingletonStreams();
   [OFFICER_KEY, SIGNATORY_KEY, PORTAL_WORKSPACES_KEY].forEach((key) => localStorage.removeItem(key));
 }

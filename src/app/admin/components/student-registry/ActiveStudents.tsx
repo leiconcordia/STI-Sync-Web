@@ -1,5 +1,5 @@
 import { formatPersonName } from '../../../utils/name.utils';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
 import BulkImportRegistrarModal from './BulkImportRegistrarModal';
@@ -9,10 +9,9 @@ import ArchiveStudentModal from '../../../modules/students/components/ArchiveStu
 import { StudentDocument } from '../../../modules/students/types/student.types';
 import { formatTimestampDate } from '../../../modules/students/utils/date.utils';
 import { useCourses, useSections } from '../../../modules/academic/hooks/useAcademicStream';
-import { collection, onSnapshot, query } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
-import type { OrganizationMemberDocument } from '../../../modules/organizations/types/member.types';
-import type { PayableDocument } from '../../../modules/finance/types/payable.types';
+import { useOrganizationStream } from '../../../modules/organizations/hooks/useOrganizationStream';
+import { useAllActiveMemberships } from '../../../modules/organizations/hooks/useOrgMemberCountsStream';
+import { useAllPayables } from '../../../modules/finance/hooks/usePayableStream';
 import { TablePagination } from '../../../components/common/TablePagination';
 import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile';
 
@@ -58,36 +57,10 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
   const { user, profile } = useAdviserProfile();
   const adminUid = user?.uid || profile?.uid || 'admin';
 
-  // Real-time Organization Memberships, Organizations & Payables for table enrichment
-  const [allMemberships, setAllMemberships] = useState<OrganizationMemberDocument[]>([]);
-  const [allOrgs, setAllOrgs] = useState<any[]>([]);
-  const [allPayables, setAllPayables] = useState<PayableDocument[]>([]);
-
-  useEffect(() => {
-    // 1. Subscribe to organization members
-    const qMembers = query(collection(db, 'organization_members'));
-    const unsubMembers = onSnapshot(qMembers, (snap) => {
-      setAllMemberships(snap.docs.map((d) => ({ id: d.id, ...d.data() } as OrganizationMemberDocument)));
-    });
-
-    // 2. Subscribe to organizations for acronyms / names
-    const qOrgs = query(collection(db, 'organizations'));
-    const unsubOrgs = onSnapshot(qOrgs, (snap) => {
-      setAllOrgs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
-
-    // 3. Subscribe to payables
-    const qPayables = query(collection(db, 'payables'));
-    const unsubPayables = onSnapshot(qPayables, (snap) => {
-      setAllPayables(snap.docs.map((d) => ({ id: d.id, ...d.data() } as PayableDocument)));
-    });
-
-    return () => {
-      unsubMembers();
-      unsubOrgs();
-      unsubPayables();
-    };
-  }, []);
+  // Shared singleton streams for Organization Memberships, Organizations & Payables enrichment
+  const { data: allMemberships = [] } = useAllActiveMemberships();
+  const { data: allOrgs = [] } = useOrganizationStream();
+  const { data: allPayables = [] } = useAllPayables();
 
   // Map student club memberships
   const studentOrgsMap = useMemo(() => {
@@ -96,6 +69,7 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
 
     const map = new Map<string, string[]>();
     allMemberships.forEach((m) => {
+      if (m.status !== 'active' && m.status !== 'pending_removal') return;
       const org = orgMap.get(m.organizationId);
       const clubBadge = org?.acronym || org?.name || m.department || 'Club';
 

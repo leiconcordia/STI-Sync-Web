@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import {
   ArrowLeft, Download, Clock, CheckCircle, CheckCircle2, XCircle, RotateCcw,
-  Calendar, Users, Shield, Receipt, FileText, FileCheck, History,
+  Calendar, MapPin, Users, Shield, Receipt, FileText, FileCheck, History,
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
   FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
@@ -74,7 +74,7 @@ const NAV_SECTIONS = [
   { id: 'objectives', icon: Target, label: '2. Objectives & Indicators' },
   { id: 'operations', icon: SlidersHorizontal, label: '3. Operations & Budget Custodians' },
   { id: 'execution', icon: Wrench, label: '4. Mechanics & Materials' },
-  { id: 'audience_schedule', icon: Calendar, label: '5. Schedule & Target Audience' },
+  { id: 'audience_schedule', icon: Calendar, label: '5. Target Market & Schedule' },
   { id: 'strategy', icon: Megaphone, label: '6. Marketing & Documentation' },
   { id: 'tasks', icon: ListChecks, label: '7. Committee Task Matrix' },
   { id: 'financials', icon: Receipt, label: '8. Financial Projections' },
@@ -1237,8 +1237,16 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     return null;
   }, [isSasCreated, activeEvent.hostingOrgId, event, orgMap, orgName, orgAcronym]);
   const eventTypeName = eventTypes.find((t) => t.id === event.eventTypeId)?.name || 'General Activity';
-  const venueObj = venues.find((v) => v.id === event.venueId);
-  const venueName = venueObj ? venueObj.name : event.customVenueName || event.venueId || 'On-Campus Venue';
+  const resolvedVenueId = (activeEvent as any)?.venueId || event.venueId;
+  const venueObj = venues.find((v) => v.id === resolvedVenueId);
+  const venueName = venueObj
+    ? venueObj.name
+    : (activeEvent as any)?.venueName ||
+      fullProposal?.venueName ||
+      (event as any)?.venueName ||
+      event.customVenueName ||
+      resolvedVenueId ||
+      'On-Campus Venue';
 
   const [exportingPdf, setExportingPdf] = useState(false);
 
@@ -2759,127 +2767,213 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             </div>
           </section>
 
-          {/* SECTION 5 — SCHEDULE & TARGET AUDIENCE */}
+          {/* SECTION 5 — TARGET MARKET, ATTENDANCE & SCHEDULE */}
           <section
             ref={(el) => { sectionRefs.current['audience_schedule'] = el; }}
             onMouseEnter={() => { setActiveSection('audience_schedule'); setVisitedSections((p) => new Set([...p, 'audience_schedule'])); }}
             className="space-y-4"
           >
             <SectionHeader
-              title="5. Target Audience & Multi-Session Schedule"
-              subtitle="Academic criteria, participant count, and session schedules with entry/exit scanning windows"
+              title="5. Target Market & Multi-Session Schedule"
+              subtitle="Declared target market, expected attendance, requested venue, and proposed session schedules"
             />
 
-            <div className="space-y-4">
-              {/* Audience Scope Summary */}
-              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-xs space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-100 pb-3 border-b border-gray-100">
-                  <div className="px-3 first:pl-0 text-left sm:text-center">
-                    <p className="text-[11px] uppercase text-gray-400 font-bold tracking-wider mb-1">Expected Attendance</p>
-                    <p className="text-[#001A4D] font-extrabold text-base">
-                      {fullProposal.estimatedAttendance || `${event.expectedParticipantCount || 0} Students`}
-                    </p>
-                  </div>
-                  <div className="px-3 text-left sm:text-center pt-3 sm:pt-0">
-                    <p className="text-[11px] uppercase text-gray-400 font-bold tracking-wider mb-1">Academic Division</p>
-                    <p className="text-[#0E4EBD] font-extrabold text-sm">
-                      {event.targetAcademicLevel === 'COLLEGE'
-                        ? 'College Division'
-                        : event.targetAcademicLevel === 'SHS'
-                          ? 'Senior High School (SHS)'
-                          : 'Both College & SHS'}
-                    </p>
-                  </div>
-                  <div className="px-3 last:pr-0 text-left sm:text-center pt-3 sm:pt-0">
-                    <p className="text-[11px] uppercase text-gray-400 font-bold tracking-wider mb-1">Audience Scope</p>
-                    <p className="text-slate-800 font-extrabold text-sm">
-                      {event.targetAudienceScope === 'members' ? 'Org Members Only' : 'Campus-Wide Open'}
-                    </p>
-                  </div>
-                </div>
+            {(() => {
+              const resolvedTargetMarket =
+                fullProposal.targetMarket?.trim() ||
+                fullProposal.targetAudience?.targetMarketSummary?.trim() ||
+                (activeEvent as any)?.targetMarket?.trim() ||
+                (activeEvent as any)?.targetAudience?.targetMarketSummary?.trim() ||
+                (event as any).targetMarket?.trim() ||
+                (event as any).targetAudience?.targetMarketSummary?.trim() ||
+                '';
 
-                {/* Filter Badges: Years, Programs, Sections */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Target Year Levels</p>
-                    <div className="flex flex-wrap gap-1">
-                      {(event.targetYearLevels || []).map((y) => (
-                        <span key={y} className="px-2 py-0.5 bg-[#001A4D] text-[#FFD41C] text-[10px] font-bold rounded-md">
-                          {y}
-                        </span>
-                      ))}
-                      {(!event.targetYearLevels || event.targetYearLevels.length === 0) && (
-                        <span className="text-slate-400 italic text-[11px]">All Year Levels</span>
-                      )}
-                    </div>
-                  </div>
+              const resolvedExpectedAttendance =
+                fullProposal.estimatedAttendance?.trim() ||
+                (fullProposal.estAttendanceCount
+                  ? `${fullProposal.estAttendanceCount} ${fullProposal.estAttendanceQualifier || 'participants'}`
+                  : '') ||
+                (activeEvent as any)?.estimatedAttendance?.trim() ||
+                `${activeEvent.expectedParticipantCount || event.expectedParticipantCount || 0} Participants`;
 
-                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Programs / Strands</p>
-                    <div className="flex flex-wrap gap-1">
-                      {targetCourseLabels.map((c, i) => (
-                        <span key={i} className="px-2 py-0.5 bg-indigo-50 text-indigo-800 text-[10px] font-semibold rounded-md border border-indigo-200">
-                          {c}
-                        </span>
-                      ))}
-                      {targetCourseLabels.length === 0 && (
-                        <span className="text-slate-400 italic text-[11px]">All Programs</span>
-                      )}
-                    </div>
-                  </div>
+              const hasOperationalFilters = Boolean(
+                (activeEvent as any)?.publishAudienceConfigured ||
+                (activeEvent as any)?.attendanceAudienceConfigured ||
+                (event as any).publishAudienceConfigured ||
+                (event as any).attendanceAudienceConfigured ||
+                event.targetAudienceScope === 'members' ||
+                (event.targetYearLevels && event.targetYearLevels.length > 0) ||
+                targetCourseLabels.length > 0 ||
+                targetSectionLabels.length > 0 ||
+                (event.targetAcademicLevel && event.targetAcademicLevel !== 'BOTH')
+              );
 
-                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Target Sections</p>
-                    <div className="flex flex-wrap gap-1">
-                      {targetSectionLabels.map((s, i) => (
-                        <span key={i} className="px-2 py-0.5 bg-purple-50 text-[#83358E] text-[10px] font-semibold rounded-md border border-purple-200">
-                          {s}
-                        </span>
-                      ))}
-                      {targetSectionLabels.length === 0 && (
-                        <span className="text-slate-400 italic text-[11px]">All Sections</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+              const customTargetMarkets = fullProposal.targetAudience?.customTargetMarkets || [];
+              const includeFaculty = Boolean(fullProposal.targetAudience?.includeFaculty);
+              const facultyCount = Number(fullProposal.targetAudience?.facultyCount || 0);
 
-              {/* Proposed Schedule List */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-bold text-[#001A4D]">
-                    Proposed Activity Schedule ({event.sessions?.length || 1})
-                  </h4>
-                  <span className="text-xs text-gray-500">
-                    Requested Venue: <strong className="text-[#001A4D]">{venueName}</strong>
-                  </span>
-                </div>
-
-                {(event.sessions || []).map((s, i) => (
-                  <div key={s.id || i} className="border-l-4 border-[#0E4EBD] bg-white border border-gray-200 rounded-xl p-4 shadow-xs space-y-2">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 bg-[#0E4EBD]/10 text-[#0E4EBD] font-black text-xs uppercase tracking-wider rounded-md">
-                          Schedule {i + 1}
-                        </span>
-                        <span className="text-[#001A4D] font-extrabold text-base">{s.title || `Schedule ${i + 1}`}</span>
+              return (
+                <div className="space-y-4">
+                  {/* Target Market & Attendance Summary */}
+                  <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-xs space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-0 sm:divide-x divide-gray-100">
+                      <div className="sm:col-span-2 sm:pr-5">
+                        <p className="text-[11px] uppercase text-gray-400 font-bold tracking-wider mb-1">
+                          Target Market
+                        </p>
+                        <p className="text-[#001A4D] font-extrabold text-base leading-snug">
+                          {resolvedTargetMarket ||
+                            (event.targetAudienceScope === 'members'
+                              ? 'Organization Members Only'
+                              : 'All STI Students (Campus-Wide)')}
+                        </p>
+                        {(includeFaculty || customTargetMarkets.length > 0) && (
+                          <div className="flex flex-wrap gap-1.5 mt-2">
+                            {includeFaculty && (
+                              <span className="px-2 py-0.5 bg-blue-50 text-[#0E4EBD] text-[11px] font-semibold rounded-md border border-blue-200">
+                                Includes Faculty &amp; Staff{facultyCount > 0 ? ` (${facultyCount})` : ''}
+                              </span>
+                            )}
+                            {customTargetMarkets.map((c: any, idx: number) => (
+                              <span
+                                key={c.id || idx}
+                                className="px-2 py-0.5 bg-slate-100 text-slate-700 text-[11px] font-semibold rounded-md border border-slate-200"
+                              >
+                                {c.name}{c.count ? ` (${c.count})` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      <div className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold bg-gray-50 px-2.5 py-1 rounded-lg border border-gray-200/80">
-                        <Calendar className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                        <span>{formatAppDate(s.date)}</span>
-                        <span className="text-gray-300">•</span>
-                        <Clock className="w-3.5 h-3.5 text-gray-500" />
-                        <span>{format12HourTime(s.startTime)} – {format12HourTime(s.endTime)}</span>
+
+                      <div className="pt-3 sm:pt-0 sm:pl-5 sm:text-center flex flex-col justify-center">
+                        <p className="text-[11px] uppercase text-gray-400 font-bold tracking-wider mb-1">
+                          Expected Attendance
+                        </p>
+                        <p className="text-[#001A4D] font-extrabold text-lg">
+                          {resolvedExpectedAttendance}
+                        </p>
                       </div>
                     </div>
-                  </div>
-                ))}
 
-                <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200/80 rounded-lg px-3 py-2">
-                  Note: The proposed schedule above is for activity approval only. Actual attendance sessions (with Time-In/Time-Out scan windows and scanners) are created after publishing to the mobile app in <strong className="text-slate-700">Attendance, Sessions &amp; Scanners</strong>.
-                </p>
-              </div>
-            </div>
+                    {/* Operational Student Eligibility Filters (shown only once configured) */}
+                    {hasOperationalFilters && (
+                      <div className="pt-4 border-t border-gray-100 space-y-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] uppercase font-bold tracking-wider text-slate-500">
+                            Mobile Feed &amp; Scanner Eligibility Filters
+                          </span>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="px-2.5 py-0.5 bg-blue-50 text-[#0E4EBD] font-bold rounded-full border border-blue-200">
+                              {event.targetAcademicLevel === 'COLLEGE'
+                                ? 'College Division'
+                                : event.targetAcademicLevel === 'SHS'
+                                  ? 'Senior High School (SHS)'
+                                  : 'Both College & SHS'}
+                            </span>
+                            <span className="px-2.5 py-0.5 bg-slate-100 text-slate-800 font-bold rounded-full border border-slate-200">
+                              {event.targetAudienceScope === 'members' ? 'Org Members Only' : 'Campus-Wide Open'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                            <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Target Year Levels</p>
+                            <div className="flex flex-wrap gap-1">
+                              {(event.targetYearLevels || []).map((y) => (
+                                <span key={y} className="px-2 py-0.5 bg-[#001A4D] text-[#FFD41C] text-[10px] font-bold rounded-md">
+                                  {y}
+                                </span>
+                              ))}
+                              {(!event.targetYearLevels || event.targetYearLevels.length === 0) && (
+                                <span className="text-slate-400 italic text-[11px]">All Year Levels</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                            <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Programs / Strands</p>
+                            <div className="flex flex-wrap gap-1">
+                              {targetCourseLabels.map((c, i) => (
+                                <span key={i} className="px-2 py-0.5 bg-indigo-50 text-indigo-800 text-[10px] font-semibold rounded-md border border-indigo-200">
+                                  {c}
+                                </span>
+                              ))}
+                              {targetCourseLabels.length === 0 && (
+                                <span className="text-slate-400 italic text-[11px]">All Programs</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                            <p className="text-[10px] uppercase font-bold text-slate-400 mb-1.5">Target Sections</p>
+                            <div className="flex flex-wrap gap-1">
+                              {targetSectionLabels.map((s, i) => (
+                                <span key={i} className="px-2 py-0.5 bg-purple-50 text-[#83358E] text-[10px] font-semibold rounded-md border border-purple-200">
+                                  {s}
+                                </span>
+                              ))}
+                              {targetSectionLabels.length === 0 && (
+                                <span className="text-slate-400 italic text-[11px]">All Sections</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Prominent Requested Venue Banner */}
+                  <div className="flex items-center gap-3.5 bg-blue-50/70 border border-blue-200 rounded-2xl px-5 py-3.5 shadow-2xs">
+                    <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center flex-shrink-0 shadow-xs">
+                      <MapPin className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11px] uppercase font-bold tracking-wider text-[#0E4EBD]">
+                        Requested Venue
+                      </p>
+                      <p className="text-base sm:text-lg font-extrabold text-[#001A4D] break-words">
+                        {venueName}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Proposed Schedule List */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-sm font-bold text-[#001A4D]">
+                        Proposed Activity Schedule ({event.sessions?.length || 1})
+                      </h4>
+                    </div>
+
+                    {(event.sessions || []).map((s, i) => (
+                      <div key={s.id || i} className="border-l-4 border-[#0E4EBD] bg-white border border-gray-200 rounded-xl p-4 shadow-xs space-y-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                          <div className="flex items-center gap-2">
+                            <span className="px-2 py-0.5 bg-[#0E4EBD]/10 text-[#0E4EBD] font-black text-xs uppercase tracking-wider rounded-md">
+                              Schedule {i + 1}
+                            </span>
+                            <span className="text-[#001A4D] font-extrabold text-base">{s.title || `Schedule ${i + 1}`}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-gray-700 font-semibold bg-gray-50 px-2.5 py-1 rounded-lg border border-gray-200/80">
+                            <Calendar className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                            <span>{formatAppDate(s.date)}</span>
+                            <span className="text-gray-300">•</span>
+                            <Clock className="w-3.5 h-3.5 text-gray-500" />
+                            <span>{format12HourTime(s.startTime)} – {format12HourTime(s.endTime)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200/80 rounded-lg px-3 py-2">
+                      Note: The proposed schedule above is for activity approval only. Actual attendance sessions (with Time-In/Time-Out scan windows and scanners) are created after publishing to the mobile app in <strong className="text-slate-700">Attendance, Sessions &amp; Scanners</strong>.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
           </section>
 
           {/* SECTION 6 — MARKETING & DOCUMENTATION STRATEGY */}
