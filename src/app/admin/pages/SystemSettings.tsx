@@ -3,7 +3,6 @@ import { useState, useEffect } from 'react';
 import SettingsNavigation from '../components/settings/SettingsNavigation';
 import AdviserProfile from '../components/settings/AdviserProfile';
 import SecurityPassword from '../components/settings/SecurityPassword';
-import AcademicCalendar from '../components/settings/AcademicCalendar';
 import CourseDepartment from '../components/settings/CourseDepartment';
 import OrganizationSettings from '../components/settings/OrganizationSettings';
 import OfficerManagement from '../components/settings/OfficerManagement';
@@ -11,7 +10,6 @@ import EventConfiguration from '../components/settings/EventConfiguration';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
 import InstitutionalSignatoryManagement from '../components/settings/InstitutionalSignatoryManagement';
 import ApprovalWorkflowSettings from '../components/settings/ApprovalWorkflowSettings';
-import ArchiveCenter from '../components/settings/ArchiveCenter';
 import { useSearchParams } from 'react-router';
 
 export function SystemSettings() {
@@ -42,8 +40,6 @@ export function SystemSettings() {
         return <AdviserProfile onUnsavedChange={handleUnsavedChange} />;
       case 'security-password':
         return <SecurityPassword onUnsavedChange={handleUnsavedChange} />;
-      case 'academic-calendar':
-        return <AcademicCalendar onUnsavedChange={handleUnsavedChange} />;
       case 'course-department':
         return <CourseDepartment onUnsavedChange={handleUnsavedChange} />;
       case 'organization-settings':
@@ -60,8 +56,6 @@ export function SystemSettings() {
         return <ApprovalWorkflowSettings />;
       case 'institutional-signatories':
         return <InstitutionalSignatoryManagement />;
-      case 'archive-center':
-        return <ArchiveCenter onUnsavedChange={handleUnsavedChange} />;
       default:
         return <AdviserProfile onUnsavedChange={handleUnsavedChange} />;
     }

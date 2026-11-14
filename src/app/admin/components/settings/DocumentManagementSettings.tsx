@@ -1,21 +1,17 @@
 import { CATEGORY_COLORS as DOCUMENT_CATEGORY_COLORS } from '../../../modules/documents/utils/document-storage';
 import { AddDocumentCategoryModal } from '../../../modules/documents/components/AddDocumentCategoryModal';
 import { toast } from 'sonner';
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import {
-  Tag, Plus, Trash2, Edit2, Check, X,
-  AlertCircle, Hash, Archive, Save, Loader2, RotateCcw,
+  Plus, Trash2, Edit2, Check, X, Loader2,
 } from 'lucide-react';
 
 import { useDocumentCategories } from '../../../modules/documents/hooks/useDocumentCategories';
-import { useDocumentSettings } from '../../../modules/documents/hooks/useDocumentSettings';
 import {
   createDocumentCategory,
   updateDocumentCategory,
   deleteDocumentCategory,
 } from '../../../modules/documents/services/document_category.service';
-import { saveDocumentSettings } from '../../../modules/documents/services/document_settings.service';
-import { DEFAULT_DOCUMENT_SETTINGS } from '../../../modules/documents/types/document.types';
 import type { DocumentCategoryDocument } from '../../../modules/documents/types/document.types';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -143,27 +139,6 @@ function CategoryRow({
   );
 }
 
-// ─── Per-Box Save Button ───────────────────────────────────────────────────────
-function BoxSaveButton({ dirty, saving, onSave }: { dirty: boolean; saving: boolean; onSave: () => void }) {
-  if (!dirty && !saving) return null;
-  return (
-    <div className="flex justify-end mt-4 pt-3 border-t border-gray-100">
-      <button
-        onClick={onSave}
-        disabled={saving}
-        className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${
-          saving
-            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-            : 'bg-[#001A4D] text-[#FFD41C] hover:bg-[#001A4D]/90'
-        }`}
-      >
-        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-        {saving ? 'Saving…' : 'Save Changes'}
-      </button>
-    </div>
-  );
-}
-
 // ─── Main Settings Component ───────────────────────────────────────────────────
 export default function DocumentManagementSettings() {
   // ── Document Categories (Firestore-backed) ─────────────────────────────────
@@ -180,100 +155,8 @@ export default function DocumentManagementSettings() {
     try { await deleteDocumentCategory(id); } catch (error: any) { toast.error(error.message); }
   };
 
-  // ── Reference Number Format (Firestore-backed) ─────────────────────────────
-  const { data: settings, loading: settingsLoading } = useDocumentSettings();
-
-  // Local form state for Reference Number
-  const [refPrefix, setRefPrefix] = useState(DEFAULT_DOCUMENT_SETTINGS.refPrefix);
-  const [refSeparator, setRefSeparator] = useState(DEFAULT_DOCUMENT_SETTINGS.refSeparator);
-  const [refIncludeYear, setRefIncludeYear] = useState(DEFAULT_DOCUMENT_SETTINGS.refIncludeYear);
-  const [refPadding, setRefPadding] = useState(DEFAULT_DOCUMENT_SETTINGS.refPadding);
-  const [refDirty, setRefDirty] = useState(false);
-  const [refSaving, setRefSaving] = useState(false);
-
-  // Local form state for Retention & Archival
-  const [retentionYears, setRetentionYears] = useState(DEFAULT_DOCUMENT_SETTINGS.retentionYears);
-  const [autoArchiveCompleted, setAutoArchiveCompleted] = useState(DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted);
-  const [archiveAfterWeeks, setArchiveAfterWeeks] = useState(DEFAULT_DOCUMENT_SETTINGS.archiveAfterWeeks);
-  const [allowOfficerDelete, setAllowOfficerDelete] = useState(DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete);
-  const [draftExpiryDays, setDraftExpiryDays] = useState(DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
-  const [retDirty, setRetDirty] = useState(false);
-  const [retSaving, setRetSaving] = useState(false);
-
-  // Hydrate local form state from Firestore when data arrives
-  useEffect(() => {
-    if (settings) {
-      setRefPrefix(settings.refPrefix ?? DEFAULT_DOCUMENT_SETTINGS.refPrefix);
-      setRefSeparator(settings.refSeparator ?? DEFAULT_DOCUMENT_SETTINGS.refSeparator);
-      setRefIncludeYear(settings.refIncludeYear ?? DEFAULT_DOCUMENT_SETTINGS.refIncludeYear);
-      setRefPadding(settings.refPadding ?? DEFAULT_DOCUMENT_SETTINGS.refPadding);
-
-      setRetentionYears(settings.retentionYears ?? DEFAULT_DOCUMENT_SETTINGS.retentionYears);
-      setAutoArchiveCompleted(settings.autoArchiveCompleted ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted);
-      setArchiveAfterWeeks(settings.archiveAfterWeeks ?? (settings.archiveAfterSemesters ? settings.archiveAfterSemesters * 18 : DEFAULT_DOCUMENT_SETTINGS.archiveAfterWeeks));
-      setAllowOfficerDelete(settings.allowOfficerDelete ?? DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete);
-      setDraftExpiryDays(settings.draftExpiryDays ?? DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
-    }
-  }, [settings]);
-
-  // Dirty detection — compare local state with Firestore state
-  const checkRefDirty = useCallback(() => {
-    const saved = settings ?? DEFAULT_DOCUMENT_SETTINGS;
-    const dirty =
-      refPrefix !== (saved.refPrefix ?? DEFAULT_DOCUMENT_SETTINGS.refPrefix) ||
-      refSeparator !== (saved.refSeparator ?? DEFAULT_DOCUMENT_SETTINGS.refSeparator) ||
-      refIncludeYear !== (saved.refIncludeYear ?? DEFAULT_DOCUMENT_SETTINGS.refIncludeYear) ||
-      refPadding !== (saved.refPadding ?? DEFAULT_DOCUMENT_SETTINGS.refPadding);
-    setRefDirty(dirty);
-  }, [refPrefix, refSeparator, refIncludeYear, refPadding, settings]);
-
-  const checkRetDirty = useCallback(() => {
-    const saved = settings ?? DEFAULT_DOCUMENT_SETTINGS;
-    const savedWeeks = saved.archiveAfterWeeks ?? (saved.archiveAfterSemesters ? saved.archiveAfterSemesters * 18 : DEFAULT_DOCUMENT_SETTINGS.archiveAfterWeeks);
-    const dirty =
-      retentionYears !== (saved.retentionYears ?? DEFAULT_DOCUMENT_SETTINGS.retentionYears) ||
-      autoArchiveCompleted !== (saved.autoArchiveCompleted ?? DEFAULT_DOCUMENT_SETTINGS.autoArchiveCompleted) ||
-      archiveAfterWeeks !== savedWeeks ||
-      allowOfficerDelete !== (saved.allowOfficerDelete ?? DEFAULT_DOCUMENT_SETTINGS.allowOfficerDelete) ||
-      draftExpiryDays !== (saved.draftExpiryDays ?? DEFAULT_DOCUMENT_SETTINGS.draftExpiryDays);
-    setRetDirty(dirty);
-  }, [retentionYears, autoArchiveCompleted, archiveAfterWeeks, allowOfficerDelete, draftExpiryDays, settings]);
-
-  useEffect(() => { checkRefDirty(); }, [checkRefDirty]);
-  useEffect(() => { checkRetDirty(); }, [checkRetDirty]);
-
-  // Save handlers
-  const saveRefSettings = async () => {
-    setRefSaving(true);
-    try {
-      await saveDocumentSettings({ refPrefix, refSeparator, refIncludeYear, refPadding });
-    } finally {
-      setRefSaving(false);
-    }
-  };
-
-  const saveRetSettings = async () => {
-    setRetSaving(true);
-    try {
-      await saveDocumentSettings({
-        retentionYears,
-        autoArchiveCompleted,
-        autoArchiveProposals: true,
-        autoArchiveLiquidations: true,
-        archiveAfterWeeks,
-        allowOfficerDelete,
-        draftExpiryDays,
-      });
-    } finally {
-      setRetSaving(false);
-    }
-  };
-
-  // Preview
-  const refPreview = `${refPrefix}${refSeparator}${refIncludeYear ? '2026' + refSeparator : ''}${'0'.repeat(Math.max(0, refPadding - 1))}1`;
-
   // Loading state
-  if (catLoading || settingsLoading) {
+  if (catLoading) {
     return (
       <div className="flex items-center justify-center py-20">
         <Loader2 className="w-6 h-6 text-[#0E4EBD] animate-spin mr-3" />
@@ -287,7 +170,7 @@ export default function DocumentManagementSettings() {
       {/* Header */}
       <div>
         <h2 className="text-2xl font-bold text-[#001A4D]">Document Management Settings</h2>
-        <p className="text-sm text-gray-500 mt-1">Configure the Electronic Document Management System (EDMS) — categories, reference format, and retention rules.</p>
+        <p className="text-sm text-gray-500 mt-1">Configure the Electronic Document Management System (EDMS) — manage custom document categories.</p>
       </div>
 
       <div className="rounded-xl border bg-white p-6">
@@ -295,159 +178,6 @@ export default function DocumentManagementSettings() {
         {categories.length === 0 && !catLoading && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-gray-500">No custom document categories. Add a category to create its storage tab.</p>}
         <div className="space-y-2">{categories.map((cat) => <div key={cat.id}>{cat.archived ? <div className="flex items-center justify-between rounded-lg border p-3 text-sm text-gray-500"><span>{cat.name} · Archived</span><button className="text-blue-700 underline" onClick={() => handleUpdateCategory(cat.id, { active: true, archived: false }).catch(() => {})}>Reactivate</button></div> : <CategoryRow cat={cat} onUpdate={(fields) => handleUpdateCategory(cat.id, fields)} onDelete={() => handleDeleteCategory(cat.id)} />}</div>)}</div>
         {addingCat && <AddDocumentCategoryModal onClose={() => setAddingCat(false)} onCreated={() => {}} />}
-      </div>
-
-      {/* ── 2. Reference Number Format ─────────────────────────────────────── */}
-      <div className="bg-white border border-[#E0E0E0] rounded-xl p-6">
-        <div className="border-l-4 border-[#0E4EBD] pl-3 mb-5">
-          <div className="flex items-center gap-2">
-            <Hash className="w-4 h-4 text-[#0E4EBD]" />
-            <h3 className="text-base font-bold text-[#001A4D]">Reference Number Format</h3>
-          </div>
-          <p className="text-xs text-gray-500 mt-0.5">Configure the auto-generated reference number assigned to each submitted document.</p>
-        </div>
-
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Prefix</label>
-              <input
-                type="text"
-                maxLength={6}
-                value={refPrefix}
-                onChange={(e) => setRefPrefix(e.target.value.toUpperCase())}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] font-mono"
-              />
-              <p className="text-xs text-gray-500 mt-1">Max 6 characters</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Separator</label>
-              <select
-                value={refSeparator}
-                onChange={(e) => setRefSeparator(e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] font-mono"
-              >
-                <option value="-">- (dash)</option>
-                <option value="/">&nbsp;/ (slash)</option>
-                <option value="_">_ (underscore)</option>
-                <option value=".">. (dot)</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Number Padding (digits)</label>
-              <input
-                type="number"
-                min={3}
-                max={8}
-                value={refPadding}
-                onChange={(e) => setRefPadding(+e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-            <div>
-              <p className="text-sm font-medium text-gray-900">Include Year in Reference</p>
-              <p className="text-xs text-gray-500">e.g. DOC-2026-0001 vs DOC-0001</p>
-            </div>
-            <Toggle value={refIncludeYear} onChange={setRefIncludeYear} />
-          </div>
-
-          <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-            <Hash className="w-4 h-4 text-[#0E4EBD]" />
-            <div>
-              <p className="text-xs text-gray-500 mb-0.5">Preview — next reference number:</p>
-              <p className="text-[#001A4D] font-bold font-mono text-lg">{refPreview}</p>
-            </div>
-          </div>
-        </div>
-
-        <BoxSaveButton dirty={refDirty} saving={refSaving} onSave={saveRefSettings} />
-      </div>
-
-      {/* ── 3. Retention & Archive ─────────────────────────────────────────── */}
-      <div className="bg-white border border-[#E0E0E0] rounded-xl p-6">
-        <div className="border-l-4 border-[#0E4EBD] pl-3 mb-5">
-          <div className="flex items-center gap-2">
-            <Archive className="w-4 h-4 text-[#0E4EBD]" />
-            <h3 className="text-base font-bold text-[#001A4D]">Retention & Archival</h3>
-          </div>
-          <p className="text-xs text-gray-500 mt-0.5">Set how long documents are kept, when they are auto-archived, and what officers can delete.</p>
-        </div>
-
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Document Retention Period (years)</label>
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={retentionYears}
-                onChange={(e) => setRetentionYears(+e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]"
-              />
-              <p className="text-xs text-gray-500 mt-1">Documents are preserved for this period before permanent deletion is allowed.</p>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Draft Expiry (days inactive)</label>
-              <input
-                type="number"
-                min={7}
-                max={365}
-                value={draftExpiryDays}
-                onChange={(e) => setDraftExpiryDays(+e.target.value)}
-                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]"
-              />
-              <p className="text-xs text-gray-500 mt-1">Unsent draft submissions are auto-deleted after this many days.</p>
-            </div>
-          </div>
-
-          <div className="space-y-2 pt-2 border-t border-gray-100"><p className="rounded-lg bg-blue-50 p-3 text-sm text-blue-800">Approved AP, PAR, and FL files are automatically stored in Reports & Analytics after final approval. EDMS stores general documents and submissions.</p>
-            <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-              <div>
-                <p className="text-sm font-medium text-gray-900">Auto-Archive Completed Documents</p>
-                <p className="text-xs text-gray-500">Approved and Rejected documents are automatically archived after a set period.</p>
-              </div>
-              <Toggle value={autoArchiveCompleted} onChange={setAutoArchiveCompleted} />
-            </div>
-
-            {autoArchiveCompleted && (
-              <div className="ml-4 pl-3 border-l-2 border-[#0E4EBD]/30">
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Archive After (weeks past)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={52}
-                  value={archiveAfterWeeks}
-                  onChange={(e) => setArchiveAfterWeeks(+e.target.value)}
-                  className="w-40 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD]"
-                />
-                <p className="text-xs text-gray-500 mt-1">Completed (approved/rejected) documents older than this number of weeks are archived automatically.</p>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between p-3 border border-gray-200 rounded-lg">
-              <div>
-                <p className="text-sm font-medium text-gray-900">Allow Officers to Delete Draft Documents</p>
-                <p className="text-xs text-gray-500">Officers can permanently delete their own unsent draft submissions. Submitted documents can never be deleted by officers.</p>
-              </div>
-              <Toggle value={allowOfficerDelete} onChange={setAllowOfficerDelete} />
-            </div>
-
-            {/* Cross-Module Workflow Auto-Archival */}
-            <div className="pt-3 mt-3 border-t border-gray-100 space-y-2">
-              <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Workflow Automation & Cross-Module Archival</p>
-
-
-
-
-            </div>
-          </div>
-        </div>
-
-        <BoxSaveButton dirty={retDirty} saving={retSaving} onSave={saveRetSettings} />
       </div>
     </div>
   );

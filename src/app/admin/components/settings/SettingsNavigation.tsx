@@ -1,7 +1,7 @@
 import {
-  UserCircle, Lock, Calendar, Book,
+  UserCircle, Lock, Book,
   Building, Users, CalendarDays,
-  Files, Archive, FileSignature, GitBranch,
+  Files, FileSignature, GitBranch,
 } from 'lucide-react';
 
 interface SettingsNavigationProps {
@@ -22,7 +22,6 @@ const navItems = [
   {
     group: 'ACADEMIC',
     items: [
-      { id: 'academic-calendar', icon: Calendar, label: 'Academic Calendar' },
       { id: 'course-department', icon: Book, label: 'Programs & Sections Registry' },
     ]
   },
@@ -50,12 +49,6 @@ const navItems = [
     items: [
       { id: 'approval-workflows', icon: GitBranch, label: 'Default Approval Workflows' },
       { id: 'institutional-signatories', icon: FileSignature, label: 'Institutional Signatories' },
-    ]
-  },
-  {
-    group: 'SYSTEM',
-    items: [
-      { id: 'archive-center', icon: Archive, label: 'Archive & Trash Center' },
     ]
   },
 ];

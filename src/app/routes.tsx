@@ -116,7 +116,6 @@ export const router = createBrowserRouter([
       { path: "announcements", Component: Announcements },
       { path: "settings", Component: SystemSettings },
       { path: "account-management", Component: AccountManagement },
-      { path: "archive", element: <Navigate to="/home/settings?section=archive-center" replace /> },
       { path: "academic-semester", Component: AcademicSemesterSettings },
       { path: "budget-fund", Component: BudgetFundSettings },
       { path: "documents", Component: AdminDocuments },

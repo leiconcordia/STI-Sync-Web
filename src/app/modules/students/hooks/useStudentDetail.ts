@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { doc, collection, collectionGroup, query, where, onSnapshot } from 'firebase/firestore';
+import { doc, collection, collectionGroup, query, where, limit, onSnapshot } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { StudentDocument } from '../types/student.types';
 import type { OrganizationMemberDocument } from '../../organizations/types/member.types';
