@@ -769,7 +769,7 @@ export const submitLiquidationReport = async (
       type: 'document_submission',
       category: 'financial_liquidation',
       title: `Financial Liquidation Submitted: ${eventName}`,
-      message: `${orgName} submitted Form LF-01 liquidation for "${eventName}".`,
+      message: `${orgName} submitted financial liquidation for "${eventName}".`,
       resourceId: id,
       resourceType: 'liquidation',
       actionRoute: `/home/liquidations?tab=pending&id=${id}`,
@@ -1143,18 +1143,27 @@ export async function endorseLiquidationStep(
   const signerUid = signatory.id || signatory.uid || '';
   const signerEmail = (signatory.email || '').toLowerCase();
   const currentStage = data.currentStageIndex ?? 1;
+  const wasAlreadyApproved = data.status === 'approved';
+
+  const matchesSignatory = (s: any) => {
+    if (signerUid && s.signatoryUid === signerUid) return true;
+    if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
+    if (signatory.role && s.role === signatory.role) return true;
+    return false;
+  };
 
   // Locate the target step in current stage
   let targetStepIdx = chain.findIndex((s) => {
     const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
     const isPending = s.status === 'current' || s.status === 'waiting';
-    if (!stageMatches || !isPending) return false;
-
-    if (signerUid && s.signatoryUid === signerUid) return true;
-    if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
-    if (signatory.role && s.role === signatory.role) return true;
-    return false;
+    return stageMatches && isPending && matchesSignatory(s);
   });
+
+  if (targetStepIdx === -1 && wasAlreadyApproved) {
+    targetStepIdx = chain.findIndex(
+      (s) => (s.status === 'current' || s.status === 'waiting') && matchesSignatory(s)
+    );
+  }
 
   if (targetStepIdx === -1) {
     targetStepIdx = data.currentStepIndex ?? 0;
@@ -1216,23 +1225,14 @@ export async function endorseLiquidationStep(
 
   chain[targetStepIdx] = updatedStep as any;
 
-  // Dual-Approver Resolution within Executive Stage
+  // Executive / Final Approval Resolution without waiving co-signatories:
+  // Remaining unsigned signatories stay active ('current') so they can still affix their signature.
   if (newStatus === 'approved') {
-    // Authorized approver chose to fully authorize & approve:
-    // Any remaining co-approvers in this stage are waived with clear audit attribution.
-    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
-    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
-
     chain.forEach((s, idx) => {
-      if (
-        idx !== targetStepIdx &&
-        (s.status === 'waiting' || s.status === 'current') &&
-        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
-      ) {
+      if (idx !== targetStepIdx && s.status === 'waiting') {
         chain[idx] = {
           ...s,
-          status: 'waived',
-          remarks: `Step waived — Liquidation authorized and fully approved by ${approverTitle} (${approverName})`,
+          status: 'current',
         };
       }
     });
@@ -1263,7 +1263,7 @@ export async function endorseLiquidationStep(
   });
 
   const hasStages = sanitizedChain.some((s) => typeof s.stageIndex === 'number');
-  let isFullyApproved = false;
+  let isFullyApproved = wasAlreadyApproved || newStatus === 'approved';
   let nextStageIndex = currentStage;
   let stageAdvanced = false;
 
@@ -1293,8 +1293,8 @@ export async function endorseLiquidationStep(
     }
   } else {
     const nextIdx = targetStepIdx + 1;
-    isFullyApproved = nextIdx >= sanitizedChain.length;
-    if (!isFullyApproved && sanitizedChain[nextIdx]) {
+    isFullyApproved = isFullyApproved || nextIdx >= sanitizedChain.length;
+    if (nextIdx < sanitizedChain.length && sanitizedChain[nextIdx]?.status === 'waiting') {
       sanitizedChain[nextIdx] = { ...sanitizedChain[nextIdx], status: 'current' };
     }
   }
@@ -1303,8 +1303,8 @@ export async function endorseLiquidationStep(
     id: `rem-${Date.now()}`,
     authorName: signatory.name || 'Signatory',
     authorRole: 'signatory',
-    action: isFullyApproved ? 'approved' : 'endorsed',
-    comment: remarks || (isFullyApproved ? 'Financial liquidation approved by executive.' : `Endorsed stage ${currentStage} with digital signature.`),
+    action: newStatus === 'approved' ? 'approved' : 'endorsed',
+    comment: remarks || (isFullyApproved && !wasAlreadyApproved ? 'Financial liquidation approved by executive.' : `Endorsed stage ${currentStage} with digital signature.`),
     timestamp: new Date().toISOString(),
   };
 
@@ -1317,7 +1317,7 @@ export async function endorseLiquidationStep(
     remarksHistory: arrayUnion(endorsementRemark),
   };
 
-  if (isFullyApproved) {
+  if (isFullyApproved && !wasAlreadyApproved) {
     rawUpdates.approvedAt = serverTimestamp();
     rawUpdates.approvedBy = signerUid || signatory.email;
     Object.assign(rawUpdates, resolvePostApprovalSettlement(data));
@@ -1335,7 +1335,7 @@ export async function endorseLiquidationStep(
         liquidationRefNumber: data.referenceNo || '',
         updatedAt: serverTimestamp(),
       }));
-      if (isFullyApproved && (data as any).isCancellationLiquidation) {
+      if (isFullyApproved && !wasAlreadyApproved && (data as any).isCancellationLiquidation) {
         await finalizeCancelledEventFromLiquidation(data.eventId, data);
       }
     } catch (evtErr) {
@@ -1343,8 +1343,8 @@ export async function endorseLiquidationStep(
     }
   }
 
-  // If fully approved, post financial surplus or deficit to ledger and archive to EDMS
-  if (isFullyApproved) {
+  // If newly approved, post financial surplus or deficit to ledger and archive to EDMS
+  if (isFullyApproved && !wasAlreadyApproved) {
     try {
       await postLiquidationToLedger(liquidationId, { ...data, ...rawUpdates }, signerUid);
     } catch (ledgerErr) {
@@ -1637,8 +1637,8 @@ async function finalizeCancelledEventFromLiquidation(
       title: `Cancellation & Liquidation Approved: ${liqData?.eventTitle || 'Activity'}`,
       message:
         amountToReturn > 0
-          ? `Your activity cancellation and Form LF-01 were approved. Please return ₱${amountToReturn.toLocaleString()} to the Cashier and upload the Cashier receipt proof.`
-          : `Your activity cancellation and Form LF-01 were approved. The activity is now officially cancelled.`,
+          ? `Your activity cancellation and financial liquidation were approved. Please return ₱${amountToReturn.toLocaleString()} to the Cashier and upload the Cashier receipt proof.`
+          : `Your activity cancellation and financial liquidation were approved. The activity is now officially cancelled.`,
       resourceId: eventId,
       resourceType: 'event',
       actionRoute: '/officer/finance',

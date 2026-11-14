@@ -140,7 +140,7 @@ export default function PostActivityReportDetailModal({
     setIsExporting(true);
     try {
       await exportPostActivityReportPDF(report);
-      toast.success(`Official Form PAR PDF generated for ${report.referenceNo}`);
+      toast.success(`Official Post-Activity Report PDF generated for ${report.referenceNo}`);
     } catch (err: any) {
       console.error('[PostActivityReportDetailModal] PDF Error:', err);
       toast.error('Failed to generate PDF: ' + (err?.message || 'Unknown error'));
@@ -264,7 +264,7 @@ export default function PostActivityReportDetailModal({
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold tracking-widest uppercase bg-white/20 px-2 py-0.5 rounded-full text-white">
-                  Official Form PAR
+                  Post-Activity Report
                 </span>
                 <span className="text-xs text-blue-200 font-mono font-bold">
                   {report.referenceNo}
@@ -431,7 +431,7 @@ export default function PostActivityReportDetailModal({
                 </div>
               </div>
               <p className="text-[11px] text-slate-500">
-                Financial allocations sourced directly from approved Form AP-01 proposal baseline.
+                Financial allocations sourced directly from the approved Activity Proposal baseline.
               </p>
             </div>
           </div>
@@ -803,7 +803,7 @@ export default function PostActivityReportDetailModal({
                     </ul>
                   ) : (
                     <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                      <li>Official SAS clearance is stamped onto Form PAR-01.</li>
+                      <li>Official SAS clearance is stamped onto the Post-Activity Report.</li>
                       <li>The report status transitions to <strong>Approved</strong>.</li>
                       <li>The report is archived into the campus EDMS repository.</li>
                       <li>The student organization will be notified immediately.</li>

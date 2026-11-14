@@ -221,7 +221,7 @@ export default function FundingSourceSelector({
               Non-Monetary (Zero Budget)
             </h4>
             <p className="text-[11px] text-gray-600 leading-snug">
-              For campus meetings, rehearsals, online seminars, or assemblies requiring ₱0 funds. Automatically exempt from Form FL-01 financial liquidation.
+              For campus meetings, rehearsals, online seminars, or assemblies requiring ₱0 funds. Automatically exempt from financial liquidation.
             </p>
           </div>
 
@@ -269,7 +269,7 @@ export default function FundingSourceSelector({
         <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl flex items-start gap-2.5 text-xs text-emerald-900">
           <Sparkles className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
           <div className="leading-relaxed">
-            <strong>Zero Budget Exemption:</strong> Financial line items will default to ₱0.00. Once the event completes, your team will only need to file the Post-Activity Report (PAR-01) — Form FL-01 Financial Liquidation is waived.
+            <strong>Zero Budget Exemption:</strong> Financial line items will default to ₱0.00. Once the event completes, your team will only need to file the Post-Activity Report — Financial Liquidation is waived.
           </div>
         </div>
       )}

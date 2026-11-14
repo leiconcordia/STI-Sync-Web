@@ -93,6 +93,21 @@ export async function loadPortalWorkspaces(): Promise<PortalWorkspace[]> {
   return result;
 }
 
+export function hasMultiplePortalKinds(workspaces: PortalWorkspace[]): boolean {
+  return new Set(workspaces.map((workspace) => workspace.kind)).size > 1;
+}
+
+export function readStoredPortalWorkspaces(): PortalWorkspace[] {
+  try {
+    const raw = localStorage.getItem(PORTAL_WORKSPACES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 export function activatePortalWorkspace(workspace: PortalWorkspace) {
   if (!auth.currentUser || workspace.session.authUid !== auth.currentUser.uid) throw new Error('This workspace does not belong to the signed-in account.');
   localStorage.removeItem(OFFICER_KEY); localStorage.removeItem(SIGNATORY_KEY);

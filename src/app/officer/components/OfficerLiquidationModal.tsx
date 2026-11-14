@@ -1649,7 +1649,7 @@ export default function OfficerLiquidationModal({
                 <div>
                   <span className="font-bold uppercase tracking-wider text-[11px] text-emerald-800">Non-Monetary Activity — Liquidation Exempt:</span>
                   <p className="mt-0.5 text-emerald-800 leading-relaxed">
-                    This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is strictly exempt and not required for compliance, clearing, or archiving.
+                    This activity has no budget and no monetary expense projections. Financial liquidation is strictly exempt and not required for compliance, clearing, or archiving.
                   </p>
                 </div>
               </div>
@@ -1761,11 +1761,11 @@ export default function OfficerLiquidationModal({
               <div className="flex items-center gap-2">
                 <FileSpreadsheet className="w-4 h-4 text-[#0E4EBD]" />
                 <h4 className="text-xs font-bold text-gray-800 uppercase tracking-wider">
-                  Form LF-01 Official Disbursement Header
+                  Official Disbursement Header
                 </h4>
               </div>
               <span className="text-[11px] text-gray-500">
-                Official header information exported to STI Liquidation (Form LF-01)
+                Official header information exported to STI Financial Liquidation
               </span>
             </div>
 
@@ -2745,7 +2745,7 @@ export default function OfficerLiquidationModal({
                 <Lock className="w-4 h-4 text-gray-400" />
                 <span>
                   {effectiveReport?.status === 'approved'
-                    ? 'Report is approved and locked. You can preview or export Form LF-01.'
+                    ? 'Report is approved and locked. You can preview or export the liquidation report.'
                     : 'Report is submitted and locked in read-only mode during signatory routing.'}
                 </span>
               </div>
@@ -2757,7 +2757,7 @@ export default function OfficerLiquidationModal({
                   className="px-4 py-2 bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 rounded-lg text-sm font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs"
                 >
                   <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                  <span>Export Report (Form LF-01)</span>
+                  <span>Export Report</span>
                 </button>
 
                 {effectiveReport && (currentStatus === 'under_review' || currentStatus === 'pending') && (

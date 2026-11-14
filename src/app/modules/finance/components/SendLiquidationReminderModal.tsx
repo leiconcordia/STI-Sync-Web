@@ -77,16 +77,16 @@ export function SendLiquidationReminderModal({
   const suggestedMessage = useMemo(() => {
     if (selectedTone === 'overdue') {
       const absDays = Math.abs(daysRemaining);
-      return `OVERDUE NOTICE: Financial Liquidation Form LF-01 for "${eventTitle}" is overdue by ${absDays} day${
+      return `OVERDUE NOTICE: Financial Liquidation for "${eventTitle}" is overdue by ${absDays} day${
         absDays === 1 ? '' : 's'
-      } (Deadline was ${deadlineDateStr}). Immediate submission of Form LF-01 and physical receipts to the SAS Office is required.`;
+      } (Deadline was ${deadlineDateStr}). Immediate submission of the Financial Liquidation report and physical receipts to the SAS Office is required.`;
     }
     if (selectedTone === 'urgent') {
       return `URGENT NOTICE: Financial Liquidation for "${eventTitle}" is due in ${daysRemaining} day${
         daysRemaining === 1 ? '' : 's'
-      } (${deadlineDateStr}). Please finalize Form LF-01 and attach all official receipts.`;
+      } (${deadlineDateStr}). Please finalize your Financial Liquidation report and attach all official receipts.`;
     }
-    return `Friendly reminder from the SAS Office: Financial Liquidation Form LF-01 for "${eventTitle}" is due on ${deadlineDateStr} (${daysRemaining} days remaining). Please prepare your official receipts and disbursement summary.`;
+    return `Friendly reminder from the SAS Office: Financial Liquidation for "${eventTitle}" is due on ${deadlineDateStr} (${daysRemaining} days remaining). Please prepare your official receipts and disbursement summary.`;
   }, [selectedTone, eventTitle, daysRemaining, deadlineDateStr]);
 
   const [message, setMessage] = useState(suggestedMessage);
@@ -97,19 +97,19 @@ export function SendLiquidationReminderModal({
     if (tone === 'overdue') {
       const absDays = Math.abs(daysRemaining);
       setMessage(
-        `OVERDUE NOTICE: Financial Liquidation Form LF-01 for "${eventTitle}" is overdue by ${absDays} day${
+        `OVERDUE NOTICE: Financial Liquidation for "${eventTitle}" is overdue by ${absDays} day${
           absDays === 1 ? '' : 's'
-        } (Deadline was ${deadlineDateStr}). Immediate submission of Form LF-01 and physical receipts to the SAS Office is required.`
+        } (Deadline was ${deadlineDateStr}). Immediate submission of the Financial Liquidation report and physical receipts to the SAS Office is required.`
       );
     } else if (tone === 'urgent') {
       setMessage(
         `URGENT NOTICE: Financial Liquidation for "${eventTitle}" is due in ${daysRemaining} day${
           daysRemaining === 1 ? '' : 's'
-        } (${deadlineDateStr}). Please finalize Form LF-01 and attach all official receipts.`
+        } (${deadlineDateStr}). Please finalize your Financial Liquidation report and attach all official receipts.`
       );
     } else {
       setMessage(
-        `Friendly reminder from the SAS Office: Financial Liquidation Form LF-01 for "${eventTitle}" is due on ${deadlineDateStr} (${daysRemaining} days remaining). Please prepare your official receipts and disbursement summary.`
+        `Friendly reminder from the SAS Office: Financial Liquidation for "${eventTitle}" is due on ${deadlineDateStr} (${daysRemaining} days remaining). Please prepare your official receipts and disbursement summary.`
       );
     }
   };
@@ -201,7 +201,7 @@ export function SendLiquidationReminderModal({
                 Send Liquidation Reminder
               </h3>
               <p className="text-xs text-blue-200 mt-0.5">
-                STI 15-Calendar-Day Liquidation Policy (Form LF-01)
+                STI 15-Calendar-Day Liquidation Policy
               </p>
             </div>
           </div>
@@ -263,7 +263,7 @@ export function SendLiquidationReminderModal({
               <div>
                 <span className="font-bold text-emerald-950 uppercase tracking-wider text-[11px]">Non-Monetary Activity — Liquidation Exempt:</span>
                 <p className="mt-0.5 text-emerald-800 leading-relaxed">
-                  This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is strictly exempt and not required for clearance or compliance.
+                  This activity has no budget and no monetary expense projections. Financial liquidation is strictly exempt and not required for clearance or compliance.
                 </p>
               </div>
             </div>

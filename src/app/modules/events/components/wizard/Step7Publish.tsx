@@ -177,7 +177,7 @@ export default function Step7Publish({ data, onUpdate, onPublish, isPublishing, 
                 <h3 className="text-sm font-bold text-gray-700 mb-2">Budget</h3>
                 <div className="space-y-2">
                   <div className="text-2xl font-bold text-[#001A4D]">{formatCurrency(data.totalApprovedBudget || data.totalRequestedBudget || 0)}</div>
-                  <div className="text-xs text-gray-600">Total Proposed Baseline across {data.budgetItems?.length || 0} categories (Form LF-01 Spending Guide)</div>
+                  <div className="text-xs text-gray-600">Total Proposed Baseline across {data.budgetItems?.length || 0} categories (Spending Guide)</div>
                 </div>
               </div>
             </div>

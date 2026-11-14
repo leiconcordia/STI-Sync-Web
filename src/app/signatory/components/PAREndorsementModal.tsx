@@ -31,6 +31,7 @@ import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisio
 import { diffPostActivityReport } from '../../modules/workflow/utils/document-diff-engine';
 import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { PAR_SECTIONS_FOR_REVISION } from '../../modules/post-activity-reports/types/par.types';
+import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
 
 interface PAREndorsementModalProps {
   isOpen: boolean;
@@ -39,6 +40,7 @@ interface PAREndorsementModalProps {
   signatorySession: any;
   onOpenSignaturePad: () => void;
   onReportUpdated?: () => void;
+  readOnly?: boolean;
 }
 
 export default function PAREndorsementModal({
@@ -48,8 +50,8 @@ export default function PAREndorsementModal({
   signatorySession,
   onOpenSignaturePad,
   onReportUpdated,
+  readOnly = false,
 }: PAREndorsementModalProps) {
-  const [remarks, setRemarks] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showReturnDialog, setShowReturnDialog] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
@@ -123,10 +125,38 @@ export default function PAREndorsementModal({
 
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : chain.find((s) => s.status === 'current');
 
+  const isReturnedDoc = report.status === 'returned' || report.status === 'rejected';
+  const isPARApproved = report.status === 'approved';
+  const alreadySignedByMe =
+    !isReturnedDoc &&
+    (chain.some((s) => hasSignatorySignedStep(s, signatorySession)) ||
+      hasSignatorySignedDocument(report, signatorySession));
+
+  const currentStage = report.currentStageIndex ?? 1;
+  const isMyStepUnsigned = Boolean(
+    myStepIndex >= 0 &&
+      myStep &&
+      myStep.status !== 'endorsed' &&
+      myStep.status !== 'approved' &&
+      myStep.status !== 'waived' &&
+      myStep.status !== 'returned' &&
+      myStep.status !== 'returned_for_revision' &&
+      myStep.status !== 'rejected' &&
+      (isPARApproved || !myStep.stageIndex || myStep.stageIndex === currentStage)
+  );
+
+  const canSignNow = !readOnly && !alreadySignedByMe && !isReturnedDoc && isMyStepUnsigned;
+  const isReadOnlyLocked = !canSignNow;
+  const canReturnNow = canSignNow && !isPARApproved;
+
   // Dynamic approval authority permission check
   const canApprove = canSignatoryApproveDocument(signatorySession, 'par', myStep);
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
+    if (isReadOnlyLocked) {
+      toast.info('This report is read-only for your account.');
+      return;
+    }
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this report.');
       onOpenSignaturePad();
@@ -151,7 +181,7 @@ export default function PAREndorsementModal({
           canApprovePar: signatorySession?.canApprovePar,
           approvalDecision: decision,
         },
-        remarks,
+        '',
         decision
       );
 
@@ -207,7 +237,7 @@ export default function PAREndorsementModal({
     setIsExporting(true);
     try {
       await exportPostActivityReportPDF(report);
-      toast.success(`Official Form PAR PDF downloaded.`);
+      toast.success(`Official Post-Activity Report PDF downloaded.`);
     } catch (err: any) {
       toast.error('Failed to export PDF: ' + (err?.message || 'Error'));
     } finally {
@@ -534,7 +564,7 @@ export default function PAREndorsementModal({
                     <CheckCircle2 className="w-3.5 h-3.5" /> Electronic Signature Registered
                   </span>
                   <span className="text-slate-500 text-[11px]">
-                    Your official signature will be stamped on Form PAR.
+                    Your official signature will be stamped on the Post-Activity Report.
                   </span>
                 </div>
               </div>
@@ -547,25 +577,26 @@ export default function PAREndorsementModal({
                 <button
                   type="button"
                   onClick={onOpenSignaturePad}
-                  className="text-xs font-bold text-blue-700 underline hover:text-blue-900"
+                  disabled={isReadOnlyLocked}
+                  className="text-xs font-bold text-blue-700 underline hover:text-blue-900 disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
                 >
                   Register Signature Now
                 </button>
               </div>
             )}
 
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                Endorsement Remarks / Administrative Notes (Optional)
-              </label>
-              <input
-                type="text"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                placeholder="e.g. Cleared and verified with academic department."
-                className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs text-slate-800"
-              />
-            </div>
+            {isReadOnlyLocked && (
+              <div className="px-3.5 py-2.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  {alreadySignedByMe
+                    ? 'Read-Only View: You have already signed this Post-Activity Report. Action buttons are disabled.'
+                    : isReturnedDoc
+                    ? 'Read-Only View: This report is currently returned for revision.'
+                    : 'Read-Only View: Signing controls are disabled for your current session.'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -584,31 +615,36 @@ export default function PAREndorsementModal({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !canReturnNow}
               onClick={() => setShowReturnDialog(true)}
-              className="px-3.5 py-2 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              className="px-3.5 py-2 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <RotateCcw className="w-4 h-4" /> Return for Revision
             </button>
             {canApprove ? (
               <button
                 type="button"
-                disabled={isSubmitting || !hasSignature}
+                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
                 onClick={() => setPendingConfirmType('approve')}
-                className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                 title="Grant executive clearance and fully approve PAR"
               >
                 <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                <span>{isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
+                <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
               </button>
             ) : (
               <button
                 type="button"
-                disabled={isSubmitting || !hasSignature}
+                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
                 onClick={() => setPendingConfirmType('endorse')}
-                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
               >
-                {isSubmitting ? (
+                {alreadySignedByMe ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-[#FFD41C]" />
+                    Already Signed
+                  </>
+                ) : isSubmitting ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" /> Recording...
                   </>
@@ -665,7 +701,7 @@ export default function PAREndorsementModal({
                 </div>
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                    <li>Your official digital signature will be sealed onto Form PAR-01.</li>
+                    <li>Your official digital signature will be sealed onto the Post-Activity Report.</li>
                     <li>The report status transitions to <strong>Approved & Cleared</strong>.</li>
                     <li>The report is archived into the Institutional EDMS.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

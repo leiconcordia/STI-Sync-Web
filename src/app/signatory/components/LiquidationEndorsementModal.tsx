@@ -64,6 +64,7 @@ import { LiquidationExportPreviewModal } from '../../modules/finance/components/
 import { formatCurrency, formatVariance } from '../../utils/currency';
 import { formatAppDateTime } from '../../utils/date';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
+import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
 
 interface LiquidationEndorsementModalProps {
   isOpen?: boolean;
@@ -72,6 +73,7 @@ interface LiquidationEndorsementModalProps {
   signatorySession: any;
   onOpenSignaturePad: () => void;
   onLiquidationUpdated?: () => void;
+  readOnly?: boolean;
 }
 
 function normalizeItemAttachments(item: ExpenseLineItem | undefined): ReceiptAttachment[] {
@@ -107,6 +109,7 @@ export default function LiquidationEndorsementModal({
   signatorySession,
   onOpenSignaturePad,
   onLiquidationUpdated,
+  readOnly = false,
 }: LiquidationEndorsementModalProps) {
   const [selectedItemIndex, setSelectedItemIndex] = useState(0);
   const [viewingDisbursementVoucher, setViewingDisbursementVoucher] = useState(false);
@@ -114,7 +117,6 @@ export default function LiquidationEndorsementModal({
   const [zoomLevel, setZoomLevel] = useState(100);
   const [rotationDeg, setRotationDeg] = useState(0);
 
-  const [remarks, setRemarks] = useState('');
   const [returnRemarks, setReturnRemarks] = useState('');
   const [initialReturnFlags, setInitialReturnFlags] = useState<string[]>([]);
   const [initialStepRemarks, setInitialStepRemarks] = useState<Record<string, string>>({});
@@ -399,18 +401,42 @@ export default function LiquidationEndorsementModal({
   };
 
   const isUnderReview = liquidation.status === 'under_review' || liquidation.status === 'pending';
-  const stageSteps = (liquidation.approvalChain || []).filter((s) => (s.stageIndex ?? 1) === currentStage);
+  const isLiquidationApproved = liquidation.status === 'approved';
+  const isReturnedDoc = liquidation.status === 'returned' || liquidation.status === 'rejected';
+  const chain = liquidation.approvalChain || [];
+  const stageSteps = chain.filter((s) => (s.stageIndex ?? 1) === currentStage);
   const myStepInCurrentStage = stageSteps.find((s) => matchesCurrentSigner(s));
+  const myUnsignedStep = chain.find(
+    (s) =>
+      matchesCurrentSigner(s) &&
+      s.status !== 'endorsed' &&
+      s.status !== 'approved' &&
+      s.status !== 'waived' &&
+      s.status !== 'returned' &&
+      s.status !== 'returned_for_revision' &&
+      s.status !== 'rejected'
+  );
+  const alreadySignedByMe =
+    !isReturnedDoc &&
+    (chain.some((s) => hasSignatorySignedStep(s, signatorySession)) ||
+      hasSignatorySignedDocument(liquidation, signatorySession));
 
   const isMyTurnNow = Boolean(
-    isUnderReview &&
-    myStepInCurrentStage &&
-    myStepInCurrentStage.status !== 'endorsed' &&
-    myStepInCurrentStage.status !== 'approved' &&
-    myStepInCurrentStage.status !== 'waived'
+    !readOnly &&
+      !alreadySignedByMe &&
+      !isReturnedDoc &&
+      ((isUnderReview &&
+        myStepInCurrentStage &&
+        myStepInCurrentStage.status !== 'endorsed' &&
+        myStepInCurrentStage.status !== 'approved' &&
+        myStepInCurrentStage.status !== 'waived') ||
+        (isLiquidationApproved && Boolean(myUnsignedStep)))
   );
 
-  const myFutureStep = (liquidation.approvalChain || []).find((s) => {
+  const isReadOnlyLocked = !isMyTurnNow;
+  const canReturnNow = isMyTurnNow && !isLiquidationApproved;
+
+  const myFutureStep = chain.find((s) => {
     const isFuture = (s.stageIndex ?? 1) > currentStage;
     return isFuture && matchesCurrentSigner(s);
   });
@@ -419,8 +445,9 @@ export default function LiquidationEndorsementModal({
 
   const currentStep =
     myStepInCurrentStage ||
-    liquidation.approvalChain?.find((s) => matchesCurrentSigner(s)) ||
-    liquidation.approvalChain?.[liquidation.currentStepIndex ?? 0];
+    myUnsignedStep ||
+    chain.find((s) => matchesCurrentSigner(s)) ||
+    chain[liquidation.currentStepIndex ?? 0];
 
   const activeSignatureUrl = useMemo(() => {
     if (signatorySession?.signatureUrl) return signatorySession.signatureUrl;
@@ -438,7 +465,6 @@ export default function LiquidationEndorsementModal({
   }, [signatorySession?.signatureUrl, signatorySession?.signatureDataUrl]);
 
   const hasSignature = Boolean(activeSignatureUrl);
-  const chain = liquidation.approvalChain || [];
   const activeVoucher = (liquidation as any)?.disbursementVoucher || (liquidation as any)?.voucher || null;
   const myStepIndex = chain.findIndex((s) => matchesCurrentSigner(s));
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
@@ -466,6 +492,10 @@ export default function LiquidationEndorsementModal({
   const isDeficit = surplusOrDeficit < 0;
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
+    if (isReadOnlyLocked) {
+      toast.info('This liquidation is read-only for your account.');
+      return;
+    }
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this liquidation.');
       onOpenSignaturePad();
@@ -490,7 +520,7 @@ export default function LiquidationEndorsementModal({
           canApproveLiquidation: signatorySession?.canApproveLiquidation,
           approvalDecision: decision,
         },
-        remarks,
+        '',
         decision
       );
 
@@ -622,10 +652,10 @@ export default function LiquidationEndorsementModal({
               type="button"
               onClick={() => setShowExportModal(true)}
               className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/20 text-xs font-semibold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer"
-              title="Export official STI liquidation form (LIQUIDATION-FORMAT_v1)"
+              title="Export official STI liquidation report"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-[#FFD41C]" />
-              <span>Export LF-01</span>
+              <span>Export Liquidation</span>
             </button>
 
             {hasRevisions && (
@@ -1215,90 +1245,80 @@ export default function LiquidationEndorsementModal({
               />
             </div>
 
-            {/* E-Signature Verification & Signing Card (Only active when it is this user's turn) */}
-            {isMyTurnNow ? (
-              <div className="pt-3 border-t border-slate-200 space-y-3">
-                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                  <span>Signatory Electronic Signature Verification</span>
-                </h4>
+            {/* E-Signature Verification & Signing Card */}
+            <div className="pt-3 border-t border-slate-200 space-y-3">
+              <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                <PenTool className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                <span>Signatory Electronic Signature Verification</span>
+              </h4>
 
-                {hasSignature ? (
-                  <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="border border-slate-300 bg-white p-1.5 rounded-xl shadow-xs shrink-0">
-                        <img
-                          src={activeSignatureUrl!}
-                          alt="Registered Signature"
-                          className="h-9 w-24 object-contain"
-                        />
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Verified Digital Ink Signature Ready</span>
-                        </div>
-                        <p className="text-[11px] text-slate-500">
-                          Stamping as <strong>{signatorySession?.name}</strong> ({signatorySession?.roleTitle})
-                        </p>
-                      </div>
+              {hasSignature ? (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="border border-slate-300 bg-white p-1.5 rounded-xl shadow-xs shrink-0">
+                      <img
+                        src={activeSignatureUrl!}
+                        alt="Registered Signature"
+                        className="h-9 w-24 object-contain"
+                      />
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={onOpenSignaturePad}
-                      className="text-xs text-blue-700 hover:text-blue-800 font-semibold underline cursor-pointer"
-                    >
-                      Re-draw
-                    </button>
-                  </div>
-                ) : (
-                  <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5">
-                      <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
-                      <div>
-                        <h5 className="text-xs font-bold text-amber-950">No Electronic Signature on File</h5>
-                        <p className="text-[11px] text-amber-800">
-                          Register your official digital signature to endorse this liquidation.
-                        </p>
+                    <div>
+                      <div className="text-xs font-bold text-slate-800 flex items-center gap-1">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Verified Digital Ink Signature Ready</span>
                       </div>
+                      <p className="text-[11px] text-slate-500">
+                        Stamping as <strong>{signatorySession?.name}</strong> ({signatorySession?.roleTitle})
+                      </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={onOpenSignaturePad}
-                      className="px-3 py-1.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold shrink-0 cursor-pointer shadow-xs"
-                    >
-                      Register Signature
-                    </button>
                   </div>
-                )}
 
-                {/* Endorsement Remarks Input */}
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    {isFinalApprover
-                      ? 'Executive Approval Directive / Directives (Optional)'
-                      : isChecker
-                      ? 'Audit Verification Notes (Optional)'
-                      : 'Endorsement Notes (Optional)'}
-                  </label>
-                  <input
-                    type="text"
-                    value={remarks}
-                    onChange={(e) => setRemarks(e.target.value)}
-                    placeholder={
-                      isFinalApprover
-                        ? 'e.g. Approved. Proceed with official ledger entry and fund refund...'
-                        : isChecker
-                        ? 'e.g. Verified official receipts against line items and amounts...'
-                        : 'e.g. Reviewed and endorsed by department head...'
-                    }
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
-                  />
+                  <button
+                    type="button"
+                    onClick={onOpenSignaturePad}
+                    disabled={isReadOnlyLocked}
+                    className="text-xs text-blue-700 hover:text-blue-800 font-semibold underline cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
+                  >
+                    Re-draw
+                  </button>
                 </div>
+              ) : (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                    <div>
+                      <h5 className="text-xs font-bold text-amber-950">No Electronic Signature on File</h5>
+                      <p className="text-[11px] text-amber-800">
+                        Register your official digital signature to endorse this liquidation.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenSignaturePad}
+                    disabled={isReadOnlyLocked}
+                    className="px-3 py-1.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold shrink-0 cursor-pointer shadow-xs disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Register Signature
+                  </button>
+                </div>
+              )}
 
-              </div>
-            ) : null}
+              {isReadOnlyLocked && (
+                <div className="px-3.5 py-2.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    {alreadySignedByMe
+                      ? 'Read-Only View: You have already signed this Financial Liquidation. Action buttons are disabled.'
+                      : isPipelinePreview
+                      ? `Pipeline Preview: Awaiting Stage ${currentStage} review before your turn.`
+                      : liquidation.status === 'returned'
+                      ? 'Read-Only View: This liquidation is currently returned for revision.'
+                      : 'Read-Only View: Signing controls are disabled for your current session.'}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* ═════════════════════════════════════════════════════════════ */}
@@ -1574,98 +1594,72 @@ export default function LiquidationEndorsementModal({
 
         {/* ── STICKY FOOTER ACTIONS ── */}
         <div className="bg-slate-50 border-t border-slate-200 px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
-          {!isMyTurnNow ? (
-            <div className="flex flex-col sm:flex-row items-center justify-between w-full gap-3">
-              <div className="text-xs text-slate-500 font-medium flex items-center gap-2">
-                {isPipelinePreview ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                    <Layers className="w-3.5 h-3.5 text-purple-600" />
-                    Pipeline Preview: Awaiting Stage {currentStage} review before your turn.
-                  </span>
-                ) : liquidation.status === 'approved' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                    Liquidation is fully approved and completed.
-                  </span>
-                ) : liquidation.status === 'returned' ? (
-                  <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                    <RotateCcw className="w-3.5 h-3.5 text-amber-600" />
-                    Liquidation is returned for revision.
-                  </span>
-                ) : (
-                  <span>Read-only inspection mode.</span>
-                )}
-              </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {!isReturning && (
               <button
                 type="button"
-                onClick={onClose}
-                className="w-full sm:w-auto px-5 py-2.5 text-xs font-bold text-white bg-[#001A4D] hover:bg-[#0A2E6D] rounded-xl transition-colors cursor-pointer"
+                onClick={() => {
+                  setIsReturning(true);
+                }}
+                disabled={isSubmitting || !canReturnNow}
+                className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/60 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
               >
-                Close Preview
+                <RotateCcw className="w-4 h-4" />
+                <span>Return for Revision</span>
               </button>
-            </div>
-          ) : (
-            <>
-              <div className="flex items-center gap-2">
-                {!isReturning && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsReturning(true);
-                    }}
-                    disabled={isSubmitting}
-                    className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/60 transition-colors cursor-pointer"
-                  >
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Return for Revision</span>
-                  </button>
-                )}
-              </div>
+            )}
+            {isReadOnlyLocked && (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-slate-200/80 text-slate-700">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                {alreadySignedByMe ? 'Already Signed (Read-Only)' : 'Read-Only Mode'}
+              </span>
+            )}
+          </div>
 
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                >
-                  Close
-                </button>
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
+            >
+              Close
+            </button>
 
-                {canApprove && isFinalApprover ? (
-                  <button
-                    type="button"
-                    onClick={() => setPendingConfirmType('approve')}
-                    disabled={isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
-                    title="Grant executive approval and fully approve liquidation"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                    <span>{isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setPendingConfirmType('endorse')}
-                    disabled={isSubmitting || !hasSignature}
-                    className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-50 cursor-pointer ${
-                      isChecker
-                        ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
-                        : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-                    }`}
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>
-                      {isSubmitting
-                        ? 'Processing...'
-                        : isChecker
-                        ? 'Audit & Check Liquidation'
-                        : 'Stamp E-Signature & Endorse'}
-                    </span>
-                  </button>
-                )}
-              </div>
-            </>
-          )}
+            {canApprove && isFinalApprover ? (
+              <button
+                type="button"
+                onClick={() => setPendingConfirmType('approve')}
+                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                title="Grant executive approval and fully approve liquidation"
+              >
+                <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPendingConfirmType('endorse')}
+                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                className={`w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer ${
+                  isChecker
+                    ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
+                }`}
+              >
+                <Send className="w-4 h-4" />
+                <span>
+                  {alreadySignedByMe
+                    ? 'Already Signed'
+                    : isSubmitting
+                    ? 'Processing...'
+                    : isChecker
+                    ? 'Audit & Check Liquidation'
+                    : 'Stamp E-Signature & Endorse'}
+                </span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1710,7 +1704,7 @@ export default function LiquidationEndorsementModal({
                 </div>
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                    <li>Your official digital signature will be sealed onto Form LF-01.</li>
+                    <li>Your official digital signature will be sealed onto the Financial Liquidation report.</li>
                     <li>The liquidation status transitions to <strong>Fully Approved & Concluded</strong>.</li>
                     <li>Financial disbursements and balances will be officially liquidated.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

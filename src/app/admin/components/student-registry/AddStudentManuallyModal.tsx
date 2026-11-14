@@ -26,6 +26,7 @@ import {
 } from '../../../modules/students/services/student.service';
 import {
   useCourses,
+  useDepartments,
   useSections,
   useActiveAcademicPeriods,
 } from '../../../modules/academic/hooks/useAcademicStream';
@@ -54,6 +55,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
 
   const { data: allStudents = [] } = useStudents();
   const { data: courses = [] } = useCourses();
+  const { data: departments = [] } = useDepartments();
   const { data: sections = [] } = useSections();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
 
@@ -206,6 +208,8 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
       return;
     }
 
+    const selectedDeptObj = departments.find((d) => d.id === selectedCourseObj.departmentId);
+
     if (duplicateCheck?.status === 'COLLISION') {
       setSubmitError(duplicateCheck.message);
       return;
@@ -221,6 +225,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
           courseCode: selectedCourseObj.code,
           courseName: selectedCourseObj.name,
           departmentId: selectedCourseObj.departmentId,
+          departmentName: selectedDeptObj?.name || '',
           section: section.trim() || 'UNASSIGNED',
           schoolYear,
           semester,
@@ -241,6 +246,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
             courseCode: selectedCourseObj.code,
             courseName: selectedCourseObj.name,
             departmentId: selectedCourseObj.departmentId,
+            departmentName: selectedDeptObj?.name || '',
             yearLevel,
             section: section.trim() || 'UNASSIGNED',
             schoolYear,

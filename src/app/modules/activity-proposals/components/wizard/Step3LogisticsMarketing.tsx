@@ -873,7 +873,7 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
               Target market <span className="text-red-500">*</span>
             </label>
           </div>
-          <span className="text-[11px] text-gray-400">Form AP-01 Section 8</span>
+          <span className="text-[11px] text-gray-400">Section 8</span>
         </div>
 
         <p className="text-xs text-gray-500">

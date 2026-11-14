@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router';
-import { CheckCircle2, Download, Eye, FileCheck2, FileSpreadsheet, FileText, Loader2, Search } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Download, Eye, FileCheck2, FileSpreadsheet, FileText, Loader2, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
+import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
 import { resolveActivityName } from '../../modules/events/utils/activity-compliance.utils';
 import { formatAppDate } from '../../utils/date';
 import { exportActivityProposalPDF } from '../../modules/activity-proposals/utils/proposal-pdf-exporter';
@@ -16,6 +17,8 @@ import type { LiquidationDocument } from '../../modules/finance/types/liquidatio
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
 
 type DocFilter = 'all' | 'proposal' | 'liquidation' | 'par';
+
+const PAGE_SIZE = 8;
 
 interface SignedEntry {
   id: string;
@@ -56,49 +59,76 @@ export default function SignatorySignedDocumentsPage() {
   const documents = useSignatoryDocuments(session);
   const [filter, setFilter] = useState<DocFilter>('all');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [selectedProposal, setSelectedProposal] = useState<ActivityProposal | null>(null);
   const [selectedLiquidation, setSelectedLiquidation] = useState<LiquidationDocument | null>(null);
   const [selectedPAR, setSelectedPAR] = useState<PostActivityReportDocument | null>(null);
 
+  const canProposal = isSignatoryApplicableTo(session, 'proposal');
+  const canLiquidation = isSignatoryApplicableTo(session, 'liquidation');
+  const canPAR = isSignatoryApplicableTo(session, 'par');
+
   const items = useMemo<SignedEntry[]>(() => {
-    const proposals: SignedEntry[] = documents.endorsedProposals.map((p) => ({
-      id: p.id,
-      docType: 'proposal',
-      typeLabel: 'Activity Proposal',
-      title: p.title || p.activityTitle || 'Untitled Activity Proposal',
-      organization: p.organizationName || 'Student Organization',
-      status: String((p as any).proposalStatus || p.status || 'endorsed'),
-      signedAt: resolveSignedAt(p, session),
-      raw: p,
-    }));
-    const liquidations: SignedEntry[] = documents.endorsedLiquidations.map((l) => ({
-      id: l.id,
-      docType: 'liquidation',
-      typeLabel: 'Financial Liquidation',
-      title: resolveActivityName(l, documents.allProposals),
-      organization: l.organizationName || 'Student Organization',
-      status: String(l.status || 'endorsed'),
-      signedAt: resolveSignedAt(l, session),
-      raw: l,
-    }));
-    const pars: SignedEntry[] = documents.endorsedPARs.map((par) => ({
-      id: par.id,
-      docType: 'par',
-      typeLabel: 'Post-Activity Report',
-      title: resolveActivityName(par, documents.allProposals),
-      organization: par.organizationName || 'Student Organization',
-      status: String((par as any).reportStatus || par.status || 'endorsed'),
-      signedAt: resolveSignedAt(par, session),
-      raw: par,
-    }));
+    const proposals: SignedEntry[] = canProposal
+      ? documents.endorsedProposals.map((p) => ({
+          id: p.id,
+          docType: 'proposal',
+          typeLabel: 'Activity Proposal',
+          title: p.title || p.activityTitle || 'Untitled Activity Proposal',
+          organization: p.organizationName || 'Student Organization',
+          status: String((p as any).proposalStatus || p.status || 'endorsed'),
+          signedAt: resolveSignedAt(p, session),
+          raw: p,
+        }))
+      : [];
+    const liquidations: SignedEntry[] = canLiquidation
+      ? documents.endorsedLiquidations.map((l) => ({
+          id: l.id,
+          docType: 'liquidation',
+          typeLabel: 'Financial Liquidation',
+          title: resolveActivityName(l, documents.allProposals),
+          organization: l.organizationName || 'Student Organization',
+          status: String(l.status || 'endorsed'),
+          signedAt: resolveSignedAt(l, session),
+          raw: l,
+        }))
+      : [];
+    const pars: SignedEntry[] = canPAR
+      ? documents.endorsedPARs.map((par) => ({
+          id: par.id,
+          docType: 'par',
+          typeLabel: 'Post-Activity Report',
+          title: resolveActivityName(par, documents.allProposals),
+          organization: par.organizationName || 'Student Organization',
+          status: String((par as any).reportStatus || par.status || 'endorsed'),
+          signedAt: resolveSignedAt(par, session),
+          raw: par,
+        }))
+      : [];
     return [...proposals, ...liquidations, ...pars].sort((a, b) => toMillis(b.signedAt) - toMillis(a.signedAt));
-  }, [documents.endorsedProposals, documents.endorsedLiquidations, documents.endorsedPARs, documents.allProposals, session]);
+  }, [canProposal, canLiquidation, canPAR, documents.endorsedProposals, documents.endorsedLiquidations, documents.endorsedPARs, documents.allProposals, session]);
+
+  const availableTabs = useMemo<[DocFilter, string][]>(() => {
+    const typeTabs: [DocFilter, string][] = [];
+    if (canProposal) typeTabs.push(['proposal', `Proposals (${documents.endorsedProposals.length})`]);
+    if (canLiquidation) typeTabs.push(['liquidation', `Liquidations (${documents.endorsedLiquidations.length})`]);
+    if (canPAR) typeTabs.push(['par', `PARs (${documents.endorsedPARs.length})`]);
+
+    if (typeTabs.length === 3) {
+      return [['all', `All (${items.length})`], ...typeTabs];
+    }
+    return typeTabs;
+  }, [canProposal, canLiquidation, canPAR, documents.endorsedProposals.length, documents.endorsedLiquidations.length, documents.endorsedPARs.length, items.length]);
+
+  const activeFilter: DocFilter = availableTabs.some(([key]) => key === filter)
+    ? filter
+    : availableTabs[0]?.[0] || 'all';
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
-      if (filter !== 'all' && item.docType !== filter) return false;
+      if (activeFilter !== 'all' && item.docType !== activeFilter) return false;
       if (!q) return true;
       return (
         item.title.toLowerCase().includes(q) ||
@@ -106,7 +136,14 @@ export default function SignatorySignedDocumentsPage() {
         item.typeLabel.toLowerCase().includes(q)
       );
     });
-  }, [items, filter, search]);
+  }, [items, activeFilter, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const paginated = useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  );
 
   const handleOpen = (entry: SignedEntry) => {
     if (entry.docType === 'proposal') setSelectedProposal(entry.raw as ActivityProposal);
@@ -157,20 +194,16 @@ export default function SignatorySignedDocumentsPage() {
       <section className="rounded-2xl border border-slate-200 bg-white shadow-xs overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2">
-            {(
-              [
-                ['all', `All (${items.length})`],
-                ['proposal', `Proposals (${documents.endorsedProposals.length})`],
-                ['liquidation', `Liquidations (${documents.endorsedLiquidations.length})`],
-                ['par', `PARs (${documents.endorsedPARs.length})`],
-              ] as [DocFilter, string][]
-            ).map(([key, label]) => (
+            {availableTabs.map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => setFilter(key)}
+                onClick={() => {
+                  setFilter(key);
+                  setPage(1);
+                }}
                 className={`rounded-lg px-3 py-1.5 text-xs font-bold transition-colors cursor-pointer ${
-                  filter === key ? 'bg-[#001A4D] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  activeFilter === key ? 'bg-[#001A4D] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 {label}
@@ -183,7 +216,10 @@ export default function SignatorySignedDocumentsPage() {
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
               placeholder="Search signed documents..."
               className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-xs focus:outline-none focus:ring-2 focus:ring-[#0E4EBD]"
             />
@@ -212,7 +248,7 @@ export default function SignatorySignedDocumentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filtered.map((entry) => (
+                {paginated.map((entry) => (
                   <tr key={`${entry.docType}:${entry.id}`} className="hover:bg-slate-50">
                     <td className="px-4 py-3.5 whitespace-nowrap">
                       <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
@@ -263,6 +299,40 @@ export default function SignatorySignedDocumentsPage() {
             </table>
           </div>
         )}
+        {!documents.loading && !documents.error && filtered.length > 0 && (
+          <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50/70 px-4 py-3 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between">
+            <span>
+              Showing{' '}
+              <strong className="text-[#001A4D]">
+                {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)}
+              </strong>{' '}
+              of <strong className="text-[#001A4D]">{filtered.length}</strong> documents
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={currentPage <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+                Previous
+              </button>
+              <span className="px-2 font-bold text-[#001A4D]">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={currentPage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Next
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       {selectedProposal && (
@@ -272,6 +342,7 @@ export default function SignatorySignedDocumentsPage() {
           signatorySession={session}
           onClose={() => setSelectedProposal(null)}
           onOpenSignaturePad={onOpenSignatureModal}
+          readOnly
         />
       )}
       {selectedLiquidation && (
@@ -281,6 +352,7 @@ export default function SignatorySignedDocumentsPage() {
           signatorySession={session}
           onClose={() => setSelectedLiquidation(null)}
           onOpenSignaturePad={onOpenSignatureModal}
+          readOnly
         />
       )}
       {selectedPAR && (
@@ -290,6 +362,7 @@ export default function SignatorySignedDocumentsPage() {
           signatorySession={session}
           onClose={() => setSelectedPAR(null)}
           onOpenSignaturePad={onOpenSignatureModal}
+          readOnly
         />
       )}
     </div>

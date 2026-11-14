@@ -226,7 +226,7 @@ export async function syncProposalToEventsCollection(
             : false,
         visibilityStart: (proposal as any).visibilityStart || existingData.visibilityStart || null,
         eventTypeId: 'activity',
-        customEventTypeName: 'Activity Proposal (Form AP-01)',
+        customEventTypeName: 'Activity Proposal',
         eventCategoryId: 'campus_activity',
         customEventCategoryName: 'Official Campus Activity',
         isOfficerProposal: isOfficerProposalVal,
@@ -954,18 +954,31 @@ export async function endorseProposal(
   const signerUid = signatory.id || signatory.uid || '';
   const signerEmail = (signatory.email || '').toLowerCase();
   const currentStage = data.currentStageIndex ?? 1;
+  const wasAlreadyApproved =
+    data.status === 'approved_president' ||
+    data.proposalStatus === 'approved' ||
+    data.lifecycleStatus === 'approved' ||
+    data.isApproved === true;
 
   // 1. Locate the specific step for this signatory that is pending review
-  let targetStepIdx = chain.findIndex((s) => {
-    const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
-    const isPending = s.status === 'current' || s.status === 'waiting';
-    if (!stageMatches || !isPending) return false;
-
+  const matchesSignatory = (s: any) => {
     if (signerUid && s.signatoryUid === signerUid) return true;
     if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
     if (signatory.role && s.role === signatory.role) return true;
     return false;
+  };
+
+  let targetStepIdx = chain.findIndex((s) => {
+    const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
+    const isPending = s.status === 'current' || s.status === 'waiting';
+    return stageMatches && isPending && matchesSignatory(s);
   });
+
+  if (targetStepIdx === -1 && wasAlreadyApproved) {
+    targetStepIdx = chain.findIndex(
+      (s) => (s.status === 'current' || s.status === 'waiting') && matchesSignatory(s)
+    );
+  }
 
   // Fallback to legacy currentStepIndex if stage match not found
   if (targetStepIdx === -1) {
@@ -1036,23 +1049,14 @@ export async function endorseProposal(
 
   chain[targetStepIdx] = updatedStep as any;
 
-  // Dual-Approver Resolution within the Executive Stage:
+  // Executive / Final Approval Resolution without waiving co-signatories:
+  // Any remaining unsigned signatories stay active ('current') so they can still affix their signature.
   if (newStatus === 'approved') {
-    // Authorized approver chose to fully authorize & approve:
-    // Any remaining co-approvers in this stage are waived with clear audit attribution.
-    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
-    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
-
     chain.forEach((s, idx) => {
-      if (
-        idx !== targetStepIdx &&
-        (s.status === 'waiting' || s.status === 'current') &&
-        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
-      ) {
+      if (idx !== targetStepIdx && s.status === 'waiting') {
         chain[idx] = {
           ...s,
-          status: 'waived',
-          remarks: `Step waived — Activity proposal authorized and fully approved by ${approverTitle} (${approverName})`,
+          status: 'current',
         };
       }
     });
@@ -1086,7 +1090,7 @@ export async function endorseProposal(
 
   // 3. Determine if current stage has completed all required signatures
   const hasStages = sanitizedChain.some((s) => typeof s.stageIndex === 'number');
-  let isFullyApproved = false;
+  let isFullyApproved = wasAlreadyApproved || newStatus === 'approved';
   let nextStageIndex = currentStage;
   let stageAdvanced = false;
 
@@ -1121,14 +1125,10 @@ export async function endorseProposal(
     }
   } else {
     // Legacy linear step progression
-    if (newStatus === 'approved') {
-      isFullyApproved = true;
-    } else {
-      const nextIdx = targetStepIdx + 1;
-      isFullyApproved = nextIdx >= sanitizedChain.length;
-      if (!isFullyApproved && sanitizedChain[nextIdx]) {
-        sanitizedChain[nextIdx] = { ...sanitizedChain[nextIdx], status: 'current' };
-      }
+    const nextIdx = targetStepIdx + 1;
+    isFullyApproved = isFullyApproved || nextIdx >= sanitizedChain.length;
+    if (nextIdx < sanitizedChain.length && sanitizedChain[nextIdx]?.status === 'waiting') {
+      sanitizedChain[nextIdx] = { ...sanitizedChain[nextIdx], status: 'current' };
     }
   }
 
@@ -1149,8 +1149,10 @@ export async function endorseProposal(
     rawUpdates.adviserRemarks = null;
     rawUpdates.stepRevisionRemarks = null;
     rawUpdates.returnFlags = [];
-    rawUpdates.approvedAt = serverTimestamp();
-    rawUpdates.approvedBy = signatory.name || signatory.email || 'Signatory Approver';
+    if (!wasAlreadyApproved) {
+      rawUpdates.approvedAt = serverTimestamp();
+      rawUpdates.approvedBy = signatory.name || signatory.email || 'Signatory Approver';
+    }
   } else {
     rawUpdates.isReturned = false;
   }
@@ -1172,15 +1174,15 @@ export async function endorseProposal(
       adviserRemarks: isFullyApproved ? null : ((data as any).adviserRemarks || null),
       stepRevisionRemarks: isFullyApproved ? null : ((data as any).stepRevisionRemarks || null),
       returnFlags: isFullyApproved ? [] : ((data as any).returnFlags || []),
-      ...(isFullyApproved ? {
+      ...(isFullyApproved && !wasAlreadyApproved ? {
         approvedAt: serverTimestamp(),
         approvedBy: signatory.name || signatory.email || 'Signatory Approver',
       } : {}),
     }
   );
 
-  // Auto-archive approved activity proposal / permit into EDMS
-  if (isFullyApproved) {
+  // Auto-archive approved activity proposal / permit into EDMS & encumber budget on initial approval
+  if (isFullyApproved && !wasAlreadyApproved) {
     try {
       await autoArchiveApprovedEvent(proposalId, userUid || signatory.email, remarks);
     } catch (archErr) {

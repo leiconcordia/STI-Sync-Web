@@ -101,7 +101,7 @@ export const RETURN_FLAGS_GROUPED: ReturnStepFlag[] = [
 
 const REJECTION_REASONS = [
   'Fraudulent or Misleading Information',
-  'Insufficient Documentation or Incomplete Form AP-01',
+  'Insufficient Documentation or Incomplete Activity Proposal',
   'Financial Budget Exceeds Allocation Limit',
   'Scheduling or Venue Conflict',
   'Institutional Policy Violation',
@@ -1293,10 +1293,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         financialProjections: financialProjections,
         approvalChain: fullProposal.approvalChain || (event as any).approvalChain || [],
       });
-      toast.success('Activity Proposal Form AP-01 exported successfully!');
+      toast.success('Activity Proposal PDF exported successfully!');
     } catch (err: any) {
       console.error(err);
-      toast.error('Failed to export Form AP-01 PDF.');
+      toast.error('Failed to export Activity Proposal PDF.');
     } finally {
       setExportingPdf(false);
     }
@@ -1501,10 +1501,10 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             onClick={handleExportPDF}
             disabled={exportingPdf}
             className="px-3.5 py-1.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-            title="Download Official STI Form AP-01 PDF"
+            title="Download Official Activity Proposal PDF"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>{exportingPdf ? 'Generating Form AP-01...' : 'Export Form AP-01'}</span>
+            <span>{exportingPdf ? 'Generating PDF...' : 'Export PDF'}</span>
           </button>
 
           {/* Activity Utilities (Utils Dropdown Menu — STI Clean Theme) */}
@@ -2065,7 +2065,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           {/* Section Navigation List (10 Official Form AP-01 Sections) */}
           <div className="space-y-1">
             <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wider px-3 mb-2">
-              Proposal Sections (Form AP-01)
+              Proposal Sections
             </p>
             {navItems.map((sec) => {
               const Icon = sec.icon;
@@ -2129,7 +2129,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               <span>Admin Oversight</span>
             </div>
             <p className="text-[11px] text-white/80 leading-relaxed">
-              Official Form AP-01 institutional record. Approvals release operational controls, student publishing, and budget allocations.
+              Official institutional Activity Proposal record. Approvals release operational controls, student publishing, and budget allocations.
             </p>
           </div>
         </aside>
@@ -2170,7 +2170,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           >
             <SectionHeader
               title="1. Activity Identity & Proponents"
-              subtitle="Official Form AP-01 title, theme, host bodies, principal proponents, and media assets"
+              subtitle="Official activity title, theme, host bodies, principal proponents, and media assets"
             />
 
             <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-xs">
@@ -2288,7 +2288,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           >
             <SectionHeader
               title="2. Institutional Objectives & Success Indicators"
-              subtitle="Form AP-01 strategic alignment, core objectives, and measurable Key Performance Indicators (KPIs)"
+              subtitle="Strategic alignment, core objectives, and measurable Key Performance Indicators (KPIs)"
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -2611,7 +2611,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                       <Receipt className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                      Financial Liquidation (Form LF-01 Readiness)
+                      Financial Liquidation Readiness
                     </span>
                     <span className="font-mono text-slate-600">
                       Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalExpenseAmount)}</strong>
@@ -2630,7 +2630,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           </span>
                         </div>
                         <p className="text-xs text-emerald-800 max-w-xl">
-                          This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is not required for clearance, compliance, or archiving.
+                          This activity has no budget and no monetary expense projections. Financial liquidation is not required for clearance, compliance, or archiving.
                         </p>
                       </div>
 
@@ -2890,7 +2890,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           >
             <SectionHeader
               title="6. Marketing & Documentation Strategy"
-              subtitle="Form AP-01 promotional outreach channels and official documentation / coverage plans"
+              subtitle="Promotional outreach channels and official documentation / coverage plans"
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -2997,7 +2997,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             className="space-y-4"
           >
             <SectionHeader
-              title="8. Official Financial Projections (Form AP-01)"
+              title="8. Official Financial Projections"
               subtitle="Standard 6-column revenue and expenditure breakdown with projected net balance"
             />
 
@@ -3035,7 +3035,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                     <div className="leading-relaxed">
                       <strong className="block font-bold text-emerald-900">
-                        🔒 Verified Historical Baseline (Form AP-01 Comparative):
+                        🔒 Verified Historical Baseline (Comparative):
                       </strong>
                       The figures in <em>"Last Year's Actual"</em> are directly linked to the official past record of{' '}
                       <strong>"{histRef.eventTitle}"</strong> ({histRef.schoolYear ? `SY ${histRef.schoolYear} • ` : ''}Total: {formatPHP(histRef.originalTotalAmount)}) and have <strong>not been modified</strong>.
@@ -3092,7 +3092,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-2">
                   <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
                     <span className="w-2 h-2 rounded-full bg-[#0E4EBD]" />
-                    Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+                    Proposed Budget Baseline Categories
                   </h4>
                   <span className="text-[10px] text-slate-500 font-medium">
                     Approved spending guide for post-event financial liquidation
@@ -3447,7 +3447,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
                   >
                     <Download className="w-4 h-4" />
-                    <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                    <span>{exportingPdf ? 'Exporting PDF...' : 'Export Proposal PDF'}</span>
                   </button>
                   <button
                     onClick={onClose}
@@ -3483,7 +3483,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       {isCompleted ? 'Activity Completed' : 'Activity Approved & Active'}
                     </h4>
                     <p className="text-xs text-blue-100">
-                      Official Form AP-01 Record
+                      Official Activity Proposal Record
                     </p>
                   </div>
                 </div>
@@ -3520,7 +3520,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />
-                  <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                  <span>{exportingPdf ? 'Exporting PDF...' : 'Export Proposal PDF'}</span>
                 </button>
                 <button
                   onClick={onClose}
@@ -3673,7 +3673,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />
-                  <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                  <span>{exportingPdf ? 'Exporting PDF...' : 'Export Proposal PDF'}</span>
                 </button>
                 {canWithdrawProposal(activeEvent, 'admin', adviserProfile?.uid).canWithdraw && (
                   <button
@@ -3755,7 +3755,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   className="w-full py-2.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
                 >
                   <Download className="w-4 h-4" />
-                  <span>{exportingPdf ? 'Exporting Form AP-01...' : 'Export Form AP-01 PDF'}</span>
+                  <span>{exportingPdf ? 'Exporting PDF...' : 'Export Proposal PDF'}</span>
                 </button>
                 <button
                   onClick={onClose}
@@ -3807,7 +3807,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   <div className="text-xs text-blue-900 leading-relaxed">
                     <p className="font-bold">Stage 1: Student Affairs & Services (SAS) Endorsement</p>
                     <p className="text-blue-700 mt-0.5">
-                      Your master electronic signature will be sealed onto Stage 1 of Form AP-01. Once signed, the proposal will automatically advance to <strong>Stage 2 (Academic & Dean Endorsements)</strong>.
+                      Your master electronic signature will be sealed onto Stage 1 of the Activity Proposal. Once signed, the proposal will automatically advance to <strong>Stage 2 (Academic & Dean Endorsements)</strong>.
                     </p>
                   </div>
                 </div>
@@ -3887,7 +3887,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         />
                       </div>
                       <div className="text-[10px] text-slate-400 font-mono text-center border-t border-slate-100 pt-1.5 w-full">
-                        Official Cryptographic Seal • Form AP-01 Digital Endorsement
+                        Official Cryptographic Seal • Activity Proposal Digital Endorsement
                       </div>
                     </div>
                   ) : (
@@ -4038,7 +4038,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   </p>
                   <ul className="list-disc list-inside space-y-1 text-slate-700 text-xs leading-relaxed">
                     <li>
-                      SAS initial review is recorded as <strong>Cleared</strong> and stamped into Form AP-01 trail.
+                      SAS initial review is recorded as <strong>Cleared</strong> and stamped into the Activity Proposal audit trail.
                     </li>
                     <li>
                       Proposal status advances to <strong>Under Review</strong> and unlocks Stage 1 in the Signatory Portal.
@@ -4128,7 +4128,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   What happens next:
                 </div>
                 <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                  <li>Your official SAS digital signature will be sealed onto Form AP-01.</li>
+                  <li>Your official SAS digital signature will be sealed onto the Activity Proposal.</li>
                   <li>The proposal transitions to <strong>Fully Approved</strong>.</li>
                   <li>Operational studio permissions (pass scanners, publishing feed) will be unlocked.</li>
                   <li>Student organization officers and stakeholders will be notified immediately.</li>

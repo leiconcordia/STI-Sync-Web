@@ -67,9 +67,9 @@ export const ReportDetailDrawer: React.FC<ReportDetailDrawerProps> = ({
             </div>
             <div>
               <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#FFD100]">
-                {selection.type === 'ap' && 'Activity Proposal Record (AP-01)'}
-                {selection.type === 'fl' && 'Financial Liquidation Record (LF-01)'}
-                {selection.type === 'par' && 'Post-Activity Report Record (PAR-01)'}
+                {selection.type === 'ap' && 'Activity Proposal Record'}
+                {selection.type === 'fl' && 'Financial Liquidation Record'}
+                {selection.type === 'par' && 'Post-Activity Report Record'}
                 {selection.type === 'org' && 'Organization Accreditation Profile'}
                 {selection.type === 'officer' && 'Student Officer Profile'}
               </div>

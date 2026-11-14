@@ -61,7 +61,7 @@ export function AuthorityConflictModal({
             <div>
               <h3 className="font-bold text-base">Cannot Revoke Signing Authority</h3>
               <p className="text-xs text-amber-100">
-                Active dependencies found for {docInfo.name} ({docInfo.code}).
+                Active dependencies found for {docInfo.name}.
               </p>
             </div>
           </div>
@@ -78,7 +78,7 @@ export function AuthorityConflictModal({
           <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 leading-relaxed flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <strong>Authority Modification Blocked:</strong> Signing authority for <strong>{docInfo.name} ({docInfo.code})</strong> cannot be set to <em>Cannot Sign</em> because <strong>{signatory.name}</strong> has active roles. Review the blocking reasons below:
+              <strong>Authority Modification Blocked:</strong> Signing authority for <strong>{docInfo.name}</strong> cannot be set to <em>Cannot Sign</em> because <strong>{signatory.name}</strong> has active roles. Review the blocking reasons below:
             </div>
           </div>
 

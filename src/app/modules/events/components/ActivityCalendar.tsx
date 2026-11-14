@@ -92,6 +92,9 @@ function getActivityDateKeys(activity: EventDocument): string[] {
   const fallback = normalizeDateStr(
     (activity as any).targetImplementationDate ||
     (activity as any).implementationDate ||
+    (activity as any).startDate ||
+    (activity as any).targetDate ||
+    (activity as any).eventDate ||
     (activity as any).date
   );
   if (fallback) {

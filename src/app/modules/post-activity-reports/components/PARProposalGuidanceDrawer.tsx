@@ -68,7 +68,7 @@ export default function PARProposalGuidanceDrawer({
         <div className="min-w-0 pr-2">
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded-full bg-white/20 text-[#FFD41C] text-[10px] font-mono font-bold uppercase tracking-wider">
-              {proposalData?.referenceNo || eventData?.referenceId || 'Form AP-01'}
+              {proposalData?.referenceNo || eventData?.referenceId || 'Activity Proposal'}
             </span>
             <span className="text-xs font-bold text-white truncate">
               Proposal Guidance

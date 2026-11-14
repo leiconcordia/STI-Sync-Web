@@ -86,7 +86,7 @@ export function useSemesters() {
     const unsubscribe = onSnapshot(
       q,
       (snap) => {
-        setData(snap.docs.map(doc => doc.data() as SemesterDocument));
+        setData(snap.docs.map((d) => ({ ...d.data(), id: d.id }) as SemesterDocument));
         setLoading(false);
       },
       (err) => {

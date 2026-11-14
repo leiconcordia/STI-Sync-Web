@@ -653,7 +653,7 @@ export function CalendarAndActivityMonitorPane({
                   <p className="text-xs font-bold text-gray-700">All SAS activities cleared!</p>
                   <p className="text-[11px] text-gray-400 mt-0.5">
                     {sasFilter === 'needs_action'
-                      ? 'No SAS institutional activities currently lack LF-01 or PAR compliance.'
+                      ? 'No SAS institutional activities currently lack Financial Liquidation or PAR compliance.'
                       : 'No pending SAS institutional activities scheduled.'}
                   </p>
                 </div>

@@ -913,10 +913,10 @@ export function generateAPSummaryReport(
 
   return {
     id: 'AP_SUMMARY_REPORT',
-    title: 'Activity Proposals (Form AP-01) Master Audit Report',
+    title: 'Activity Proposals Master Audit Report',
     category: 'INSTITUTIONAL',
     metadata: {
-      title: 'Activity Proposals (Form AP-01) Master Audit Report',
+      title: 'Activity Proposals Master Audit Report',
       subtitle: 'Comprehensive audit log of campus activity proposals, club advisers, institutional endorsements, and approved allocations.',
       academicYear: filter.academicYear,
       semester: filter.semester,
@@ -973,10 +973,10 @@ export function generateFLLedgerReport(
 
   return {
     id: 'FL_LEDGER_REPORT',
-    title: 'Financial Liquidations (Form LF-01) Master Audit Ledger',
+    title: 'Financial Liquidations Master Audit Ledger',
     category: 'INSTITUTIONAL',
     metadata: {
-      title: 'Financial Liquidations (Form LF-01) Master Audit Ledger',
+      title: 'Financial Liquidations Master Audit Ledger',
       subtitle: 'Official institutional reconciliation ledger of cash advances, club advisers, receipts, and surplus funds.',
       academicYear: filter.academicYear,
       semester: filter.semester,
@@ -1033,10 +1033,10 @@ export function generatePARPortfolioReport(
 
   return {
     id: 'PAR_PORTFOLIO_REPORT',
-    title: 'Post-Activity Reports (Form PAR-01) Master Portfolio',
+    title: 'Post-Activity Reports Master Portfolio',
     category: 'INSTITUTIONAL',
     metadata: {
-      title: 'Post-Activity Reports (Form PAR-01) Master Portfolio',
+      title: 'Post-Activity Reports Master Portfolio',
       subtitle: 'Official documentation audit of campus event execution, club advisers, student turnout verification, and completion status.',
       academicYear: filter.academicYear,
       semester: filter.semester,

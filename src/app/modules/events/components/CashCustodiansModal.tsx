@@ -453,7 +453,7 @@ export default function CashCustodiansModal({
             <Receipt className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
             <div>
               <p className="font-bold text-[#001A4D]">
-                Institutional Liquidation Bridge (LIQUIDATION-FORMAT_v1.xlsx)
+                Institutional Liquidation Bridge
               </p>
               <p className="text-[11px] text-blue-800 mt-0.5 leading-relaxed">
                 Assign cash advances directly to approved financial projection line items or contingency reserves. When the activity concludes, the official <strong>Liquidation Report</strong> will automatically load these exact custodians and cash amounts for attaching physical receipts (ORs) and computing variances.

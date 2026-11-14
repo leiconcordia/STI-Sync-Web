@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { ArrowRight, Building2, Layers, LogOut, ShieldCheck, Users } from 'lucide-react';
 import { auth } from '../../services/firebase';
-import { activatePortalWorkspace, clearPortalSessions, loadPortalWorkspaces, type PortalWorkspace } from './services/portal-workspace.service';
+import {
+  activatePortalWorkspace,
+  clearPortalSessions,
+  hasMultiplePortalKinds,
+  loadPortalWorkspaces,
+  type PortalWorkspace,
+} from './services/portal-workspace.service';
 
 export default function PortalWorkspaces() {
   const navigate = useNavigate();
@@ -16,7 +22,15 @@ export default function PortalWorkspaces() {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) { navigate('/portal/login', { replace: true }); return; }
       if (live) setUserEmail(user.email || '');
-      try { const choices = await loadPortalWorkspaces(); if (live) setWorkspaces(choices); }
+      try {
+        const choices = await loadPortalWorkspaces();
+        if (!live) return;
+        if (choices.length > 0 && !hasMultiplePortalKinds(choices)) {
+          navigate(activatePortalWorkspace(choices[0]), { replace: true });
+          return;
+        }
+        setWorkspaces(choices);
+      }
       catch (failure: any) { if (live) setError(failure.message || 'Unable to load your workspaces.'); }
       finally { if (live) setLoading(false); }
     });

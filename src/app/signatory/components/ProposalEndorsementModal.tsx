@@ -45,6 +45,7 @@ import RevisionDiffViewerModal from '../../modules/workflow/components/RevisionD
 import InlineRevisionBadge from '../../modules/workflow/components/InlineRevisionBadge';
 import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { diffActivityProposal } from '../../modules/workflow/utils/document-diff-engine';
+import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
 
 const AP_STEPS_FOR_REVISION = [
   { key: 'step_1', stepNumber: 1, label: 'Step 1: General Info & Proponents', description: 'Activity Title, Rationale, Theme, Proponents, and Organizing Body' },
@@ -63,6 +64,7 @@ interface ProposalEndorsementModalProps {
   signatorySession: any;
   onOpenSignaturePad: () => void;
   onProposalUpdated?: () => void;
+  readOnly?: boolean;
 }
 
 export default function ProposalEndorsementModal({
@@ -72,8 +74,8 @@ export default function ProposalEndorsementModal({
   signatorySession,
   onOpenSignaturePad,
   onProposalUpdated,
+  readOnly = false,
 }: ProposalEndorsementModalProps) {
-  const [remarks, setRemarks] = useState('');
   const [returnRemarks, setReturnRemarks] = useState('');
   const [rejectionReason, setRejectionReason] = useState('');
   const [isReturning, setIsReturning] = useState(false);
@@ -177,10 +179,8 @@ export default function ProposalEndorsementModal({
 
   const chain = proposal.approvalChain || [];
 
-  // Dynamically find current user's step index in the approval chain (zero hardcoded roles)
-  const myStepIndex = chain.findIndex((s) => {
-    const stageMatch = s.stageIndex ? s.stageIndex === currentStage : true;
-    if (!stageMatch) return false;
+  const matchesSignatoryIdentity = (s: any) => {
+    if (!s) return false;
     if (userUid && (s.signatoryUid === userUid || s.signatoryUid === signatorySession?.id || s.signatoryUid === signatorySession?.uid)) return true;
     if (userEmail && s.signatoryEmail?.toLowerCase() === userEmail) return true;
     if (userRole && s.role && s.role.toLowerCase() === userRole.toLowerCase()) return true;
@@ -190,9 +190,65 @@ export default function ProposalEndorsementModal({
       if (sT === uT || sT.includes(uT) || uT.includes(sT)) return true;
     }
     return false;
+  };
+
+  const isReturnedDoc =
+    proposal.status === 'returned' ||
+    (proposal as any).proposalStatus === 'returned' ||
+    Boolean((proposal as any).isReturned);
+  const isRejectedDoc =
+    proposal.status === 'rejected' ||
+    (proposal as any).proposalStatus === 'rejected';
+  const isProposalApproved =
+    proposal.status === 'approved_president' ||
+    (proposal as any).proposalStatus === 'approved' ||
+    (proposal as any).lifecycleStatus === 'approved' ||
+    Boolean((proposal as any).isApproved);
+
+  const alreadySignedByMe =
+    !isReturnedDoc &&
+    (chain.some((s) => hasSignatorySignedStep(s, signatorySession)) ||
+      hasSignatorySignedDocument(proposal, signatorySession));
+
+  // Dynamically find current user's step index in the approval chain (zero hardcoded roles)
+  let myStepIndex = chain.findIndex((s) => {
+    const stageMatch = s.stageIndex ? s.stageIndex === currentStage : true;
+    return stageMatch && matchesSignatoryIdentity(s);
   });
 
+  if (myStepIndex < 0 && isProposalApproved) {
+    myStepIndex = chain.findIndex(
+      (s) =>
+        s.status !== 'endorsed' &&
+        s.status !== 'approved' &&
+        s.status !== 'waived' &&
+        matchesSignatoryIdentity(s)
+    );
+  }
+
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
+
+  const isMyStepUnsigned = Boolean(
+    myStep &&
+      matchesSignatoryIdentity(myStep) &&
+      myStep.status !== 'endorsed' &&
+      myStep.status !== 'approved' &&
+      myStep.status !== 'waived' &&
+      myStep.status !== 'returned' &&
+      myStep.status !== 'returned_for_revision' &&
+      myStep.status !== 'rejected'
+  );
+
+  const canSignNow =
+    !readOnly &&
+    !alreadySignedByMe &&
+    !isReturnedDoc &&
+    !isRejectedDoc &&
+    isMyStepUnsigned &&
+    (isProposalApproved || !myStep?.stageIndex || myStep.stageIndex === currentStage);
+
+  const isReadOnlyLocked = !canSignNow;
+  const canReturnOrRejectNow = canSignNow && !isProposalApproved;
 
   // Dynamic approval authority permission check
   const canApprove = canSignatoryApproveDocument(signatorySession, 'proposal', myStep);
@@ -206,6 +262,10 @@ export default function ProposalEndorsementModal({
   const isFinalApprover = Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0));
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
+    if (isReadOnlyLocked) {
+      toast.info('This document is read-only for your account.');
+      return;
+    }
     if (!hasSignature) {
       toast.error('Please register your electronic signature before endorsing this proposal.');
       onOpenSignaturePad();
@@ -230,7 +290,7 @@ export default function ProposalEndorsementModal({
           canApproveProposal: signatorySession?.canApproveProposal,
           approvalDecision: decision,
         },
-        remarks,
+        '',
         decision
       );
 
@@ -682,7 +742,7 @@ export default function ProposalEndorsementModal({
                   )}
                   <tr className="bg-rose-50/40 font-bold text-rose-900">
                     <td colSpan={5} className="p-2 text-[11px] uppercase tracking-wider">
-                      Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+                      Proposed Budget Baseline Categories
                     </td>
                   </tr>
                   {proposal.financialProjections?.expenses?.map((e, i) => (
@@ -860,7 +920,8 @@ export default function ProposalEndorsementModal({
                 <button
                   type="button"
                   onClick={onOpenSignaturePad}
-                  className="text-xs text-blue-700 hover:text-blue-800 font-semibold underline self-start sm:self-center"
+                  disabled={isReadOnlyLocked}
+                  className="text-xs text-blue-700 hover:text-blue-800 font-semibold underline self-start sm:self-center disabled:opacity-40 disabled:cursor-not-allowed disabled:no-underline"
                 >
                   Re-draw Signature
                 </button>
@@ -879,7 +940,8 @@ export default function ProposalEndorsementModal({
                 <button
                   type="button"
                   onClick={onOpenSignaturePad}
-                  className="px-3.5 py-1.5 bg-[#001A4D] text-white rounded-xl text-xs font-bold flex items-center gap-1.5"
+                  disabled={isReadOnlyLocked}
+                  className="px-3.5 py-1.5 bg-[#001A4D] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <PenTool className="w-3.5 h-3.5 text-[#FFD41C]" />
                   <span>Register Signature</span>
@@ -887,28 +949,26 @@ export default function ProposalEndorsementModal({
               </div>
             )}
 
-            {/* Endorsement Remarks */}
-            <div>
-              <label className="block text-xs font-bold text-slate-700 mb-1">
-                {isFinalApprover ? 'Executive Approval Directives / Remarks (Optional)' : 'Endorsement Notes / Recommendations (Optional)'}
-              </label>
-              <input
-                type="text"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                placeholder={
-                  isFinalApprover
-                    ? 'e.g. Approved. Proceed with facility scheduling and student safety coordination...'
-                    : 'e.g. Endorsed with recommendation to coordinate AV setup with IT staff...'
-                }
-                className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
-              />
-              {hasSubsequentApprover && (
-                <p className="text-[11px] text-blue-800 bg-blue-50/80 border border-blue-200/70 rounded-xl px-3 py-2 mt-2 leading-relaxed">
-                  <span className="font-bold">Multi-Approver Route:</span> Stamping your approval will advance this proposal to the subsequent approver in the dynamic pipeline.
-                </p>
-              )}
-            </div>
+            {isReadOnlyLocked && (
+              <div className="px-3.5 py-2.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  {alreadySignedByMe
+                    ? 'Read-Only View: You have already signed this Activity Proposal. Action buttons are disabled.'
+                    : isReturnedDoc
+                    ? 'Read-Only View: This proposal is currently returned for revision.'
+                    : isRejectedDoc
+                    ? 'Read-Only View: This proposal has been rejected.'
+                    : 'Read-Only View: Signing controls are disabled for your current session.'}
+                </span>
+              </div>
+            )}
+
+            {!isReadOnlyLocked && hasSubsequentApprover && (
+              <p className="text-[11px] text-blue-800 bg-blue-50/80 border border-blue-200/70 rounded-xl px-3 py-2 leading-relaxed">
+                <span className="font-bold">Multi-Approver Route:</span> Stamping your approval will advance this proposal to the subsequent approver in the dynamic pipeline.
+              </p>
+            )}
 
 
 
@@ -957,8 +1017,8 @@ export default function ProposalEndorsementModal({
                 <button
                   type="button"
                   onClick={() => setIsReturning(true)}
-                  disabled={isSubmitting}
-                  className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors cursor-pointer"
+                  disabled={isSubmitting || !canReturnOrRejectNow}
+                  className="text-xs text-amber-700 hover:text-amber-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-amber-100/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                 >
                   <RotateCcw className="w-4 h-4" />
                   <span>Return for Revision</span>
@@ -967,8 +1027,8 @@ export default function ProposalEndorsementModal({
                   <button
                     type="button"
                     onClick={() => setIsRejecting(true)}
-                    disabled={isSubmitting}
-                    className="text-xs text-rose-700 hover:text-rose-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-rose-100/50 transition-colors cursor-pointer"
+                    disabled={isSubmitting || !canReturnOrRejectNow}
+                    className="text-xs text-rose-700 hover:text-rose-800 font-bold flex items-center gap-1.5 px-3 py-2 rounded-xl hover:bg-rose-100/50 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                   >
                     <X className="w-4 h-4" />
                     <span>Reject</span>
@@ -1025,22 +1085,22 @@ export default function ProposalEndorsementModal({
                   <button
                     type="button"
                     onClick={() => setPendingConfirmType('approve')}
-                    disabled={isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-50 cursor-pointer"
+                    disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     title="Grant executive approval and fully approve proposal"
                   >
                     <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                    <span>{isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
+                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => setPendingConfirmType('endorse')}
-                    disabled={isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-50 cursor-pointer"
+                    disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <Send className="w-4 h-4" />
-                    <span>{isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse'}</span>
+                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse'}</span>
                   </button>
                 )}
               </>
@@ -1090,7 +1150,7 @@ export default function ProposalEndorsementModal({
                 </div>
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                    <li>Your official digital signature will be sealed onto Form AP-01.</li>
+                    <li>Your official digital signature will be sealed onto the Activity Proposal.</li>
                     <li>The proposal transitions to <strong>Fully Approved</strong>.</li>
                     <li>Operational permissions (attendance scanner, publishing, allocations) will unlock.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

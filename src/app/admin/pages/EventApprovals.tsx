@@ -1293,11 +1293,6 @@ export function EventApprovals() {
                         {/* Activity & Reference */}
                         <td className="py-3.5 px-4 max-w-[240px]">
                           <div className="font-bold text-gray-900 text-sm leading-snug truncate flex items-center gap-1.5">
-                            {isAP && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200 uppercase tracking-wider flex-shrink-0">
-                                AP-01
-                              </span>
-                            )}
                             <span className="truncate">{event.title}</span>
                           </div>
                           {event.tagline && (
@@ -1475,7 +1470,7 @@ export function EventApprovals() {
                             <button
                               onClick={() => setSelectedEvent(event)}
                               className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                              title="View Proposal Form AP-01"
+                              title="View Activity Proposal"
                             >
                               <Eye className="w-3.5 h-3.5" />
                               <span>View</span>

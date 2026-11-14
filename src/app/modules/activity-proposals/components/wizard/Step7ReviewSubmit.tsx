@@ -719,7 +719,7 @@ export default function Step7ReviewSubmit({
                   {isOfficerOnly
                     ? 'Only the Organization Adviser’s registered digital signature will be verified and attached when the Adviser formally submits this Activity Proposal.'
                     : makerSignatureUrl
-                    ? 'Official signature is verified from your registered profile and will be stamped onto Form AP-01 upon submission and publication-quality PDF export.'
+                    ? 'Official signature is verified from your registered profile and will be stamped onto the Activity Proposal upon submission and publication-quality PDF export.'
                     : 'No registered digital signature found for your account. Please upload or register your signature in your Profile / Account Settings before submitting this Activity Proposal.'}
                 </p>
               </div>

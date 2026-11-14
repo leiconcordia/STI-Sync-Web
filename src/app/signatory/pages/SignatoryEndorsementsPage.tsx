@@ -829,7 +829,7 @@ export default function SignatoryEndorsementsPage() {
                       <div className="space-y-1.5 flex-1 min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-xs font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200/80">
-                            Form PAR
+                            Post-Activity Report
                           </span>
                           <span className="font-mono text-xs text-slate-500 font-bold">
                             {parDoc.referenceNo}

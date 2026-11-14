@@ -331,7 +331,7 @@ export default function SasSignatoryMaintenance() {
             Automatic & Locked First-Gate Institutional Governance
           </h4>
           <p className="text-slate-600 leading-relaxed">
-            By institutional policy, whenever a student organization creates an Activity Proposal (Form AP-01),
+            By institutional policy, whenever a student organization creates an Activity Proposal,
             <strong> Stage 1 is permanently dedicated to Student Affairs & Services (SAS)</strong>.
             The <strong>Signatory Name</strong> and <strong>Position Title</strong> configured below are
             <strong> automatically populated and locked</strong> — student officers cannot alter, override, or delete this first sign-off gate.
@@ -419,7 +419,7 @@ export default function SasSignatoryMaintenance() {
               </div>
             )}
             <p className="text-[11px] text-gray-400">
-              Appears on the "Endorsed by" signature line of official Form AP-01 proposals.
+              Appears on the "Endorsed by" signature line of official Activity Proposals.
             </p>
           </div>
 
@@ -562,7 +562,7 @@ export default function SasSignatoryMaintenance() {
             </div>
 
             <div className="text-[11px] text-slate-400">
-              Vector resolution with anti-aliasing • Ready for official high-resolution AP-01 prints
+              Vector resolution with anti-aliasing • Ready for official high-resolution proposal prints
             </div>
           </div>
         </div>

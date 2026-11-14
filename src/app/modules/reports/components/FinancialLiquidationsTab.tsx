@@ -148,7 +148,7 @@ export const FinancialLiquidationsTab: React.FC<FinancialLiquidationsTabProps> =
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-extrabold text-gray-900">
-                Financial Liquidation & Audit Ledger (LF-01)
+                Financial Liquidation & Audit Ledger
               </h3>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-emerald-50 text-emerald-700 border border-emerald-200">
                 {rows.length} Reports

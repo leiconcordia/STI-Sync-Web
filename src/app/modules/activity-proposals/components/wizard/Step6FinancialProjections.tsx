@@ -575,11 +575,11 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-rose-500" />
                 <h3 className="text-sm font-bold text-slate-800">
-                  B. Proposed Budget Baseline Categories (Form LF-01 Spending Baseline)
+                  B. Proposed Budget Baseline Categories
                 </h3>
               </div>
               <p className="text-[11px] text-slate-500 pl-4.5 mt-0.5">
-                These general baseline categories establish the asking budget and spending guide for post-event Form LF-01 Financial Liquidation, where actual store receipts will be attached.
+                These general baseline categories establish the asking budget and spending guide for post-event Financial Liquidation, where actual store receipts will be attached.
               </p>
             </div>
             <button
@@ -768,7 +768,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               </div>
               <p className="text-xs text-slate-600 mt-0.5">
                 {isNonMonetary
-                  ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from Form FL-01 financial liquidation.'
+                  ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from financial liquidation.'
                   : formData.fundingSource === 'organization_funds'
                     ? 'Proposed budget will be allocated from the official student organization treasury.'
                     : 'Institutional budget allocation requested for school administration review and endorsement.'}

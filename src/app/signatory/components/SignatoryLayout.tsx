@@ -24,7 +24,6 @@ import {
   FileText,
   FileSpreadsheet,
   FileCheck2,
-  CalendarDays,
   BarChart3,
   UserCheck,
   LogOut,
@@ -214,12 +213,6 @@ export default function SignatoryLayout() {
       label: 'Post-Activity Reports',
       icon: FileCheck2,
       visible: canAccessPAR,
-    },
-    {
-      to: '/signatory/calendar',
-      label: 'Calendar of Activities',
-      icon: CalendarDays,
-      visible: true,
     },
     {
       to: '/signatory/reports',

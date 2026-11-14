@@ -1750,14 +1750,14 @@ export default function CreateProposalModal({
                   <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
                     <li>This activity is funded from <strong>Organization Internal Funds</strong>.</li>
                     <li>The proposal routes directly to <strong>Student Affairs & Services (SAS)</strong> for official review, approval, and digital signature.</li>
-                    <li>Your registered electronic signature is affixed to Form AP-01.</li>
+                    <li>Your registered electronic signature is affixed to the Activity Proposal.</li>
                   </ul>
                 ) : (
                   <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
                     <li>This activity is funded from <strong>School Budget</strong>.</li>
                     <li>The proposal routes first to <strong>Student Affairs & Services (SAS)</strong> for preliminary clearance.</li>
                     <li>Upon clearance, it will advance to your designated <strong>institutional signatories</strong>.</li>
-                    <li>Your registered electronic signature is affixed to Form AP-01.</li>
+                    <li>Your registered electronic signature is affixed to the Activity Proposal.</li>
                   </ul>
                 )}
               </div>

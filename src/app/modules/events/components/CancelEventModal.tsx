@@ -205,7 +205,7 @@ export function CancelEventModal({
 
       if (result.cancellationPendingApproval) {
         toast.success('Cancellation & Financial Liquidation Submitted', {
-          description: `Form LF-01 with attached receipts was submitted to the Financial Liquidation signatory pipeline. Once approved, "${event.title}" will finalize as cancelled and Cashier return proof will unlock.`,
+          description: `Financial Liquidation with attached receipts was submitted to the signatory pipeline. Once approved, "${event.title}" will finalize as cancelled and Cashier return proof will unlock.`,
           duration: 7000,
         });
       } else {
@@ -352,7 +352,7 @@ export function CancelEventModal({
 
               <p className="text-[11px] text-rose-800 leading-relaxed pt-1">
                 {hasVerifiedExpenses
-                  ? 'Because official expense receipts are already attached, confirming will submit Form LF-01 (with your Activity Cancelled reason) to the Financial Liquidation signatory pipeline first. Once approved, the activity becomes Cancelled and Cashier return proof will unlock.'
+                  ? 'Because official expense receipts are already attached, confirming will submit Financial Liquidation (with your Activity Cancelled reason) to the signatory pipeline first. Once approved, the activity becomes Cancelled and Cashier return proof will unlock.'
                   : hasDisbursementVoucher
                     ? `A Disbursement Voucher (${formatCurrency(amountDisbursed)}) is attached with 0 expense receipts. Upload the Cashier Return Proof below to confirm the full amount was returned before cancelling.`
                     : `No Disbursement Voucher and no expense receipts are attached (${liquidationsCount} empty draft(s)). This activity can be cancelled immediately with no liquidation required.`}
@@ -469,7 +469,7 @@ export function CancelEventModal({
                 />
                 <span>
                   {hasVerifiedExpenses
-                    ? 'I understand that confirming will lock this activity as Cancellation Pending and submit the Financial Liquidation (Form LF-01) with attached receipts to the FL signatory pipeline for approval.'
+                    ? 'I understand that confirming will lock this activity as Cancellation Pending and submit the Financial Liquidation with attached receipts to the FL signatory pipeline for approval.'
                     : hasDisbursementVoucher
                       ? 'I confirm that the full disbursed amount has been returned to the Cashier with authentic proof attached, and cancelling will permanently mark this event as Cancelled.'
                       : 'I understand that cancelling this event will permanently set its status to Cancelled, notify all designated signatories, and release unused budget allocations.'}

@@ -138,7 +138,7 @@ export const PostActivityReportsTab: React.FC<PostActivityReportsTabProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-extrabold text-gray-900">
-                Post-Activity Reports & Outcomes Ledger (PAR-01)
+                Post-Activity Reports & Outcomes Ledger
               </h3>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-purple-50 text-purple-700 border border-purple-200">
                 {rows.length} Reports

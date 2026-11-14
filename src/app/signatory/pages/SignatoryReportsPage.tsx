@@ -36,7 +36,6 @@ export default function SignatoryReportsPage() {
   const selectedId = params.get('activity');
   const selected = selectedId ? data.rows.find((row) => row.id === selectedId || row.activity.id === selectedId) : undefined;
   const years = useMemo(() => [...new Set([...data.periods.map((period) => period.academicYear), ...data.rows.map((row) => row.academicYear)].filter(Boolean))].sort().reverse(), [data.periods, data.rows]);
-  const terms = useMemo(() => [...new Set([...data.periods.map((period) => period.semester), ...data.rows.map((row) => row.semester)].filter(Boolean))].sort(), [data.periods, data.rows]);
   const pages = Math.max(1, Math.ceil(rows.length / pageSize));
   const currentPage = Math.min(page, pages);
   const visibleRows = rows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
@@ -74,14 +73,12 @@ export default function SignatoryReportsPage() {
         <label className="relative flex-1"><Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" /><span className="sr-only">Search campus activities</span><input aria-label="Search campus activities" value={filters.search} onChange={(event) => change({ search: event.target.value })} placeholder="Search activity name, organizer, or document reference..." className={`${SELECT_CLASS} pl-10`} /></label>
         <button type="button" onClick={reset} className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50">Reset filters</button>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <FilterSelect label="Academic period" value={filters.period} onChange={(period) => change({ period, academicYear: 'ALL', semester: 'ALL' })} options={[
-          ['ACTIVE', 'Active academic periods'], ['ALL', 'All academic periods'],
-          ...data.periods.map((period): [string, string] => [period.id, `${period.label || `${period.academicYear} ${period.semester}`} (${period.academicLevel || (String(period.semester).includes('Trimester') ? 'SHS' : 'College')})`]),
+          ['ALL', 'All academic periods'], ['ACTIVE', 'Active academic periods'],
+          ...data.periods.map((period): [string, string] => [period.id || `${period.academicYear} ${period.semester}`, `${period.label || `${period.academicYear} ${period.semester}`} (${period.academicLevel || (String(period.semester).includes('Trimester') ? 'SHS' : 'College')})`]),
         ]} />
         <FilterSelect label="Academic year" value={filters.academicYear} onChange={(academicYear) => change({ academicYear, period: 'ALL' })} options={[['ALL', 'All academic years'], ...years.map((year): [string, string] => [year, year])]} />
-        <FilterSelect label="Semester / Term" value={filters.semester} onChange={(semester) => change({ semester, period: 'ALL' })} options={[['ALL', 'All terms'], ...terms.map((term): [string, string] => [term, term])]} />
-        <FilterSelect label="Academic scope" value={filters.scope} onChange={(scope) => change({ scope })} options={[['ALL', 'College & SHS'], ['COLLEGE', 'College'], ['SHS', 'SHS']]} />
         <FilterSelect label="Organizer" value={filters.organizationId} onChange={(organizationId) => change({ organizationId })} options={[
           ['ALL', 'All organizations & SAS'], ['sas', 'Student Affairs & Services (SAS)'],
           ...data.organizations.filter((org) => org.id !== 'sas').map((org): [string, string] => [org.id, org.acronym || org.name]),

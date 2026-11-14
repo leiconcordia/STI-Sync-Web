@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import type { StudentDocument } from '../types/student.types';
 import { useStudentDetail } from '../hooks/useStudentDetail';
+import { useDepartments, useCourses } from '../../academic/hooks/useAcademicStream';
 import { formatTimestampDate } from '../utils/date.utils';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate } from '../../../utils/date';
@@ -28,9 +29,89 @@ export default function StudentDetailModal({
   readOnly = false,
 }: StudentDetailModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('profile');
-  const { student: streamedStudent, memberships, payables, attendances, stats, loading } = useStudentDetail(initialStudent);
+  const [selectedAttendanceOrg, setSelectedAttendanceOrg] = useState<string>('all');
+  const { student: streamedStudent, memberships, organizations, payables, attendances, stats, loading } = useStudentDetail(initialStudent);
+  const { data: departments = [] } = useDepartments();
+  const { data: courses = [] } = useCourses();
 
   const student = streamedStudent || initialStudent;
+
+  const resolvedDepartmentName = useMemo(() => {
+    const matchedCourse = courses.find(
+      (c) =>
+        (student.courseId && c.id === student.courseId) ||
+        (student.courseCode && c.code?.toLowerCase() === student.courseCode.toLowerCase())
+    );
+    const deptKey = student.departmentId || matchedCourse?.departmentId || '';
+    const matchedDept = departments.find(
+      (d) =>
+        (deptKey && (d.id === deptKey || d.code?.toLowerCase() === deptKey.toLowerCase())) ||
+        (student.departmentName && d.name?.toLowerCase() === student.departmentName.toLowerCase())
+    );
+    if (matchedDept) {
+      return matchedDept.name || matchedDept.code || '—';
+    }
+    if (student.departmentName && student.departmentName !== student.departmentId) {
+      return student.departmentName;
+    }
+    if (student.departmentId && student.departmentId.length < 16 && !/^[A-Za-z0-9]{15,}$/.test(student.departmentId)) {
+      return student.departmentId;
+    }
+    return '—';
+  }, [departments, courses, student.departmentId, student.departmentName, student.courseId, student.courseCode]);
+
+  // Build per-organization filter options for SAS Admin Event Attendance tab
+  const attendanceOrgOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    organizations
+      .filter((o) => !o.archived)
+      .forEach((o) => {
+        map.set(o.id, o.acronym ? `${o.name} (${o.acronym})` : o.name);
+      });
+
+    let hasSasEvents = false;
+    attendances.forEach((a) => {
+      if (a.hostOrgId === '__sas__') {
+        hasSasEvents = true;
+      } else if (a.hostOrgId && !map.has(a.hostOrgId)) {
+        map.set(a.hostOrgId, a.hostOrgName || a.hostOrgId);
+      }
+    });
+
+    const orgList = Array.from(map.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    if (hasSasEvents) {
+      orgList.unshift({ id: '__sas__', label: 'Student Affairs & Services (SAS)' });
+    }
+    return orgList;
+  }, [organizations, attendances]);
+
+  const filteredAttendances = useMemo(() => {
+    if (selectedAttendanceOrg === 'all') return attendances;
+    return attendances.filter((a) => a.hostOrgId === selectedAttendanceOrg);
+  }, [attendances, selectedAttendanceOrg]);
+
+  const filteredAttendanceStats = useMemo(() => {
+    if (selectedAttendanceOrg === 'all') {
+      return {
+        totalEvents: stats.totalEvents,
+        eventsAttended: stats.eventsAttended,
+        attendanceRate: stats.attendanceRate,
+      };
+    }
+    const totalEvents = filteredAttendances.length;
+    const eventsAttended = filteredAttendances.filter(
+      (a) =>
+        a.completedChecks >= a.totalExpectedChecks ||
+        a.status === 'Complete' ||
+        a.status === 'Checked In' ||
+        a.status === 'Late'
+    ).length;
+    const attendanceRate = totalEvents > 0 ? Math.round((eventsAttended / totalEvents) * 100) : 100;
+    return { totalEvents, eventsAttended, attendanceRate };
+  }, [selectedAttendanceOrg, filteredAttendances, stats]);
 
   // Compute Payables Breakdown Grouped by Joined Organizations
   const orgPayablesBreakdown = useMemo(() => {
@@ -314,11 +395,11 @@ export default function StudentDetailModal({
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
                     <div>
                       <span className="text-xs text-gray-500 font-medium block">Department</span>
-                      <span className="font-medium text-[#001A4D]">{student.departmentName || student.departmentId}</span>
+                      <span className="font-medium text-[#001A4D] break-words">{resolvedDepartmentName}</span>
                     </div>
                     <div>
                       <span className="text-xs text-gray-500 font-medium block">Program</span>
-                      <span className="font-medium text-[#001A4D]">{student.courseName} ({student.courseCode})</span>
+                      <span className="font-medium text-[#001A4D] break-words">{student.courseName} ({student.courseCode})</span>
                     </div>
                     <div>
                       <span className="text-xs text-gray-500 font-medium block">Year Level</span>
@@ -623,26 +704,46 @@ export default function StudentDetailModal({
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 shadow-sm">
                   <div className="text-xs font-bold text-gray-500 uppercase">Total Event Participations</div>
-                  <div className="text-2xl font-bold text-[#001A4D] mt-1">{stats.totalEvents}</div>
+                  <div className="text-2xl font-bold text-[#001A4D] mt-1">{filteredAttendanceStats.totalEvents}</div>
                   <div className="text-xs text-gray-400 mt-0.5">Events registered / logged</div>
                 </div>
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 shadow-sm">
                   <div className="text-xs font-bold text-gray-500 uppercase">Events Attended</div>
-                  <div className="text-2xl font-bold text-green-600 mt-1">{stats.eventsAttended}</div>
+                  <div className="text-2xl font-bold text-green-600 mt-1">{filteredAttendanceStats.eventsAttended}</div>
                   <div className="text-xs text-gray-400 mt-0.5">Verified check-ins</div>
                 </div>
                 <div className="bg-white border border-[#E0E0E0] rounded-xl p-4 shadow-sm">
                   <div className="text-xs font-bold text-gray-500 uppercase">Overall Attendance Rate</div>
-                  <div className="text-2xl font-bold text-[#0E4EBD] mt-1">{stats.attendanceRate}%</div>
+                  <div className="text-2xl font-bold text-[#0E4EBD] mt-1">{filteredAttendanceStats.attendanceRate}%</div>
                   <div className="text-xs text-gray-400 mt-0.5">Campus event compliance</div>
                 </div>
               </div>
 
               {/* Attendance Logs Table */}
               <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-sm">
-                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-                  <h3 className="font-bold text-[#001A4D] text-base">Attendance History Logs</h3>
-                  <span className="text-xs text-gray-500">{attendances.length} event log(s)</span>
+                <div className="px-5 py-4 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-[#001A4D] text-base">Attendance History Logs</h3>
+                    <span className="text-xs text-gray-500">
+                      {selectedAttendanceOrg === 'all'
+                        ? `${attendances.length} event log(s)`
+                        : `${filteredAttendances.length} of ${attendances.length} event log(s)`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={selectedAttendanceOrg}
+                      onChange={(e) => setSelectedAttendanceOrg(e.target.value)}
+                      className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 outline-none focus:ring-2 focus:ring-[#0E4EBD]/30 cursor-pointer max-w-[260px]"
+                    >
+                      <option value="all">All Organizations</option>
+                      {attendanceOrgOptions.map((orgOpt) => (
+                        <option key={orgOpt.id} value={orgOpt.id}>
+                          {orgOpt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -656,14 +757,16 @@ export default function StudentDetailModal({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
-                      {attendances.length === 0 ? (
+                      {filteredAttendances.length === 0 ? (
                         <tr>
                           <td colSpan={4} className="px-5 py-8 text-center text-gray-400">
-                            No attendance logs recorded for this student yet.
+                            {attendances.length === 0
+                              ? 'No attendance logs recorded for this student yet.'
+                              : 'No attendance logs found for the selected organization.'}
                           </td>
                         </tr>
                       ) : (
-                        attendances.map((a) => (
+                        filteredAttendances.map((a) => (
                           <tr key={a.id} className="hover:bg-gray-50/80">
                             <td className="px-5 py-3.5 font-semibold text-[#001A4D]">{a.event}</td>
                             <td className="px-5 py-3.5 text-gray-600 text-xs font-medium">

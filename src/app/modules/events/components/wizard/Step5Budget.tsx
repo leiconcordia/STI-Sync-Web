@@ -318,11 +318,11 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
             </div>
             <div className="space-y-1">
               <div className="font-bold text-[#001A4D] flex items-center gap-1.5 text-xs">
-                <span>Form LF-01 Liquidation Baseline Notice</span>
+                <span>Liquidation Baseline Notice</span>
                 <span className="px-2 py-0.5 bg-blue-100 text-blue-800 rounded text-[10px] font-semibold">Standard STI Policy</span>
               </div>
               <p className="text-blue-800 leading-relaxed text-[11px]">
-                Each proposed category here establishes your approved spending guide (Left Side of Form LF-01). After the event is approved and concluded, these items appear as <strong>Reference Guide Tabs</strong> in your Financial Liquidation portal, where you will attach multiple actual store receipts line-by-line.
+                Each proposed category here establishes your approved spending guide for Financial Liquidation. After the event is approved and concluded, these items appear as <strong>Reference Guide Tabs</strong> in your Financial Liquidation portal, where you will attach multiple actual store receipts line-by-line.
               </p>
               <p className="text-blue-700/90 text-[11px] pt-0.5">
                 💡 <strong>Contingency / Buffer Fund:</strong> Simply add a category named <em>&quot;Contingency / Buffer Fund&quot;</em> with your desired baseline. It follows the exact same receipt attachment workflow as all other categories.
@@ -542,7 +542,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
           <div className="p-3.5 bg-[#001A4D]/5 border border-[#001A4D]/20 rounded-xl flex items-center justify-between">
             <div>
               <span className="font-bold text-[#001A4D] text-sm">Total Proposed Baseline Budget</span>
-              <p className="text-xs text-gray-500">Total approved allocation guide for post-event Form LF-01 financial liquidation</p>
+              <p className="text-xs text-gray-500">Total approved allocation guide for post-event financial liquidation</p>
             </div>
             <span className={`text-2xl font-black ${accentText}`}>{formatCurrency(totalProposed)}</span>
           </div>
@@ -593,7 +593,7 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
               <div className="flex items-center justify-between pb-2 border-b border-slate-200">
                 <div className="flex items-center gap-1.5">
                   <Receipt className="w-4 h-4 text-[#001A4D]" />
-                  <span className="text-xs font-bold text-[#001A4D]">Form LF-01 Baseline Preview</span>
+                  <span className="text-xs font-bold text-[#001A4D]">Liquidation Baseline Preview</span>
                 </div>
                 <span className="text-[10px] bg-blue-100 text-blue-900 font-bold px-1.5 py-0.5 rounded">
                   Left Side Guide

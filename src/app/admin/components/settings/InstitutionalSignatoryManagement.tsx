@@ -95,22 +95,22 @@ export interface DocumentWorkflowConfig {
 export const DOCUMENT_WORKFLOW_CONFIGS: DocumentWorkflowConfig[] = [
   {
     key: 'proposal',
-    title: 'ACTIVITY PROPOSALS (AP-01)',
-    code: 'AP-01',
+    title: 'ACTIVITY PROPOSALS',
+    code: 'proposal',
     badge: 'Events & Programs',
     description: 'Student activities, campus events, and organizational initiatives.',
   },
   {
     key: 'liquidation',
-    title: 'FINANCIAL LIQUIDATIONS (FL-01)',
-    code: 'FL-01',
+    title: 'FINANCIAL LIQUIDATIONS',
+    code: 'liquidation',
     badge: 'Cash & Expenses',
     description: 'Expense receipts, cash advance liquidation, and financial audits.',
   },
   {
     key: 'par',
-    title: 'POST-ACTIVITY REPORTS (PAR-01)',
-    code: 'PAR-01',
+    title: 'POST-ACTIVITY REPORTS',
+    code: 'par',
     badge: 'Outcome & Metrics',
     description: 'Post-event documentation, student attendance, and evaluation.',
   },

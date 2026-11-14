@@ -716,16 +716,26 @@ export async function endorsePARStep(
   const signerUid = signatory.id || signatory.uid || '';
   const signerEmail = (signatory.email || '').toLowerCase();
   const currentStage = data.currentStageIndex ?? 1;
+  const wasAlreadyApproved = data.status === 'approved';
 
-  let targetStepIdx = chain.findIndex((s) => {
-    const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
-    const isPending = s.status === 'current' || s.status === 'waiting';
-    if (!stageMatches || !isPending) return false;
+  const matchesSignatory = (s: any) => {
     if (signerUid && s.signatoryUid === signerUid) return true;
     if (signerEmail && s.signatoryEmail?.toLowerCase() === signerEmail) return true;
     if (signatory.role && s.role === signatory.role) return true;
     return false;
+  };
+
+  let targetStepIdx = chain.findIndex((s) => {
+    const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
+    const isPending = s.status === 'current' || s.status === 'waiting';
+    return stageMatches && isPending && matchesSignatory(s);
   });
+
+  if (targetStepIdx === -1 && wasAlreadyApproved) {
+    targetStepIdx = chain.findIndex(
+      (s) => (s.status === 'current' || s.status === 'waiting') && matchesSignatory(s)
+    );
+  }
 
   if (targetStepIdx === -1) {
     targetStepIdx = data.currentStepIndex ?? 0;
@@ -778,21 +788,13 @@ export async function endorsePARStep(
     remarks: remarks || chain[targetStepIdx].remarks,
   };
 
-  // If approved by executive approver, waive remaining co-approvers in this stage
+  // When executive approver signs off, keep remaining unsigned signatories active ('current') without waiving them
   if (newStatus === 'approved') {
-    const approverName = signatory.name || targetStep.signatoryName || 'Executive Signatory';
-    const approverTitle = signatory.roleTitle || targetStep.roleTitle || (isPresident ? 'School President' : isSchoolAdmin ? 'School Administrator' : 'Executive Approver');
-
     chain.forEach((s, idx) => {
-      if (
-        idx !== targetStepIdx &&
-        (s.status === 'waiting' || s.status === 'current') &&
-        ((s.stageIndex ?? 1) === currentStage || s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator')
-      ) {
+      if (idx !== targetStepIdx && s.status === 'waiting') {
         chain[idx] = {
           ...s,
-          status: 'waived',
-          remarks: `Step waived — PAR authorized and fully approved by ${approverTitle} (${approverName})`,
+          status: 'current',
         };
       }
     });
@@ -803,7 +805,7 @@ export async function endorsePARStep(
     (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
   );
 
-  let isFullyApproved = false;
+  let isFullyApproved = wasAlreadyApproved || newStatus === 'approved';
   let nextStageIndex = currentStage;
   let stageAdvanced = false;
 
@@ -830,8 +832,8 @@ export async function endorsePARStep(
     id: `rem-${Date.now()}`,
     authorName: signatory.name || 'Signatory',
     authorRole: 'signatory',
-    action: isFullyApproved ? 'approved' : 'endorsed',
-    comment: remarks || (isFullyApproved ? 'Post-Activity Report fully cleared and approved.' : `Endorsed stage ${currentStage}.`),
+    action: newStatus === 'approved' ? 'approved' : 'endorsed',
+    comment: remarks || (isFullyApproved && !wasAlreadyApproved ? 'Post-Activity Report fully cleared and approved.' : `Endorsed stage ${currentStage}.`),
     timestamp: new Date().toISOString(),
   };
 
@@ -842,7 +844,7 @@ export async function endorsePARStep(
     status: isFullyApproved ? 'approved' : 'under_review',
     updatedAt: serverTimestamp(),
     remarksHistory: arrayUnion(sanitizeFirestorePayload(endorsementRemark)),
-    ...(isFullyApproved
+    ...(isFullyApproved && !wasAlreadyApproved
       ? { approvedAt: serverTimestamp(), approvedBy: signerUid || signatory.email }
       : {}),
   });
@@ -861,8 +863,8 @@ export async function endorsePARStep(
     console.warn('[endorsePARStep] Event sync note:', err);
   }
 
-  // Cross-Module EDMS Auto-Archive upon final approval!
-  if (isFullyApproved) {
+  // Cross-Module EDMS Auto-Archive upon initial final approval
+  if (isFullyApproved && !wasAlreadyApproved) {
     try {
       await autoArchiveApprovedPAR(parId, { ...data, ...updates }, signerUid || signatory.email);
     } catch (archErr) {

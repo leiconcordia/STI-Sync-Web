@@ -22,13 +22,13 @@ import {
   Search,
   Maximize2,
   Shield,
-  Plus,
 } from 'lucide-react';
-import { collection, query, where, onSnapshot, collectionGroup } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, collectionGroup, limit } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
 import type { OrganizationMemberDocument } from '../../modules/organizations/types/member.types';
 import type { OrganizationOfficerDocument } from '../../modules/organizations/hooks/useOrgOfficers';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { formatCurrency } from '../../utils/currency';
 import { formatAppDate, formatAppDateTime } from '../../utils/date';
 import type { PayableDocument } from '../../modules/finance/types/payable.types';
@@ -36,7 +36,6 @@ import { updateMemberStatus } from '../../modules/organizations/services/member.
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
-import { AddPayableModal } from './AddPayableModal';
 
 interface MemberProfilePanelProps {
   member: OrganizationMemberDocument;
@@ -59,15 +58,15 @@ export function MemberProfilePanel({
   const { data: roles = [] } = useRoles();
   const { data: allStudents = [] } = useStudents();
   const { data: orgs = [] } = useOrganizationStream();
+  const { events: allEvents = [] } = useAllEvents();
 
   const activeOrgId = profile?.activeOrganizationId || member.organizationId || '';
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
 
   const [activeTab, setActiveTab] = useState<ModalTab>('ledger');
-  const [showAddPayableModal, setShowAddPayableModal] = useState(false);
   const [allPayables, setAllPayables] = useState<PayableDocument[]>([]);
   const [loadingPayables, setLoadingPayables] = useState(true);
-  const [attendances, setAttendances] = useState<any[]>([]);
+  const [rawAttendances, setRawAttendances] = useState<any[]>([]);
   const [loadingAttendance, setLoadingAttendance] = useState(true);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
@@ -75,7 +74,6 @@ export function MemberProfilePanel({
   // Filters & Search states
   const [payableSearch, setPayableSearch] = useState('');
   const [payableStatusFilter, setPayableStatusFilter] = useState('All');
-  const [payableTypeFilter, setPayableTypeFilter] = useState('All');
 
   const [attendanceSearch, setAttendanceSearch] = useState('');
   const [attendanceStatusFilter, setAttendanceStatusFilter] = useState('All');
@@ -188,55 +186,147 @@ export function MemberProfilePanel({
       if (payableStatusFilter === 'paid') matchesStatus = isSettled;
       if (payableStatusFilter === 'partial') matchesStatus = p.status === 'partial';
 
-      let matchesType = true;
-      if (payableTypeFilter !== 'All') matchesType = p.type === payableTypeFilter;
-
-      return matchesSearch && matchesStatus && matchesType;
+      return matchesSearch && matchesStatus;
     });
-  }, [orgPayables, payableSearch, payableStatusFilter, payableTypeFilter]);
+  }, [orgPayables, payableSearch, payableStatusFilter]);
 
   // ─── Real-time Attendance History Logs Listener ────────────────────────────
   useEffect(() => {
     if (!member) return;
     setLoadingAttendance(true);
 
-    const sId = member.studentId;
-    const attRef = collectionGroup(db, 'attendance');
-
-    const unsubscribe = onSnapshot(
-      attRef,
-      (snapshot) => {
-        const logs: any[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          const matchesStudent =
-            data.studentId === sId ||
-            data.studentSchoolId === sId ||
-            data.studentNumber === sId ||
-            (data.email && member.email && data.email.toLowerCase() === member.email.toLowerCase());
-
-          if (matchesStudent) {
-            logs.push({ id: docSnap.id, ...data });
-          }
-        });
-
-        logs.sort((a, b) => {
-          const aTime = a.scannedAt?.seconds || a.createdAt?.seconds || 0;
-          const bTime = b.scannedAt?.seconds || b.createdAt?.seconds || 0;
-          return bTime - aTime;
-        });
-
-        setAttendances(logs);
-        setLoadingAttendance(false);
-      },
-      (err) => {
-        console.error('[MemberProfilePanel] Error streaming attendance:', err);
-        setLoadingAttendance(false);
-      }
+    const candidateIds = Array.from(
+      new Set(
+        [
+          member.studentId,
+          (member as any).studentSchoolId,
+          studentDoc?.id,
+          studentDoc?.studentId,
+          (studentDoc as any)?.authUid,
+        ].filter((v): v is string => Boolean(v && String(v).trim()))
+      )
     );
+    const schoolId = studentDoc?.studentId || member.studentId || '';
+    const memberEmailLower = (member.email || studentDoc?.email || '').trim().toLowerCase();
 
-    return () => unsubscribe();
-  }, [member]);
+    if (candidateIds.length === 0) {
+      setRawAttendances([]);
+      setLoadingAttendance(false);
+      return;
+    }
+
+    const attBuckets = new Map<string, Map<string, any>>();
+    const emitMerged = () => {
+      const merged = new Map<string, any>();
+      attBuckets.forEach((bucket) => {
+        bucket.forEach((item, pathKey) => merged.set(pathKey, item));
+      });
+      const logs = Array.from(merged.values());
+      logs.sort((a, b) => {
+        const aTime = a.scannedAt?.seconds || a.createdAt?.seconds || 0;
+        const bTime = b.scannedAt?.seconds || b.createdAt?.seconds || 0;
+        return bTime - aTime;
+      });
+      setRawAttendances(logs);
+      setLoadingAttendance(false);
+    };
+
+    const unsubs: Array<() => void> = [];
+    const addListener = (bucketKey: string, qRef: any) => {
+      const unsub = onSnapshot(
+        qRef,
+        (snapshot: any) => {
+          const bucket = new Map<string, any>();
+          snapshot.forEach((docSnap: any) => {
+            const data = docSnap.data();
+            const dIds = [data.studentId, data.studentSchoolId, data.studentNumber]
+              .filter(Boolean)
+              .map((v: any) => String(v).trim());
+            const dEmail = String(data.email || '').trim().toLowerCase();
+            const matchesStudent =
+              dIds.some((id: string) => candidateIds.includes(id)) ||
+              (memberEmailLower && dEmail === memberEmailLower);
+
+            if (matchesStudent) {
+              const parentEventId = docSnap.ref?.parent?.parent?.id || '';
+              bucket.set(docSnap.ref.path, {
+                id: docSnap.id,
+                parentEventId,
+                ...data,
+              });
+            }
+          });
+          attBuckets.set(bucketKey, bucket);
+          emitMerged();
+        },
+        (err) => {
+          console.error(`[MemberProfilePanel] Error streaming attendance (${bucketKey}):`, err);
+          setLoadingAttendance(false);
+        }
+      );
+      unsubs.push(unsub);
+    };
+
+    candidateIds.forEach((cid, idx) => {
+      addListener(
+        `studentId_${idx}`,
+        query(collectionGroup(db, 'attendance'), where('studentId', '==', cid), limit(100))
+      );
+    });
+    if (schoolId) {
+      addListener(
+        'studentSchoolId',
+        query(collectionGroup(db, 'attendance'), where('studentSchoolId', '==', schoolId), limit(100))
+      );
+      addListener(
+        'studentNumber',
+        query(collectionGroup(db, 'attendance'), where('studentNumber', '==', schoolId), limit(100))
+      );
+    }
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [member, studentDoc]);
+
+  // Scope attendance strictly to this specific organization (activeOrgId)
+  const attendances = useMemo(() => {
+    if (!activeOrgId) return rawAttendances;
+
+    const eventMap = new Map<string, any>();
+    allEvents.forEach((e) => eventMap.set(e.id, e));
+
+    const activeOrgNameLower = activeOrg?.name?.trim().toLowerCase() || '';
+    const activeOrgAcronymLower = activeOrg?.acronym?.trim().toLowerCase() || '';
+
+    return rawAttendances.filter((att) => {
+      const resolvedEventId = att.eventId || att.parentEventId || '';
+      const eventDoc = resolvedEventId ? eventMap.get(resolvedEventId) : undefined;
+      const attOrgId = (att.organizationId || att.hostingOrgId || '').trim();
+
+      if (eventDoc) {
+        const eventHostOrgId = (eventDoc.hostingOrgId || eventDoc.organizationId || '').trim();
+        if (eventHostOrgId) {
+          return eventHostOrgId === activeOrgId;
+        }
+        if ((eventDoc as any).isSasDirect) {
+          return false;
+        }
+        return attOrgId === activeOrgId;
+      }
+
+      if (attOrgId) {
+        return attOrgId === activeOrgId;
+      }
+
+      const attOrgLabel = String(att.organizationName || att.org || '').trim().toLowerCase();
+      if (!attOrgLabel) return false;
+      return (
+        (activeOrgNameLower && attOrgLabel === activeOrgNameLower) ||
+        (activeOrgAcronymLower && attOrgLabel === activeOrgAcronymLower)
+      );
+    });
+  }, [rawAttendances, allEvents, activeOrgId, activeOrg]);
 
   // Filtered Attendances (Search & Dropdowns)
   const filteredAttendances = useMemo(() => {
@@ -392,7 +482,7 @@ export function MemberProfilePanel({
             </button>
           </div>
 
-          {/* Quick Balance Pill & Add Payable Action */}
+          {/* Quick Balance Pill */}
           <div className="flex items-center gap-3 text-xs">
             <div className="hidden sm:flex items-center gap-2">
               <span className="text-gray-500">Club Balance:</span>
@@ -404,16 +494,6 @@ export function MemberProfilePanel({
                 {formatCurrency(totalOutstanding)}
               </span>
             </div>
-            {activeTab === 'ledger' && (
-              <button
-                type="button"
-                onClick={() => setShowAddPayableModal(true)}
-                className="px-3 py-1.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
-              >
-                <Plus className="w-3.5 h-3.5 text-[#FFD41C]" />
-                Add Payable / Fine
-              </button>
-            )}
           </div>
         </div>
 
@@ -492,16 +572,6 @@ export function MemberProfilePanel({
                   <option value="outstanding">Outstanding / Unpaid</option>
                   <option value="paid">Paid / Settled</option>
                   <option value="partial">Partial Payment</option>
-                </select>
-                <select
-                  value={payableTypeFilter}
-                  onChange={(e) => setPayableTypeFilter(e.target.value)}
-                  className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-medium text-gray-700 outline-none"
-                >
-                  <option value="All">All Item Types</option>
-                  <option value="membership_fee">Membership Fee</option>
-                  <option value="event_fee">Event Fee</option>
-                  <option value="fine">Fine / Penalty</option>
                 </select>
               </div>
 
@@ -846,18 +916,6 @@ export function MemberProfilePanel({
             )}
           </div>
         </div>
-      )}
-
-      {/* Add Payable / Fine Modal */}
-      {showAddPayableModal && (
-        <AddPayableModal
-          isOpen={showAddPayableModal}
-          onClose={() => setShowAddPayableModal(false)}
-          organizationId={activeOrgId}
-          organizationName={activeOrg?.name || member.organizationName || 'Student Organization'}
-          addedBy={profile?.studentId || 'Officer'}
-          preselectedMemberId={member.studentId || member.id}
-        />
       )}
     </div>
   );

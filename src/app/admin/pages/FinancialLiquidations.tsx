@@ -895,7 +895,7 @@ export function FinancialLiquidations() {
                           <button
                             onClick={() => setExportReport(liq)}
                             className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="Export official STI liquidation form (LIQUIDATION-FORMAT_v1)"
+                            title="Export official STI liquidation report"
                           >
                             <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
                             <span>Export</span>
@@ -1330,7 +1330,7 @@ export function FinancialLiquidations() {
                   className="bg-[#001A4D] hover:bg-[#002D72] text-white font-bold text-xs cursor-pointer shadow-xs"
                 >
                   <FileSpreadsheet className="w-4 h-4 mr-1.5 text-[#FFD41C]" />
-                  Export Liquidation (LF-01)
+                  Export Liquidation
                 </Button>
               </div>
 
@@ -1571,7 +1571,7 @@ export function FinancialLiquidations() {
                     </ul>
                   ) : (
                     <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
-                      <li>Official SAS sign-off is stamped onto Form LF-01.</li>
+                      <li>Official SAS sign-off is stamped onto the Financial Liquidation report.</li>
                       <li>The report status transitions to <strong>Approved</strong>.</li>
                       <li>Financial ledger and budget balances are finalized.</li>
                       <li>The student organization will be notified immediately.</li>

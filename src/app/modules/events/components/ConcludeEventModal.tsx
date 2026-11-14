@@ -253,7 +253,7 @@ export const ConcludeEventModal: React.FC<ConcludeEventModalProps> = ({
               </div>
               <p className="text-slate-600 dark:text-slate-400">
                 {isLiquidationCompulsory
-                  ? `This event has an approved baseline budget ceiling of ₱${formatPHP(totalApprovedBudget)}. Officers can record actual purchases line-by-line and attach official receipts for institutional liquidation (Form LF-01).`
+                  ? `This event has an approved baseline budget ceiling of ₱${formatPHP(totalApprovedBudget)}. Officers can record actual purchases line-by-line and attach official receipts for institutional liquidation.`
                   : 'This event has no monetary budget allocation or expense projections. No financial liquidation report is required.'}
               </p>
             </div>

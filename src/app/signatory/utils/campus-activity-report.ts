@@ -66,7 +66,7 @@ export interface CampusReportFilters {
   quick: string;
 }
 export const DEFAULT_CAMPUS_FILTERS: CampusReportFilters = {
-  period: 'ACTIVE', academicYear: 'ALL', semester: 'ALL', organizationId: 'ALL', scope: 'ALL', search: '',
+  period: 'ALL', academicYear: 'ALL', semester: 'ALL', organizationId: 'ALL', scope: 'ALL', search: '',
   startDate: '', endDate: '', proposalStatus: 'ALL', activityState: 'ALL', flStatus: 'ALL', parStatus: 'ALL', quick: 'ALL',
 };
 
@@ -314,15 +314,52 @@ export function buildCampusActivityRows({
   }).sort((a, b) => (b.dates.at(-1) || '').localeCompare(a.dates.at(-1) || '') || a.title.localeCompare(b.title));
 }
 
+const normFilterToken = (value: any) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
+function matchesAcademicPeriod(row: CampusActivityRow, period: SemesterDocument): boolean {
+  if (row.semesterId && period.id && row.semesterId === period.id) return true;
+  if (period.label && row.semesterId && normFilterToken(row.semesterId) === normFilterToken(period.label)) return true;
+
+  const rowYear = normFilterToken(row.academicYear);
+  const periodYear = normFilterToken(period.academicYear);
+  const rowTerm = normFilterToken(row.semester);
+  const periodTerm = normFilterToken(period.semester);
+  if (rowYear && periodYear && rowYear === periodYear) {
+    if (!periodTerm || !rowTerm || rowTerm === periodTerm || rowTerm.includes(periodTerm) || periodTerm.includes(rowTerm)) {
+      return true;
+    }
+  }
+
+  const pStart = String((period as any).startDate || '').slice(0, 10);
+  const pEnd = String((period as any).endDate || '').slice(0, 10);
+  if (pStart && pEnd && row.dates.some((date) => date >= pStart && date <= pEnd)) {
+    return true;
+  }
+
+  return false;
+}
+
 export function filterCampusActivityRows(rows: CampusActivityRow[], filters: CampusReportFilters, periods: SemesterDocument[] = []): CampusActivityRow[] {
   return rows.filter((row) => {
     if (filters.period !== 'ALL') {
-      const candidates = periods.filter((period) => filters.period === 'ACTIVE' ? period.status === 'ACTIVE' && !period.archived : period.id === filters.period);
-      if (!candidates.some((period) => row.semesterId ? row.semesterId === period.id
-        : row.academicYear === period.academicYear && row.semester === period.semester)) return false;
+      const candidates = periods.filter((period) =>
+        filters.period === 'ACTIVE'
+          ? period.status === 'ACTIVE' && !period.archived
+          : period.id === filters.period ||
+            `${period.academicYear} ${period.semester}` === filters.period ||
+            period.label === filters.period
+      );
+      if (candidates.length > 0 && !candidates.some((period) => matchesAcademicPeriod(row, period))) {
+        return false;
+      }
+      if (candidates.length === 0) return false;
     }
-    if (filters.academicYear !== 'ALL' && row.academicYear !== filters.academicYear) return false;
-    if (filters.semester !== 'ALL' && row.semester !== filters.semester) return false;
+    if (filters.academicYear !== 'ALL' && normFilterToken(row.academicYear) !== normFilterToken(filters.academicYear)) return false;
+    if (filters.semester !== 'ALL' && normFilterToken(row.semester) !== normFilterToken(filters.semester)) return false;
     if (filters.organizationId !== 'ALL' && row.organizationId !== filters.organizationId) return false;
     if (filters.scope !== 'ALL' && row.scope !== filters.scope && row.scope !== 'BOTH') return false;
     if ((filters.startDate || filters.endDate) && !row.dates.some((date) => (!filters.startDate || date >= filters.startDate) && (!filters.endDate || date <= filters.endDate))) return false;

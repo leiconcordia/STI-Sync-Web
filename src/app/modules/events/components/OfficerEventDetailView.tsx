@@ -1846,7 +1846,7 @@ export default function OfficerEventDetailView({
                   <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <span className="font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
                       <Receipt className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                      Financial Liquidation (Form LF-01 Readiness)
+                      Financial Liquidation Readiness
                     </span>
                     <span className="font-mono text-slate-600">
                       Approved Baseline Budget Ceiling: <strong className="text-[#001A4D]">{formatPHP(totalApprovedBudget)}</strong>
@@ -1865,7 +1865,7 @@ export default function OfficerEventDetailView({
                           </span>
                         </div>
                         <p className="text-xs text-emerald-800 max-w-xl">
-                          This activity has no budget and no monetary expense projections. Financial liquidation (Form LF-01) is not required for clearance, compliance, or archiving.
+                          This activity has no budget and no monetary expense projections. Financial liquidation is not required for clearance, compliance, or archiving.
                         </p>
                       </div>
 

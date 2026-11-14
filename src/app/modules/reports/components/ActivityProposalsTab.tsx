@@ -149,7 +149,7 @@ export const ActivityProposalsTab: React.FC<ActivityProposalsTabProps> = ({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-extrabold text-gray-900">
-                Activity Proposals Master Ledger (AP-01)
+                Activity Proposals Master Ledger
               </h3>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-extrabold bg-[#003B73]/10 text-[#003B73]">
                 {rows.length} Proposals

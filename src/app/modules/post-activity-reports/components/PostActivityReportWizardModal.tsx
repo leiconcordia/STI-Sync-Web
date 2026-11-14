@@ -897,7 +897,7 @@ Output ONLY the paragraph text.
             }))
           );
           setLinkedLiquidationId(liquidationDoc.id || '');
-          setLiquidationRef(liquidationDoc.referenceNo || 'LF-01');
+          setLiquidationRef(liquidationDoc.referenceNo || 'Financial Liquidation');
           setCopiedFromLiquidation(true);
         } else {
           // Fallback: Form AP-01 projection
@@ -1446,7 +1446,7 @@ Output ONLY the paragraph text.
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-bold tracking-widest uppercase bg-white/20 px-2 py-0.5 rounded-full text-white">
-                  Official Form PAR
+                  Official Post-Activity Report
                 </span>
                 <span className="text-[11px] font-semibold text-blue-200">
                   STI Institutional Compliance
@@ -1470,7 +1470,7 @@ Output ONLY the paragraph text.
                 title="Toggle side-by-side Activity Proposal Guidance Drawer"
               >
                 <BookOpen className={`w-3.5 h-3.5 ${isGuidanceDrawerOpen ? 'text-[#0E4EBD]' : 'text-[#FFD41C]'}`} />
-                <span>View AP-01 Reference</span>
+                <span>View Proposal Reference</span>
               </button>
             )}
             <button
@@ -1613,7 +1613,7 @@ Output ONLY the paragraph text.
                   <div className="bg-gradient-to-br from-slate-900 to-[#001A4D] rounded-xl p-5 text-white space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-bold text-[#FFD41C] uppercase tracking-wider">
-                        Auto-Populated from Approved Form AP-01
+                        Auto-Populated from Approved Activity Proposal
                       </span>
                       <span className="text-xs bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
                         Lifecycle: Concluded
@@ -1651,16 +1651,16 @@ Output ONLY the paragraph text.
                         </strong>
                       </div>
                       <div>
-                        <span className="text-slate-400 block font-medium">Linked AP-01 / LF-01:</span>
+                        <span className="text-slate-400 block font-medium">Linked Proposal / Liquidation:</span>
                         <strong className="text-[#FFD41C] font-mono">
-                          {linkedProposal?.referenceNo || selectedEvent.referenceId || 'AP-01'}
+                          {linkedProposal?.referenceNo || selectedEvent.referenceId || 'Activity Proposal'}
                           {copiedFromLiquidation && liquidationRef ? ` • ${liquidationRef}` : ''}
                         </strong>
                       </div>
                     </div>
                     {proposalMaterials.length > 0 && (
                       <div className="pt-2 border-t border-white/10 text-xs">
-                        <span className="text-slate-400 font-medium block mb-1">Materials (from AP-01):</span>
+                        <span className="text-slate-400 font-medium block mb-1">Materials (from Proposal):</span>
                         <div className="flex flex-wrap gap-1.5">
                           {proposalMaterials.map((mat, i) => (
                             <span key={i} className="px-2 py-0.5 rounded-md bg-white/10 text-slate-200 text-[11px]">
@@ -1713,7 +1713,7 @@ Output ONLY the paragraph text.
                     {!mechanicsDiffered ? (
                       <div className="bg-white border border-slate-200 rounded-lg p-3">
                         <span className="text-[11px] font-bold text-slate-500 block mb-1">
-                          Proposed Mechanics (from Form AP-01):
+                          Proposed Mechanics (from Activity Proposal):
                         </span>
                         {proposedMechanics.length > 0 ? (
                           <ul className="list-disc pl-4 space-y-0.5 text-xs text-slate-700">
@@ -1801,7 +1801,7 @@ Output ONLY the paragraph text.
                         <div className="grid grid-cols-2 gap-2 mb-3">
                           <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
                             <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
-                              <Lock className="w-3 h-3" /> Estimated Attendance (AP-01)
+                              <Lock className="w-3 h-3" /> Estimated Attendance (Proposal)
                             </span>
                             <span className="text-sm font-black text-slate-800 block mt-0.5">
                               {estimatedAttendance > 0 ? `${estimatedAttendance} Pax` : 'Not Specified'}
@@ -1809,7 +1809,7 @@ Output ONLY the paragraph text.
                           </div>
                           <div className="bg-slate-100 p-2.5 rounded-lg border border-slate-200">
                             <span className="text-[10px] font-bold text-slate-500 flex items-center gap-1">
-                              <Lock className="w-3 h-3" /> Target Market (AP-01)
+                              <Lock className="w-3 h-3" /> Target Market (Proposal)
                             </span>
                             <span className="text-xs font-bold text-slate-800 block mt-0.5 truncate" title={targetAudience || 'General Student Body'}>
                               {targetAudience || 'General Student Body'}
@@ -1837,7 +1837,7 @@ Output ONLY the paragraph text.
                           )}
                           {estimatedAttendance > 0 && attendedCount > 0 && (
                             <span className="text-[10px] text-slate-500 block mt-1">
-                              Turnout vs. AP-01 Estimate: <strong>{turnoutRate}%</strong> ({attendedCount} / {estimatedAttendance})
+                              Turnout vs. Proposal Estimate: <strong>{turnoutRate}%</strong> ({attendedCount} / {estimatedAttendance})
                             </span>
                           )}
                         </div>
@@ -1920,7 +1920,7 @@ Output ONLY the paragraph text.
                               ? 'text-emerald-700 bg-emerald-100 border-emerald-200'
                               : 'text-blue-700 bg-blue-100 border-blue-200'
                           }`}>
-                            {copiedFromLiquidation ? `Copied from LF-01 (${liquidationRef})` : 'AP-01 Fallback'}
+                            {copiedFromLiquidation ? `Copied from Liquidation (${liquidationRef})` : 'Proposal Fallback'}
                           </span>
                         </div>
                         <p className="text-[11px] text-slate-500 italic mb-3">
@@ -2058,7 +2058,7 @@ Output ONLY the paragraph text.
                       <span>1. Achievement of Objectives <span className="text-red-500">*</span></span>
                     </h4>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Review the planned objectives from Form AP-01 and provide an institutional narrative of how they were met.
+                      Review the planned objectives from the Activity Proposal and provide an institutional narrative of how they were met.
                     </p>
                   </div>
                   <AIAssistButton
@@ -2075,7 +2075,7 @@ Output ONLY the paragraph text.
                   <div className="flex items-center justify-between">
                     <span className="text-[10px] font-bold uppercase tracking-wider text-[#001A4D] flex items-center gap-1">
                       <Award className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                      Planned Objectives (from Linked Form AP-01)
+                      Planned Objectives (from Linked Activity Proposal)
                     </span>
                     <span className="text-[10px] font-semibold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
                       {(proposalObjectives.length > 0 ? proposalObjectives : objectiveAssessments).length} Objective(s)

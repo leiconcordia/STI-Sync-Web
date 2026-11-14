@@ -86,6 +86,16 @@ export function useSignatoryDocuments(session: any) {
       const currentStep = chain[currentIdx];
 
       const isReturnedStatus = isDocumentCurrentlyReturned(p);
+      const hasPersonallySigned = !isReturnedStatus && (
+        chain.some((s) => hasSignatorySignedStep(s, session)) ||
+        hasSignatorySignedDocument(p, session)
+      );
+      const isApprovedStatus =
+        !isReturnedStatus &&
+        (p.status === 'approved_president' ||
+          (p as any).proposalStatus === 'approved' ||
+          (p as any).lifecycleStatus === 'approved' ||
+          (p as any).isApproved === true);
       const isOrgSchoolBudget =
         Boolean((p as any).isOfficerProposal) && (p as any).fundingSource !== 'organization_funds';
       const hasAnySignature = chain.some((s) => s.status === 'endorsed' || s.status === 'approved');
@@ -98,40 +108,51 @@ export function useSignatoryDocuments(session: any) {
 
       const isUnderReview =
         !isReturnedStatus &&
+        !isApprovedStatus &&
         !isAwaitingSasGate &&
         (p.status === 'under_review' ||
         (p as any).proposalStatus === 'pending' ||
         (p as any).proposalStatus === 'pending_review' ||
         (p as any).proposalStatus === 'under_review');
 
-      if (canAccessProposal && isUnderReview) {
-        const currentStage = p.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+      if (canAccessProposal && !hasPersonallySigned) {
+        if (isUnderReview) {
+          const currentStage = p.currentStageIndex ?? 1;
+          const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
-        if (hasStages) {
-          // Strictly show only when it is my stage and my turn right now
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
+          if (hasStages) {
+            const isMyTurnInStage = chain.some((s) => {
+              const inStage = (s.stageIndex ?? 1) === currentStage;
+              const isPending = s.status === 'current' || (!s.status && inStage);
+              const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
+              return inStage && isPending && isNotSigned && matchesSignatory(s);
+            });
 
-          // Future stage signatories CANNOT see the proposal
-          if (isMyTurnInStage) {
+            if (isMyTurnInStage) {
+              pending.push(p);
+            }
+          } else if (matchesSignatory(currentStep)) {
             pending.push(p);
           }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(p);
+        } else if (isApprovedStatus) {
+          const hasUnsignedStepForMe = chain.some(
+            (s) =>
+              s.status !== 'endorsed' &&
+              s.status !== 'approved' &&
+              s.status !== 'waived' &&
+              s.status !== 'returned' &&
+              s.status !== 'returned_for_revision' &&
+              s.status !== 'rejected' &&
+              matchesSignatory(s)
+          );
+          if (hasUnsignedStepForMe) {
+            pending.push(p);
+          }
         }
       }
 
       // Signed History & Archive: Strictly per-signatory!
       // Must NOT be returned, AND this signatory must have personally signed it.
-      const hasPersonallySigned = !isReturnedStatus && (
-        chain.some((s) => hasSignatorySignedStep(s, session)) ||
-        hasSignatorySignedDocument(p, session)
-      );
       if (hasPersonallySigned) {
         endorsed.push(p);
       }
@@ -168,37 +189,54 @@ export function useSignatoryDocuments(session: any) {
       const currentStep = chain[currentIdx];
 
       const isReturnedStatus = isDocumentCurrentlyReturned(l);
-      const isUnderReview =
-        !isReturnedStatus &&
-        (l as any).isPendingSasVetting !== true &&
-        (l.status === 'under_review' || l.status === 'pending');
-
-      if (canAccessLiquidation && isUnderReview) {
-        const currentStage = l.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
-
-        if (hasStages) {
-          // Strictly show only when it is my stage and my turn right now
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
-
-          if (isMyTurnInStage) {
-            pending.push(l);
-          }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(l);
-        }
-      }
-
-      // Signed History & Archive: Strictly per-signatory!
       const hasPersonallySigned = !isReturnedStatus && (
         chain.some((s) => hasSignatorySignedStep(s, session)) ||
         hasSignatorySignedDocument(l, session)
       );
+      const isApprovedStatus = !isReturnedStatus && l.status === 'approved';
+      const isUnderReview =
+        !isReturnedStatus &&
+        !isApprovedStatus &&
+        (l as any).isPendingSasVetting !== true &&
+        (l.status === 'under_review' || l.status === 'pending');
+
+      if (canAccessLiquidation && !hasPersonallySigned) {
+        if (isUnderReview) {
+          const currentStage = l.currentStageIndex ?? 1;
+          const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+
+          if (hasStages) {
+            const isMyTurnInStage = chain.some((s) => {
+              const inStage = (s.stageIndex ?? 1) === currentStage;
+              const isPending = s.status === 'current' || (!s.status && inStage);
+              const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
+              return inStage && isPending && isNotSigned && matchesSignatory(s);
+            });
+
+            if (isMyTurnInStage) {
+              pending.push(l);
+            }
+          } else if (matchesSignatory(currentStep)) {
+            pending.push(l);
+          }
+        } else if (isApprovedStatus) {
+          const hasUnsignedStepForMe = chain.some(
+            (s) =>
+              s.status !== 'endorsed' &&
+              s.status !== 'approved' &&
+              s.status !== 'waived' &&
+              s.status !== 'returned' &&
+              s.status !== 'returned_for_revision' &&
+              s.status !== 'rejected' &&
+              matchesSignatory(s)
+          );
+          if (hasUnsignedStepForMe) {
+            pending.push(l);
+          }
+        }
+      }
+
+      // Signed History & Archive: Strictly per-signatory!
       if (hasPersonallySigned) {
         endorsed.push(l);
       }
@@ -235,38 +273,56 @@ export function useSignatoryDocuments(session: any) {
       const currentStep = chain[currentIdx];
 
       const isReturnedStatus = isDocumentCurrentlyReturned(par);
+      const hasPersonallySigned = !isReturnedStatus && (
+        chain.some((s) => hasSignatorySignedStep(s, session)) ||
+        hasSignatorySignedDocument(par, session)
+      );
+      const isApprovedStatus = !isReturnedStatus && par.status === 'approved';
       const isUnderReview =
         !isReturnedStatus &&
+        !isApprovedStatus &&
         (par as any).isPendingSasVetting !== true &&
         (par.status === 'under_review' ||
         par.status === 'pending' ||
         (par as any).reportStatus === 'submitted');
 
-      if (canAccessPAR && isUnderReview) {
-        const currentStage = par.currentStageIndex ?? 1;
-        const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+      if (canAccessPAR && !hasPersonallySigned) {
+        if (isUnderReview) {
+          const currentStage = par.currentStageIndex ?? 1;
+          const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
 
-        if (hasStages) {
-          const isMyTurnInStage = chain.some((s) => {
-            const inStage = (s.stageIndex ?? 1) === currentStage;
-            const isPending = s.status === 'current' || (!s.status && inStage);
-            const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
-            return inStage && isPending && isNotSigned && matchesSignatory(s);
-          });
+          if (hasStages) {
+            const isMyTurnInStage = chain.some((s) => {
+              const inStage = (s.stageIndex ?? 1) === currentStage;
+              const isPending = s.status === 'current' || (!s.status && inStage);
+              const isNotSigned = s.status !== 'endorsed' && s.status !== 'approved' && s.status !== 'waived';
+              return inStage && isPending && isNotSigned && matchesSignatory(s);
+            });
 
-          if (isMyTurnInStage) {
+            if (isMyTurnInStage) {
+              pending.push(par);
+            }
+          } else if (matchesSignatory(currentStep)) {
             pending.push(par);
           }
-        } else if (matchesSignatory(currentStep)) {
-          pending.push(par);
+        } else if (isApprovedStatus) {
+          const hasUnsignedStepForMe = chain.some(
+            (s) =>
+              s.status !== 'endorsed' &&
+              s.status !== 'approved' &&
+              s.status !== 'waived' &&
+              s.status !== 'returned' &&
+              s.status !== 'returned_for_revision' &&
+              s.status !== 'rejected' &&
+              matchesSignatory(s)
+          );
+          if (hasUnsignedStepForMe) {
+            pending.push(par);
+          }
         }
       }
 
       // Signed History & Archive: Strictly per-signatory!
-      const hasPersonallySigned = !isReturnedStatus && (
-        chain.some((s) => hasSignatorySignedStep(s, session)) ||
-        hasSignatorySignedDocument(par, session)
-      );
       if (hasPersonallySigned) {
         endorsed.push(par);
       }
