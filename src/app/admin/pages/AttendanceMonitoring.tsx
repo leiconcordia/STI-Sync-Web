@@ -100,7 +100,10 @@ function EventDetail({
   sections: string[];
   studentMap?: Map<string, any>;
 }) {
-  const [filterState, setFilterState] = useState<AttendanceFilterState>(INITIAL_FILTERS);
+  const [filterState, setFilterState] = useState<AttendanceFilterState>(() => ({
+    ...INITIAL_FILTERS,
+    sessionId: event.sessions && event.sessions.length > 0 ? event.sessions[0].id : 'all',
+  }));
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [selectedStudentForQR, setSelectedStudentForQR] = useState<{
     record: EnrichedAttendanceRecord;
@@ -290,7 +293,10 @@ function EventDetail({
   };
 
   const handleResetFilters = () => {
-    setFilterState(INITIAL_FILTERS);
+    setFilterState({
+      ...INITIAL_FILTERS,
+      sessionId: event.sessions && event.sessions.length > 0 ? event.sessions[0].id : 'all',
+    });
   };
 
   const sessionsList = event.sessions.map(s => ({ id: s.id, title: s.label }));
@@ -348,9 +354,40 @@ function EventDetail({
       <div className="flex items-center justify-between border-b border-gray-200 pb-3">
         <div className="flex items-center gap-2 text-[#001A4D] text-sm font-bold">
           <UserCheck className="w-4 h-4" />
-          <span>Attendance Roster ({allRecords.length})</span>
+          <span>Attendance Roster ({filteredRecords.length})</span>
         </div>
       </div>
+
+      {/* Session Tabs (1 tab per session) */}
+      {event.sessions && event.sessions.length > 0 && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          {event.sessions.map((sess, idx) => {
+            const isActiveTab = filterState.sessionId === sess.id;
+            const sessionCount = allRecords.filter((r) => r.sessionId === sess.id).length;
+            return (
+              <button
+                key={sess.id || idx}
+                type="button"
+                onClick={() => handleFilterChange({ sessionId: sess.id })}
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border transition-all whitespace-nowrap cursor-pointer ${
+                  isActiveTab
+                    ? 'bg-[#001A4D] text-white border-[#001A4D] shadow-xs'
+                    : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50 hover:text-[#001A4D]'
+                }`}
+              >
+                <span>{sess.label || `Session ${idx + 1}`}</span>
+                <span
+                  className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                    isActiveTab ? 'bg-[#FFD41C] text-[#001A4D]' : 'bg-gray-100 text-gray-600'
+                  }`}
+                >
+                  {sessionCount}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Shared Filter Toolbar - Scoped strictly to actual participants in this attendance */}
       <AttendanceFilterToolbar

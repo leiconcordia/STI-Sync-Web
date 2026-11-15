@@ -12,7 +12,6 @@ import { transferCollectionGroupToLedger } from '../../modules/finance/services/
 import { ProcessRefundModal } from '../../modules/finance/components/ProcessRefundModal';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
-import { removeOrgAutoPayableRule, toggleOrgAutoPayableRule } from '../../modules/organizations/services/organization.service';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import type { OrgLedgerDocument } from '../../modules/finance/types/finance.types';
@@ -24,11 +23,9 @@ import {
   ChevronUp as FcChevronUp,
   CheckCircle2 as FcCheckCircle2,
   Trash2 as FcTrash2,
-  Power as FcPower,
   Download as FcDownload,
   ArrowDownLeft as FcArrowDownLeft,
   ArrowUpRight as FcArrowUpRight,
-  Sparkles as FcSparkles,
   FileText as FcFileText,
 } from 'lucide-react';
 import { toast as fcToast } from 'sonner';
@@ -1811,13 +1808,6 @@ function StudentCollectionsAndPayablesTab({
   const [showPayableExport, setShowPayableExport] = useState(false);
   const [showAddPayable, setShowAddPayable] = useState(false);
   const { profile: fcOfficerProfile } = useOfficerProfile();
-  const { data: fcOrganizations = [] } = useOrganizationStream();
-  const currentOrgForRules = useMemo(
-    () => fcOrganizations.find((o) => o.id === organizationId) || null,
-    [fcOrganizations, organizationId]
-  );
-  const [togglingRuleId, setTogglingRuleId] = useState<string | null>(null);
-  const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null);
   const [paymentModalData, setPaymentModalData] = useState<{
     payables: PayableDocument[];
     defaultPayableId?: string;
@@ -2132,100 +2122,6 @@ function StudentCollectionsAndPayablesTab({
           </div>
         </div>
       </div>
-
-      {/* Auto-Assign Rules on Club Entry */}
-      {(currentOrgForRules?.autoPayableRules?.length ?? 0) > 0 && (
-        <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-4 space-y-2.5">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <FcSparkles className="w-4 h-4 text-[#0E4EBD]" />
-              <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider">
-                Auto-Assigned Payables When Students Join This Club ({currentOrgForRules!.autoPayableRules!.length})
-              </h4>
-            </div>
-            <span className="text-[11px] text-blue-700 font-medium">
-              Automatically billed to incoming active members & synced to the Student Mobile App
-            </span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
-            {currentOrgForRules!.autoPayableRules!.map((rule) => (
-              <div
-                key={rule.id}
-                className={`flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg border text-xs bg-white ${
-                  rule.isActive ? 'border-blue-200' : 'border-gray-200 opacity-70'
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-bold text-[#001A4D] truncate">{rule.title}</span>
-                    <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                        rule.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
-                      }`}
-                    >
-                      {rule.isActive ? 'Active' : 'Paused'}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-gray-500 mt-0.5 truncate">
-                    {fcFormatCurrency(rule.amount || 0)} &bull;{' '}
-                    {rule.type === 'membership_due' ? 'Membership Due' : 'Club Fine'}
-                    {rule.targetYearLevels && rule.targetYearLevels.length > 0
-                      ? ` • ${rule.targetYearLevels.join(', ')}`
-                      : ' • All Years'}
-                    {rule.targetSections && rule.targetSections.length > 0
-                      ? ` • Sec ${rule.targetSections.join(', ')}`
-                      : ''}
-                  </p>
-                </div>
-                {!isPast && (
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      disabled={togglingRuleId === rule.id}
-                      onClick={async () => {
-                        setTogglingRuleId(rule.id);
-                        try {
-                          await toggleOrgAutoPayableRule(organizationId, rule.id, !rule.isActive);
-                          fcToast.success(
-                            rule.isActive ? `Paused auto-billing for "${rule.title}"` : `Activated auto-billing for "${rule.title}"`
-                          );
-                        } catch (err: any) {
-                          fcToast.error(err?.message || 'Failed to update auto-payable rule.');
-                        } finally {
-                          setTogglingRuleId(null);
-                        }
-                      }}
-                      title={rule.isActive ? 'Pause auto-billing for new members' : 'Resume auto-billing for new members'}
-                      className="p-1.5 rounded-md border border-gray-200 hover:bg-gray-100 text-gray-600 cursor-pointer disabled:opacity-50"
-                    >
-                      <FcPower className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={deletingRuleId === rule.id}
-                      onClick={async () => {
-                        setDeletingRuleId(rule.id);
-                        try {
-                          await removeOrgAutoPayableRule(organizationId, rule.id);
-                          fcToast.success(`Removed auto-assign rule "${rule.title}". Existing student payables remain intact.`);
-                        } catch (err: any) {
-                          fcToast.error(err?.message || 'Failed to remove auto-payable rule.');
-                        } finally {
-                          setDeletingRuleId(null);
-                        }
-                      }}
-                      title="Remove auto-assign rule (keeps existing student payables)"
-                      className="p-1.5 rounded-md border border-red-200 hover:bg-red-50 text-red-600 cursor-pointer disabled:opacity-50"
-                    >
-                      <FcTrash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Sub-View Navigation Tabs */}
       <div className="flex gap-1 border-b border-gray-200">

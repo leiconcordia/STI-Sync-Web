@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   X,
   Loader2,
@@ -11,13 +11,12 @@ import {
   GraduationCap,
   Coins,
   AlertCircle,
-  UserPlus,
+  CheckCircle2,
 } from 'lucide-react';
 import { useSemesters } from '../../modules/academic';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useOrgPayables } from '../../modules/finance/hooks/usePayableStream';
-import { saveOrgAutoPayableRule } from '../../modules/organizations/services/organization.service';
 import {
   createPayable,
   buildStudentsLookupMap,
@@ -60,17 +59,15 @@ export function AddPayableModal({
   const [amount, setAmount] = useState<number | ''>('');
   const [dueDate, setDueDate] = useState('');
 
-  // Application timing checkboxes
-  const [applyToExisting, setApplyToExisting] = useState(true);
-  const [autoAssignNewMembers, setAutoAssignNewMembers] = useState(false);
-
   // Target selection mode: 'all' (All / Year+Section Filtered) | 'specific' (Pick checkboxes)
   const [targetMode, setTargetMode] = useState<'specific' | 'all'>('all');
   const [yearFilter, setYearFilter] = useState('all');
   const [sectionFilter, setSectionFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   // Fast student lookup so club payables resolve real Firebase authUid, Year Level, and Section
   const studentLookup = useMemo(() => {
@@ -133,8 +130,7 @@ export function AddPayableModal({
       setDescription('');
       setAmount('');
       setDueDate('');
-      setApplyToExisting(true);
-      setAutoAssignNewMembers(false);
+      setShowConfirmModal(false);
       setYearFilter('all');
       setSectionFilter('all');
       setSearchQuery('');
@@ -265,7 +261,22 @@ export function AddPayableModal({
       ? 'Membership Due'
       : 'Club Assessment';
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const targetMembers = useMemo(() => {
+    return targetMode === 'all'
+      ? filteredMembers
+      : activeMembers.filter((m) => selectedMemberIds.includes(m.selectionKey));
+  }, [targetMode, filteredMembers, activeMembers, selectedMemberIds]);
+
+  const getLocalTodayStr = () => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+  const todayStr = getLocalTodayStr();
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!label.trim()) {
@@ -278,155 +289,117 @@ export function AddPayableModal({
       return;
     }
 
-    if (!applyToExisting && !autoAssignNewMembers) {
-      toast.error('Please choose whether to apply to existing club members and/or auto-assign to new members upon joining.');
+    if (dueDate && dueDate < getLocalTodayStr()) {
+      toast.error('Due date cannot be in the past.');
       return;
     }
 
-    const targetMembers = !applyToExisting
-      ? []
-      : targetMode === 'all'
-      ? filteredMembers
-      : activeMembers.filter((m) => selectedMemberIds.includes(m.selectionKey));
-
-    if (applyToExisting && targetMembers.length === 0) {
+    if (targetMembers.length === 0) {
       toast.error('No active club members match your target selection.');
       return;
     }
 
-    const defaultPeriod = resolveActivePeriodForLevel(
-      semesters,
-      targetMembers[0]?.resolvedAcademicLevel || activeMembers[0]?.resolvedAcademicLevel || 'COLLEGE'
-    );
+    setShowConfirmModal(true);
+  };
 
+  const handleConfirmedCreate = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setIsSubmitting(true);
 
     try {
-      let savedRuleId: string | null = null;
       const normalizedLabel = label.trim().toLowerCase();
-
-      if (autoAssignNewMembers) {
-        const savedRule = await saveOrgAutoPayableRule(organizationId, {
-          type: payableType,
-          label: label.trim(),
-          description: description.trim() || `Assessment for ${organizationName}`,
-          amount: Number(amount),
-          dueDate: dueDate || null,
-          semesterId: defaultPeriod.id,
-          semester: defaultPeriod.semester || defaultPeriod.label,
-          schoolYear: defaultPeriod.schoolYear,
-          createdBy: addedBy,
-        });
-        savedRuleId = savedRule.id;
-      }
-
       let createdCount = 0;
       let skippedDuplicateCount = 0;
 
-      if (applyToExisting) {
-        for (const m of targetMembers) {
-          const memberPeriod = resolveActivePeriodForLevel(semesters, m.resolvedAcademicLevel);
-          const resolvedStudentUid = m.hasLinkedAuthUid
-            ? m.resolvedAuthUid
-            : await lookupStudentAuthUidByIdentifiers({
-                authUid: (m as any).authUid || (m as any).studentAuthUid,
-                schoolId: m.resolvedSchoolId,
-                studentId: m.studentId,
-                docId: m.id,
-                email: m.email,
-              });
+      for (const m of targetMembers) {
+        const memberPeriod = resolveActivePeriodForLevel(semesters, m.resolvedAcademicLevel);
+        const resolvedStudentUid = m.hasLinkedAuthUid
+          ? m.resolvedAuthUid
+          : await lookupStudentAuthUidByIdentifiers({
+              authUid: (m as any).authUid || (m as any).studentAuthUid,
+              schoolId: m.resolvedSchoolId,
+              studentId: m.studentId,
+              docId: m.id,
+              email: m.email,
+            });
 
-          // Deduplicate when rule/auto-assign or same-term membership_due already exists for this member
-          const alreadyHasPayable = existingPayables.some((p) => {
-            if (p.status === 'waived' || p.status === 'refunded') return false;
-            const pSid = String(p.studentId || '').trim().toLowerCase();
-            const pSchool = String(p.studentSchoolId || '').trim().toLowerCase();
-            const matchMember =
-              pSid === resolvedStudentUid.toLowerCase() ||
-              pSid === m.resolvedAuthUid.toLowerCase() ||
-              pSchool === m.resolvedSchoolId.toLowerCase() ||
-              pSid === m.resolvedSchoolId.toLowerCase();
-            if (!matchMember) return false;
-            if (savedRuleId && p.autoRuleId === savedRuleId) return true;
-            if (payableType === 'membership_due' && p.type === 'membership_due') {
-              if (memberPeriod.id && p.semesterId) {
-                return p.semesterId === memberPeriod.id;
-              }
-              if (memberPeriod.semester && memberPeriod.schoolYear && p.semester && p.schoolYear) {
-                return (
-                  String(p.semester).trim().toLowerCase() === memberPeriod.semester.trim().toLowerCase() &&
-                  String(p.schoolYear).trim().toLowerCase() === memberPeriod.schoolYear.trim().toLowerCase()
-                );
-              }
-              return String(p.label || p.title || '').trim().toLowerCase() === normalizedLabel;
-            }
-            if (autoAssignNewMembers && String(p.label || p.title || '').trim().toLowerCase() === normalizedLabel) {
-              return true;
-            }
-            return false;
-          });
+        // Deduplicate if this active member already has the exact same payable in this period
+        const alreadyHasPayable = existingPayables.some((p) => {
+          if (p.status === 'waived' || p.status === 'refunded') return false;
+          const pSid = String(p.studentId || '').trim().toLowerCase();
+          const pSchool = String(p.studentSchoolId || '').trim().toLowerCase();
+          const matchMember =
+            pSid === resolvedStudentUid.toLowerCase() ||
+            pSid === m.resolvedAuthUid.toLowerCase() ||
+            pSchool === m.resolvedSchoolId.toLowerCase() ||
+            pSid === m.resolvedSchoolId.toLowerCase();
+          if (!matchMember) return false;
 
-          if (alreadyHasPayable) {
-            skippedDuplicateCount++;
-            continue;
+          const sameType = p.type === payableType;
+          const sameLabel = String(p.label || p.title || '').trim().toLowerCase() === normalizedLabel;
+          const samePeriod =
+            (memberPeriod.id && p.semesterId === memberPeriod.id) ||
+            (memberPeriod.semester &&
+              memberPeriod.schoolYear &&
+              String(p.semester || '').trim().toLowerCase() === memberPeriod.semester.trim().toLowerCase() &&
+              String(p.schoolYear || '').trim().toLowerCase() === memberPeriod.schoolYear.trim().toLowerCase());
+
+          if (payableType === 'membership_due' && sameType) {
+            return samePeriod || (!p.semesterId && sameLabel);
           }
+          return sameType && sameLabel && (samePeriod || !p.semesterId);
+        });
 
-          await createPayable({
-            studentId: resolvedStudentUid,
-            studentName: m.studentName || 'Member',
-            studentSchoolId: m.resolvedSchoolId,
-            type: payableType,
-            label: label.trim(),
-            title: label.trim(),
-            feeTitle: label.trim(),
-            eventTitle: label.trim(),
-            category: categoryName,
-            description: description.trim() || `Assessment for ${organizationName}`,
-            organizationId,
-            organizationName,
-            semesterId: memberPeriod.id,
-            semester: memberPeriod.semester || memberPeriod.label,
-            schoolYear: memberPeriod.schoolYear,
-            autoRuleId: savedRuleId,
-            assignedAmount: Number(amount),
-            amount: Number(amount),
-            paymentStatus: 'UNPAID',
-            dueDate: dueDate ? new Date(dueDate) : null,
-            courseCode: m.resolvedCourseCode,
-            courseName: m.resolvedCourseName,
-            departmentId: m.resolvedDepartmentId,
-            departmentName: m.resolvedDepartmentName,
-            yearLevel: m.resolvedYear,
-            section: m.resolvedSection,
-            academicLevel: m.resolvedAcademicLevel,
-            createdBy: addedBy,
-          });
-          createdCount++;
+        if (alreadyHasPayable) {
+          skippedDuplicateCount++;
+          continue;
         }
+
+        await createPayable({
+          studentId: resolvedStudentUid,
+          studentName: m.studentName || 'Member',
+          studentSchoolId: m.resolvedSchoolId,
+          type: payableType,
+          label: label.trim(),
+          title: label.trim(),
+          feeTitle: label.trim(),
+          eventTitle: label.trim(),
+          category: categoryName,
+          description: description.trim() || `Assessment for ${organizationName}`,
+          organizationId,
+          organizationName,
+          semesterId: memberPeriod.id,
+          semester: memberPeriod.semester || memberPeriod.label,
+          schoolYear: memberPeriod.schoolYear,
+          assignedAmount: Number(amount),
+          amount: Number(amount),
+          paymentStatus: 'UNPAID',
+          dueDate: dueDate ? new Date(dueDate) : null,
+          courseCode: m.resolvedCourseCode,
+          courseName: m.resolvedCourseName,
+          departmentId: m.resolvedDepartmentId,
+          departmentName: m.resolvedDepartmentName,
+          yearLevel: m.resolvedYear,
+          section: m.resolvedSection,
+          academicLevel: m.resolvedAcademicLevel,
+          createdBy: addedBy,
+        });
+        createdCount++;
       }
 
-      if (autoAssignNewMembers && applyToExisting) {
-        toast.success(
-          `Assigned "${label.trim()}" to ${createdCount} active member(s) and enabled auto-assign for future members.${
-            skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} already billed)` : ''
-          }`
-        );
-      } else if (autoAssignNewMembers) {
-        toast.success(
-          `Saved "${label.trim()}" — every new student who enters ${organizationName} will receive this payable automatically.`
-        );
-      } else {
-        toast.success(
-          `Successfully assigned "${label.trim()}" to ${createdCount} member(s).${
-            skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} skipped as already assigned)` : ''
-          }`
-        );
-      }
+      toast.success(
+        `Successfully assigned "${label.trim()}" to ${createdCount} member(s).${
+          skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} skipped as already assigned)` : ''
+        }`
+      );
+      setShowConfirmModal(false);
       onClose();
     } catch (err: any) {
       console.error('[AddPayableModal] Creation error:', err);
       toast.error(`Failed to assign payable: ${err.message || 'Unknown error'}`);
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -573,6 +546,7 @@ export function AddPayableModal({
               </label>
               <input
                 type="date"
+                min={todayStr}
                 value={dueDate}
                 onChange={(e) => setDueDate(e.target.value)}
                 className="w-full px-3.5 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none cursor-pointer"
@@ -597,48 +571,8 @@ export function AddPayableModal({
             />
           </div>
 
-          {/* Effective Scope / When This Payable Applies */}
-          <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-4 space-y-2.5">
-            <label className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
-              <UserPlus className="w-3.5 h-3.5 text-[#0E4EBD]" />
-              When Does This Payable Apply?
-            </label>
-            <div className="space-y-2">
-              <label className="flex items-start gap-2.5 p-2.5 bg-white border border-gray-200 rounded-lg cursor-pointer hover:border-[#0E4EBD] transition-colors">
-                <input
-                  type="checkbox"
-                  checked={applyToExisting}
-                  onChange={(e) => setApplyToExisting(e.target.checked)}
-                  className="mt-0.5 rounded border-gray-300 text-[#001A4D] focus:ring-[#001A4D] cursor-pointer"
-                />
-                <div className="text-xs">
-                  <p className="font-bold text-[#001A4D]">Apply immediately to existing active club members</p>
-                  <p className="text-gray-500 text-[11px]">
-                    Bills targeted students who are already active members of {organizationName} right now (and syncs to their Mobile App).
-                  </p>
-                </div>
-              </label>
-
-              <label className="flex items-start gap-2.5 p-2.5 bg-white border border-gray-200 rounded-lg cursor-pointer hover:border-[#0E4EBD] transition-colors">
-                <input
-                  type="checkbox"
-                  checked={autoAssignNewMembers}
-                  onChange={(e) => setAutoAssignNewMembers(e.target.checked)}
-                  className="mt-0.5 rounded border-gray-300 text-[#001A4D] focus:ring-[#001A4D] cursor-pointer"
-                />
-                <div className="text-xs">
-                  <p className="font-bold text-[#001A4D]">Auto-assign when a new student enters / joins this club</p>
-                  <p className="text-gray-500 text-[11px]">
-                    Automatically assigns this payable to incoming students the moment their membership is added or approved.
-                  </p>
-                </div>
-              </label>
-            </div>
-          </div>
-
-          {/* Target Selection */}
-          {applyToExisting ? (
-            <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
+          {/* Target Selection (Active Club Members Only) */}
+          <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
                   <GraduationCap className="w-3.5 h-3.5 text-[#0E4EBD]" />
@@ -791,15 +725,6 @@ export function AddPayableModal({
                 </div>
               )}
             </div>
-          ) : (
-            <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-start gap-2.5">
-              <UserPlus className="w-4 h-4 text-[#0E4EBD] flex-shrink-0 mt-0.5" />
-              <span>
-                Existing members will not be billed right now. Instead,{' '}
-                <strong>"{label.trim() || 'this payable'}"</strong> will automatically apply the moment a new student enters or is approved as an active member of <strong>{organizationName}</strong>.
-              </span>
-            </div>
-          )}
 
           {/* Footer Action Buttons */}
           <div className="flex items-center justify-end gap-3 pt-2">
@@ -816,23 +741,118 @@ export function AddPayableModal({
               disabled={isSubmitting}
               className="px-5 py-2.5 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-sm font-bold flex items-center gap-2 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
             >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />
-                  {applyToExisting ? 'Assigning Payables...' : 'Saving Auto-Assign Rule...'}
-                </>
-              ) : (
-                <>
-                  <Plus className="w-4 h-4 text-[#FFD41C]" />
-                  {!applyToExisting && autoAssignNewMembers
-                    ? 'Save Auto-Assign Rule'
-                    : 'Create & Assign Payable'}
-                </>
-              )}
+              <Plus className="w-4 h-4 text-[#FFD41C]" />
+              Create & Assign Payable
             </button>
           </div>
         </form>
       </div>
+
+      {/* Confirmation Modal */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-xs"
+            onClick={() => {
+              if (!isSubmitting) setShowConfirmModal(false);
+            }}
+          />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden z-10 border border-gray-200">
+            <div className="bg-[#001A4D] px-5 py-4 flex items-center justify-between text-white">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-5 h-5 text-[#FFD41C]" />
+                <h3 className="font-bold text-base">Confirm Payable Assignment</h3>
+              </div>
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => setShowConfirmModal(false)}
+                className="text-white/70 hover:text-white p-1 rounded-lg cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-gray-600">
+                Please review the details below before assigning this payable to the selected active club members.
+              </p>
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-3.5 space-y-2 text-xs">
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500">Payable Title</span>
+                  <span className="font-bold text-[#001A4D] text-right">{label.trim()}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500">Type</span>
+                  <span className="font-semibold text-gray-800">{categoryName}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500">Amount per Student</span>
+                  <span className="font-bold text-[#001A4D]">{formatCurrency(Number(amount) || 0)}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-gray-500">Target Members</span>
+                  <span className="font-bold text-[#0E4EBD]">{targetMembers.length} active member(s)</span>
+                </div>
+                <div className="flex justify-between gap-2 pt-1.5 border-t border-gray-200">
+                  <span className="text-gray-600 font-semibold">Total Collectible</span>
+                  <span className="font-extrabold text-emerald-700">
+                    {formatCurrency((Number(amount) || 0) * targetMembers.length)}
+                  </span>
+                </div>
+                {dueDate && (
+                  <div className="flex justify-between gap-2">
+                    <span className="text-gray-500">Due Date</span>
+                    <span className="font-medium text-gray-800">{dueDate}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
+                  Recipients ({targetMembers.length})
+                </p>
+                <div className="max-h-32 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100 bg-white">
+                  {targetMembers.map((m) => (
+                    <div key={m.selectionKey} className="px-3 py-1.5 flex items-center justify-between text-xs">
+                      <span className="font-medium text-[#001A4D] truncate">{m.studentName || 'Member'}</span>
+                      <span className="text-[11px] font-mono text-gray-400 shrink-0 ml-2">{m.resolvedSchoolId}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-gray-100">
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={() => setShowConfirmModal(false)}
+                  className="px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-50 cursor-pointer disabled:opacity-50"
+                >
+                  Back / Edit
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmitting}
+                  onClick={handleConfirmedCreate}
+                  className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50 shadow-xs"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFD41C]" />
+                      Assigning...
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-[#FFD41C]" />
+                      Confirm & Assign Payables
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

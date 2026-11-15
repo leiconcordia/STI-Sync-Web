@@ -74,7 +74,7 @@ export default function SignatoryDashboardPage() {
       badgeText: 'Proposal',
       title: p.title || p.activityTitle || 'Untitled Activity Proposal',
       org: p.organizationName || 'Student Organization',
-      date: p.targetDate || (p as any).createdAt,
+      date: p.date || p.sessions?.[0]?.date || p.targetDate || (p as any).createdAt,
       stage: p.currentStageIndex ?? 1,
       isUrgent: Boolean((p as any).isUrgent),
       urgentJustification: (p as any).urgentJustification || '',
@@ -260,7 +260,7 @@ export default function SignatoryDashboardPage() {
                     </span>
                     <span className="text-xs text-slate-500 flex items-center gap-1">
                       <Calendar className="w-3 h-3 text-slate-400" />
-                      Target: {formatLongDate(prop.targetDate, 'TBD')}
+                      Target: {formatLongDate(prop.date || prop.sessions?.[0]?.date || prop.targetDate, 'TBD')}
                     </span>
                   </div>
                   <h3 className="text-sm font-extrabold text-[#001A4D] truncate">

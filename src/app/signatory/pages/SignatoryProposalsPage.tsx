@@ -235,7 +235,7 @@ export default function SignatoryProposalsPage() {
                   <div className="flex items-center gap-4 text-xs text-slate-500">
                     <span className="flex items-center gap-1">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                      Target Date: {formatLongDate(prop.targetDate, 'TBD')}
+                      Target Date: {formatLongDate(prop.date || prop.sessions?.[0]?.date || prop.targetDate, 'TBD')}
                     </span>
                   </div>
                   {isUrgent && (prop as any).urgentJustification && (

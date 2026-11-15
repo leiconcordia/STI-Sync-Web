@@ -1,4 +1,4 @@
-import { collectionGroup, onSnapshot, collection, query, limit } from 'firebase/firestore';
+import { collectionGroup, onSnapshot, collection } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { AttendanceRecord } from '../types/attendance.types';
 import { formatAppTime } from '../../../utils/date';
@@ -56,13 +56,74 @@ const attendanceStream = createSingletonStream<AttendanceRecord[]>({
     let topFlaggedRecords: AttendanceRecord[] = [];
 
     const updateCombinedRecords = () => {
-      const recordMap = new Map<string, AttendanceRecord>();
+      // 1. Deduplicate identical Firestore document IDs across collectionGroup & top-level streams
+      const docMap = new Map<string, AttendanceRecord>();
       for (const r of [...groupNormalRecords, ...topNormalRecords, ...groupFlaggedRecords, ...topFlaggedRecords]) {
-        if (!recordMap.has(r.id)) {
-          recordMap.set(r.id, r);
+        if (!docMap.has(r.id)) {
+          docMap.set(r.id, r);
         }
       }
-      const combined = Array.from(recordMap.values());
+
+      // 2. Merge separate time_in and time_out documents for the same student + event + session
+      const isRealTime = (val?: string) => Boolean(val && val !== '—' && val !== 'Absent');
+      const pickTime = (a?: string, b?: string) => {
+        if (isRealTime(a)) return a!;
+        if (isRealTime(b)) return b!;
+        if (a && a !== '—') return a;
+        if (b && b !== '—') return b;
+        return '—';
+      };
+
+      const mergedMap = new Map<string, AttendanceRecord>();
+      for (const r of docMap.values()) {
+        if (r.status === 'Flagged') {
+          mergedMap.set(`flagged::${r.id}`, r);
+          continue;
+        }
+
+        const studentKey = String(r.studentId || r.id).trim().toLowerCase();
+        const sessionKey = String(r.sessionId || 'default').trim().toLowerCase();
+        const eventKey = String(r.eventId || '').trim().toLowerCase();
+        const mergeKey = `${eventKey}::${sessionKey}::${studentKey}`;
+
+        const existing = mergedMap.get(mergeKey);
+        if (!existing) {
+          mergedMap.set(mergeKey, r);
+          continue;
+        }
+
+        const mergedCheckIn = pickTime(existing.checkIn, r.checkIn);
+        const mergedCheckOut = pickTime(existing.checkOut, r.checkOut);
+        const hasIn = isRealTime(mergedCheckIn);
+        const hasOut = isRealTime(mergedCheckOut);
+
+        let mergedStatus = existing.status;
+        if (hasOut) {
+          mergedStatus = 'Checked Out';
+        } else if (existing.status === 'Late' || r.status === 'Late') {
+          mergedStatus = 'Late';
+        } else if (hasIn) {
+          mergedStatus = 'Checked In';
+        } else {
+          mergedStatus = r.status || existing.status;
+        }
+
+        const existingSec = (existing.createdAt as any)?.seconds ?? 0;
+        const incomingSec = (r.createdAt as any)?.seconds ?? 0;
+
+        mergedMap.set(mergeKey, {
+          ...existing,
+          ...r,
+          id: existing.id,
+          name: existing.name !== 'Unknown Student' ? existing.name : r.name,
+          checkIn: mergedCheckIn,
+          checkOut: mergedCheckOut,
+          status: mergedStatus,
+          createdAt: incomingSec > existingSec ? r.createdAt : existing.createdAt,
+        });
+      }
+
+      const combined = Array.from(mergedMap.values());
       combined.sort((a, b) => {
         const aTime = (a.createdAt as any)?.seconds ?? 0;
         const bTime = (b.createdAt as any)?.seconds ?? 0;
@@ -72,7 +133,7 @@ const attendanceStream = createSingletonStream<AttendanceRecord[]>({
     };
 
     const unsubAttendanceGroup = onSnapshot(
-      query(collectionGroup(db, 'attendance'), limit(150)),
+      collectionGroup(db, 'attendance'),
       (snapshot) => {
         groupNormalRecords = snapshot.docs.map(parseNormalDoc);
         updateCombinedRecords();
@@ -84,7 +145,7 @@ const attendanceStream = createSingletonStream<AttendanceRecord[]>({
     );
 
     const unsubTopAttendance = onSnapshot(
-      query(collection(db, 'attendance'), limit(100)),
+      collection(db, 'attendance'),
       (snapshot) => {
         topNormalRecords = snapshot.docs.map(parseNormalDoc);
         updateCombinedRecords();
@@ -95,7 +156,7 @@ const attendanceStream = createSingletonStream<AttendanceRecord[]>({
     );
 
     const unsubFlaggedGroup = onSnapshot(
-      query(collectionGroup(db, 'flagged_attendance'), limit(100)),
+      collectionGroup(db, 'flagged_attendance'),
       (snapshot) => {
         groupFlaggedRecords = snapshot.docs.map(parseFlaggedDoc);
         updateCombinedRecords();
@@ -107,7 +168,7 @@ const attendanceStream = createSingletonStream<AttendanceRecord[]>({
     );
 
     const unsubTopFlagged = onSnapshot(
-      query(collection(db, 'flagged_attendance'), limit(100)),
+      collection(db, 'flagged_attendance'),
       (snapshot) => {
         topFlaggedRecords = snapshot.docs.map(parseFlaggedDoc);
         updateCombinedRecords();

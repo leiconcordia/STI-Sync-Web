@@ -30,7 +30,7 @@ try {
       },
     })));
     const preview = document.querySelector('#reset-password-preview');
-    assert.ok(preview?.value?.length >= 16, 'The modal must display a generated password before submitting');
+    assert.ok(preview?.value?.length >= 8 && preview?.value?.length <= 12, 'The modal must display a simple generated password before submitting');
     const initialPassword = preview.value;
     assert.match(document.body.textContent, /This is a preview/);
     assert.equal(requests.length, 0, 'Opening the modal must not reset the account');

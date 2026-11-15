@@ -409,7 +409,7 @@ export function useOrgCollectionsStream(organizationId: string | null, semesterI
         const cleanLabel = (doc.label || doc.feeTitle || doc.title || (doc.type === 'membership_due' ? 'Membership Dues' : 'Club Assessment')).trim();
         const groupId = doc.eventId
           ? `${doc.eventId}_${doc.type}`
-          : `${doc.type || 'club_fee'}_${cleanLabel.toLowerCase()}_${doc.semesterId || 'all'}`;
+          : `${doc.type || 'club_fee'}_${cleanLabel.toLowerCase()}`;
         const eId = doc.eventId || 'unassigned';
 
         if (!groupsMap.has(groupId)) {

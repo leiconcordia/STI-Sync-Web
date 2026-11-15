@@ -463,12 +463,12 @@ export function EditOrganizationModal({
             {adviserMode === 'keep' && (
               <div>
                 {organization.adviser?.name ? (
-                  <div className="bg-white border border-gray-200 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs">
-                    <div className="flex items-center gap-3">
+                  <div className="bg-white border border-gray-200 rounded-xl p-3.5 flex flex-col gap-3 shadow-2xs">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
                         <UserCheck className="w-5 h-5" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <p className="font-bold text-[#001A4D] text-sm truncate">
                           {organization.adviser.name}
                         </p>
@@ -480,7 +480,7 @@ export function EditOrganizationModal({
                         </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                    <div className="flex flex-wrap items-center justify-end gap-2 pt-2.5 border-t border-gray-100">
                       <button
                         type="button"
                         onClick={() => {
@@ -498,17 +498,17 @@ export function EditOrganizationModal({
                           });
                           setAdviserErrors({});
                         }}
-                        className="px-2.5 py-1.5 text-xs font-semibold text-[#0E4EBD] bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                        className="px-3 py-1.5 text-xs font-semibold text-[#0E4EBD] bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
+                        <RefreshCw className="w-3.5 h-3.5 shrink-0" />
                         <span>Replace Adviser</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => setAdviserMode('unassign')}
-                        className="px-2.5 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 transition-colors flex items-center gap-1.5 cursor-pointer"
+                        className="px-3 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
                       >
-                        <UserX className="w-3.5 h-3.5" />
+                        <UserX className="w-3.5 h-3.5 shrink-0" />
                         <span>Unassign</span>
                       </button>
                     </div>

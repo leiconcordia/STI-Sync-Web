@@ -18,7 +18,6 @@ const pageTitles: Record<string, string> = {
   "/home/settings": "System Settings",
   "/home/account-management": "Account Management",
   "/home/academic-semester": "Academic Year & Semester",
-  "/home/budget-fund": "Budget & Fund Management",
   "/home/documents": "Document Management",
   "/home/certificates": "Certificates",
   "/home/audit-logs": "Audit Logs",

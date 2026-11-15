@@ -12,7 +12,6 @@ import { Announcements } from "./admin/pages/Announcements";
 import { SystemSettings } from "./admin/pages/SystemSettings";
 import { AccountManagement } from "./admin/pages/AccountManagement";
 import { AcademicSemesterSettings } from "./admin/pages/AcademicSemesterSettings";
-import { BudgetFundSettings } from "./admin/pages/BudgetFundSettings";
 import { AdminDocuments } from "./admin/pages/AdminDocuments";
 import { AdminDocumentReview } from "./admin/pages/AdminDocumentReview";
 import { AuditLogs } from "./admin/pages/AuditLogs";
@@ -116,7 +115,6 @@ export const router = createBrowserRouter([
       { path: "settings", Component: SystemSettings },
       { path: "account-management", Component: AccountManagement },
       { path: "academic-semester", Component: AcademicSemesterSettings },
-      { path: "budget-fund", Component: BudgetFundSettings },
       { path: "documents", Component: AdminDocuments },
       { path: "documents/:docId/review", Component: AdminDocumentReview },
       { path: "audit-logs", Component: AuditLogs },

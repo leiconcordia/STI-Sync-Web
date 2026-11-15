@@ -134,6 +134,7 @@ export default function AttendanceScannersModal({
 
   // Sessions
   const [sessions, setSessions] = useState<EventSession[]>([]);
+  const [persistedSessionIds, setPersistedSessionIds] = useState<Set<string>>(new Set());
 
   // Assigned Scanners
   const [assignedScanners, setAssignedScanners] = useState<EventScanner[]>(
@@ -182,25 +183,26 @@ export default function AttendanceScannersModal({
       );
 
       if (hasConfiguredSessions && data.sessions && Array.isArray(data.sessions) && data.sessions.length > 0) {
-        setSessions(
-          data.sessions.map((s: any, idx: number) => ({
-            id: s.id || `sess_${idx + 1}_${Date.now()}`,
-            title: s.title || s.name || `Session ${idx + 1}`,
-            name: s.title || s.name || `Session ${idx + 1}`,
-            date: s.date || baseDate,
-            startTime: s.startTime || '08:00',
-            endTime: s.endTime || '12:00',
-            timeInOpen: s.timeInOpen || s.startTime || '07:30',
-            timeInClose: s.timeInClose || '09:00',
-            isLateEnabled: Boolean(s.isLateEnabled),
-            markLateAfter: s.markLateAfter || '08:15',
-            hasTimeOut: Boolean(s.hasTimeOut),
-            timeOutOpen: s.timeOutOpen || '',
-            timeOutClose: s.timeOutClose || '',
-          }))
-        );
+        const mappedSessions = data.sessions.map((s: any, idx: number) => ({
+          id: s.id || `sess_${idx + 1}_${Date.now()}`,
+          title: s.title || s.name || `Session ${idx + 1}`,
+          name: s.title || s.name || `Session ${idx + 1}`,
+          date: s.date || baseDate,
+          startTime: s.startTime || '08:00',
+          endTime: s.endTime || '12:00',
+          timeInOpen: s.timeInOpen || s.startTime || '07:30',
+          timeInClose: s.timeInClose || '09:00',
+          isLateEnabled: Boolean(s.isLateEnabled),
+          markLateAfter: s.markLateAfter || '08:15',
+          hasTimeOut: Boolean(s.hasTimeOut),
+          timeOutOpen: s.timeOutOpen || '',
+          timeOutClose: s.timeOutClose || '',
+        }));
+        setSessions(mappedSessions);
+        setPersistedSessionIds(new Set(mappedSessions.map((s: EventSession) => s.id)));
       } else {
         setSessions([]);
+        setPersistedSessionIds(new Set());
       }
 
       setAssignedScanners(
@@ -556,9 +558,9 @@ export default function AttendanceScannersModal({
   const handleAddSession = () => {
     const nextIdx = sessions.length + 1;
     const lastSession = sessions[sessions.length - 1];
-    let defaultOpen = '13:00';
-    let defaultClose = '14:30';
-    let defaultLate = '13:30';
+    let defaultOpen = '08:00';
+    let defaultClose = '09:30';
+    let defaultLate = '08:30';
 
     if (lastSession) {
       const lastEndMins = timeToMinutes(
@@ -590,19 +592,33 @@ export default function AttendanceScannersModal({
     setSessions((prev) => [...prev, newSession]);
   };
 
-  // Remove a session
+  // Remove a session (only allowed for unsaved drafts or saved sessions that have not yet started)
   const handleRemoveSession = (id: string) => {
-    if (sessions.length <= 1) {
-      toast.error('At least one attendance session is required.');
+    const target = sessions.find((s) => s.id === id);
+    if (target && persistedSessionIds.has(id) && getSessionTimingStatus(target) !== 'upcoming') {
+      toast.error('Active or concluded sessions cannot be deleted.');
       return;
     }
     setSessions((prev) => prev.filter((s) => s.id !== id));
   };
 
-  // Update session fields
+  // Update session fields and keep startTime/endTime aligned with configured scan windows
   const handleUpdateSession = (id: string, updates: Partial<EventSession>) => {
     setSessions((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
+      prev.map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, ...updates };
+        return {
+          ...next,
+          startTime: next.timeInOpen || next.startTime || '08:00',
+          endTime:
+            (next.hasTimeOut && next.timeOutClose
+              ? next.timeOutClose
+              : next.timeInClose) ||
+            next.endTime ||
+            '12:00',
+        };
+      })
     );
   };
 
@@ -741,21 +757,28 @@ export default function AttendanceScannersModal({
         .map((s) => s.officerUserId)
         .filter(Boolean) as string[];
 
-      const sanitizedSessions = sessions.map((s) => ({
-        id: s.id,
-        title: s.title || s.name || 'Session',
-        name: s.title || s.name || 'Session',
-        date: s.date || proposalDate,
-        startTime: s.startTime || '08:00',
-        endTime: s.endTime || '12:00',
-        timeInOpen: s.timeInOpen || s.startTime || '07:30',
-        timeInClose: s.timeInClose || '09:00',
-        isLateEnabled: Boolean(s.isLateEnabled),
-        markLateAfter: s.isLateEnabled ? s.markLateAfter || s.timeInClose || '08:15' : null,
-        hasTimeOut: Boolean(s.hasTimeOut),
-        timeOutOpen: s.hasTimeOut ? s.timeOutOpen || '' : '',
-        timeOutClose: s.hasTimeOut ? s.timeOutClose || '' : '',
-      }));
+      const sanitizedSessions = sessions.map((s) => {
+        const effectiveStart = s.timeInOpen || s.startTime || '08:00';
+        const effectiveEnd =
+          (s.hasTimeOut && s.timeOutClose ? s.timeOutClose : s.timeInClose) ||
+          s.endTime ||
+          '12:00';
+        return {
+          id: s.id,
+          title: s.title || s.name || 'Session',
+          name: s.title || s.name || 'Session',
+          date: s.date || proposalDate,
+          startTime: effectiveStart,
+          endTime: effectiveEnd,
+          timeInOpen: s.timeInOpen || s.startTime || '07:30',
+          timeInClose: s.timeInClose || '09:00',
+          isLateEnabled: Boolean(s.isLateEnabled),
+          markLateAfter: s.isLateEnabled ? s.markLateAfter || s.timeInClose || '08:15' : null,
+          hasTimeOut: Boolean(s.hasTimeOut),
+          timeOutOpen: s.hasTimeOut ? s.timeOutOpen || '' : '',
+          timeOutClose: s.hasTimeOut ? s.timeOutClose || '' : '',
+        };
+      });
 
       const sanitizedScanners = assignedScanners.map((sc) => ({
         ...sc,
@@ -793,6 +816,7 @@ export default function AttendanceScannersModal({
         console.warn('[AttendanceScannersModal] Failed to mirror to events collection:', evtErr);
       }
 
+      setPersistedSessionIds(new Set(sanitizedSessions.map((s) => s.id)));
       toast.success('Attendance sessions & scanner permissions updated successfully!');
       if (onUpdated) onUpdated();
       onClose();
@@ -1022,21 +1046,24 @@ export default function AttendanceScannersModal({
                 const isSessionInvalid = isDateInvalid || hasSessionTimeErrors;
 
                 // Lifecycle status & permissions
+                const isPersistedSession = persistedSessionIds.has(sess.id);
                 const timingStatus = getSessionTimingStatus(sess);
                 const isConcluded = timingStatus === 'concluded';
                 const isActive = timingStatus === 'active';
                 const isUpcoming = timingStatus === 'upcoming';
 
-                // Lifecycle locking policy
-                const isDateLocked = readOnly || isConcluded || isActive;
-                const isTitleLocked = readOnly || isConcluded;
-                const isTimeInOpenLocked = readOnly || isConcluded || isActive;
-                const isTimeInCloseLocked = readOnly || isConcluded; // Extendable during active session!
-                const isLateLocked = readOnly || isConcluded || isActive;
-                const isTimeOutToggleLocked = readOnly || isConcluded || isActive;
-                const isTimeOutOpenLocked = readOnly || isConcluded || isActive;
-                const isTimeOutCloseLocked = readOnly || isConcluded; // Extendable during active session!
-                const canRemoveSession = !readOnly && sessions.length > 1 && isUpcoming;
+                // Once a session is created/saved, all fields are read-only.
+                // Deletion is only allowed for unsaved drafts or saved sessions that have not yet started.
+                const isFieldLocked = readOnly || isPersistedSession || isConcluded || isActive;
+                const isDateLocked = isFieldLocked;
+                const isTitleLocked = isFieldLocked;
+                const isTimeInOpenLocked = isFieldLocked;
+                const isTimeInCloseLocked = isFieldLocked;
+                const isLateLocked = isFieldLocked;
+                const isTimeOutToggleLocked = isFieldLocked;
+                const isTimeOutOpenLocked = isFieldLocked;
+                const isTimeOutCloseLocked = isFieldLocked;
+                const canRemoveSession = !readOnly && (!isPersistedSession || isUpcoming);
 
                 return (
                   <div
@@ -1100,6 +1127,12 @@ export default function AttendanceScannersModal({
                             Upcoming
                           </span>
                         )}
+                        {isPersistedSession && isUpcoming && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[10.5px] font-bold border border-slate-300">
+                            <Lock className="w-3 h-3 text-slate-500" />
+                            Read-Only (Saved)
+                          </span>
+                        )}
 
                         {hasSessionTimeErrors && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 text-[10px] font-bold border border-rose-200">
@@ -1130,19 +1163,19 @@ export default function AttendanceScannersModal({
                         </div>
 
                         {/* Remove Session Button */}
-                        {!readOnly && sessions.length > 1 && (
+                        {!readOnly && (
                           canRemoveSession ? (
                             <button
                               type="button"
                               onClick={() => handleRemoveSession(sess.id)}
                               className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                              title="Remove this upcoming session"
+                              title="Delete this session (not yet started)"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
                           ) : (
                             <span
-                              title="Active or concluded sessions cannot be removed to safeguard attendance audit records."
+                              title="Sessions that have already started or concluded cannot be deleted."
                               className="p-1 text-slate-300 cursor-not-allowed"
                             >
                               <Lock className="w-4 h-4" />
@@ -1162,7 +1195,13 @@ export default function AttendanceScannersModal({
                     {isActive && (
                       <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-emerald-800">
                         <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
-                        <span>Scanning is currently in progress. Opening and late times are locked, but closing cutoff times can be extended if the event runs late.</span>
+                        <span>Scanning is currently in progress. Saved session settings and deletion are locked.</span>
+                      </div>
+                    )}
+                    {isPersistedSession && isUpcoming && (
+                      <div className="bg-slate-100 border border-slate-200 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-slate-700">
+                        <Lock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span>This session is already created and is read-only. You can still delete it before it starts.</span>
                       </div>
                     )}
 

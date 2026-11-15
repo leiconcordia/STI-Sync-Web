@@ -1,9 +1,19 @@
 'use strict';
 const { FieldValue, Timestamp } = require('firebase-admin/firestore');
 const { HttpsError } = require('firebase-functions/v2/https');
-const { randomBytes, randomUUID } = require('node:crypto');
+const { randomInt, randomUUID } = require('node:crypto');
 const collections = { advisers: 'organization_advisers', students: 'students', signatories: 'institutional_signatories' };
 const normalize = (v) => String(v || '').trim().toLowerCase();
+const TEMP_CODE_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789';
+const TEMP_DIGIT_ALPHABET = '23456789';
+
+function createSimpleTemporaryPassword() {
+  const chars = Array.from({ length: 6 }, () => TEMP_CODE_ALPHABET[randomInt(TEMP_CODE_ALPHABET.length)]);
+  if (!chars.some((ch) => TEMP_DIGIT_ALPHABET.includes(ch))) {
+    chars[randomInt(chars.length)] = TEMP_DIGIT_ALPHABET[randomInt(TEMP_DIGIT_ALPHABET.length)];
+  }
+  return `Sti-${chars.join('')}`;
+}
 
 function createResetHandler({ db, auth, sendMail }) {
   return async (request) => {
@@ -12,7 +22,7 @@ function createResetHandler({ db, auth, sendMail }) {
     if (!actor.exists || actor.data().isActive !== true) throw new HttpsError('permission-denied', 'An active SAS administrator is required.');
     const { kind, id, reason, temporaryPassword } = request.data || {};
     if (!Object.hasOwn(collections, kind) || typeof id !== 'string' || !id || id.includes('/') || typeof reason !== 'string' || reason.trim().length < 5 || reason.length > 300) throw new HttpsError('invalid-argument', 'Select an account and provide a reason of 5–300 characters.');
-    if (temporaryPassword !== undefined && (typeof temporaryPassword !== 'string' || temporaryPassword.length < 16 || temporaryPassword.length > 128 || !/[A-Z]/.test(temporaryPassword) || !/[a-z]/.test(temporaryPassword) || !/[0-9]/.test(temporaryPassword) || !/[^A-Za-z0-9]/.test(temporaryPassword))) {
+    if (temporaryPassword !== undefined && (typeof temporaryPassword !== 'string' || temporaryPassword.length < 8 || temporaryPassword.length > 128 || !/[A-Z]/.test(temporaryPassword) || !/[a-z]/.test(temporaryPassword) || !/[0-9]/.test(temporaryPassword) || !/[^A-Za-z0-9]/.test(temporaryPassword))) {
       throw new HttpsError('invalid-argument', 'Generate a valid temporary password before confirming the reset.');
     }
     const target = await db.collection(collections[kind]).doc(id).get();
@@ -54,7 +64,7 @@ function createResetHandler({ db, auth, sendMail }) {
       const pending = db.batch();
       refs.forEach((ref) => pending.update(ref, { requiresPasswordChange: true, resetInProgress: true }));
       await pending.commit();
-      const password = temporaryPassword || `Sti-7${randomBytes(18).toString('base64url')}!`;
+      const password = temporaryPassword || createSimpleTemporaryPassword();
       await auth.updateUser(account.uid, { password });
       changed = true;
       const batch = db.batch();

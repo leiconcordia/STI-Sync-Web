@@ -338,25 +338,8 @@ export const addMember = async (payload: AddMemberPayload, addedBy: string): Pro
           memberCount: increment(1),
           updatedAt: serverTimestamp(),
         });
-
-        // Trigger auto-assigned club payables / membership fee
-        await ensureMembershipPayable(
-          payload.organizationId,
-          payload.studentId || docRef.id,
-          payload.studentName,
-          payload.paymentStatus,
-          addedBy,
-          {
-            authUid: payload.authUid,
-            studentSchoolId: payload.studentId,
-            course: payload.course,
-            year: payload.year,
-            section: payload.section,
-            department: payload.department,
-          }
-        );
       } catch (orgErr) {
-        console.warn('Could not update organization memberCount / payable:', orgErr);
+        console.warn('Could not update organization memberCount:', orgErr);
       }
     }
 
@@ -421,25 +404,8 @@ export const updateMemberStatus = async (
           memberCount: increment(1),
           updatedAt: serverTimestamp(),
         });
-
-        // Trigger auto-assigned club payables / membership fee if not already assigned
-        await ensureMembershipPayable(
-          orgId,
-          studentId,
-          studentName,
-          prevData?.paymentStatus || 'outstanding',
-          actionByUid || 'Officer Status Update',
-          {
-            authUid: prevData?.authUid,
-            studentSchoolId: prevData?.studentSchoolId || prevData?.studentId,
-            course: prevData?.course,
-            year: prevData?.year,
-            section: prevData?.section,
-            department: prevData?.department,
-          }
-        );
       } catch (err) {
-        console.warn('Could not increment organization memberCount / payable:', err);
+        console.warn('Could not increment organization memberCount:', err);
       }
     }
   }
@@ -488,24 +454,7 @@ export const approveMemberApplication = async (
     }
   }
 
-  // 3. Trigger Auto-Assigned Club Payables / Membership Due if configured
-  const res = await ensureMembershipPayable(
-    orgId,
-    studentId,
-    studentName,
-    'outstanding',
-    approvedByUid || 'Officer Application Approval',
-    {
-      authUid: memberData.authUid,
-      studentSchoolId: memberData.studentSchoolId || memberData.studentId,
-      course: memberData.course,
-      year: memberData.year,
-      section: memberData.section,
-      department: memberData.department,
-    }
-  );
-
-  return res;
+  return { created: 0, skipped: 0 };
 };
 
 /**

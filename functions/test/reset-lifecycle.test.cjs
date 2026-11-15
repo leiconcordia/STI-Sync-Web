@@ -89,6 +89,7 @@ test('the production handler returns confirmed credentials for the existing app 
   const result = await createResetHandler({ db, auth })(request('students', user.uid));
   assert.equal(result.delivery, 'pending');
   assert.equal(result.recipientEmail, user.email);
+  assert.ok(result.temporaryPassword.length >= 8 && result.temporaryPassword.length <= 12);
   assert.equal(result.temporaryPassword, (await ref.get()).data().tempPass);
   assert.equal((await login(user.email, result.temporaryPassword)).ok, true);
   assert.equal((await login(user.email, 'OriginalPassword123!')).ok, false);
