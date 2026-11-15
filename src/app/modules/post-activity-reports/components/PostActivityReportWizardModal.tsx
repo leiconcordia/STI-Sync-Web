@@ -458,11 +458,7 @@ export default function PostActivityReportWizardModal({
     const basis = estimatedAttendance || registeredCount || att;
     const rate = basis > 0 ? Math.min(100, Math.round((att / basis) * 100)) : (att > 0 ? 100 : 0);
     setTurnoutRate(rate);
-    setHowManyAttended(
-      estimatedAttendance > 0
-        ? `${att} / ${estimatedAttendance} Estimated Attendees (${rate}% Turnout)`
-        : `${att} Attendees`
-    );
+    setHowManyAttended(`${att} Attendees`);
     if (validationErrors.attendedCount && att > 0) {
       setValidationErrors((prev) => ({ ...prev, attendedCount: false }));
     }
@@ -1416,11 +1412,7 @@ Output ONLY the paragraph text.
           turnoutRate,
           targetAudience,
           whoAttended,
-          howManyAttended:
-            howManyAttended ||
-            (estimatedAttendance > 0
-              ? `${attendedCount} / ${estimatedAttendance} Estimated Attendees (${turnoutRate}% Turnout)`
-              : `${attendedCount} Attendees`),
+          howManyAttended: howManyAttended || `${attendedCount} Attendees`,
           attendanceMonitoringUsed: hasScannedAttendance,
         },
 
@@ -1953,11 +1945,6 @@ Output ONLY the paragraph text.
                           {validationErrors.attendedCount && (
                             <span className="text-[10px] text-red-600 font-medium mt-0.5 block">
                               Attended count required
-                            </span>
-                          )}
-                          {estimatedAttendance > 0 && attendedCount > 0 && (
-                            <span className="text-[10px] text-slate-500 block mt-1">
-                              Turnout vs. Proposal Estimate: <strong>{turnoutRate}%</strong> ({attendedCount} / {estimatedAttendance})
                             </span>
                           )}
                         </div>

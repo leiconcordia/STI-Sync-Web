@@ -673,34 +673,10 @@ export default function AttendanceScannersModal({
     }
   };
 
-  // Toggle assigned session for an officer scanner
-  const handleToggleScannerSession = (scannerKey: string, sessionId: string) => {
-    setAssignedScanners((prev) =>
-      prev.map((s) => {
-        if (s.officerUserId !== scannerKey && s.id !== scannerKey) return s;
-        const current = s.assignedSessionIds || [];
-        const updated = current.includes(sessionId)
-          ? current.filter((id) => id !== sessionId)
-          : [...current, sessionId];
-        return { ...s, assignedSessionIds: updated };
-      })
-    );
-  };
-
-  // Set officer scanner to All Sessions
-  const handleSetScannerAllSessions = (scannerKey: string) => {
-    setAssignedScanners((prev) =>
-      prev.map((s) => {
-        if (s.officerUserId !== scannerKey && s.id !== scannerKey) return s;
-        return { ...s, assignedSessionIds: [] };
-      })
-    );
-  };
-
   // Update permissions for an assigned scanner
   const handleToggleScannerPermission = (
     officerUserId: string,
-    permission: 'canCheckOut' | 'allowManualAttendance'
+    permission: 'allowManualAttendance'
   ) => {
     setAssignedScanners((prev) =>
       prev.map((s) =>
@@ -782,7 +758,9 @@ export default function AttendanceScannersModal({
 
       const sanitizedScanners = assignedScanners.map((sc) => ({
         ...sc,
-        assignedSessionIds: sc.assignedSessionIds || [],
+        canCheckIn: true,
+        canCheckOut: true,
+        assignedSessionIds: [],
       }));
 
       const audiencePayload = buildOperationalAudiencePayload({
@@ -795,8 +773,9 @@ export default function AttendanceScannersModal({
 
       const docRef = doc(db, ACTIVITIES_COLLECTION, activity.id);
       const updates = {
-        enableQRTickets,
-        attendanceEnabled: enableQRTickets,
+        enableQRTickets: true,
+        enableQR: true,
+        attendanceEnabled: true,
         attendanceSessionsConfigured: true,
         attendanceAudienceConfigured: true,
         ...audiencePayload,
@@ -843,11 +822,9 @@ export default function AttendanceScannersModal({
                 <span className="text-[11px] font-mono font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-[#FFD41C] border border-blue-400/30">
                   {activity.referenceId}
                 </span>
-                {enableQRTickets && (
-                  <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
-                    QR Gates Enabled
-                  </span>
-                )}
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30">
+                  QR Gates Enabled
+                </span>
               </div>
               <p className="text-xs text-slate-300 mt-0.5 truncate max-w-md">
                 {activity.title}
@@ -941,32 +918,6 @@ export default function AttendanceScannersModal({
               </p>
             </div>
           )}
-
-          {/* Section 1: QR Tickets Gate Toggle */}
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <h4 className="text-xs font-bold text-slate-900">Enable QR Gate Passes</h4>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Generate personal QR codes on student mobile tickets for scanning upon entry and exit.
-                </p>
-              </div>
-              <label className={`relative inline-flex items-center ${readOnly ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}>
-                <input
-                  type="checkbox"
-                  disabled={readOnly}
-                  checked={enableQRTickets}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setEnableQRTickets(checked);
-                    setAttendanceEnabled(checked);
-                  }}
-                  className="sr-only peer"
-                />
-                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#001A4D]"></div>
-              </label>
-            </div>
-          </div>
 
           {/* Required Target Participant & Offline Scanner Roster Filter */}
           <OperationalAudienceSelector
@@ -1607,26 +1558,6 @@ export default function AttendanceScannersModal({
                         <div className="flex items-center gap-2">
                           {isAssigned ? (
                             <div className="flex items-center gap-2">
-                              {/* Permission: Can Time Out */}
-                              <label
-                                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-700 cursor-pointer select-none hover:bg-slate-50"
-                                title="Allow scanning Time-Out gates"
-                              >
-                                <input
-                                  type="checkbox"
-                                  disabled={readOnly}
-                                  checked={assignedScanner?.canCheckOut !== false}
-                                  onChange={() =>
-                                    handleToggleScannerPermission(
-                                      assignedScanner.officerUserId || officer.studentId,
-                                      'canCheckOut'
-                                    )
-                                  }
-                                  className="w-3.5 h-3.5 text-blue-600 rounded"
-                                />
-                                <span>Time-Out</span>
-                              </label>
-
                               {/* Permission: Allow Manual Attendance */}
                               <label
                                 className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white border border-slate-200 text-[10px] font-bold text-slate-700 cursor-pointer select-none hover:bg-slate-50"
@@ -1682,59 +1613,6 @@ export default function AttendanceScannersModal({
                           )}
                         </div>
                       </div>
-
-                      {/* Per-Session Assignment Chips for Assigned Scanners */}
-                      {isAssigned && assignedScanner && sessions.length > 1 && (
-                        <div className="flex items-center flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-slate-200/60 pl-10">
-                          <span className="text-[10px] font-bold text-slate-500 uppercase mr-1">
-                            Assigned Sessions:
-                          </span>
-                          <button
-                            type="button"
-                            disabled={readOnly}
-                            onClick={() =>
-                              handleSetScannerAllSessions(
-                                assignedScanner.officerUserId || assignedScanner.id
-                              )
-                            }
-                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                              !assignedScanner.assignedSessionIds ||
-                              assignedScanner.assignedSessionIds.length === 0
-                                ? 'bg-[#001A4D] text-[#FFD41C] shadow-2xs'
-                                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                            }`}
-                          >
-                            All Sessions
-                          </button>
-                          {sessions.map((s, sIdx) => {
-                            const isSelected =
-                              assignedScanner.assignedSessionIds &&
-                              assignedScanner.assignedSessionIds.length > 0
-                                ? assignedScanner.assignedSessionIds.includes(s.id)
-                                : false;
-                            return (
-                              <button
-                                key={s.id}
-                                type="button"
-                                disabled={readOnly}
-                                onClick={() =>
-                                  handleToggleScannerSession(
-                                    assignedScanner.officerUserId || assignedScanner.id,
-                                    s.id
-                                  )
-                                }
-                                className={`px-2 py-0.5 rounded-md text-[10px] font-bold transition-all cursor-pointer ${
-                                  isSelected
-                                    ? 'bg-blue-600 text-white shadow-2xs'
-                                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                }`}
-                              >
-                                {s.title || `Session ${sIdx + 1}`}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
                     </div>
                   );
                 })

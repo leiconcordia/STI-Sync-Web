@@ -21,33 +21,33 @@ const navGroups = [
   {
     title: "Main",
     items: [
-      { icon: LayoutDashboard, label: 'Dashboard', path: '/officer/dashboard', badge: null },
-      { icon: Users, label: 'Member Directory', path: '/officer/members', badge: null },
+      { icon: LayoutDashboard, label: 'Dashboard', path: '/officer/dashboard' },
+      { icon: Users, label: 'Member Directory', path: '/officer/members' },
     ]
   },
   {
     title: "Activities & Logs",
     items: [
-      { icon: Calendar, label: 'Activities', path: '/officer/events', badge: null },
-      { icon: QrCode, label: 'Attendance Logs', path: '/officer/attendance', badge: null },
-      { icon: Award, label: 'Certificates', path: '/officer/certificates', badge: 2 },
+      { icon: Calendar, label: 'Activities', path: '/officer/events' },
+      { icon: QrCode, label: 'Attendance Logs', path: '/officer/attendance' },
+      { icon: Award, label: 'Certificates', path: '/officer/certificates' },
     ]
   },
   {
     title: "Finance & Docs",
     items: [
-      { icon: Wallet, label: 'Finance Center', path: '/officer/finance', badge: null },
-      { icon: Receipt, label: 'Financial Liquidation', path: '/officer/liquidation', badge: null },
-      { icon: FileCheck2, label: 'Post-Activity Reports', path: '/officer/post-activity-reports', badge: null },
-      { icon: Files, label: 'Documents', path: '/officer/documents', badge: 2 },
-      { icon: BarChart3, label: 'Reports & Analytics', path: '/officer/reports', badge: null },
+      { icon: Wallet, label: 'Finance Center', path: '/officer/finance' },
+      { icon: Receipt, label: 'Financial Liquidation', path: '/officer/liquidation' },
+      { icon: FileCheck2, label: 'Post-Activity Reports', path: '/officer/post-activity-reports' },
+      { icon: Files, label: 'Documents', path: '/officer/documents' },
+      { icon: BarChart3, label: 'Reports & Analytics', path: '/officer/reports' },
     ]
   },
   {
     title: "System",
     items: [
-      { icon: Bell, label: 'Announcements', path: '/officer/announcements', badge: 3 },
-      { icon: Settings, label: 'Settings', path: '/officer/settings', badge: null },
+      { icon: Bell, label: 'Announcements', path: '/officer/announcements' },
+      { icon: Settings, label: 'Settings', path: '/officer/settings' },
     ]
   }
 ];
@@ -115,9 +115,6 @@ export function OfficerSidebar() {
                     )}
                     <Icon className={`w-5 h-5 flex-shrink-0 ${isActive ? 'text-[#0E4EBD]' : 'text-gray-400 group-hover:text-[#001A4D]'}`} />
                     <span className="text-sm flex-1">{item.label}</span>
-                    {item.badge !== null && (
-                      <span className={`w-2 h-2 rounded-full ${item.path === '/officer/certificates' ? 'bg-[#FFC107]' : 'bg-[#E24B4A]'}`} />
-                    )}
                   </Link>
                 );
               })}

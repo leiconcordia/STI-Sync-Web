@@ -1,4 +1,4 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { ATTENDANCE_COLLECTION } from '../../attendance/services/attendance.service';
 
@@ -48,9 +48,18 @@ export async function computeEventAttendanceSummary(
   eventData?: any,
   proposalData?: any
 ): Promise<EventAttendanceBridgeResult> {
-  // Derive default target audience without static placeholders like "Enrolled STI Students"
-  let defaultTargetAudience = '';
-  if (proposalData?.targetAudience) {
+  // Derive default target audience prioritizing the actual Target Market set on the proposal/event
+  let defaultTargetAudience = (
+    proposalData?.targetMarket ||
+    proposalData?.targetAudience?.targetMarketSummary ||
+    eventData?.targetMarket ||
+    eventData?.targetAudience?.targetMarketSummary ||
+    proposalData?.targetAudienceText ||
+    eventData?.targetAudienceText ||
+    ''
+  ).trim();
+
+  if (!defaultTargetAudience && proposalData?.targetAudience) {
     const aud = proposalData.targetAudience;
     if (typeof aud === 'string') {
       defaultTargetAudience = aud;
@@ -60,20 +69,18 @@ export async function computeEventAttendanceSummary(
       } else if (Array.isArray(aud.courses) && aud.courses.length > 0) {
         defaultTargetAudience = aud.courses.join(', ');
       } else if (Array.isArray(aud.departments) && aud.departments.length > 0) {
-        defaultTargetAudience = aud.departments.join(', ');
+        const specificDepts = aud.departments.filter((d: string) => d && d !== 'All Academic Departments');
+        if (specificDepts.length > 0) {
+          defaultTargetAudience = specificDepts.join(', ');
+        } else if (Array.isArray(aud.academicLevels) && aud.academicLevels.length > 0) {
+          defaultTargetAudience = aud.academicLevels.join(', ');
+        } else {
+          defaultTargetAudience = aud.departments.join(', ');
+        }
       } else if (Array.isArray(aud.academicLevels) && aud.academicLevels.length > 0) {
         defaultTargetAudience = aud.academicLevels.join(', ');
       }
     }
-  }
-
-  if (!defaultTargetAudience) {
-    defaultTargetAudience =
-      proposalData?.targetAudienceText ||
-      proposalData?.targetMarket ||
-      eventData?.targetAudienceText ||
-      eventData?.targetMarket ||
-      '';
   }
 
   // 1. Determine planned / expected target headcount strictly connected to linked Activity Proposal
@@ -110,32 +117,29 @@ export async function computeEventAttendanceSummary(
 
   let expectedHeadcount = estimatedAttendance;
 
-  // 2. Fetch attendance records from Firestore
+  // 2. Fetch attendance records from Firestore (matching Attendance Monitoring streams)
   const attendanceDocsMap = new Map<string, any>();
 
   try {
-    // Primary query by eventId
     if (eventId) {
-      const snap = await getDocs(
-        query(collection(db, ATTENDANCE_COLLECTION), where('eventId', '==', eventId))
-      );
-      snap.docs.forEach((d) => attendanceDocsMap.set(d.id, d.data()));
-    }
-
-    // Secondary query by event title if eventId query returned 0 (legacy records support)
-    const eventTitle = eventData?.title || proposalData?.title;
-    if (attendanceDocsMap.size === 0 && eventTitle) {
-      const titleSnap = await getDocs(
-        query(collection(db, ATTENDANCE_COLLECTION), where('event', '==', eventTitle))
-      );
-      titleSnap.docs.forEach((d) => attendanceDocsMap.set(d.id, d.data()));
+      const [groupSnap, topSnap] = await Promise.all([
+        getDocs(query(collectionGroup(db, 'attendance'), where('eventId', '==', eventId))),
+        getDocs(query(collection(db, ATTENDANCE_COLLECTION), where('eventId', '==', eventId))),
+      ]);
+      groupSnap.docs.forEach((d) => attendanceDocsMap.set(d.id, d.data()));
+      topSnap.docs.forEach((d) => {
+        if (!attendanceDocsMap.has(d.id)) {
+          attendanceDocsMap.set(d.id, d.data());
+        }
+      });
     }
   } catch (err) {
     console.warn('[computeEventAttendanceSummary] Attendance query error:', err);
   }
 
   // 3. De-duplicate unique students and filter attendees
-  // Unique by studentId or studentAuthUid
+  // Count anyone who actually attended (Checked In, Checked Out, Complete, Present, Late),
+  // even without Time-Out; never count Absent or Flagged records.
   const uniqueAttendees = new Map<string, any>();
   const courseCodeSet = new Set<string>();
   const sectionSet = new Set<string>();
@@ -149,14 +153,23 @@ export async function computeEventAttendanceSummary(
   };
 
   attendanceDocsMap.forEach((row, docId) => {
-    const rawStatus = (row.status || '').toLowerCase().trim();
+    const rawStatus = String(row.status || '').toLowerCase().trim();
+    const checkInStr = String(row.checkIn || '').trim();
+    const hasRealCheckIn = Boolean(
+      checkInStr &&
+      checkInStr !== '—' &&
+      checkInStr.toLowerCase() !== 'absent'
+    );
     const isAttended =
-      rawStatus === 'complete' ||
-      rawStatus === 'checked in' ||
-      rawStatus === 'present' ||
-      rawStatus === 'late' ||
-      Boolean(row.checkIn) ||
-      Boolean(row.scannedAt);
+      rawStatus !== 'absent' &&
+      rawStatus !== 'flagged' &&
+      (rawStatus === 'complete' ||
+        rawStatus === 'checked in' ||
+        rawStatus === 'checked out' ||
+        rawStatus === 'present' ||
+        rawStatus === 'late' ||
+        hasRealCheckIn ||
+        Boolean(row.scannedAt));
 
     if (rawStatus === 'complete') breakdown.complete++;
     else if (rawStatus === 'checked in' || rawStatus === 'present') breakdown.checkedIn++;
@@ -194,29 +207,19 @@ export async function computeEventAttendanceSummary(
       ? 100
       : 0;
 
-  // 5. Construct formatted demographic whoAttended string
+  // 5. Prefill whoAttended from the actual Target Market set on the proposal/event;
+  // only fall back to attendee course breakdown if no target market was set.
   let whoAttended = defaultTargetAudience;
   const courseList = Array.from(courseCodeSet).filter(Boolean);
-  if (courseList.length > 0) {
+  if (!whoAttended && courseList.length > 0) {
     const coursesStr = courseList.join(', ');
     const sectionsStr = Array.from(sectionSet).filter(Boolean).join(', ');
-    if (sectionsStr) {
-      whoAttended = `${coursesStr} (Sec. ${sectionsStr})`;
-    } else {
-      whoAttended = `${coursesStr} Students`;
-    }
+    whoAttended = sectionsStr ? `${coursesStr} (Sec. ${sectionsStr})` : `${coursesStr} Students`;
   }
 
-  // 6. Construct formatted howManyAttended string
+  // 6. Construct formatted howManyAttended string (without turnout percentage)
   const hasAttendanceLogs = actualAttendedCount > 0;
-  let howManyAttended = '';
-  if (actualAttendedCount > 0 && expectedHeadcount > 0) {
-    howManyAttended = `${actualAttendedCount} / ${expectedHeadcount} Expected Attendees (${turnoutRate}% Turnout)`;
-  } else if (actualAttendedCount > 0) {
-    howManyAttended = `${actualAttendedCount} Attendees (Verified Attendance Logs)`;
-  } else {
-    howManyAttended = '';
-  }
+  const howManyAttended = actualAttendedCount > 0 ? `${actualAttendedCount} Attendees` : '';
 
   return {
     registeredCount: expectedHeadcount,
