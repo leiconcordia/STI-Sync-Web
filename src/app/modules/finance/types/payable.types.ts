@@ -68,11 +68,18 @@ export interface PayableDocument {
   fineViolations?: FineViolationDetail[];  // Granular breakdown of session fine violations
 
   // ─── Mobile App Compatibility & Academic Context ───
+  payableId?: string;
+  eventTitle?: string | null;
   title?: string;
   feeTitle?: string;
   category?: string;
   amount?: number;
+  amountDue?: number;
+  amountPaid?: number;
+  balance?: number;
+  studentNumber?: string;
   paymentStatus?: string;
+  autoRuleId?: string | null;
   courseCode?: string;
   courseName?: string;
   departmentId?: string;
@@ -164,6 +171,7 @@ export interface StudentEventCollectionGroup {
 }
 
 export interface CreatePayablePayload {
+  payableId?: string;
   studentId: string;
   studentName: string;
   studentSchoolId: string;
@@ -171,6 +179,7 @@ export interface CreatePayablePayload {
   label: string;
   title?: string;
   feeTitle?: string;
+  eventTitle?: string | null;
   category?: string;
   description?: string;
   organizationId?: string | null;
@@ -179,9 +188,16 @@ export interface CreatePayablePayload {
   semester?: string;
   schoolYear?: string;
   eventId?: string | null;
+  autoRuleId?: string | null;
   assignedAmount: number;
   amount?: number;
+  paidAmount?: number;
+  status?: PayableStatus;
   paymentStatus?: string;
+  qrTicketUnlocked?: boolean;
+  transferredToBudget?: boolean;
+  recordedBy?: string | null;
+  paymentMethod?: string | null;
   courseCode?: string;
   courseName?: string;
   departmentId?: string;
@@ -189,7 +205,7 @@ export interface CreatePayablePayload {
   yearLevel?: string;
   section?: string;
   academicLevel?: string;
-  dueDate?: Date | Timestamp | null;
+  dueDate?: string | Date | Timestamp | null;
   createdBy: string;
   fineViolations?: FineViolationDetail[];
 }

@@ -30,6 +30,160 @@ import type {
 
 export const PAYABLES_COLLECTION = 'payables';
 
+const cleanStudentKey = (value: any): string =>
+  typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+
+/**
+ * Prefers active student profiles with a linked Firebase Auth UID when duplicate
+ * /students documents exist for the same school ID or email.
+ */
+export function pickPreferredStudentRecord(current: any, candidate: any): any {
+  if (!current) return candidate;
+  if (!candidate) return current;
+
+  const scoreRecord = (s: any): number => {
+    let score = 0;
+    const status = String(s.status || '').toUpperCase();
+    const enrollment = String(s.enrollmentStatus || '').toUpperCase();
+    if (!s.archived && status !== 'INACTIVE' && enrollment !== 'INACTIVE') {
+      score += 4;
+    }
+    if (cleanStudentKey(s.authUid)) score += 2;
+    if (cleanStudentKey(s.studentId || s.schoolId || s.studentNumber)) score += 1;
+    return score;
+  };
+
+  return scoreRecord(candidate) > scoreRecord(current) ? candidate : current;
+}
+
+/**
+ * Builds a case-insensitive lookup map of /students records keyed by studentId,
+ * authUid, email, and Firestore document ID without letting stale/inactive duplicates
+ * overwrite active Auth-linked profiles.
+ */
+export function buildStudentsLookupMap(docs: Array<any>): Map<string, any> {
+  const lookup = new Map<string, any>();
+  const setPreferred = (rawKey: any, record: any) => {
+    const key = cleanStudentKey(rawKey).toLowerCase();
+    if (!key) return;
+    lookup.set(key, pickPreferredStudentRecord(lookup.get(key), record));
+  };
+
+  docs.forEach((entry) => {
+    const sData =
+      typeof entry?.data === 'function'
+        ? { id: entry.id, ...entry.data() }
+        : entry;
+    if (!sData) return;
+    setPreferred(sData.studentId || sData.schoolId || sData.studentNumber, sData);
+    setPreferred(sData.authUid, sData);
+    setPreferred(sData.email, sData);
+    setPreferred(sData.id, sData);
+  });
+
+  return lookup;
+}
+
+/**
+ * Resolves the canonical `studentId` stored on /payables documents.
+ * Mobile queries `/payables` with `where('studentId', '==', authUid)`, so linked
+ * Firebase `authUid` must always win over auto-generated `/students` doc IDs.
+ */
+export function resolvePayableStudentUid(student: any, fallbackId: string = ''): string {
+  if (!student) return cleanStudentKey(fallbackId);
+  return (
+    cleanStudentKey(student.authUid) ||
+    cleanStudentKey(student.studentAuthUid) ||
+    cleanStudentKey(student.id) ||
+    cleanStudentKey(student.studentId) ||
+    cleanStudentKey(student.schoolId) ||
+    cleanStudentKey(student.studentNumber) ||
+    cleanStudentKey(fallbackId)
+  );
+}
+
+/**
+ * Resolves the active semester or trimester matching a student's academic level track
+ * (`COLLEGE` vs `SHS`) when both tracks have simultaneous ACTIVE periods.
+ */
+export function resolveActivePeriodForLevel(
+  semesters: Array<any>,
+  academicLevel?: string
+): { id: string; semester: string; schoolYear: string; label: string } {
+  const normalizedLevel =
+    cleanStudentKey(academicLevel).toUpperCase() === 'SHS' ? 'SHS' : 'COLLEGE';
+  const nonArchived = (semesters || []).filter((s) => s && !s.archived);
+  const pool = nonArchived.length > 0 ? nonArchived : semesters || [];
+
+  const exactActive = pool.find(
+    (s) =>
+      s?.status === 'ACTIVE' &&
+      (cleanStudentKey(s?.academicLevel).toUpperCase() || 'COLLEGE') === normalizedLevel
+  );
+  const anyActive = pool.find((s) => s?.status === 'ACTIVE');
+  const exactAny = pool.find(
+    (s) => (cleanStudentKey(s?.academicLevel).toUpperCase() || 'COLLEGE') === normalizedLevel
+  );
+  const chosen = exactActive || anyActive || exactAny || pool[0];
+
+  return {
+    id: chosen?.id || 'active',
+    semester: chosen?.semester || chosen?.term || chosen?.label || '',
+    schoolYear: chosen?.academicYear || '',
+    label: chosen?.label || chosen?.semester || '',
+  };
+}
+
+/**
+ * Targeted Firestore fallback to resolve a student's canonical payable UID (`authUid`)
+ * when an in-memory stream cache is incomplete or has not populated `authUid` yet.
+ */
+export async function lookupStudentAuthUidByIdentifiers(params: {
+  authUid?: string;
+  schoolId?: string;
+  studentId?: string;
+  docId?: string;
+  email?: string;
+}): Promise<string> {
+  const explicitAuth = cleanStudentKey(params.authUid);
+  if (explicitAuth) return explicitAuth;
+
+  const candidates: any[] = [];
+  const studentsRef = collection(db, 'students');
+  const schoolId = cleanStudentKey(params.schoolId || params.studentId);
+  const docId = cleanStudentKey(params.docId);
+  const email = cleanStudentKey(params.email).toLowerCase();
+
+  try {
+    if (schoolId) {
+      const snap = await getDocs(query(studentsRef, where('studentId', '==', schoolId)));
+      snap.docs.forEach((d) => candidates.push({ id: d.id, ...d.data() }));
+    }
+    if (candidates.length === 0 && docId) {
+      const dSnap = await getDoc(doc(db, 'students', docId));
+      if (dSnap.exists()) {
+        candidates.push({ id: dSnap.id, ...dSnap.data() });
+      }
+    }
+    if (candidates.length === 0 && email) {
+      const emailSnap = await getDocs(query(studentsRef, where('email', '==', email)));
+      emailSnap.docs.forEach((d) => candidates.push({ id: d.id, ...d.data() }));
+    }
+  } catch (err) {
+    console.warn('[lookupStudentAuthUidByIdentifiers] Lookup fallback failed:', err);
+  }
+
+  let preferred: any = null;
+  for (const c of candidates) {
+    preferred = pickPreferredStudentRecord(preferred, c);
+  }
+
+  return resolvePayableStudentUid(
+    preferred,
+    docId || schoolId || cleanStudentKey(params.studentId)
+  );
+}
+
 /**
  * Generate membership dues for org members.
  * Deduplicates automatically by checking existing membership_due payables.
@@ -55,37 +209,65 @@ export async function generateMembershipDues(payload: GenerateDuesPayload): Prom
   const snapshot = await getDocs(qMembers);
 
   // Load students map for resolving Auth UID and 11-digit School ID
-  const studentsLookup = new Map<string, any>();
+  let studentsLookup = new Map<string, any>();
   try {
     const studentsRef = collection(db, 'students');
     const studentsSnap = await getDocs(studentsRef);
-    studentsSnap.docs.forEach((d) => {
-      const sData = { id: d.id, ...d.data() };
-      if (sData.studentId) studentsLookup.set(String(sData.studentId).trim().toLowerCase(), sData);
-      if (sData.authUid) studentsLookup.set(String(sData.authUid).trim().toLowerCase(), sData);
-      if (d.id) studentsLookup.set(d.id.trim().toLowerCase(), sData);
-    });
+    studentsLookup = buildStudentsLookupMap(studentsSnap.docs);
   } catch (e) {
     console.warn('[generateMembershipDues] Could not pre-fetch students for ID resolution:', e);
   }
 
-  const membersToProcess: Array<{ studentId: string; studentName: string; studentSchoolId: string }> = [];
+  const membersToProcess: Array<{
+    studentId: string;
+    studentName: string;
+    studentSchoolId: string;
+    courseCode?: string;
+    courseName?: string;
+    departmentId?: string;
+    departmentName?: string;
+    yearLevel?: string;
+    section?: string;
+    academicLevel?: string;
+    semester?: string;
+    schoolYear?: string;
+  }> = [];
 
   snapshot.docs.forEach((d) => {
     const data = d.data();
     const rawStudentId = (data.studentId || d.id || '').toString().trim();
     if (memberIds === 'all' || memberIds.includes(rawStudentId) || memberIds.includes(d.id)) {
       const matched =
+        (data.authUid ? studentsLookup.get(String(data.authUid).trim().toLowerCase()) : undefined) ||
         studentsLookup.get(rawStudentId.toLowerCase()) ||
         (data.studentSchoolId ? studentsLookup.get(String(data.studentSchoolId).trim().toLowerCase()) : undefined);
-      const authUid = matched?.authUid || matched?.id || data.authUid || data.studentAuthUid || rawStudentId;
+      const authUid = resolvePayableStudentUid(
+        matched,
+        cleanStudentKey(data.authUid) || cleanStudentKey(data.studentAuthUid) || rawStudentId
+      );
       const schoolId = matched?.studentId || data.studentSchoolId || data.studentId || rawStudentId;
-      const fullName = data.studentName || (matched ? `${matched.firstName} ${matched.lastName}` : 'Student');
+      const fullName =
+        data.studentName ||
+        (matched ? `${matched.firstName || ''} ${matched.lastName || ''}`.trim() : '') ||
+        'Student';
+      const resolvedYear = matched?.yearLevel || data.yearLevel || '';
 
       membersToProcess.push({
         studentId: authUid,
         studentName: fullName,
         studentSchoolId: schoolId,
+        courseCode: matched?.courseCode || data.courseCode || '',
+        courseName: matched?.courseName || data.courseName || '',
+        departmentId: matched?.departmentId || data.departmentId || '',
+        departmentName: matched?.departmentName || matched?.department || data.department || '',
+        yearLevel: resolvedYear,
+        section: matched?.section || data.section || '',
+        academicLevel:
+          matched?.academicLevel ||
+          data.academicLevel ||
+          (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE'),
+        semester: matched?.semester || data.semester || '',
+        schoolYear: matched?.schoolYear || data.schoolYear || '',
       });
     }
   });
@@ -128,31 +310,36 @@ export async function generateMembershipDues(payload: GenerateDuesPayload): Prom
     const batch = writeBatch(db);
     for (const member of chunk) {
       const newRef = doc(payablesRef);
-      batch.set(newRef, {
-        id: newRef.id,
-        studentId: member.studentId,
-        studentName: member.studentName,
-        studentSchoolId: member.studentSchoolId,
-        type: 'membership_due',
-        label: `Membership Due (${organizationName})`,
-        description: `Semester membership fee for ${organizationName}`,
-        organizationId,
-        organizationName,
-        semesterId,
-        eventId: null,
-        assignedAmount: membershipFee,
-        paidAmount: 0,
-        status: 'pending',
-        dueDate: dueDate ? Timestamp.fromDate(dueDate) : null,
-        paidAt: null,
-        recordedBy: null,
-        paymentMethod: null,
-        transferredToBudget: false,
-        transferredAt: null,
-        createdBy,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      batch.set(
+        newRef,
+        buildCanonicalPayableRecord(newRef.id, {
+          studentId: member.studentId,
+          studentName: member.studentName,
+          studentSchoolId: member.studentSchoolId,
+          type: 'membership_due',
+          label: `Membership Due (${organizationName})`,
+          title: `Membership Due (${organizationName})`,
+          feeTitle: `Membership Due (${organizationName})`,
+          category: 'Membership Due',
+          description: `Semester membership fee for ${organizationName}`,
+          organizationId,
+          organizationName,
+          semesterId,
+          semester: member.semester,
+          schoolYear: member.schoolYear,
+          eventId: null,
+          assignedAmount: membershipFee,
+          dueDate: dueDate || null,
+          courseCode: member.courseCode,
+          courseName: member.courseName,
+          departmentId: member.departmentId,
+          departmentName: member.departmentName,
+          yearLevel: member.yearLevel,
+          section: member.section,
+          academicLevel: member.academicLevel,
+          createdBy,
+        })
+      );
       createdCount++;
     }
     await batch.commit();
@@ -162,47 +349,91 @@ export async function generateMembershipDues(payload: GenerateDuesPayload): Prom
 }
 
 /**
- * Create a single payable doc (fine, custom fee, event fee)
+ * Builds a canonical Firestore /payables payload with full STI Sync Mobile App parity.
  */
-export async function createPayable(payload: CreatePayablePayload): Promise<string> {
-  const payablesRef = collection(db, PAYABLES_COLLECTION);
-  const newDocRef = doc(payablesRef);
-
+export function buildCanonicalPayableRecord(
+  id: string,
+  payload: CreatePayablePayload,
+  nowTimestamp?: any
+): Record<string, any> {
   let formattedDueDate: Timestamp | null = null;
   if (payload.dueDate) {
     if (payload.dueDate instanceof Timestamp) {
       formattedDueDate = payload.dueDate;
     } else {
-      formattedDueDate = Timestamp.fromDate(payload.dueDate);
+      const parsed = new Date(payload.dueDate as any);
+      if (!isNaN(parsed.getTime())) {
+        formattedDueDate = Timestamp.fromDate(parsed);
+      }
     }
   }
 
   const payableAmount = Number(payload.assignedAmount ?? payload.amount ?? 0);
+  const initialPaid = Math.min(payableAmount, Math.max(0, Number(payload.paidAmount ?? 0)));
+  const remainingBalance = Math.max(0, payableAmount - initialPaid);
+  const computedStatus: PayableStatus =
+    payload.status ||
+    (initialPaid >= payableAmount && payableAmount > 0
+      ? 'paid'
+      : initialPaid > 0
+      ? 'partial'
+      : 'pending');
   const payableTitle = (payload.title || payload.label || payload.feeTitle || 'Payable Fee').trim();
+  const category =
+    payload.category ||
+    (payload.type === 'admin_fine' || payload.type === 'org_fine'
+      ? 'Fine'
+      : payload.type === 'membership_due'
+      ? 'Membership Due'
+      : payload.type === 'event_pass'
+      ? 'Event Pass'
+      : payload.type === 'event_fee'
+      ? 'Event Fee'
+      : 'Institutional Assessment');
+  const paymentStatus =
+    payload.paymentStatus ||
+    (computedStatus === 'paid'
+      ? 'PAID'
+      : computedStatus === 'partial'
+      ? 'PARTIAL'
+      : computedStatus === 'waived'
+      ? 'WAIVED'
+      : computedStatus === 'refunded'
+      ? 'REFUNDED'
+      : 'UNPAID');
 
-  await setDoc(newDocRef, {
-    id: newDocRef.id,
+  const tsNow = nowTimestamp || serverTimestamp();
+
+  const record: Record<string, any> = {
+    id,
+    payableId: payload.payableId || id,
     studentId: payload.studentId,
     studentName: payload.studentName,
     studentSchoolId: payload.studentSchoolId,
+    studentNumber: payload.studentSchoolId || '',
     type: payload.type,
     label: payableTitle,
     title: payableTitle,
     feeTitle: payableTitle,
-    category: payload.category || (payload.type === 'admin_fine' || payload.type === 'org_fine' ? 'Fine' : 'Institutional Assessment'),
+    eventTitle: payload.eventTitle ?? (payload.eventId ? payableTitle : null),
+    category,
     description: payload.description || '',
     organizationId: payload.organizationId || null,
     organizationName: payload.organizationName || (payload.organizationId ? null : 'SAO Administration'),
-    semesterId: payload.semesterId,
+    semesterId: payload.semesterId || '',
     semester: payload.semester || '',
     schoolYear: payload.schoolYear || '',
     eventId: payload.eventId || null,
+    autoRuleId: payload.autoRuleId || null,
     amount: payableAmount,
+    amountDue: payableAmount,
     assignedAmount: payableAmount,
-    paidAmount: 0,
-    status: 'pending' as PayableStatus,
-    paymentStatus: 'UNPAID',
-    qrTicketUnlocked: false,
+    paidAmount: initialPaid,
+    amountPaid: initialPaid,
+    balance: remainingBalance,
+    status: computedStatus,
+    paymentStatus,
+    qrTicketUnlocked: Boolean(payload.qrTicketUnlocked),
     dueDate: formattedDueDate,
     courseCode: payload.courseCode || '',
     courseName: payload.courseName || '',
@@ -211,15 +442,31 @@ export async function createPayable(payload: CreatePayablePayload): Promise<stri
     yearLevel: payload.yearLevel || '',
     section: payload.section || '',
     academicLevel: payload.academicLevel || 'COLLEGE',
-    paidAt: null,
-    recordedBy: null,
-    paymentMethod: null,
-    transferredToBudget: false,
+    paidAt: computedStatus === 'paid' ? tsNow : null,
+    recordedBy: payload.recordedBy ?? null,
+    paymentMethod: payload.paymentMethod ?? null,
+    transferredToBudget: Boolean(payload.transferredToBudget),
     transferredAt: null,
     createdBy: payload.createdBy,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+    createdAt: tsNow,
+    updatedAt: tsNow,
+  };
+
+  if (payload.fineViolations && payload.fineViolations.length > 0) {
+    record.fineViolations = payload.fineViolations;
+  }
+
+  return record;
+}
+
+/**
+ * Create a single payable doc (fine, custom fee, event fee, club due)
+ */
+export async function createPayable(payload: CreatePayablePayload): Promise<string> {
+  const payablesRef = collection(db, PAYABLES_COLLECTION);
+  const newDocRef = doc(payablesRef);
+
+  await setDoc(newDocRef, buildCanonicalPayableRecord(newDocRef.id, payload));
 
   return newDocRef.id;
 }
@@ -310,9 +557,21 @@ export async function recordPayment(
     if (!paidAtTimestamp) paidAtTimestamp = Timestamp.now();
   }
 
+  const remainingAfterPayment =
+    assigned > 0 ? Math.max(0, assigned - newPaidAmount) : 0;
+  const paymentStatusStr =
+    newStatus === 'paid'
+      ? 'PAID'
+      : newStatus === 'partial'
+      ? 'PARTIAL'
+      : 'UNPAID';
+
   const updates: Record<string, any> = {
     paidAmount: newPaidAmount,
+    amountPaid: newPaidAmount,
+    balance: remainingAfterPayment,
     status: newStatus,
+    paymentStatus: paymentStatusStr,
     paidAt: paidAtTimestamp,
     recordedBy,
     paymentMethod,
@@ -351,6 +610,8 @@ export async function waivePayable(payableId: string, waivedBy: string): Promise
   const payableRef = doc(db, PAYABLES_COLLECTION, payableId);
   await updateDoc(payableRef, {
     status: 'waived' as PayableStatus,
+    paymentStatus: 'WAIVED',
+    balance: 0,
     recordedBy: waivedBy,
     updatedAt: serverTimestamp(),
   });
@@ -368,17 +629,32 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
   }
 
   for (const chunk of chunks) {
+    const snaps = await Promise.all(
+      chunk.map((id) => getDoc(doc(db, PAYABLES_COLLECTION, id)).catch(() => null))
+    );
     const batch = writeBatch(db);
-    for (const id of chunk) {
+    chunk.forEach((id, idx) => {
       const ref = doc(db, PAYABLES_COLLECTION, id);
-      batch.update(ref, {
+      const snap = snaps[idx];
+      const existingData = snap && snap.exists() ? snap.data() : null;
+      const assigned = existingData
+        ? Number(existingData.assignedAmount ?? existingData.amount ?? 0)
+        : 0;
+      const updatePayload: Record<string, any> = {
         status: 'paid' as PayableStatus,
+        paymentStatus: 'PAID',
+        balance: 0,
         paidAt: serverTimestamp(),
         recordedBy,
         paymentMethod: 'cash',
         updatedAt: serverTimestamp(),
-      });
-    }
+      };
+      if (assigned > 0) {
+        updatePayload.paidAmount = assigned;
+        updatePayload.amountPaid = assigned;
+      }
+      batch.update(ref, updatePayload);
+    });
     await batch.commit();
   }
 }
@@ -512,16 +788,11 @@ export async function recordEventFinePayables(
   let skippedCount = 0;
 
   // Load students map for robust resolution between Auth UID and 11-digit Student ID
-  const studentsLookup = new Map<string, any>();
+  let studentsLookup = new Map<string, any>();
   try {
     const studentsRef = collection(db, 'students');
     const studentsSnap = await getDocs(studentsRef);
-    studentsSnap.docs.forEach((d) => {
-      const sData = { id: d.id, ...d.data() };
-      if (sData.studentId) studentsLookup.set(String(sData.studentId).trim().toLowerCase(), sData);
-      if (sData.authUid) studentsLookup.set(String(sData.authUid).trim().toLowerCase(), sData);
-      if (d.id) studentsLookup.set(d.id.trim().toLowerCase(), sData);
-    });
+    studentsLookup = buildStudentsLookupMap(studentsSnap.docs);
   } catch (e) {
     console.warn('[recordEventFinePayables] Could not pre-fetch students for ID resolution:', e);
   }
@@ -534,12 +805,16 @@ export async function recordEventFinePayables(
     const status = (rec.status || '').toString();
 
     const matched =
+      ((rec as any).studentAuthUid ? studentsLookup.get(String((rec as any).studentAuthUid).trim().toLowerCase()) : undefined) ||
       studentsLookup.get(rawStudentId.toLowerCase()) ||
       (rawSchoolId ? studentsLookup.get(rawSchoolId.toLowerCase()) : undefined);
 
-    const authUid = matched?.authUid || matched?.id || (rec as any).studentAuthUid || rawStudentId;
+    const authUid = resolvePayableStudentUid(matched, (rec as any).studentAuthUid || rawStudentId);
     const schoolId = matched?.studentId || rawSchoolId || rawStudentId;
-    const studentName = rec.name || (matched ? `${matched.firstName} ${matched.lastName}` : 'Student');
+    const studentName =
+      rec.name ||
+      (matched ? `${matched.firstName || ''} ${matched.lastName || ''}`.trim() : '') ||
+      'Student';
 
     let violationCategory: 'absent' | 'late' | 'missed_scan' | null = null;
     let label = '';
@@ -570,18 +845,34 @@ export async function recordEventFinePayables(
 
     existingFineKeys.add(fineKey);
     existingFineKeys.add(fineSchoolKey);
+    const resolvedYear = matched?.yearLevel || '';
     newPayablesToCreate.push({
       studentId: authUid,
       studentName,
       studentSchoolId: schoolId,
       type: payableType,
       label,
+      title: label,
+      feeTitle: label,
+      eventTitle: eventData.title || '',
+      category: 'Fine',
       description,
       organizationId: orgId,
       organizationName: orgName,
       semesterId,
+      semester: eventData.semester || matched?.semester || '',
+      schoolYear: eventData.schoolYear || matched?.schoolYear || '',
       eventId,
       assignedAmount: fineAmount,
+      courseCode: matched?.courseCode || '',
+      courseName: matched?.courseName || '',
+      departmentId: matched?.departmentId || '',
+      departmentName: matched?.departmentName || matched?.department || '',
+      yearLevel: resolvedYear,
+      section: matched?.section || '',
+      academicLevel:
+        matched?.academicLevel ||
+        (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE'),
       createdBy,
     });
   }
@@ -599,29 +890,7 @@ export async function recordEventFinePayables(
     const batch = writeBatch(db);
     for (const payload of chunk) {
       const newDocRef = doc(payablesRef);
-      batch.set(newDocRef, {
-        id: newDocRef.id,
-        studentId: payload.studentId,
-        studentName: payload.studentName,
-        studentSchoolId: payload.studentSchoolId,
-        type: payload.type,
-        label: payload.label,
-        description: payload.description || '',
-        organizationId: payload.organizationId || null,
-        organizationName: payload.organizationName || null,
-        semesterId: payload.semesterId,
-        eventId: payload.eventId || null,
-        assignedAmount: payload.assignedAmount,
-        paidAmount: 0,
-        status: 'pending' as PayableStatus,
-        dueDate: null,
-        paidAt: null,
-        recordedBy: null,
-        paymentMethod: null,
-        createdBy: payload.createdBy,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      batch.set(newDocRef, buildCanonicalPayableRecord(newDocRef.id, payload));
       createdCount++;
     }
     await batch.commit();
@@ -706,16 +975,11 @@ export async function generateDynamicEventFines(
   });
 
   // 3. Load students map for robust resolution between Auth UID and 11-digit Student ID
-  const studentsLookup = new Map<string, any>();
+  let studentsLookup = new Map<string, any>();
   try {
     const studentsRef = collection(db, 'students');
     const studentsSnap = await getDocs(studentsRef);
-    studentsSnap.docs.forEach((d) => {
-      const sData = { id: d.id, ...d.data() };
-      if (sData.studentId) studentsLookup.set(String(sData.studentId).trim().toLowerCase(), sData);
-      if (sData.authUid) studentsLookup.set(String(sData.authUid).trim().toLowerCase(), sData);
-      if (d.id) studentsLookup.set(d.id.trim().toLowerCase(), sData);
-    });
+    studentsLookup = buildStudentsLookupMap(studentsSnap.docs);
   } catch (e) {
     console.warn('[generateDynamicEventFines] Could not pre-fetch students for ID resolution:', e);
   }
@@ -741,13 +1005,17 @@ export async function generateDynamicEventFines(
       if (!rawStudentId && !rawSchoolId) return;
 
       const matched =
+        (student.studentAuthUid ? studentsLookup.get(String(student.studentAuthUid).trim().toLowerCase()) : undefined) ||
         studentsLookup.get(rawStudentId.toLowerCase()) ||
         (rawSchoolId ? studentsLookup.get(rawSchoolId.toLowerCase()) : undefined);
 
       // studentId must be Auth UID (or Firestore student doc id) so Mobile App query (where('studentId', '==', authUid)) matches
-      const authUid = matched?.authUid || matched?.id || student.studentAuthUid || rawStudentId;
+      const authUid = resolvePayableStudentUid(matched, student.studentAuthUid || rawStudentId);
       const schoolId = matched?.studentId || rawSchoolId || rawStudentId;
-      const fullName = student.studentName || (matched ? `${matched.firstName} ${matched.lastName}` : 'Student');
+      const fullName =
+        student.studentName ||
+        (matched ? `${matched.firstName || ''} ${matched.lastName || ''}`.trim() : '') ||
+        'Student';
 
       const existing = existingPayablesByStudent.get(authUid.toLowerCase()) || existingPayablesByStudent.get(schoolId.toLowerCase());
       if (existing && (existing.status === 'paid' || existing.status === 'waived' || existing.paidAmount > 0)) {
@@ -760,11 +1028,15 @@ export async function generateDynamicEventFines(
         .join(', ');
 
       if (existing) {
+        const remainingBal = Math.max(0, student.totalFine - (existing.paidAmount || 0));
         writeOps.push({
           type: 'update',
           docId: existing.id,
           data: {
             assignedAmount: student.totalFine,
+            amount: student.totalFine,
+            amountDue: student.totalFine,
+            balance: remainingBal,
             description: `Event Violations: ${violationDescriptions}`,
             fineViolations: student.violations,
             updatedAt: serverTimestamp(),
@@ -773,6 +1045,8 @@ export async function generateDynamicEventFines(
         updatedCount++;
         totalAssessedAmount += student.totalFine;
       } else {
+        const fineLabel = isSasAdminEvent ? `Event Fine — ${eventTitle}` : `Club Fine — ${eventTitle}`;
+        const resolvedYear = matched?.yearLevel || '';
         writeOps.push({
           type: 'create',
           data: {
@@ -780,26 +1054,32 @@ export async function generateDynamicEventFines(
             studentSchoolId: schoolId,
             studentName: fullName,
             type: payableType,
-            label: isSasAdminEvent ? `Event Fine — ${eventTitle}` : `Club Fine — ${eventTitle}`,
+            label: fineLabel,
+            title: fineLabel,
+            feeTitle: fineLabel,
+            eventTitle,
+            category: 'Fine',
             description: `Event Violations: ${violationDescriptions}`,
             organizationId: orgId,
             organizationName: orgName,
             semesterId: semesterId || eventData.semesterId || 'active',
+            semester: eventData.semester || matched?.semester || '',
+            schoolYear: eventData.schoolYear || matched?.schoolYear || '',
             eventId,
             assignedAmount: student.totalFine,
-            paidAmount: 0,
-            status: 'pending' as PayableStatus,
             dueDate: parsedDueDate,
-            paidAt: null,
-            recordedBy: null,
-            paymentMethod: null,
-            transferredToBudget: false,
-            transferredAt: null,
+            courseCode: matched?.courseCode || '',
+            courseName: matched?.courseName || '',
+            departmentId: matched?.departmentId || '',
+            departmentName: matched?.departmentName || matched?.department || '',
+            yearLevel: resolvedYear,
+            section: matched?.section || '',
+            academicLevel:
+              matched?.academicLevel ||
+              (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE'),
             fineViolations: student.violations,
             createdBy,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
+          } satisfies CreatePayablePayload,
         });
         createdCount++;
         totalAssessedAmount += student.totalFine;
@@ -907,12 +1187,18 @@ export async function generateDynamicEventFines(
       const rawSchoolId = (student.studentSchoolId || '').toString().trim();
 
       const matched =
+        ((student as any).studentAuthUid
+          ? studentsLookup.get(String((student as any).studentAuthUid).trim().toLowerCase())
+          : undefined) ||
         studentsLookup.get(rawStudentId.toLowerCase()) ||
         (rawSchoolId ? studentsLookup.get(rawSchoolId.toLowerCase()) : undefined);
 
-      const authUid = matched?.authUid || matched?.id || rawStudentId;
+      const authUid = resolvePayableStudentUid(matched, (student as any).studentAuthUid || rawStudentId);
       const schoolId = matched?.studentId || rawSchoolId || rawStudentId;
-      const fullName = student.studentName || (matched ? `${matched.firstName} ${matched.lastName}` : 'Student');
+      const fullName =
+        student.studentName ||
+        (matched ? `${matched.firstName || ''} ${matched.lastName || ''}`.trim() : '') ||
+        'Student';
 
       const existing = existingPayablesByStudent.get(authUid.toLowerCase()) || existingPayablesByStudent.get(schoolId.toLowerCase());
       if (existing && (existing.status === 'paid' || existing.status === 'waived' || existing.paidAmount > 0)) {
@@ -923,11 +1209,15 @@ export async function generateDynamicEventFines(
       const violationDescriptions = violations.map((v) => `${v.description} (₱${v.amount})`).join(', ');
 
       if (existing) {
+        const remainingBal = Math.max(0, studentTotalFine - (existing.paidAmount || 0));
         writeOps.push({
           type: 'update',
           docId: existing.id,
           data: {
             assignedAmount: studentTotalFine,
+            amount: studentTotalFine,
+            amountDue: studentTotalFine,
+            balance: remainingBal,
             description: `Event Violations: ${violationDescriptions}`,
             fineViolations: violations,
             updatedAt: serverTimestamp(),
@@ -936,6 +1226,8 @@ export async function generateDynamicEventFines(
         updatedCount++;
         totalAssessedAmount += studentTotalFine;
       } else {
+        const fineLabel = isSasAdminEvent ? `Event Fine — ${eventTitle}` : `Club Fine — ${eventTitle}`;
+        const resolvedYear = matched?.yearLevel || '';
         writeOps.push({
           type: 'create',
           data: {
@@ -943,26 +1235,32 @@ export async function generateDynamicEventFines(
             studentSchoolId: schoolId,
             studentName: fullName,
             type: payableType,
-            label: isSasAdminEvent ? `Event Fine — ${eventTitle}` : `Club Fine — ${eventTitle}`,
+            label: fineLabel,
+            title: fineLabel,
+            feeTitle: fineLabel,
+            eventTitle,
+            category: 'Fine',
             description: `Event Violations: ${violationDescriptions}`,
             organizationId: orgId,
             organizationName: orgName,
             semesterId: semesterId || eventData.semesterId || 'active',
+            semester: eventData.semester || matched?.semester || '',
+            schoolYear: eventData.schoolYear || matched?.schoolYear || '',
             eventId,
             assignedAmount: studentTotalFine,
-            paidAmount: 0,
-            status: 'pending' as PayableStatus,
             dueDate: parsedDueDate,
-            paidAt: null,
-            recordedBy: null,
-            paymentMethod: null,
-            transferredToBudget: false,
-            transferredAt: null,
+            courseCode: matched?.courseCode || '',
+            courseName: matched?.courseName || '',
+            departmentId: matched?.departmentId || '',
+            departmentName: matched?.departmentName || matched?.department || '',
+            yearLevel: resolvedYear,
+            section: matched?.section || '',
+            academicLevel:
+              matched?.academicLevel ||
+              (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE'),
             fineViolations: violations,
             createdBy,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          },
+          } satisfies CreatePayablePayload,
         });
         createdCount++;
         totalAssessedAmount += studentTotalFine;
@@ -982,7 +1280,7 @@ export async function generateDynamicEventFines(
       for (const op of chunk) {
         if (op.type === 'create') {
           const newDocRef = doc(payablesRef);
-          batch.set(newDocRef, { ...op.data, id: newDocRef.id });
+          batch.set(newDocRef, buildCanonicalPayableRecord(newDocRef.id, op.data));
         } else if (op.type === 'update' && op.docId) {
           const docRef = doc(payablesRef, op.docId);
           batch.update(docRef, op.data);
@@ -1051,7 +1349,7 @@ export async function transferEventFinesToBudget(
  */
 export async function syncStudentPayablesForActiveEvents(
   student: {
-    id: string;
+    id?: string;
     studentId?: string;
     schoolId?: string;
     authUid?: string;
@@ -1070,7 +1368,7 @@ export async function syncStudentPayablesForActiveEvents(
   },
   createdBy: string = 'system_sync'
 ): Promise<number> {
-  const studentDocId = student.id || student.authUid || student.studentId;
+  const studentDocId = resolvePayableStudentUid(student);
   if (!studentDocId) return 0;
 
   const officialSchoolId = student.studentId || student.schoolId || '';
@@ -1155,18 +1453,27 @@ export async function syncStudentPayablesForActiveEvents(
     const payablesRef = collection(db, PAYABLES_COLLECTION);
     const qStudentPayables = query(
       payablesRef,
-      where('studentId', 'in', [studentDocId, officialSchoolId].filter(Boolean))
+      where('studentId', 'in', Array.from(new Set([studentDocId, student.id, officialSchoolId].filter(Boolean))))
     );
     const studentPayablesSnap = await getDocs(qStudentPayables);
 
     const existingEventIds = new Set<string>();
-    const existingMembershipOrgIds = new Set<string>();
+    const existingOrgPayableKeys = new Set<string>();
 
     studentPayablesSnap.docs.forEach((d) => {
       const data = d.data();
       if (data.eventId) existingEventIds.add(data.eventId);
-      if (data.type === 'membership_due' && data.organizationId) {
-        existingMembershipOrgIds.add(data.organizationId);
+      if (data.organizationId) {
+        if (data.type === 'membership_due') {
+          existingOrgPayableKeys.add(`${data.organizationId}::membership_due`);
+        }
+        if (data.autoRuleId) {
+          existingOrgPayableKeys.add(`${data.organizationId}::rule::${data.autoRuleId}`);
+        }
+        const normLabel = String(data.label || data.title || '').trim().toLowerCase();
+        if (normLabel) {
+          existingOrgPayableKeys.add(`${data.organizationId}::label::${normLabel}`);
+        }
       }
     });
 
@@ -1191,48 +1498,65 @@ export async function syncStudentPayablesForActiveEvents(
 
       if (!requiresPayment && !isQREnabled) continue;
 
-      newPayablesToCreate.push({
-        studentId: studentDocId,
-        studentName: fullName,
-        studentSchoolId: officialSchoolId,
-        type: requiresPayment ? 'event_fee' : 'event_pass',
-        label: requiresPayment ? `Event Fee — ${evt.title || 'Event'}` : `Event Pass (Free) — ${evt.title || 'Event'}`,
-        description: requiresPayment ? `Fee for event: ${evt.title || ''}` : `Free entry pass with QR ticket access for: ${evt.title || ''}`,
-        organizationId:
-          evt.hostingOrgId &&
-          evt.hostingOrgId !== 'sas_admin' &&
-          evt.hostingOrgId !== 'sas' &&
-          evt.hostingOrgId !== 'sao_admin' &&
-          evt.hostingOrgId !== 'sao'
-            ? evt.hostingOrgId
-            : null,
-        organizationName:
-          evt.hostingOrgId === 'sas' || evt.hostingOrgId === 'sas_admin'
-            ? 'Student Affairs and Services (SAS)'
-            : (evt.hostingOrgName || evt.org || null),
-        semesterId: evt.semesterId || '',
-        eventId: evt.id,
-        assignedAmount: requiresPayment ? fee : 0,
-        paidAmount: 0,
-        status: requiresPayment ? 'pending' : 'paid',
-        qrTicketUnlocked: !requiresPayment && isQREnabled,
-        dueDate:
-          evt.sessions && evt.sessions[0]?.date
-            ? Timestamp.fromDate(new Date(evt.sessions[0].date))
-            : null,
-        paidAt: requiresPayment ? null : serverTimestamp(),
-        recordedBy: null,
-        paymentMethod: requiresPayment ? null : 'free_entry',
-        createdBy,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      const eventPayableTitle = requiresPayment
+        ? `Event Fee — ${evt.title || 'Event'}`
+        : `Event Pass (Free) — ${evt.title || 'Event'}`;
+      newPayablesToCreate.push(
+        buildCanonicalPayableRecord('', {
+          studentId: studentDocId,
+          studentName: fullName,
+          studentSchoolId: officialSchoolId,
+          type: requiresPayment ? 'event_fee' : 'event_pass',
+          label: eventPayableTitle,
+          title: eventPayableTitle,
+          feeTitle: eventPayableTitle,
+          eventTitle: evt.title || 'Event',
+          category: requiresPayment ? 'Event Fee' : 'Event Pass',
+          description: requiresPayment
+            ? `Fee for event: ${evt.title || ''}`
+            : `Free entry pass with QR ticket access for: ${evt.title || ''}`,
+          organizationId:
+            evt.hostingOrgId &&
+            evt.hostingOrgId !== 'sas_admin' &&
+            evt.hostingOrgId !== 'sas' &&
+            evt.hostingOrgId !== 'sao_admin' &&
+            evt.hostingOrgId !== 'sao'
+              ? evt.hostingOrgId
+              : null,
+          organizationName:
+            evt.hostingOrgId === 'sas' || evt.hostingOrgId === 'sas_admin'
+              ? 'Student Affairs and Services (SAS)'
+              : (evt.hostingOrgName || evt.org || 'SAO Administration'),
+          semesterId: evt.semesterId || '',
+          semester: evt.semester || studentSemester,
+          schoolYear: evt.schoolYear || student.schoolYear || '',
+          eventId: evt.id,
+          assignedAmount: requiresPayment ? fee : 0,
+          status: requiresPayment ? 'pending' : 'paid',
+          qrTicketUnlocked: !requiresPayment && isQREnabled,
+          dueDate:
+            evt.sessions && evt.sessions[0]?.date
+              ? new Date(evt.sessions[0].date)
+              : null,
+          paymentMethod: requiresPayment ? null : 'free_entry',
+          courseCode: studentCourseCode,
+          courseName: student.courseName || '',
+          departmentId: studentDeptId,
+          yearLevel: studentYear,
+          section: student.section || '',
+          academicLevel: studentAcademicLevel || 'COLLEGE',
+          createdBy,
+        })
+      );
       existingEventIds.add(evt.id);
     }
 
-    // 3. Check active club memberships in organization_members
+    // 3. Check active club memberships in organization_members & apply active autoPayableRules / membershipFee
     const membersRef = collection(db, 'organization_members');
-    const memberIdentifiers = [studentDocId, officialSchoolId].filter(Boolean);
+    const memberIdentifiers = Array.from(
+      new Set([studentDocId, student.id, officialSchoolId].filter(Boolean) as string[])
+    );
+    const seenOrgIds = new Set<string>();
     for (const ident of memberIdentifiers) {
       const qMemberships = query(
         membersRef,
@@ -1244,32 +1568,79 @@ export async function syncStudentPayablesForActiveEvents(
       for (const mDoc of membersSnap.docs) {
         const mData = mDoc.data();
         const orgId = mData.organizationId;
-        if (!orgId || existingMembershipOrgIds.has(orgId)) continue;
+        if (!orgId || seenOrgIds.has(orgId)) continue;
+        seenOrgIds.add(orgId);
 
-        newPayablesToCreate.push({
-          studentId: studentDocId,
+        const orgSnap = await getDoc(doc(db, 'organizations', orgId)).catch(() => null);
+        const orgData = orgSnap?.exists() ? orgSnap.data() : null;
+        const orgName = orgData?.name || mData.organizationName || 'Organization';
+        const autoRules: any[] = Array.isArray(orgData?.autoPayableRules)
+          ? orgData.autoPayableRules.filter((r: any) => r?.isActive !== false && Number(r?.amount) > 0)
+          : [];
+
+        const authStudentId = resolvePayableStudentUid(student, studentDocId);
+        const baseAcademicFields = {
+          studentId: authStudentId,
           studentName: fullName,
           studentSchoolId: officialSchoolId,
-          type: 'membership_due',
-          label: `Membership Due (${mData.organizationName || 'Club'})`,
-          description: `Semester membership fee for ${mData.organizationName || 'Organization'}`,
           organizationId: orgId,
-          organizationName: mData.organizationName || null,
-          semesterId: mData.semesterId || 'active',
-          eventId: null,
-          assignedAmount: Number(mData.membershipFee) || 50,
-          paidAmount: 0,
-          status: 'pending',
-          qrTicketUnlocked: false,
-          dueDate: null,
-          paidAt: null,
-          recordedBy: null,
-          paymentMethod: null,
+          organizationName: orgName,
+          courseCode: studentCourseCode,
+          courseName: student.courseName || '',
+          departmentId: studentDeptId,
+          yearLevel: studentYear,
+          section: student.section || '',
+          academicLevel: studentAcademicLevel || 'COLLEGE',
+          semester: studentSemester,
+          schoolYear: student.schoolYear || '',
           createdBy,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        existingMembershipOrgIds.add(orgId);
+        };
+
+        let hasRuleCoveringMembershipDue = false;
+        for (const rule of autoRules) {
+          if (rule.type === 'membership_due') hasRuleCoveringMembershipDue = true;
+          const ruleKey = `${orgId}::rule::${rule.id}`;
+          const labelKey = `${orgId}::label::${String(rule.label || '').trim().toLowerCase()}`;
+          if (existingOrgPayableKeys.has(ruleKey) || existingOrgPayableKeys.has(labelKey)) continue;
+
+          newPayablesToCreate.push(
+            buildCanonicalPayableRecord('', {
+              ...baseAcademicFields,
+              type: rule.type || 'custom',
+              label: rule.label,
+              title: rule.label,
+              feeTitle: rule.label,
+              description: rule.description || `Auto-assigned club payable for ${orgName}`,
+              semesterId: rule.semesterId || mData.semesterId || 'active',
+              semester: rule.semester || studentSemester,
+              schoolYear: rule.schoolYear || student.schoolYear || '',
+              eventId: null,
+              autoRuleId: rule.id,
+              assignedAmount: Number(rule.amount) || 0,
+              dueDate: rule.dueDate ? new Date(rule.dueDate) : null,
+            })
+          );
+          existingOrgPayableKeys.add(ruleKey);
+          existingOrgPayableKeys.add(labelKey);
+        }
+
+        // Legacy fallback if club configured organization.membershipFee without an autoPayableRule
+        const legacyFee = Number(orgData?.membershipFee || mData.membershipFee || 0);
+        if (!hasRuleCoveringMembershipDue && legacyFee > 0 && !existingOrgPayableKeys.has(`${orgId}::membership_due`)) {
+          newPayablesToCreate.push(
+            buildCanonicalPayableRecord('', {
+              ...baseAcademicFields,
+              type: 'membership_due',
+              label: `Membership Due (${orgData?.acronym || orgName})`,
+              description: `Semester membership fee for ${orgName}`,
+              semesterId: mData.semesterId || 'active',
+              eventId: null,
+              assignedAmount: legacyFee,
+              dueDate: null,
+            })
+          );
+          existingOrgPayableKeys.add(`${orgId}::membership_due`);
+        }
       }
     }
 
@@ -1284,7 +1655,7 @@ export async function syncStudentPayablesForActiveEvents(
         const batch = writeBatch(db);
         for (const p of chunk) {
           const newRef = doc(payablesRef);
-          batch.set(newRef, { ...p, id: newRef.id });
+          batch.set(newRef, { ...p, id: newRef.id, payableId: newRef.id });
           createdCount++;
         }
         await batch.commit();
@@ -1633,6 +2004,8 @@ export async function processPayableRefund(params: ProcessPayableRefundParams): 
     const newTransferredAmount = Math.max(0, transferredAmt - ledgerDebit);
     transaction.update(payableRef, {
       status: 'refunded' as PayableStatus,
+      paymentStatus: 'REFUNDED',
+      balance: 0,
       refundedAmount: requestedRefund,
       refundedAt: now,
       refundedBy,

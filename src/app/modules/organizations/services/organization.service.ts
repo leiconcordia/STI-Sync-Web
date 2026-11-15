@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDoc,
   updateDoc,
   serverTimestamp,
   query,
@@ -13,7 +14,7 @@ import { db, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../..
 import { generateTemporaryPassword } from '../../accounts/services/temporary-password.mjs';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { sendAdviserWelcomeCredentialsEmail } from '../../../../services/email.service';
-import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
+import type { CreateOrganizationPayload, OrgAdviserData, OrgAutoPayableRule } from '../types/organization.types';
 import { structuredNameFields } from '../../../utils/name.utils';
 import {
   ADVISER_NAME_REVIEW_REQUIRED, adviserNameVerification, collectAdviserIdentities,
@@ -317,3 +318,89 @@ export const updateOrganization = async (
     throw new Error(`Organization update failed: ${error.message}`);
   }
 };
+
+/**
+ * Adds or updates an automatic payable rule on /organizations/{orgId}.
+ * Rules marked active are automatically applied to incoming members when they join or are approved.
+ */
+export async function saveOrgAutoPayableRule(
+  orgId: string,
+  ruleInput: Omit<OrgAutoPayableRule, 'id' | 'createdAt' | 'isActive'> & { id?: string; isActive?: boolean }
+): Promise<OrgAutoPayableRule> {
+  if (!orgId) throw new Error('Organization ID is required.');
+  const orgRef = doc(db, COLLECTION, orgId);
+  const orgSnap = await getDoc(orgRef);
+  if (!orgSnap.exists()) throw new Error('Organization not found.');
+
+  const existing: OrgAutoPayableRule[] = Array.isArray(orgSnap.data()?.autoPayableRules)
+    ? orgSnap.data()!.autoPayableRules
+    : [];
+
+  const normalizedLabel = ruleInput.label.trim().toLowerCase();
+  const duplicateIndex = existing.findIndex(
+    (r) =>
+      (ruleInput.id && r.id === ruleInput.id) ||
+      (r.type === ruleInput.type && r.label.trim().toLowerCase() === normalizedLabel)
+  );
+
+  const rule: OrgAutoPayableRule = {
+    id: ruleInput.id || (duplicateIndex >= 0 ? existing[duplicateIndex].id : `RULE-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`),
+    type: ruleInput.type,
+    label: ruleInput.label.trim(),
+    description: ruleInput.description.trim(),
+    amount: Number(ruleInput.amount) || 0,
+    dueDate: ruleInput.dueDate || null,
+    semesterId: ruleInput.semesterId || '',
+    semester: ruleInput.semester || '',
+    schoolYear: ruleInput.schoolYear || '',
+    isActive: ruleInput.isActive ?? true,
+    createdBy: ruleInput.createdBy,
+    createdAt: duplicateIndex >= 0 ? existing[duplicateIndex].createdAt : new Date().toISOString(),
+  };
+
+  const nextRules =
+    duplicateIndex >= 0
+      ? existing.map((r, idx) => (idx === duplicateIndex ? rule : r))
+      : [...existing, rule];
+
+  await updateDoc(orgRef, {
+    autoPayableRules: nextRules,
+    updatedAt: serverTimestamp(),
+  });
+
+  return rule;
+}
+
+export async function removeOrgAutoPayableRule(orgId: string, ruleId: string): Promise<void> {
+  if (!orgId || !ruleId) return;
+  const orgRef = doc(db, COLLECTION, orgId);
+  const orgSnap = await getDoc(orgRef);
+  if (!orgSnap.exists()) return;
+
+  const existing: OrgAutoPayableRule[] = Array.isArray(orgSnap.data()?.autoPayableRules)
+    ? orgSnap.data()!.autoPayableRules
+    : [];
+  const nextRules = existing.filter((r) => r.id !== ruleId);
+
+  await updateDoc(orgRef, {
+    autoPayableRules: nextRules,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function toggleOrgAutoPayableRule(orgId: string, ruleId: string, isActive: boolean): Promise<void> {
+  if (!orgId || !ruleId) return;
+  const orgRef = doc(db, COLLECTION, orgId);
+  const orgSnap = await getDoc(orgRef);
+  if (!orgSnap.exists()) return;
+
+  const existing: OrgAutoPayableRule[] = Array.isArray(orgSnap.data()?.autoPayableRules)
+    ? orgSnap.data()!.autoPayableRules
+    : [];
+  const nextRules = existing.map((r) => (r.id === ruleId ? { ...r, isActive } : r));
+
+  await updateDoc(orgRef, {
+    autoPayableRules: nextRules,
+    updatedAt: serverTimestamp(),
+  });
+}

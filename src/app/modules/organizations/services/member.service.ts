@@ -15,6 +15,8 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { formatPersonName } from '../../../utils/name.utils';
+import { createPayable } from '../../finance/services/payable.service';
+import type { OrgAutoPayableRule } from '../types/organization.types';
 import type {
   AddMemberPayload,
   OrganizationMemberDocument,
@@ -31,108 +33,248 @@ import {
 
 const COLLECTION = 'organization_members';
 
+interface MemberStudentHint {
+  authUid?: string;
+  studentSchoolId?: string;
+  course?: string;
+  year?: string;
+  section?: string;
+  department?: string;
+}
+
 /**
- * Helper to ensure a membership fee payable is generated for an active member
- * the moment they join or are approved:
- * 1. Checks if the club already created/generated a membership_due in /payables (uses its fee, label, semester, dueDate).
- * 2. Or checks if the organization has membershipFee configured in /organizations.
- * 3. Deduplicates and automatically creates the 'membership_due' payable document for the student!
+ * Resolves a student's canonical Firestore /students record using a targeted lookup
+ * so club payables always store Firebase authUid in `studentId` (required by Mobile App)
+ * alongside the 11-digit `studentSchoolId`, yearLevel, and section.
+ */
+async function resolveStudentForClubPayable(
+  rawIdentifier: string,
+  hint?: MemberStudentHint
+): Promise<{
+  authUid: string;
+  studentSchoolId: string;
+  courseCode: string;
+  courseName: string;
+  departmentId: string;
+  departmentName: string;
+  yearLevel: string;
+  section: string;
+  academicLevel: string;
+  semester: string;
+  schoolYear: string;
+}> {
+  const cleanId = (rawIdentifier || '').toString().trim();
+  let sData: Record<string, any> | null = null;
+
+  if (cleanId) {
+    try {
+      const bySchoolIdSnap = await getDocs(
+        query(collection(db, 'students'), where('studentId', '==', cleanId))
+      );
+      if (!bySchoolIdSnap.empty) {
+        sData = { id: bySchoolIdSnap.docs[0].id, ...bySchoolIdSnap.docs[0].data() };
+      } else {
+        const byAuthSnap = await getDocs(
+          query(collection(db, 'students'), where('authUid', '==', cleanId))
+        );
+        if (!byAuthSnap.empty) {
+          sData = { id: byAuthSnap.docs[0].id, ...byAuthSnap.docs[0].data() };
+        } else {
+          const directSnap = await getDoc(doc(db, 'students', cleanId));
+          if (directSnap.exists()) {
+            sData = { id: directSnap.id, ...directSnap.data() };
+          }
+        }
+      }
+    } catch (lookupErr) {
+      console.warn('[member.service] Student lookup warning:', lookupErr);
+    }
+  }
+
+  const resolvedYear = sData?.yearLevel || hint?.year || '';
+  const inferredLevel =
+    sData?.academicLevel ||
+    (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE');
+
+  return {
+    authUid: sData?.authUid || sData?.id || hint?.authUid || cleanId,
+    studentSchoolId: sData?.studentId || hint?.studentSchoolId || cleanId,
+    courseCode: sData?.courseCode || hint?.course || '',
+    courseName: sData?.courseName || '',
+    departmentId: sData?.departmentId || '',
+    departmentName: sData?.departmentName || sData?.department || hint?.department || '',
+    yearLevel: resolvedYear,
+    section: sData?.section || hint?.section || '',
+    academicLevel: inferredLevel,
+    semester: sData?.semester || '',
+    schoolYear: sData?.schoolYear || '',
+  };
+}
+
+/**
+ * Helper to ensure all active auto-assigned club payables (plus configured membership dues)
+ * are generated for an active member the moment they enter/join or are approved into a club.
+ * Resolves Firebase authUid + full Mobile /payables fields so fees immediately appear on Mobile.
  */
 export async function ensureMembershipPayable(
   organizationId: string,
   studentId: string,
   studentName: string,
   paymentStatus: 'paid' | 'outstanding' = 'outstanding',
-  addedBy: string = 'Officer'
-): Promise<{ payableCreated: boolean; feeAmount?: number }> {
+  addedBy: string = 'Officer',
+  studentHint?: MemberStudentHint
+): Promise<{ payableCreated: boolean; createdCount?: number; feeAmount?: number }> {
   try {
     if (!organizationId || !studentId) return { payableCreated: false };
 
-    const payablesRef = collection(db, 'payables');
+    const [orgSnap, studentInfo, existingOrgPayablesSnap] = await Promise.all([
+      getDoc(doc(db, 'organizations', organizationId)),
+      resolveStudentForClubPayable(studentId, studentHint),
+      getDocs(query(collection(db, 'payables'), where('organizationId', '==', organizationId))),
+    ]);
 
-    // 1. Check if the student already has a membership_due for this organization
-    const qExistingOrgDues = query(
-      payablesRef,
-      where('organizationId', '==', organizationId),
-      where('type', '==', 'membership_due')
+    const orgData = orgSnap.exists() ? orgSnap.data() : null;
+    const organizationName = orgData?.name || 'Organization';
+    const orgAcronym = orgData?.acronym || organizationName;
+
+    const identifierSet = new Set(
+      [studentId, studentInfo.authUid, studentInfo.studentSchoolId, studentHint?.authUid, studentHint?.studentSchoolId]
+        .filter(Boolean)
+        .map((val) => String(val).trim().toLowerCase())
     );
-    const existingSnap = await getDocs(qExistingOrgDues);
 
-    const alreadyHasDue = existingSnap.docs.some((d) => {
-      const data = d.data();
-      const sId = (studentId || '').toString().trim().toLowerCase();
-      const match1 = (data.studentId || '').toString().trim().toLowerCase() === sId;
-      const match2 = (data.studentSchoolId || '').toString().trim().toLowerCase() === sId;
-      return match1 || match2;
-    });
+    const existingForStudent = existingOrgPayablesSnap.docs
+      .map((d) => d.data())
+      .filter((data) => {
+        const sid = String(data.studentId || '').trim().toLowerCase();
+        const schoolId = String(data.studentSchoolId || '').trim().toLowerCase();
+        return (sid && identifierSet.has(sid)) || (schoolId && identifierSet.has(schoolId));
+      });
 
-    if (alreadyHasDue) {
-      return { payableCreated: false };
+    const isAlreadyAssigned = (ruleId?: string | null, label?: string, type?: string): boolean => {
+      const normLabel = String(label || '').trim().toLowerCase();
+      return existingForStudent.some((data) => {
+        if (ruleId && data.autoRuleId && data.autoRuleId === ruleId) return true;
+        const existingLabel = String(data.label || data.title || '').trim().toLowerCase();
+        if (normLabel && existingLabel && existingLabel === normLabel) return true;
+        if (!ruleId && type === 'membership_due' && data.type === 'membership_due') return true;
+        return false;
+      });
+    };
+
+    const autoRules: OrgAutoPayableRule[] = Array.isArray(orgData?.autoPayableRules)
+      ? orgData.autoPayableRules.filter((r: any) => r?.isActive !== false && Number(r?.amount) > 0)
+      : [];
+
+    const isPaid = paymentStatus === 'paid';
+    let createdCount = 0;
+    let totalCreatedAmount = 0;
+    let coveredMembershipDue = false;
+
+    for (const rule of autoRules) {
+      if (rule.type === 'membership_due') coveredMembershipDue = true;
+      if (isAlreadyAssigned(rule.id, rule.label, rule.type)) continue;
+
+      await createPayable({
+        studentId: studentInfo.authUid,
+        studentName: studentName || 'Student',
+        studentSchoolId: studentInfo.studentSchoolId,
+        type: rule.type || 'custom',
+        label: rule.label,
+        title: rule.label,
+        feeTitle: rule.label,
+        description: rule.description || `Auto-assigned club payable for ${organizationName}`,
+        organizationId,
+        organizationName,
+        semesterId: rule.semesterId || 'active',
+        semester: rule.semester || studentInfo.semester,
+        schoolYear: rule.schoolYear || studentInfo.schoolYear,
+        eventId: null,
+        autoRuleId: rule.id,
+        assignedAmount: Number(rule.amount) || 0,
+        amount: Number(rule.amount) || 0,
+        paidAmount: isPaid && rule.type === 'membership_due' ? Number(rule.amount) || 0 : 0,
+        status: isPaid && rule.type === 'membership_due' ? 'paid' : 'pending',
+        recordedBy: isPaid && rule.type === 'membership_due' ? addedBy : null,
+        paymentMethod: isPaid && rule.type === 'membership_due' ? 'cash' : null,
+        dueDate: rule.dueDate ? new Date(rule.dueDate) : null,
+        courseCode: studentInfo.courseCode,
+        courseName: studentInfo.courseName,
+        departmentId: studentInfo.departmentId,
+        departmentName: studentInfo.departmentName,
+        yearLevel: studentInfo.yearLevel,
+        section: studentInfo.section,
+        academicLevel: studentInfo.academicLevel,
+        createdBy: addedBy || 'Officer Management',
+      });
+
+      createdCount++;
+      totalCreatedAmount += Number(rule.amount) || 0;
     }
 
-    // 2. Determine fee amount, label, and semester from existing club dues OR org profile
-    let feeAmount = 0;
-    let label = 'Membership Due';
-    let description = 'Semester membership fee';
-    let semesterId: string | null = null;
-    let dueDate: any = null;
-    let organizationName = 'Organization';
+    // Legacy fallback: check org.membershipFee or existing membership_due template if no autoRule covered membership_due
+    if (!coveredMembershipDue && !isAlreadyAssigned(null, undefined, 'membership_due')) {
+      let fallbackFee = Number(orgData?.membershipFee || 0);
+      let fallbackLabel = `${orgAcronym} Membership Due`;
+      let fallbackDesc = `Semester membership fee for ${organizationName}`;
+      let fallbackSemesterId = 'active';
+      let fallbackDueDate: any = null;
 
-    // If the club already has membership_due payables created, extract their details as template
-    if (!existingSnap.empty) {
-      const sample = existingSnap.docs[0].data();
-      feeAmount = Number(sample.assignedAmount) || 0;
-      label = sample.label || label;
-      description = sample.description || description;
-      semesterId = sample.semesterId || null;
-      dueDate = sample.dueDate || null;
-      organizationName = sample.organizationName || organizationName;
-    }
+      if (fallbackFee <= 0) {
+        const existingDueDoc = existingOrgPayablesSnap.docs.find((d) => d.data().type === 'membership_due');
+        if (existingDueDoc) {
+          const sample = existingDueDoc.data();
+          fallbackFee = Number(sample.assignedAmount ?? sample.amount ?? 0);
+          fallbackLabel = sample.label || fallbackLabel;
+          fallbackDesc = sample.description || fallbackDesc;
+          fallbackSemesterId = sample.semesterId || fallbackSemesterId;
+          fallbackDueDate = sample.dueDate || null;
+        }
+      }
 
-    // If no fee found from existing payables, check /organizations document
-    if (feeAmount <= 0) {
-      const orgRef = doc(db, 'organizations', organizationId);
-      const orgSnap = await getDoc(orgRef);
-      if (orgSnap.exists()) {
-        const orgData = orgSnap.data();
-        feeAmount = Number(orgData.membershipFee || 0);
-        organizationName = orgData.name || organizationName;
-        label = `${orgData.acronym || orgData.name || 'Organization'} Membership Due`;
+      if (fallbackFee > 0) {
+        await createPayable({
+          studentId: studentInfo.authUid,
+          studentName: studentName || 'Student',
+          studentSchoolId: studentInfo.studentSchoolId,
+          type: 'membership_due',
+          label: fallbackLabel,
+          title: fallbackLabel,
+          feeTitle: fallbackLabel,
+          description: fallbackDesc,
+          organizationId,
+          organizationName,
+          semesterId: fallbackSemesterId,
+          semester: studentInfo.semester,
+          schoolYear: studentInfo.schoolYear,
+          eventId: null,
+          assignedAmount: fallbackFee,
+          amount: fallbackFee,
+          paidAmount: isPaid ? fallbackFee : 0,
+          status: isPaid ? 'paid' : 'pending',
+          recordedBy: isPaid ? addedBy : null,
+          paymentMethod: isPaid ? 'cash' : null,
+          dueDate: fallbackDueDate,
+          courseCode: studentInfo.courseCode,
+          courseName: studentInfo.courseName,
+          departmentId: studentInfo.departmentId,
+          departmentName: studentInfo.departmentName,
+          yearLevel: studentInfo.yearLevel,
+          section: studentInfo.section,
+          academicLevel: studentInfo.academicLevel,
+          createdBy: addedBy || 'Officer Management',
+        });
+
+        createdCount++;
+        totalCreatedAmount += fallbackFee;
       }
     }
 
-    // 3. If there is a fee, create the membership_due payable for this student
-    if (feeAmount > 0) {
-      const isPaid = paymentStatus === 'paid';
-      const newPayableRef = doc(collection(db, 'payables'));
-
-      await setDoc(newPayableRef, {
-        id: newPayableRef.id,
-        studentId: studentId,
-        studentSchoolId: studentId,
-        studentName: studentName || 'Student',
-        type: 'membership_due',
-        label: label,
-        description: description,
-        organizationId: organizationId,
-        organizationName: organizationName,
-        semesterId: semesterId,
-        eventId: null,
-        assignedAmount: feeAmount,
-        paidAmount: isPaid ? feeAmount : 0,
-        status: isPaid ? 'paid' : 'pending',
-        dueDate: dueDate,
-        paidAt: isPaid ? serverTimestamp() : null,
-        recordedBy: isPaid ? addedBy : null,
-        paymentMethod: isPaid ? 'cash' : null,
-        createdBy: addedBy || 'Officer Management',
-        assignedBy: addedBy || 'Officer Management',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      return { payableCreated: true, feeAmount };
-    }
+    return {
+      payableCreated: createdCount > 0,
+      createdCount,
+      feeAmount: totalCreatedAmount > 0 ? totalCreatedAmount : undefined,
+    };
   } catch (err) {
     console.warn('[member.service] Error ensuring membership payable:', err);
   }
@@ -197,13 +339,21 @@ export const addMember = async (payload: AddMemberPayload, addedBy: string): Pro
           updatedAt: serverTimestamp(),
         });
 
-        // Trigger membership fee payable if configured or created
+        // Trigger auto-assigned club payables / membership fee
         await ensureMembershipPayable(
           payload.organizationId,
           payload.studentId || docRef.id,
           payload.studentName,
           payload.paymentStatus,
-          addedBy
+          addedBy,
+          {
+            authUid: payload.authUid,
+            studentSchoolId: payload.studentId,
+            course: payload.course,
+            year: payload.year,
+            section: payload.section,
+            department: payload.department,
+          }
         );
       } catch (orgErr) {
         console.warn('Could not update organization memberCount / payable:', orgErr);
@@ -272,13 +422,21 @@ export const updateMemberStatus = async (
           updatedAt: serverTimestamp(),
         });
 
-        // Trigger membership fee payable if not already assigned
+        // Trigger auto-assigned club payables / membership fee if not already assigned
         await ensureMembershipPayable(
           orgId,
           studentId,
           studentName,
           prevData?.paymentStatus || 'outstanding',
-          actionByUid || 'Officer Status Update'
+          actionByUid || 'Officer Status Update',
+          {
+            authUid: prevData?.authUid,
+            studentSchoolId: prevData?.studentSchoolId || prevData?.studentId,
+            course: prevData?.course,
+            year: prevData?.year,
+            section: prevData?.section,
+            department: prevData?.department,
+          }
         );
       } catch (err) {
         console.warn('Could not increment organization memberCount / payable:', err);
@@ -330,13 +488,21 @@ export const approveMemberApplication = async (
     }
   }
 
-  // 3. Trigger Membership Due Payable if club already created dues or requires fee
+  // 3. Trigger Auto-Assigned Club Payables / Membership Due if configured
   const res = await ensureMembershipPayable(
     orgId,
     studentId,
     studentName,
     'outstanding',
-    approvedByUid || 'Officer Application Approval'
+    approvedByUid || 'Officer Application Approval',
+    {
+      authUid: memberData.authUid,
+      studentSchoolId: memberData.studentSchoolId || memberData.studentId,
+      course: memberData.course,
+      year: memberData.year,
+      section: memberData.section,
+      department: memberData.department,
+    }
   );
 
   return res;

@@ -42,8 +42,8 @@ const sourceBadgeMap: Record<string, { bg: string; text: string; label: string }
   manual_expense: { bg: 'bg-red-100', text: 'text-red-700', label: 'Manual Expense' },
   carry_over: { bg: 'bg-indigo-100', text: 'text-indigo-700', label: 'Carry-Over Fund' },
   event_budget: { bg: 'bg-purple-100', text: 'text-purple-700', label: 'Approved Event Budget' },
-  liquidation_surplus: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: 'Liquidation Surplus Refund' },
-  liquidation_deficit: { bg: 'bg-rose-100', text: 'text-rose-700', label: 'Liquidation Deficit Expense' },
+  liquidation_surplus: { bg: 'bg-emerald-100', text: 'text-emerald-700', label: 'Surplus Returned (+ Funds)' },
+  liquidation_deficit: { bg: 'bg-rose-100', text: 'text-rose-700', label: 'Officer Reimbursement (- Paid Out)' },
   sponsorship: { bg: 'bg-amber-100', text: 'text-amber-700', label: 'Sponsorship / Grant' },
 };
 
@@ -451,7 +451,7 @@ export default function TransactionDetailModal({
                         ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                         : 'bg-rose-50 text-rose-700 border border-rose-200'
                     }`}>
-                      {(liquidationData?.surplusOrDeficit || 0) >= 0 ? 'Surplus Refund: ' : 'Deficit Expense: '}
+                      {(liquidationData?.surplusOrDeficit || 0) >= 0 ? 'Surplus Returned: ' : 'Reimbursement Paid: '}
                       {formatCurrency(Math.abs(liquidationData?.surplusOrDeficit || transaction.amount))}
                     </span>
                   </div>

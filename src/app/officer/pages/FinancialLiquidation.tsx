@@ -881,6 +881,27 @@ export default function FinancialLiquidation() {
                         </div>
                       </div>
                     </div>
+                    {Number(viewingDetailReport.allocatedBudget || 0) > 0 && (
+                      <div className="mt-2.5 pt-2.5 border-t border-gray-200/70 text-[11px] font-medium text-left">
+                        {Number(viewingDetailReport.surplusOrDeficit || 0) > 0 ? (
+                          <span className="text-emerald-800">
+                            <strong>Surplus (Disbursed &gt; Actual):</strong> Return{' '}
+                            <strong>{formatCurrency(viewingDetailReport.surplusOrDeficit)}</strong> back to{' '}
+                            {(viewingDetailReport as any).fundingSource === 'organization_funds' ? 'Club Funds (+Income in Finance Center)' : 'STI Cashier'} (no reimbursement needed).
+                          </span>
+                        ) : Number(viewingDetailReport.surplusOrDeficit || 0) < 0 ? (
+                          <span className="text-rose-800">
+                            <strong>Deficit (Actual &gt; Disbursed):</strong> Reimburse{' '}
+                            <strong>{formatCurrency(Math.abs(viewingDetailReport.surplusOrDeficit))}</strong> to the officer/advance holder from{' '}
+                            {(viewingDetailReport as any).fundingSource === 'organization_funds' ? 'Club Funds (-Expense in Finance Center)' : 'STI Cashier'}.
+                          </span>
+                        ) : (
+                          <span className="text-blue-800">
+                            <strong>Settled Exactly:</strong> Actual expenses matched the disbursed budget (₱0.00 return/reimbursement).
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })()}

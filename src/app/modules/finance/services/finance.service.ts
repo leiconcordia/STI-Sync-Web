@@ -62,16 +62,29 @@ export async function deductApprovedEventBudget(
   eventId: string,
   adminUserId?: string
 ): Promise<string | null> {
-  const budgetAmount = Number(eventData.totalApprovedBudget || eventData.allocatedBudget) || 0;
+  if (!eventData || typeof eventData !== 'object' || !eventId) return null;
+  if (eventData.fundingSource === 'zero_budget') return null;
+
+  const budgetAmount =
+    Number(eventData.totalApprovedBudget) ||
+    Number(eventData.allocatedBudget) ||
+    Number(eventData.financialProjections?.totalExpenses) ||
+    Number(eventData.budget) ||
+    0;
   if (budgetAmount <= 0) return null;
 
+  const rawOrgId = String(
+    eventData.hostingOrgId ||
+    eventData.organizationId ||
+    eventData.submittedByOrgId ||
+    eventData.orgId ||
+    ''
+  ).trim();
+  const isSasSentinel = !rawOrgId || ['sas_admin', 'sas', 'sao_admin', 'sao', 'admin', 'institutional'].includes(rawOrgId.toLowerCase());
   const isSasAdminEvent =
-    !eventData.hostingOrgId ||
-    eventData.hostingOrgId === 'sas_admin' ||
-    eventData.hostingOrgId === 'sas' ||
-    eventData.hostingOrgId === 'sao_admin' ||
-    eventData.hostingOrgId === 'sao' ||
-    eventData.isOfficerProposal === false;
+    eventData.fundingSource === 'organization_funds' && !isSasSentinel
+      ? false
+      : (isSasSentinel || eventData.isOfficerProposal === false);
 
   const eventTitle = eventData.title || eventData.name || 'Approved Event';
   const semesterId = eventData.semesterId || null;
@@ -117,7 +130,7 @@ export async function deductApprovedEventBudget(
     }
 
     const docRef = await addDoc(orgLedgerRef, {
-      organizationId: eventData.hostingOrgId,
+      organizationId: rawOrgId,
       semesterId,
       date: Timestamp.now(),
       description: `Approved Event Budget – ${eventTitle}`,

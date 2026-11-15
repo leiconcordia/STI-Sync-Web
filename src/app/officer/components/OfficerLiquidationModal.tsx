@@ -2003,36 +2003,75 @@ export default function OfficerLiquidationModal({
           </div>
 
           {/* Live Financial Variance Summary Cards */}
-          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
-              <div className="text-xs text-gray-500 font-medium">Approved Budget</div>
-              <div className="text-lg font-bold text-[#001A4D] mt-1 font-mono">{formatCurrency(allocatedBudget)}</div>
+          <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
+                <div className="text-xs text-gray-500 font-medium">Disbursed / Approved Budget</div>
+                <div className="text-lg font-bold text-[#001A4D] mt-1 font-mono">{formatCurrency(allocatedBudget)}</div>
+              </div>
+
+              <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
+                <div className="text-xs text-gray-500 font-medium">Total Actual Spendings</div>
+                <div className="text-lg font-bold text-[#0E4EBD] mt-1 font-mono">{formatCurrency(totalActualSpending)}</div>
+              </div>
+
+              <div
+                className={`p-3 bg-white border rounded-lg shadow-2xs ${
+                  isDeficit ? 'border-red-200 bg-red-50/20' : 'border-green-200 bg-green-50/20'
+                }`}
+              >
+                <div className="text-xs text-gray-500 font-medium">
+                  {isDeficit ? 'Net Deficit (Over Budget)' : 'Net Surplus (Unspent)'}
+                </div>
+                <div className={`text-lg font-bold mt-1 font-mono ${isDeficit ? 'text-red-600' : 'text-green-600'}`}>
+                  {formatVariance(surplusOrDeficit)}
+                </div>
+              </div>
+
+              <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
+                <div className="text-xs text-gray-500 font-medium">Receipts Attached</div>
+                <div className="text-lg font-bold text-slate-800 mt-1 font-mono">
+                  {lineItems.filter((i) => (i.receiptFiles && i.receiptFiles.length > 0) || (i.receiptUrls && i.receiptUrls.length > 0) || i.receiptUrl).length}
+                </div>
+              </div>
             </div>
 
-            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
-              <div className="text-xs text-gray-500 font-medium">Total Actual Spendings</div>
-              <div className="text-lg font-bold text-[#0E4EBD] mt-1 font-mono">{formatCurrency(totalActualSpending)}</div>
-            </div>
-
-            <div
-              className={`p-3 bg-white border rounded-lg shadow-2xs ${
-                isDeficit ? 'border-red-200 bg-red-50/20' : 'border-green-200 bg-green-50/20'
-              }`}
-            >
-              <div className="text-xs text-gray-500 font-medium">
-                {isDeficit ? 'Net Deficit (Over Budget)' : 'Net Surplus (Remaining)'}
+            {allocatedBudget > 0 && (
+              <div
+                className={`px-3.5 py-2.5 rounded-lg border text-xs flex items-start gap-2.5 ${
+                  surplusOrDeficit > 0
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : surplusOrDeficit < 0
+                    ? 'bg-rose-50 border-rose-200 text-rose-900'
+                    : 'bg-blue-50 border-blue-200 text-blue-900'
+                }`}
+              >
+                <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  {surplusOrDeficit > 0 ? (
+                    <span>
+                      <strong>Action Upon Approval — RETURN UNSPENT CASH:</strong> Disbursed amount exceeds actual expenses by{' '}
+                      <strong>{formatCurrency(surplusOrDeficit)}</strong>.{' '}
+                      {isOrgFunds
+                        ? 'Return the unused balance back to your Club Funds (logged as Surplus Return +Income in Finance Center) — no reimbursement needed.'
+                        : 'Return the unused balance to the STI Cashier (no reimbursement needed).'}
+                    </span>
+                  ) : surplusOrDeficit < 0 ? (
+                    <span>
+                      <strong>Action Upon Approval — REIMBURSE OFFICER:</strong> Actual expenses exceed disbursed funds by{' '}
+                      <strong>{formatCurrency(Math.abs(surplusOrDeficit))}</strong>.{' '}
+                      {isOrgFunds
+                        ? 'Reimburse the officer/advance holder from Club Funds (logged as Deficit Reimbursement -Expense in Finance Center).'
+                        : 'Process reimbursement via the STI Cashier for out-of-pocket expenses.'}
+                    </span>
+                  ) : (
+                    <span>
+                      <strong>Exact Balance Settled:</strong> Disbursed budget matches actual expenses (₱0.00 variance). No return or reimbursement is required.
+                    </span>
+                  )}
+                </div>
               </div>
-              <div className={`text-lg font-bold mt-1 font-mono ${isDeficit ? 'text-red-600' : 'text-green-600'}`}>
-                {formatVariance(surplusOrDeficit)}
-              </div>
-            </div>
-
-            <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
-              <div className="text-xs text-gray-500 font-medium">Receipts Attached</div>
-              <div className="text-lg font-bold text-slate-800 mt-1 font-mono">
-                {lineItems.filter((i) => (i.receiptFiles && i.receiptFiles.length > 0) || (i.receiptUrls && i.receiptUrls.length > 0) || i.receiptUrl).length}
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Tab Navigation: Expenses vs Signatory Pipeline */}
@@ -2785,7 +2824,9 @@ export default function OfficerLiquidationModal({
               <div className="p-4 bg-blue-50/40 border border-blue-200 rounded-xl space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
-                    Post-Approval Cashier Settlement Proof
+                    {isOrgFunds
+                      ? 'Post-Approval Club Treasury Settlement Proof'
+                      : 'Post-Approval Cashier Settlement Proof'}
                   </h4>
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
@@ -2797,10 +2838,10 @@ export default function OfficerLiquidationModal({
                     }`}
                   >
                     {effectiveReport.cashierSettlementStatus === 'verified'
-                      ? 'Cashier Proof Verified'
+                      ? (isOrgFunds ? 'Club Settlement Verified' : 'Cashier Proof Verified')
                       : effectiveReport.cashierSettlementStatus === 'proof_uploaded'
                         ? 'Proof Uploaded • Awaiting SAS Verification'
-                        : 'Pending Cashier Proof'}
+                        : (isOrgFunds ? 'Pending Club Settlement Proof' : 'Pending Cashier Proof')}
                   </span>
                 </div>
 
@@ -2820,10 +2861,10 @@ export default function OfficerLiquidationModal({
                   readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
                   title={
                     Number(effectiveReport.surplusOrDeficit || 0) < 0
-                      ? `Cashier Reimbursement Proof (Deficit: ${formatCurrency(
+                      ? `${isOrgFunds ? 'Club Treasury' : 'Cashier'} Reimbursement Proof (Reimburse: ${formatCurrency(
                           Math.abs(Number(effectiveReport.surplusOrDeficit || 0))
                         )})`
-                      : `Cashier Surplus / Return Proof (${formatCurrency(
+                      : `${isOrgFunds ? 'Club Treasury' : 'Cashier'} Surplus Return Proof (Return: ${formatCurrency(
                           Number(
                             (effectiveReport as any).amountToReturn ??
                               effectiveReport.surplusOrDeficit ??
@@ -2831,7 +2872,13 @@ export default function OfficerLiquidationModal({
                           )
                         )})`
                   }
-                  description="Your liquidation is approved. Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers below."
+                  description={
+                    isOrgFunds
+                      ? Number(effectiveReport.surplusOrDeficit || 0) < 0
+                        ? 'Disbursed budget was lower than actual expenses. Reimburse the officer from Club Funds and upload the signed Reimbursement Voucher / Proof below.'
+                        : 'Disbursed budget was higher than actual expenses. Return unspent cash to your Club Treasury (tracked automatically in Finance Center) and upload the Club Return Slip / Proof below.'
+                      : 'Your liquidation is approved. Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers below.'
+                  }
                 />
 
                 {effectiveReport.cashierSettlementStatus !== 'verified' && (

@@ -50,6 +50,7 @@ import {
   generateOrgPARLedgerReport,
 } from '../../modules/reports/services/report-generator.service';
 import { exportReportToCSV } from '../../modules/reports/utils/csv-report-builder';
+import { exportReportToPDF } from '../../modules/reports/utils/pdf-report-builder';
 
 type OrgLedgerTab = 'ap' | 'fl' | 'par' | 'officers' | 'members';
 type FundingFilter = 'ALL' | 'club' | 'school';
@@ -723,6 +724,18 @@ export default function OfficerReportsPage() {
         </div>
       </div>
 
+      {/* ── Member Payables & Dues Tracker (Select Payable Name -> Paid / Not Paid Yet) ── */}
+      {activeOrg && (
+        <OfficerPayablesReportSection
+          org={activeOrg}
+          payables={payables}
+          filter={filterOptions}
+          officerName={officerName}
+          presidentName={presidentName}
+          adviserName={adviserName}
+        />
+      )}
+
       {/* ── Tabbed Organization Ledgers & Rosters ── */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
         <div className="p-4 border-b border-gray-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -1129,11 +1142,583 @@ export default function OfficerReportsPage() {
       </div>
 
       {/* ── Shared Non-Overlapping PDF & CSV Export Modal ── */}
-      <ReportExportModal
-        report={previewReport}
-        isOpen={Boolean(previewReport)}
-        onClose={() => setPreviewReport(null)}
-      />
+      {previewReport?.id === 'OFFICER_DUES_PAYABLES_TRACKING' && activeOrg ? (
+        <OfficerPayableReportModal
+          org={activeOrg}
+          payables={payables}
+          filter={filterOptions}
+          officerName={officerName}
+          presidentName={presidentName}
+          adviserName={adviserName}
+          onClose={() => setPreviewReport(null)}
+        />
+      ) : (
+        <ReportExportModal
+          report={previewReport}
+          isOpen={Boolean(previewReport)}
+          onClose={() => setPreviewReport(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface OfficerPayableWidgetProps {
+  org: any;
+  payables: any[];
+  filter: any;
+  officerName: string;
+  presidentName: string;
+  adviserName: string;
+  initialPayableName?: string;
+  initialStatusFilter?: 'ALL' | 'PAID' | 'UNPAID';
+  onClose?: () => void;
+}
+
+function getOfficerPayableName(p: any): string {
+  return (p.eventName || p.title || p.description || p.feeTitle || 'Club Payable').toString().trim();
+}
+
+function isOfficerPayablePaid(p: any): boolean {
+  const st = (p.status || p.paymentStatus || '').toString().trim().toLowerCase();
+  if (st === 'refunded') return false;
+  if (st === 'paid') return true;
+  const assigned = Number(p.assignedAmount ?? p.amount ?? 0);
+  const paid = Number(p.paidAmount ?? 0);
+  const balance = p.balance !== undefined ? Number(p.balance) : Math.max(0, assigned - paid);
+  return assigned > 0 && balance <= 0;
+}
+
+function exportReportRowsToCSV(report: any, fileSuffix: string) {
+  const escapeCsv = (val: any) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+  const headers = (report.columns || []).map((c: any) => escapeCsv(c.header)).join(',');
+  const body = (report.rows || []).map((row: any) =>
+    (report.columns || []).map((c: any) => escapeCsv(row[c.key])).join(',')
+  );
+  const meta = [
+    escapeCsv(report.metadata?.title || report.title),
+    escapeCsv(report.metadata?.subtitle || ''),
+    escapeCsv(`Generated: ${report.metadata?.generatedAt || new Date().toLocaleString()}`),
+    '',
+  ];
+  const csv = [...meta, headers, ...body].join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${fileSuffix}_${new Date().toISOString().split('T')[0]}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function OfficerPayablesReportSection({
+  org,
+  payables,
+  filter,
+  officerName,
+  presidentName,
+  adviserName,
+}: OfficerPayableWidgetProps) {
+  const { data: studentsList = [] } = useStudents();
+  const [selectedPayableName, setSelectedPayableName] = useState<string>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PAID' | 'UNPAID'>('ALL');
+  const [search, setSearch] = useState<string>('');
+  const [showModal, setShowModal] = useState<boolean>(false);
+
+  const orgPayables = useMemo(
+    () => (payables || []).filter((p: any) => p.organizationId === org?.id),
+    [payables, org?.id]
+  );
+
+  const payableOptions = useMemo(() => {
+    const map = new Map<string, { name: string; paid: number; unpaid: number }>();
+    orgPayables.forEach((p: any) => {
+      const name = getOfficerPayableName(p);
+      const entry = map.get(name) || { name, paid: 0, unpaid: 0 };
+      const st = (p.status || '').toString().toLowerCase();
+      if (st !== 'refunded') {
+        if (isOfficerPayablePaid(p)) entry.paid += 1;
+        else entry.unpaid += 1;
+      }
+      map.set(name, entry);
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [orgPayables]);
+
+  const generated = useMemo(
+    () =>
+      generateOfficerDuesTrackingReport(
+        org,
+        payables,
+        filter,
+        officerName,
+        presidentName,
+        adviserName,
+        { payableName: selectedPayableName, paymentStatusFilter: statusFilter },
+        studentsList
+      ),
+    [org, payables, filter, officerName, presidentName, adviserName, selectedPayableName, statusFilter, studentsList]
+  );
+
+  const displayedRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return generated.rows;
+    return generated.rows.filter((r: any) =>
+      `${r.studentId} ${r.studentName} ${r.yearSection} ${r.feeTitle} ${r.status}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [generated.rows, search]);
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
+      <div className="p-4 border-b border-gray-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-slate-50/70">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-[#001A4D]/10 flex items-center justify-center text-[#001A4D]">
+            <Users className="w-4 h-4" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-[#001A4D]">
+              Club Payables Collection Roster (Paid vs. Not Paid Yet)
+            </h3>
+            <p className="text-xs text-gray-500">
+              Select a specific payable to review and export students who already paid vs. not paid yet.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            disabled={generated.rows.length === 0}
+            onClick={() => {
+              const safeName =
+                selectedPayableName === 'ALL'
+                  ? 'All_Payables'
+                  : selectedPayableName.replace(/[^a-zA-Z0-9]/g, '_');
+              exportReportRowsToCSV(generated, `Payables_${safeName}`);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowModal(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#001A4D] text-white hover:bg-[#0E4EBD] transition-colors shadow-xs cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Preview &amp; Export PDF/CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 border-b border-gray-100 flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-1.5">
+            <span className="font-bold text-gray-600">Payable Name:</span>
+            <select
+              value={selectedPayableName}
+              onChange={(e) => setSelectedPayableName(e.target.value)}
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg font-semibold text-gray-800 outline-none focus:border-[#0E4EBD] cursor-pointer"
+            >
+              <option value="ALL">All Payables ({orgPayables.length})</option>
+              {payableOptions.map((opt) => (
+                <option key={opt.name} value={opt.name}>
+                  {opt.name} ({opt.paid} Paid / {opt.unpaid} Not Paid Yet)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl border border-gray-200">
+            {(
+              [
+                { id: 'ALL', label: 'All Students' },
+                { id: 'PAID', label: 'Paid Only' },
+                { id: 'UNPAID', label: 'Not Paid Yet Only' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setStatusFilter(opt.id)}
+                className={`px-3 py-1 rounded-lg font-bold transition-colors cursor-pointer ${
+                  statusFilter === opt.id
+                    ? opt.id === 'PAID'
+                      ? 'bg-emerald-600 text-white'
+                      : opt.id === 'UNPAID'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-[#001A4D] text-white'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative w-full lg:w-64">
+          <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search student name or ID..."
+            className="w-full pl-8 pr-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-xs outline-none focus:bg-white focus:border-[#0E4EBD]"
+          />
+        </div>
+      </div>
+
+      {/* KPI Strip */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4 bg-gray-50/40 border-b border-gray-100">
+        {generated.kpis.map((kpi: any, i: number) => (
+          <div key={i} className="bg-white border border-gray-200 rounded-xl px-3.5 py-2.5">
+            <p className="text-[10px] font-bold text-gray-500 uppercase">{kpi.label}</p>
+            <p className="text-base font-bold text-[#001A4D] mt-0.5">{kpi.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Preview Table */}
+      <div className="overflow-x-auto max-h-72 overflow-y-auto">
+        <table className="w-full text-left border-collapse text-xs">
+          <thead className="sticky top-0 bg-slate-50 border-b border-gray-200 text-[11px] font-extrabold uppercase tracking-wider text-gray-500">
+            <tr>
+              <th className="py-2.5 px-4">Student ID</th>
+              <th className="py-2.5 px-4">Student Name</th>
+              <th className="py-2.5 px-4">Year / Section</th>
+              <th className="py-2.5 px-4">Payable Name</th>
+              <th className="py-2.5 px-4 text-right">Assigned</th>
+              <th className="py-2.5 px-4 text-right">Paid</th>
+              <th className="py-2.5 px-4 text-right">Balance</th>
+              <th className="py-2.5 px-4">Status</th>
+              <th className="py-2.5 px-4">Date Paid</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {displayedRows.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="py-8 text-center text-gray-400">
+                  No student payable records match the selected Payable Name or Payment Status.
+                </td>
+              </tr>
+            ) : (
+              displayedRows.slice(0, 50).map((row: any, idx: number) => {
+                const isPaidRow = row.status === 'PAID';
+                const isRefundedRow = row.status === 'REFUNDED';
+                return (
+                  <tr key={`${row.studentId}-${idx}`} className="hover:bg-blue-50/30">
+                    <td className="py-2.5 px-4 font-mono font-bold text-[#003B73] whitespace-nowrap">
+                      {row.studentId}
+                    </td>
+                    <td className="py-2.5 px-4 font-bold text-gray-900 whitespace-nowrap">
+                      {row.studentName}
+                    </td>
+                    <td className="py-2.5 px-4 text-gray-600 whitespace-nowrap">
+                      {row.yearSection}
+                    </td>
+                    <td className="py-2.5 px-4 text-gray-800">{row.feeTitle}</td>
+                    <td className="py-2.5 px-4 text-right font-semibold text-gray-700 whitespace-nowrap">
+                      {row.assigned}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-bold text-emerald-700 whitespace-nowrap">
+                      {row.paid}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-bold text-rose-700 whitespace-nowrap">
+                      {row.balance}
+                    </td>
+                    <td className="py-2.5 px-4 whitespace-nowrap">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                          isPaidRow
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : isRefundedRow
+                              ? 'bg-gray-100 text-gray-600 border-gray-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                        }`}
+                      >
+                        {row.status}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-gray-500 whitespace-nowrap">{row.datePaid}</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      {displayedRows.length > 50 && (
+        <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 text-[11px] text-gray-500">
+          Showing first 50 of {displayedRows.length} matching records. Open Preview or Export CSV/PDF for all rows.
+        </div>
+      )}
+
+      {showModal && (
+        <OfficerPayableReportModal
+          org={org}
+          payables={payables}
+          filter={filter}
+          officerName={officerName}
+          presidentName={presidentName}
+          adviserName={adviserName}
+          initialPayableName={selectedPayableName}
+          initialStatusFilter={statusFilter}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function OfficerPayableReportModal({
+  org,
+  payables,
+  filter,
+  officerName,
+  presidentName,
+  adviserName,
+  initialPayableName = 'ALL',
+  initialStatusFilter = 'ALL',
+  onClose,
+}: OfficerPayableWidgetProps) {
+  const { data: studentsList = [] } = useStudents();
+  const [selectedPayableName, setSelectedPayableName] = useState<string>(initialPayableName);
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PAID' | 'UNPAID'>(initialStatusFilter);
+  const [exportingPdf, setExportingPdf] = useState(false);
+
+  const orgPayables = useMemo(
+    () => (payables || []).filter((p: any) => p.organizationId === org?.id),
+    [payables, org?.id]
+  );
+
+  const payableOptions = useMemo(() => {
+    const map = new Map<string, { name: string; paid: number; unpaid: number }>();
+    orgPayables.forEach((p: any) => {
+      const name = getOfficerPayableName(p);
+      const entry = map.get(name) || { name, paid: 0, unpaid: 0 };
+      const st = (p.status || '').toString().toLowerCase();
+      if (st !== 'refunded') {
+        if (isOfficerPayablePaid(p)) entry.paid += 1;
+        else entry.unpaid += 1;
+      }
+      map.set(name, entry);
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [orgPayables]);
+
+  const report = useMemo(
+    () =>
+      generateOfficerDuesTrackingReport(
+        org,
+        payables,
+        filter,
+        officerName,
+        presidentName,
+        adviserName,
+        { payableName: selectedPayableName, paymentStatusFilter: statusFilter },
+        studentsList
+      ),
+    [org, payables, filter, officerName, presidentName, adviserName, selectedPayableName, statusFilter, studentsList]
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl border border-gray-200 overflow-hidden">
+        {/* Header */}
+        <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white border-b-4 border-[#FFD41C] shrink-0">
+          <div>
+            <h2 className="text-base font-bold">{report.metadata.title}</h2>
+            <p className="text-xs text-blue-200 mt-0.5">{report.metadata.subtitle}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close modal"
+            className="p-1.5 rounded-lg hover:bg-white/10 text-blue-100 hover:text-white cursor-pointer"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Interactive Payable Filter Controls */}
+        <div className="px-6 py-3 bg-slate-50 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3 shrink-0 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-bold text-[#001A4D]">Select Payable:</span>
+            <select
+              value={selectedPayableName}
+              onChange={(e) => setSelectedPayableName(e.target.value)}
+              className="px-3 py-1.5 bg-white border border-gray-300 rounded-lg font-semibold text-gray-800 outline-none focus:border-[#0E4EBD] cursor-pointer"
+            >
+              <option value="ALL">All Payables ({orgPayables.length})</option>
+              {payableOptions.map((opt) => (
+                <option key={opt.name} value={opt.name}>
+                  {opt.name} ({opt.paid} Paid / {opt.unpaid} Not Paid Yet)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-gray-200">
+            {(
+              [
+                { id: 'ALL', label: 'All Students' },
+                { id: 'PAID', label: 'Paid Only' },
+                { id: 'UNPAID', label: 'Not Paid Yet Only' },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setStatusFilter(opt.id)}
+                className={`px-3 py-1 rounded-lg font-bold transition-colors cursor-pointer ${
+                  statusFilter === opt.id
+                    ? opt.id === 'PAID'
+                      ? 'bg-emerald-600 text-white'
+                      : opt.id === 'UNPAID'
+                        ? 'bg-red-600 text-white'
+                        : 'bg-[#001A4D] text-white'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="p-6 space-y-4 overflow-y-auto flex-1">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {report.kpis.map((kpi: any, idx: number) => (
+              <div key={idx} className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                <p className="text-[10px] font-bold text-gray-500 uppercase">{kpi.label}</p>
+                <p className="text-lg font-bold text-[#001A4D] mt-0.5">{kpi.value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <div className="max-h-72 overflow-y-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead className="sticky top-0 bg-gray-100 border-b border-gray-200 text-[10px] font-bold uppercase text-gray-600">
+                  <tr>
+                    {report.columns.map((col: any) => (
+                      <th key={col.key} className="py-2.5 px-3 whitespace-nowrap">
+                        {col.header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {report.rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={report.columns.length} className="py-8 text-center text-gray-400">
+                        No students match the selected payable and payment status filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    report.rows.map((row: any, rIdx: number) => (
+                      <tr key={rIdx} className="hover:bg-blue-50/30">
+                        {report.columns.map((col: any) => (
+                          <td key={col.key} className="py-2 px-3 whitespace-nowrap text-gray-800">
+                            {col.key === 'status' ? (
+                              <span
+                                className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  row.status === 'PAID'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : row.status === 'REFUNDED'
+                                      ? 'bg-gray-100 text-gray-600'
+                                      : 'bg-rose-50 text-rose-700 border border-rose-200'
+                                }`}
+                              >
+                                {row.status}
+                              </span>
+                            ) : (
+                              row[col.key]
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {report.signatories && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-gray-200 text-xs">
+              <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-[10px] uppercase font-bold text-gray-400">Prepared By</p>
+                <p className="font-bold text-gray-900 mt-1">{report.signatories.preparedBy?.name}</p>
+                <p className="text-gray-500">{report.signatories.preparedBy?.title}</p>
+              </div>
+              <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-[10px] uppercase font-bold text-gray-400">Attested By</p>
+                <p className="font-bold text-gray-900 mt-1">{report.signatories.attestedBy?.name}</p>
+                <p className="text-gray-500">{report.signatories.attestedBy?.title}</p>
+              </div>
+              <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <p className="text-[10px] uppercase font-bold text-gray-400">Approved By</p>
+                <p className="font-bold text-gray-900 mt-1">{report.signatories.approvedBy?.name}</p>
+                <p className="text-gray-500">{report.signatories.approvedBy?.title}</p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-200 px-6 py-4 bg-gray-50 flex items-center justify-between shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 bg-white hover:bg-gray-100 rounded-xl text-xs font-bold text-gray-700 cursor-pointer"
+          >
+            Close
+          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={report.rows.length === 0}
+              onClick={() => {
+                const safeName =
+                  selectedPayableName === 'ALL'
+                    ? 'All_Payables'
+                    : selectedPayableName.replace(/[^a-zA-Z0-9]/g, '_');
+                exportReportRowsToCSV(report, `Payables_${safeName}`);
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 bg-white hover:bg-gray-50 rounded-xl text-xs font-bold text-gray-700 cursor-pointer disabled:opacity-50"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              Export CSV / Excel
+            </button>
+            <button
+              type="button"
+              disabled={exportingPdf || report.rows.length === 0}
+              onClick={async () => {
+                setExportingPdf(true);
+                try {
+                  await exportReportToPDF(report);
+                } finally {
+                  setExportingPdf(false);
+                }
+              }}
+              className="inline-flex items-center gap-1.5 px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50 shadow-xs"
+            >
+              <Download className="w-4 h-4 text-[#FFD41C]" />
+              {exportingPdf ? 'Generating PDF...' : 'Export Official PDF'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

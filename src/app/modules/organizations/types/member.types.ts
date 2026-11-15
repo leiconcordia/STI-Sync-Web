@@ -19,6 +19,7 @@ export interface OrganizationMemberDocument {
   email: string;
   course: string;
   year: string;
+  section?: string;
   department: string;
   contactNumber: string;
   status: OrganizationMemberStatus;
@@ -42,10 +43,12 @@ export interface OrganizationMemberDocument {
 export interface AddMemberPayload {
   organizationId: string;
   studentId: string;
+  authUid?: string;
   studentName: string;
   email: string;
   course: string;
   year: string;
+  section?: string;
   department: string;
   contactNumber: string;
   status: OrganizationMemberStatus;

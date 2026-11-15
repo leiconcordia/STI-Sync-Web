@@ -15,12 +15,17 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   Layers,
+  Users,
+  AlertCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 import { useSemesters } from '../../academic/hooks/useAcademicStream';
 import { parseTimestampMillis } from '../hooks/useFinanceStream';
+import { useOrgPayables } from '../hooks/usePayableStream';
+import { useStudents } from '../../students/hooks/useStudentStream';
 import type { OrgLedgerDocument } from '../types/finance.types';
+import type { PayableDocument } from '../types/payable.types';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate } from '../../../utils/date';
 
@@ -47,19 +52,73 @@ interface ExportFinancialReportModalProps {
   organizationId: string;
   organizationName: string;
   ledgerData: OrgLedgerDocument[];
+  payablesData?: PayableDocument[];
+  initialMode?: 'ledger' | 'payables';
   currentSemesterId?: string;
   officerName?: string;
 }
 
-export function ExportFinancialReportModal({
+function getPayableDisplayName(p: PayableDocument): string {
+  return (
+    (p as any).eventName ||
+    (p as any).title ||
+    p.description ||
+    (p as any).feeTitle ||
+    'Club Payable'
+  )
+    .toString()
+    .trim();
+}
+
+function isPayableSettled(p: PayableDocument): boolean {
+  const normalizedStatus = (p.status || (p as any).paymentStatus || '').toString().trim().toLowerCase();
+  if (normalizedStatus === 'refunded') return false;
+  if (normalizedStatus === 'paid') return true;
+  const assigned = Number(p.assignedAmount ?? (p as any).amount ?? 0);
+  const paid = Number(p.paidAmount ?? 0);
+  const balance = p.balance !== undefined ? Number(p.balance) : Math.max(0, assigned - paid);
+  return assigned > 0 && balance <= 0;
+}
+
+export function ExportFinancialReportModal(props: ExportFinancialReportModalProps) {
+  const [reportMode, setReportMode] = useState<'ledger' | 'payables'>(props.initialMode || 'ledger');
+
+  if (!props.isOpen) return null;
+
+  if (reportMode === 'payables') {
+    return (
+      <PayablesRosterExportModal
+        {...props}
+        reportMode={reportMode}
+        onChangeMode={setReportMode}
+      />
+    );
+  }
+
+  return (
+    <LedgerReportModalInner
+      {...props}
+      reportMode={reportMode}
+      onChangeMode={setReportMode}
+    />
+  );
+}
+
+interface InnerExportModalProps extends ExportFinancialReportModalProps {
+  reportMode: 'ledger' | 'payables';
+  onChangeMode: (mode: 'ledger' | 'payables') => void;
+}
+
+function LedgerReportModalInner({
   isOpen,
   onClose,
-  organizationId,
   organizationName,
   ledgerData,
   currentSemesterId = 'all',
   officerName = 'Student Officer',
-}: ExportFinancialReportModalProps) {
+  reportMode,
+  onChangeMode,
+}: InnerExportModalProps) {
   const { data: semesters = [] } = useSemesters();
 
   // Filter States
@@ -694,6 +753,34 @@ export function ExportFinancialReportModal({
             </div>
           </div>
 
+          {/* Report Mode Switcher */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2">
+            <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wider px-2">
+              Report Format:
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onChangeMode('ledger')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                  reportMode === 'ledger'
+                    ? 'bg-[#001A4D] text-white shadow-2xs'
+                    : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-100'
+                }`}
+              >
+                Budget Ledger Transactions
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeMode('payables')}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer bg-white text-[#0E4EBD] border border-blue-200 hover:bg-blue-50 flex items-center gap-1.5"
+              >
+                <Users className="w-3.5 h-3.5" />
+                Student Payables Roster (Paid / Not Paid Yet)
+              </button>
+            </div>
+          </div>
+
           {/* KPI Summary Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3.5">
@@ -839,6 +926,754 @@ export function ExportFinancialReportModal({
               type="button"
               onClick={handleExportPDF}
               disabled={isExporting || chronologicalRows.length === 0}
+              className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+            >
+              <Printer className="w-4 h-4 text-[#FFD41C]" />
+              Export Official PDF
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PayablesRosterExportModal({
+  onClose,
+  organizationId,
+  organizationName,
+  payablesData,
+  currentSemesterId = 'all',
+  officerName = 'Student Officer',
+  onChangeMode,
+}: InnerExportModalProps) {
+  const { data: semesters = [] } = useSemesters();
+  const { data: streamedPayables = [] } = useOrgPayables(
+    payablesData === undefined ? organizationId : null
+  );
+  const { data: allStudents = [] } = useStudents();
+
+  const [selectedSemester, setSelectedSemester] = useState<string>(currentSemesterId || 'all');
+  const [selectedPayableName, setSelectedPayableName] = useState<string>('all');
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isExporting, setIsExporting] = useState<boolean>(false);
+
+  const rawPayables = useMemo(
+    () => (payablesData !== undefined ? payablesData : streamedPayables),
+    [payablesData, streamedPayables]
+  );
+
+  const studentLookup = useMemo(() => {
+    const map = new Map<string, (typeof allStudents)[number]>();
+    allStudents.forEach((s) => {
+      if (s.id) map.set(s.id.toLowerCase().trim(), s);
+      if (s.authUid) map.set(s.authUid.toLowerCase().trim(), s);
+      if (s.studentId) map.set(s.studentId.toLowerCase().trim(), s);
+    });
+    return map;
+  }, [allStudents]);
+
+  const selectedSemesterLabel = useMemo(() => {
+    if (selectedSemester === 'all') return 'All Academic Terms';
+    const found = semesters.find((s) => s.id === selectedSemester);
+    return found ? `${found.academicYear || ''} ${found.name || ''}`.trim() : selectedSemester;
+  }, [semesters, selectedSemester]);
+
+  const semFilteredPayables = useMemo(() => {
+    return rawPayables.filter((p) => {
+      if (selectedSemester !== 'all' && p.semesterId && p.semesterId !== selectedSemester) {
+        return false;
+      }
+      return true;
+    });
+  }, [rawPayables, selectedSemester]);
+
+  const payableNameOptions = useMemo(() => {
+    const map = new Map<string, { name: string; total: number; paid: number; unpaid: number }>();
+    semFilteredPayables.forEach((p) => {
+      const name = getPayableDisplayName(p);
+      const entry = map.get(name) || { name, total: 0, paid: 0, unpaid: 0 };
+      entry.total += 1;
+      const st = (p.status || '').toString().toLowerCase();
+      if (st !== 'refunded') {
+        if (isPayableSettled(p)) entry.paid += 1;
+        else entry.unpaid += 1;
+      }
+      map.set(name, entry);
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [semFilteredPayables]);
+
+  const enrichedFilteredPayables = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return semFilteredPayables
+      .filter((p) => {
+        const name = getPayableDisplayName(p);
+        if (selectedPayableName !== 'all' && name !== selectedPayableName) return false;
+
+        const stLower = (p.status || '').toString().toLowerCase();
+        const isRefunded = stLower === 'refunded';
+        const isPaid = isPayableSettled(p);
+
+        if (paymentStatusFilter === 'paid' && !isPaid) return false;
+        if (paymentStatusFilter === 'unpaid' && (isPaid || isRefunded)) return false;
+
+        const sDoc =
+          studentLookup.get((p.studentId || '').toLowerCase().trim()) ||
+          studentLookup.get((p.studentSchoolId || '').toLowerCase().trim());
+        const sName = (
+          p.studentName ||
+          (sDoc ? `${sDoc.lastName || ''}, ${sDoc.firstName || ''}` : 'Student')
+        ).trim();
+        const sId = (sDoc?.studentId || p.studentSchoolId || p.studentId || '').trim();
+        const sYr = (sDoc?.year || sDoc?.yearLevel || (p as any).yearLevel || '').trim();
+        const sSec = (sDoc?.section || (p as any).section || '').trim();
+
+        if (q) {
+          const hay = `${sName} ${sId} ${sYr} ${sSec} ${name}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      })
+      .map((p) => {
+        const sDoc =
+          studentLookup.get((p.studentId || '').toLowerCase().trim()) ||
+          studentLookup.get((p.studentSchoolId || '').toLowerCase().trim());
+        const assigned = Number(p.assignedAmount ?? (p as any).amount ?? 0);
+        const isPaid = isPayableSettled(p);
+        const stLower = (p.status || '').toString().toLowerCase();
+        const paid = Number(p.paidAmount ?? (isPaid ? assigned : 0));
+        const balance =
+          p.balance !== undefined ? Math.max(0, Number(p.balance)) : Math.max(0, assigned - paid);
+        const paidMillis = parseTimestampMillis((p as any).paidAt);
+
+        return {
+          id: p.id,
+          payableName: getPayableDisplayName(p),
+          studentId: sDoc?.studentId || p.studentSchoolId || p.studentId || '—',
+          studentName:
+            p.studentName ||
+            (sDoc ? `${sDoc.lastName || ''}, ${sDoc.firstName || ''}`.trim() : 'Student'),
+          yearLevel: sDoc?.year || sDoc?.yearLevel || (p as any).yearLevel || '—',
+          section: sDoc?.section || (p as any).section || '—',
+          assigned,
+          paid,
+          balance,
+          isPaid,
+          isRefunded: stLower === 'refunded',
+          statusLabel:
+            stLower === 'refunded'
+              ? 'Refunded'
+              : isPaid
+                ? 'Paid'
+                : paid > 0
+                  ? 'Not Paid Yet (Partial)'
+                  : 'Not Paid Yet',
+          paidDateStr: paidMillis ? formatAppDate(paidMillis) : 'Pending Payment',
+        };
+      })
+      .sort((a, b) => {
+        if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
+        return a.studentName.localeCompare(b.studentName);
+      });
+  }, [semFilteredPayables, selectedPayableName, paymentStatusFilter, searchQuery, studentLookup]);
+
+  const kpis = useMemo(() => {
+    const activeRows = enrichedFilteredPayables.filter((r) => !r.isRefunded);
+    const totalAssigned = activeRows.reduce((s, r) => s + r.assigned, 0);
+    const totalCollected = activeRows.reduce((s, r) => s + r.paid, 0);
+    const totalOutstanding = Math.max(0, totalAssigned - totalCollected);
+    const paidCount = activeRows.filter((r) => r.isPaid).length;
+    const unpaidCount = activeRows.filter((r) => !r.isPaid).length;
+    const rate = totalAssigned > 0 ? Math.round((totalCollected / totalAssigned) * 100) : 0;
+    return {
+      totalAssigned,
+      totalCollected,
+      totalOutstanding,
+      paidCount,
+      unpaidCount,
+      rate,
+    };
+  }, [enrichedFilteredPayables]);
+
+  const statusFilterLabel =
+    paymentStatusFilter === 'paid'
+      ? 'Paid Students Only'
+      : paymentStatusFilter === 'unpaid'
+        ? 'Not Paid Yet Only'
+        : 'All Students (Paid & Not Paid Yet)';
+
+  const handleExportCSV = () => {
+    if (enrichedFilteredPayables.length === 0) {
+      toast.error('No payable records match the selected filters.');
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const escapeCSV = (val: string | number | null | undefined) => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val).replace(/"/g, '""');
+        return `"${str}"`;
+      };
+
+      const metadataRows = [
+        [escapeCSV('STI COLLEGE ORMOC — STUDENT AFFAIRS AND SERVICES (SAS)')],
+        [escapeCSV(`CLUB PAYABLES COLLECTION ROSTER — ${organizationName}`)],
+        [escapeCSV(`Payable Selected: ${selectedPayableName === 'all' ? 'All Payables' : selectedPayableName}`)],
+        [escapeCSV(`Status Filter: ${statusFilterLabel}`)],
+        [escapeCSV(`Academic Period: ${selectedSemesterLabel}`)],
+        [escapeCSV(`Generated By: ${officerName} on ${new Date().toLocaleString()}`)],
+        [],
+        [
+          escapeCSV('Paid Students:'),
+          escapeCSV(kpis.paidCount),
+          escapeCSV('Not Paid Yet:'),
+          escapeCSV(kpis.unpaidCount),
+          escapeCSV('Total Collected (PHP):'),
+          escapeCSV(kpis.totalCollected.toFixed(2)),
+          escapeCSV('Total Outstanding (PHP):'),
+          escapeCSV(kpis.totalOutstanding.toFixed(2)),
+        ],
+        [],
+      ];
+
+      const headers = [
+        '#',
+        'Student ID',
+        'Student Name',
+        'Year Level',
+        'Section',
+        'Payable Name',
+        'Assigned (PHP)',
+        'Paid (PHP)',
+        'Balance (PHP)',
+        'Status',
+        'Date Paid',
+      ];
+
+      const tableRows = enrichedFilteredPayables.map((r, idx) =>
+        [
+          escapeCSV(idx + 1),
+          escapeCSV(r.studentId),
+          escapeCSV(r.studentName),
+          escapeCSV(r.yearLevel),
+          escapeCSV(r.section),
+          escapeCSV(r.payableName),
+          escapeCSV(r.assigned.toFixed(2)),
+          escapeCSV(r.paid.toFixed(2)),
+          escapeCSV(r.balance.toFixed(2)),
+          escapeCSV(r.statusLabel),
+          escapeCSV(r.paidDateStr),
+        ].join(',')
+      );
+
+      const csvContent = [...metadataRows.map((m) => m.join(',')), headers.join(','), ...tableRows].join('\r\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const safeOrg = organizationName.replace(/[^a-zA-Z0-9]/g, '_');
+      const safePayable =
+        selectedPayableName === 'all'
+          ? 'All_Payables'
+          : selectedPayableName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+      const dateTag = new Date().toISOString().split('T')[0];
+
+      link.setAttribute('href', url);
+      link.setAttribute('download', `${safeOrg}_Payables_${safePayable}_${dateTag}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success('Payables Roster (.csv) exported successfully!');
+    } catch (err: any) {
+      toast.error('Failed to export Payables CSV: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleExportPDF = () => {
+    if (enrichedFilteredPayables.length === 0) {
+      toast.error('No payable records match the selected filters.');
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+      const pageWidth = 297;
+      const pageHeight = 210;
+      const margin = 14;
+      let y = margin;
+
+      doc.setFillColor(0, 26, 77);
+      doc.rect(margin, y, pageWidth - margin * 2, 24, 'F');
+      doc.setFillColor(255, 212, 28);
+      doc.rect(margin, y + 24, pageWidth - margin * 2, 2, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(13);
+      doc.setTextColor(255, 255, 255);
+      doc.text('STI COLLEGE ORMOC', margin + 6, y + 8);
+
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(255, 212, 28);
+      doc.text('CLUB PAYABLES ROSTER — PAID & NOT PAID YET COLLECTION REPORT', margin + 6, y + 14);
+
+      doc.setFontSize(8);
+      doc.setTextColor(200, 215, 245);
+      doc.text(
+        `Organization: ${organizationName} | Payable: ${selectedPayableName === 'all' ? 'All Payables' : selectedPayableName} | Filter: ${statusFilterLabel}`,
+        margin + 6,
+        y + 20
+      );
+
+      doc.setTextColor(230, 230, 230);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, pageWidth - margin - 6, y + 9, { align: 'right' });
+      doc.text(`Issuer: ${officerName}`, pageWidth - margin - 6, y + 15, { align: 'right' });
+      doc.text(`Term: ${selectedSemesterLabel}`, pageWidth - margin - 6, y + 20, { align: 'right' });
+
+      y += 32;
+
+      const boxW = (pageWidth - margin * 2 - 12) / 4;
+      const boxH = 14;
+      const kpiCards = [
+        { label: 'Paid Students', val: `${kpis.paidCount} (${formatCurrency(kpis.totalCollected)})`, color: [16, 185, 129] },
+        { label: 'Not Paid Yet', val: `${kpis.unpaidCount} (${formatCurrency(kpis.totalOutstanding)})`, color: [220, 38, 38] },
+        { label: 'Total Assessed', val: formatCurrency(kpis.totalAssigned), color: [0, 26, 77] },
+        { label: 'Collection Rate', val: `${kpis.rate}%`, color: [14, 78, 189] },
+      ];
+
+      kpiCards.forEach((kpi, idx) => {
+        const bx = margin + idx * (boxW + 4);
+        doc.setFillColor(248, 250, 252);
+        doc.roundedRect(bx, y, boxW, boxH, 2, 2, 'F');
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(bx, y, boxW, boxH, 2, 2, 'S');
+        doc.setFontSize(6.5);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(100, 116, 139);
+        doc.text(kpi.label.toUpperCase(), bx + 3, y + 4.5);
+        doc.setFontSize(9.5);
+        doc.setTextColor(kpi.color[0], kpi.color[1], kpi.color[2]);
+        doc.text(kpi.val, bx + 3, y + 10.5);
+      });
+
+      y += boxH + 8;
+
+      const colWidths = [9, 27, 52, 30, 52, 23, 23, 30, 23];
+      const colHeaders = ['#', 'Student ID', 'Student Name', 'Yr & Sec', 'Payable Name', 'Paid', 'Balance', 'Status', 'Date Paid'];
+
+      const drawHeader = () => {
+        doc.setFillColor(0, 26, 77);
+        doc.rect(margin, y, pageWidth - margin * 2, 7, 'F');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(7.5);
+        doc.setTextColor(255, 255, 255);
+        let cx = margin;
+        colHeaders.forEach((ch, idx) => {
+          const w = colWidths[idx];
+          if (idx === 5 || idx === 6) {
+            doc.text(ch, cx + w - 2, y + 5, { align: 'right' });
+          } else {
+            doc.text(ch, cx + 2, y + 5);
+          }
+          cx += w;
+        });
+        y += 7;
+      };
+
+      drawHeader();
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+
+      enrichedFilteredPayables.forEach((row, idx) => {
+        if (y + 7 > pageHeight - 20) {
+          doc.addPage('a4', 'landscape');
+          y = margin;
+          drawHeader();
+        }
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(margin, y, pageWidth - margin * 2, 6, 'F');
+        }
+        let cx = margin;
+        doc.setTextColor(120, 120, 120);
+        doc.text(String(idx + 1), cx + 2, y + 4.2);
+        cx += colWidths[0];
+
+        doc.setTextColor(50, 50, 50);
+        doc.text(row.studentId.substring(0, 16), cx + 2, y + 4.2);
+        cx += colWidths[1];
+
+        doc.setTextColor(20, 20, 20);
+        doc.text(
+          row.studentName.length > 30 ? row.studentName.substring(0, 27) + '...' : row.studentName,
+          cx + 2,
+          y + 4.2
+        );
+        cx += colWidths[2];
+
+        doc.setTextColor(70, 70, 70);
+        const yrSec = `${row.yearLevel} / ${row.section}`.substring(0, 18);
+        doc.text(yrSec, cx + 2, y + 4.2);
+        cx += colWidths[3];
+
+        doc.setTextColor(30, 30, 30);
+        doc.text(
+          row.payableName.length > 30 ? row.payableName.substring(0, 27) + '...' : row.payableName,
+          cx + 2,
+          y + 4.2
+        );
+        cx += colWidths[4];
+
+        doc.setTextColor(16, 185, 129);
+        doc.text(formatCurrency(row.paid), cx + colWidths[5] - 2, y + 4.2, { align: 'right' });
+        cx += colWidths[5];
+
+        doc.setTextColor(row.balance > 0 ? 220 : 80, row.balance > 0 ? 38 : 80, row.balance > 0 ? 38 : 80);
+        doc.text(formatCurrency(row.balance), cx + colWidths[6] - 2, y + 4.2, { align: 'right' });
+        cx += colWidths[6];
+
+        if (row.isPaid) doc.setTextColor(16, 185, 129);
+        else doc.setTextColor(220, 38, 38);
+        doc.setFont('helvetica', 'bold');
+        doc.text(row.statusLabel, cx + 2, y + 4.2);
+        doc.setFont('helvetica', 'normal');
+        cx += colWidths[7];
+
+        doc.setTextColor(90, 90, 90);
+        doc.text(row.paidDateStr.substring(0, 15), cx + 2, y + 4.2);
+
+        y += 6;
+      });
+
+      const safeOrg = organizationName.replace(/[^a-zA-Z0-9]/g, '_');
+      const safePayable =
+        selectedPayableName === 'all'
+          ? 'All_Payables'
+          : selectedPayableName.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30);
+      const dateTag = new Date().toISOString().split('T')[0];
+      doc.save(`${safeOrg}_Payables_${safePayable}_${dateTag}.pdf`);
+      toast.success('Payables Roster PDF exported successfully!');
+    } catch (err: any) {
+      toast.error('Failed to export PDF: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl border border-gray-200 overflow-hidden">
+        {/* STI Navy Modal Header */}
+        <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white shrink-0 border-b-4 border-[#FFD41C]">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center">
+              <Users className="w-5 h-5 text-[#FFD41C]" />
+            </div>
+            <div>
+              <h2 className="text-base font-bold leading-tight">
+                Export Student Payables Roster
+              </h2>
+              <p className="text-xs text-blue-200 flex items-center gap-1.5 mt-0.5">
+                <Building2 className="w-3.5 h-3.5" />
+                {organizationName} &bull; Filter by Payable Name, Paid &amp; Not Paid Yet Students
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-white/10 text-blue-100 hover:text-white transition-colors cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Scrollable Content */}
+        <div className="p-6 space-y-5 overflow-y-auto flex-1">
+          {/* Mode Switcher */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2">
+            <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wider px-2">
+              Report Format:
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onChangeMode('ledger')}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer bg-white text-gray-700 border border-gray-200 hover:bg-gray-100"
+              >
+                Budget Ledger Transactions
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeMode('payables')}
+                className="px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer bg-[#001A4D] text-white shadow-2xs flex items-center gap-1.5"
+              >
+                <Users className="w-3.5 h-3.5 text-[#FFD41C]" />
+                Student Payables Roster (Paid / Not Paid Yet)
+              </button>
+            </div>
+          </div>
+
+          {/* Filter Panel */}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                <Filter className="w-3.5 h-3.5 text-[#0E4EBD]" /> Payable Filters
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedPayableName('all');
+                  setPaymentStatusFilter('all');
+                  setSelectedSemester(currentSemesterId || 'all');
+                  setSearchQuery('');
+                }}
+                className="text-[11px] font-semibold text-gray-500 hover:text-[#001A4D] flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" /> Reset Filters
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {/* Payable Name Selector */}
+              <div className="md:col-span-2">
+                <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
+                  Payable Name
+                </label>
+                <select
+                  value={selectedPayableName}
+                  onChange={(e) => setSelectedPayableName(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-gray-300 rounded-lg text-gray-800 outline-none focus:ring-2 focus:ring-[#0E4EBD]/30 cursor-pointer"
+                >
+                  <option value="all">
+                    All Club Payables ({semFilteredPayables.length} records)
+                  </option>
+                  {payableNameOptions.map((opt) => (
+                    <option key={opt.name} value={opt.name}>
+                      {opt.name} ({opt.paid} Paid / {opt.unpaid} Not Paid Yet)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Semester Filter */}
+              <div>
+                <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
+                  Academic Term
+                </label>
+                <select
+                  value={selectedSemester}
+                  onChange={(e) => setSelectedSemester(e.target.value)}
+                  className="w-full px-3 py-2 text-xs bg-white border border-gray-300 rounded-lg text-gray-800 outline-none focus:ring-2 focus:ring-[#0E4EBD]/30 cursor-pointer"
+                >
+                  <option value="all">All Academic Terms</option>
+                  {semesters.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.academicYear} {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {(
+                  [
+                    { id: 'all', label: 'All Students' },
+                    { id: 'paid', label: 'Paid Only' },
+                    { id: 'unpaid', label: 'Not Paid Yet Only' },
+                  ] as const
+                ).map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setPaymentStatusFilter(st.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                      paymentStatusFilter === st.id
+                        ? st.id === 'paid'
+                          ? 'bg-emerald-600 text-white'
+                          : st.id === 'unpaid'
+                            ? 'bg-red-600 text-white'
+                            : 'bg-[#001A4D] text-white'
+                        : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="relative w-full sm:w-72">
+                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search student name, ID, year, section..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-8 pr-3 py-1.5 text-xs bg-white border border-gray-300 rounded-lg text-gray-800 placeholder-gray-400 focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* KPI Summary */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-3.5">
+              <span className="text-[11px] font-bold text-emerald-700 uppercase tracking-wide flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Paid Students
+              </span>
+              <p className="text-lg font-bold text-emerald-800 mt-1">
+                {kpis.paidCount} students
+              </p>
+              <span className="text-[10px] text-emerald-600">
+                Collected: {formatCurrency(kpis.totalCollected)}
+              </span>
+            </div>
+
+            <div className="bg-rose-50/60 border border-rose-200/80 rounded-xl p-3.5">
+              <span className="text-[11px] font-bold text-rose-700 uppercase tracking-wide flex items-center gap-1">
+                <AlertCircle className="w-3.5 h-3.5" /> Not Paid Yet
+              </span>
+              <p className="text-lg font-bold text-rose-800 mt-1">
+                {kpis.unpaidCount} students
+              </p>
+              <span className="text-[10px] text-rose-600">
+                Balance: {formatCurrency(kpis.totalOutstanding)}
+              </span>
+            </div>
+
+            <div className="bg-blue-50/60 border border-blue-200/80 rounded-xl p-3.5">
+              <span className="text-[11px] font-bold text-blue-700 uppercase tracking-wide flex items-center gap-1">
+                <DollarSign className="w-3.5 h-3.5" /> Total Assessed
+              </span>
+              <p className="text-lg font-bold text-[#001A4D] mt-1">
+                {formatCurrency(kpis.totalAssigned)}
+              </p>
+              <span className="text-[10px] text-blue-600">Across {enrichedFilteredPayables.length} records</span>
+            </div>
+
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3.5">
+              <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wide flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-gray-500" /> Collection Rate
+              </span>
+              <p className="text-lg font-bold text-gray-800 mt-1">{kpis.rate}%</p>
+              <span className="text-[10px] text-gray-500">Paid vs total assessed</span>
+            </div>
+          </div>
+
+          {/* Preview Table */}
+          <div className="border border-gray-200 rounded-xl overflow-hidden shadow-2xs bg-white">
+            <div className="px-4 py-2.5 bg-gray-100 border-b border-gray-200 flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                Student Payables Preview ({enrichedFilteredPayables.length})
+              </span>
+              <span className="text-[11px] text-gray-500 font-medium">
+                {selectedPayableName === 'all' ? 'All Payables' : selectedPayableName} &bull; {statusFilterLabel}
+              </span>
+            </div>
+
+            <div className="max-h-64 overflow-y-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-gray-50 text-gray-600 font-bold uppercase text-[10px] border-b border-gray-200 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2 w-8 text-center">#</th>
+                    <th className="px-3 py-2">Student ID</th>
+                    <th className="px-3 py-2">Student Name</th>
+                    <th className="px-3 py-2">Year &amp; Section</th>
+                    <th className="px-3 py-2">Payable Name</th>
+                    <th className="px-3 py-2 text-right">Paid</th>
+                    <th className="px-3 py-2 text-right">Balance</th>
+                    <th className="px-3 py-2">Status</th>
+                    <th className="px-3 py-2">Date Paid</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 font-medium text-gray-700">
+                  {enrichedFilteredPayables.map((row, idx) => (
+                    <tr key={row.id || idx} className="hover:bg-blue-50/30 transition-colors">
+                      <td className="px-3 py-2 text-center text-gray-400 font-mono text-[11px]">
+                        {idx + 1}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-[11px] text-gray-600 whitespace-nowrap">
+                        {row.studentId}
+                      </td>
+                      <td className="px-3 py-2 font-semibold text-gray-900 whitespace-nowrap">
+                        {row.studentName}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
+                        {row.yearLevel} / {row.section}
+                      </td>
+                      <td className="px-3 py-2 text-gray-800 max-w-xs truncate" title={row.payableName}>
+                        {row.payableName}
+                      </td>
+                      <td className="px-3 py-2 text-right font-bold text-emerald-700 whitespace-nowrap">
+                        {formatCurrency(row.paid)}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${
+                        row.balance > 0 ? 'text-rose-700' : 'text-gray-500'
+                      }`}>
+                        {formatCurrency(row.balance)}
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                            row.isPaid
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : row.isRefunded
+                                ? 'bg-gray-100 text-gray-600 border border-gray-200'
+                                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                          }`}
+                        >
+                          {row.statusLabel}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-[11px] text-gray-500 whitespace-nowrap">
+                        {row.paidDateStr}
+                      </td>
+                    </tr>
+                  ))}
+                  {enrichedFilteredPayables.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="px-4 py-8 text-center text-gray-400 text-xs">
+                        No payable records match the selected Payable Name or Payment Status filter.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="border-t border-gray-200 px-6 py-4 bg-gray-50 flex items-center justify-between shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+          >
+            Cancel
+          </button>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              disabled={isExporting || enrichedFilteredPayables.length === 0}
+              className="px-4 py-2 border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-2xs"
+            >
+              <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+              Download Excel / CSV
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportPDF}
+              disabled={isExporting || enrichedFilteredPayables.length === 0}
               className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
             >
               <Printer className="w-4 h-4 text-[#FFD41C]" />

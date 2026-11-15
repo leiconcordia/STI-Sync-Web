@@ -357,39 +357,62 @@ function startOrSyncOfficerStore() {
     where('isActive', '==', true)
   );
 
-  activeRolesUnsub = onSnapshot(qRoles, (snapshot) => {
-    const activeRoles = snapshot.docs.map((d) => ({
-      id: d.id,
-      organizationId: d.data().organizationId,
-      roleId: d.data().roleId,
-      isActive: d.data().isActive,
-    }));
+  activeRolesUnsub = onSnapshot(
+    qRoles,
+    (snapshot) => {
+      const activeRoles = snapshot.docs.map((d) => ({
+        id: d.id,
+        organizationId: d.data().organizationId,
+        roleId: d.data().roleId,
+        isActive: d.data().isActive,
+      }));
 
-    setStoreState((prev) => {
-      let nextProfile = prev.profile;
-      if (activeRoles.length === 1 && nextProfile && !nextProfile.activeOrganizationId) {
-        nextProfile = {
-          ...nextProfile,
-          activeOrganizationId: activeRoles[0].organizationId,
-          activeRoleId: activeRoles[0].roleId,
+      setStoreState((prev) => {
+        let nextProfile = prev.profile;
+        if (activeRoles.length === 1 && nextProfile && !nextProfile.activeOrganizationId) {
+          nextProfile = {
+            ...nextProfile,
+            activeOrganizationId: activeRoles[0].organizationId,
+            activeRoleId: activeRoles[0].roleId,
+          };
+          const serialized = JSON.stringify(nextProfile);
+          activeSessionSignature = serialized;
+          localStorage.setItem(SESSION_KEY, serialized);
+          ensureOrgDocListener(nextProfile.activeOrganizationId);
+        }
+        return {
+          ...prev,
+          roles: activeRoles,
+          profile: nextProfile,
+          loading: false,
         };
-        const serialized = JSON.stringify(nextProfile);
-        activeSessionSignature = serialized;
-        localStorage.setItem(SESSION_KEY, serialized);
-        ensureOrgDocListener(nextProfile.activeOrganizationId);
-      }
-      return {
-        ...prev,
-        roles: activeRoles,
-        profile: nextProfile,
-        loading: false,
-      };
-    });
-  });
+      });
+    },
+    (err) => {
+      console.warn('[useOfficerProfile] Officer roles stream notice:', err);
+      setStoreState((prev) => ({ ...prev, loading: false }));
+    }
+  );
+}
+
+function hasStoredOfficerSession(): boolean {
+  try {
+    return Boolean(localStorage.getItem(SESSION_KEY));
+  } catch {
+    return false;
+  }
 }
 
 export function useOfficerProfile() {
-  const [state, setState] = useState<OfficerProfileStoreState>(() => storeState);
+  const [state, setState] = useState<OfficerProfileStoreState>(() => {
+    // Synchronously treat an un-hydrated stored session as loading on first render so
+    // OfficerLayout does not bounce a newly signed-in user back to /portal/login
+    // before useEffect runs startOrSyncOfficerStore().
+    if (!storeState.profile && hasStoredOfficerSession()) {
+      return { ...storeState, loading: true };
+    }
+    return storeState;
+  });
 
   useEffect(() => {
     storeSubscribers++;
@@ -454,12 +477,14 @@ export function useOfficerProfile() {
     notifyStore();
   };
 
+  const pendingSessionSync = !state.profile && hasStoredOfficerSession();
+
   return {
     profile: state.profile,
     roles: state.roles,
     activeOrgStatus: state.activeOrgStatus,
     activeOrgName: state.activeOrgName,
-    loading: state.loading,
+    loading: state.loading || pendingSessionSync,
     switchOrganization,
     markPasswordChanged,
     logout,

@@ -18,7 +18,11 @@ import {
 } from 'lucide-react';
 import { useSemesters, useCourses, useDepartments } from '../../../modules/academic';
 import { useStudents } from '../../../modules/students/hooks/useStudentStream';
-import { createPayable } from '../../../modules/finance/services/payable.service';
+import {
+  createPayable,
+  resolvePayableStudentUid,
+  resolveActivePeriodForLevel,
+} from '../../../modules/finance/services/payable.service';
 import { usePayableCategories } from '../../../modules/finance/services/payable-category.service';
 import type { PayableType } from '../../../modules/finance/types/payable.types';
 import { toast } from 'sonner';
@@ -185,13 +189,11 @@ export function AddAdminPayableModal({
       return;
     }
 
-    const semId = activeSemester?.id || semesters.find((s) => s.status === 'ACTIVE')?.id || semesters[0]?.id;
-    if (!semId) {
+    const defaultPeriod = resolveActivePeriodForLevel(semesters, 'COLLEGE');
+    if (semesters.length === 0 || !defaultPeriod.id) {
       toast.error('No active academic semester found. Please configure a semester in settings.');
       return;
     }
-
-    const selectedSemesterObj = semesters.find((s) => s.id === semId) || activeSemester;
 
     // Determine target students
     const targetStudents =
@@ -209,7 +211,10 @@ export function AddAdminPayableModal({
     try {
       let createdCount = 0;
       for (const s of targetStudents) {
-        const authUid = s.id || s.studentId;
+        const authUid = resolvePayableStudentUid(s);
+        const studentAcademicLevel =
+          s.academicLevel || (String(s.yearLevel || s.year || '').includes('Grade') ? 'SHS' : 'COLLEGE');
+        const period = resolveActivePeriodForLevel(semesters, studentAcademicLevel);
         const studentFullName =
           formatPersonName(s) ||
           s.name ||
@@ -224,13 +229,14 @@ export function AddAdminPayableModal({
           label: label.trim(),
           title: label.trim(),
           feeTitle: label.trim(),
+          eventTitle: label.trim(),
           category: categoryName.trim() || (payableType === 'admin_fine' ? 'Administrative Fine' : 'Institutional Assessment'),
           description: description.trim() || `Institutional assessment by ${addedBy}`,
           organizationId: null,
           organizationName: 'SAO Administration',
-          semesterId: semId,
-          semester: selectedSemesterObj?.label || selectedSemesterObj?.semester || '',
-          schoolYear: selectedSemesterObj?.academicYear || '',
+          semesterId: period.id,
+          semester: period.semester || period.label,
+          schoolYear: period.schoolYear,
           assignedAmount: Number(amount),
           amount: Number(amount),
           paymentStatus: 'UNPAID',
@@ -241,7 +247,7 @@ export function AddAdminPayableModal({
           departmentName: s.department || s.departmentName || '',
           yearLevel: s.yearLevel || s.year || '',
           section: s.section || '',
-          academicLevel: s.academicLevel || (String(s.yearLevel || '').includes('Grade') ? 'SHS' : 'COLLEGE'),
+          academicLevel: studentAcademicLevel,
           createdBy: addedBy,
         });
         createdCount++;

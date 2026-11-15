@@ -3,22 +3,343 @@ import { useState, useMemo, useEffect } from "react";
 import { toast } from 'sonner';
 
 import { useOrgLedger, parseTimestampMillis } from '../../modules/finance/hooks/useFinanceStream';
-import { addOrgLedgerTransaction } from '../../modules/finance/services/finance.service';
+import { addOrgLedgerTransaction, deductApprovedEventBudget } from '../../modules/finance/services/finance.service';
 import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { useOrgEvents } from '../../modules/events/hooks/useEventStream';
+import { useOrgLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useOrgPayables, useOrgCollectionsStream } from '../../modules/finance/hooks/usePayableStream';
 import { transferCollectionGroupToLedger } from '../../modules/finance/services/payable.service';
 import { ProcessRefundModal } from '../../modules/finance/components/ProcessRefundModal';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { removeOrgAutoPayableRule, toggleOrgAutoPayableRule } from '../../modules/organizations/services/organization.service';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import type { OrgLedgerDocument } from '../../modules/finance/types/finance.types';
 import type { PayableDocument, StudentEventCollectionGroup } from '../../modules/finance/types/payable.types';
 import { Timestamp } from 'firebase/firestore';
+import { formatCurrency as fcFormatCurrency } from '../../utils/currency';
+import {
+  ChevronDown as FcChevronDown,
+  ChevronUp as FcChevronUp,
+  CheckCircle2 as FcCheckCircle2,
+  Trash2 as FcTrash2,
+  Power as FcPower,
+  Download as FcDownload,
+  ArrowDownLeft as FcArrowDownLeft,
+  ArrowUpRight as FcArrowUpRight,
+  Sparkles as FcSparkles,
+  FileText as FcFileText,
+} from 'lucide-react';
+import { toast as fcToast } from 'sonner';
 
-import { GenerateDuesModal } from '../components/GenerateDuesModal';
 import { AddPayableModal } from '../components/AddPayableModal';
+
+interface ApprovedOrgActivitiesPanelProps {
+  organizationId: string;
+  ledgerData: OrgLedgerDocument[];
+  isPast?: boolean;
+  officerName?: string;
+}
+
+function ApprovedOrgActivitiesPanel({
+  organizationId,
+  ledgerData,
+  isPast = false,
+  officerName = 'Student Officer',
+}: ApprovedOrgActivitiesPanelProps) {
+  const { profile: fcBudgetProfile } = useOfficerProfile();
+  const actorName = fcBudgetProfile?.studentName || officerName;
+  const { events: orgEvents = [] } = useOrgEvents(organizationId);
+  const { liquidations: orgLiquidations = [] } = useOrgLiquidations(organizationId);
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
+  const [syncingEventId, setSyncingEventId] = useState<string | null>(null);
+
+  const activityRows = useMemo(() => {
+    const approvedSet = new Set(['approved', 'completed']);
+    const excludedSet = new Set(['draft', 'pending', 'rejected', 'returned', 'cancelled', 'withdrawn']);
+
+    return orgEvents
+      .filter((ev: any) => {
+        const fs = (ev.fundingSource || '').toString().trim().toLowerCase();
+        const isOrgFunded =
+          fs === 'organization_funds' ||
+          fs === 'organization' ||
+          fs === 'org_funds' ||
+          fs === 'club_funds';
+        if (!isOrgFunded) return false;
+
+        const pStatus = (ev.proposalStatus || '').toString().trim().toLowerCase();
+        const eStatus = (ev.status || '').toString().trim().toLowerCase();
+        if (excludedSet.has(pStatus) || excludedSet.has(eStatus)) return false;
+
+        const isApproved = pStatus
+          ? approvedSet.has(pStatus) || ev.isFullySigned === true
+          : ['approved', 'upcoming', 'ongoing', 'completed'].includes(eStatus);
+        if (!isApproved) return false;
+
+        const approvedBudget = Number(
+          ev.totalApprovedBudget ??
+            ev.allocatedBudget ??
+            ev.budget ??
+            ev.financialProjections?.totalExpenses ??
+            0
+        );
+        return approvedBudget > 0;
+      })
+      .map((ev: any) => {
+        const approvedBudget = Number(
+          ev.totalApprovedBudget ??
+            ev.allocatedBudget ??
+            ev.budget ??
+            ev.financialProjections?.totalExpenses ??
+            0
+        );
+
+        const allocTx = ledgerData.find(
+          (tx) => tx.eventId === ev.id && tx.source === 'event_budget'
+        );
+        const settlementTx = ledgerData.find(
+          (tx) =>
+            tx.eventId === ev.id &&
+            (tx.source === 'liquidation_surplus' || tx.source === 'liquidation_deficit')
+        );
+
+        const matchingFls = orgLiquidations.filter(
+          (l) => l.eventId === ev.id && l.status !== 'voided'
+        );
+        const fl =
+          matchingFls.find((l) => l.status === 'approved') ||
+          matchingFls.find((l) => l.status === 'under_review') ||
+          matchingFls[0] ||
+          null;
+
+        const disbursed = fl
+          ? Number(fl.amountAdvanced ?? fl.allocatedBudget ?? approvedBudget ?? 0)
+          : approvedBudget;
+        const actual = fl ? Number(fl.totalActualSpending ?? 0) : 0;
+        const diff = fl ? disbursed - actual : 0;
+
+        return {
+          event: ev,
+          title: ev.title || ev.eventName || ev.name || 'Club Activity',
+          referenceId: ev.referenceId || ev.referenceNo || '',
+          approvedBudget,
+          allocTx,
+          settlementTx,
+          fl,
+          disbursed,
+          actual,
+          diff,
+        };
+      });
+  }, [orgEvents, ledgerData, orgLiquidations]);
+
+  const missingSyncCount = activityRows.filter((r) => !r.allocTx).length;
+  const pendingSettlementCount = activityRows.filter(
+    (r) => r.fl && r.diff !== 0 && !r.settlementTx
+  ).length;
+  const isExpanded =
+    userExpanded !== null
+      ? userExpanded
+      : missingSyncCount > 0 || pendingSettlementCount > 0;
+
+  if (activityRows.length === 0) return null;
+
+  return (
+    <div className="bg-white border border-blue-200 rounded-xl overflow-hidden shadow-xs">
+      <div
+        onClick={() => setUserExpanded(!isExpanded)}
+        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-5 py-3.5 bg-linear-to-r from-[#001A4D]/5 via-blue-50/70 to-amber-50/40 border-b border-blue-100 cursor-pointer hover:bg-blue-50/70 transition-colors"
+      >
+        <div className="flex items-center gap-2.5 flex-wrap">
+          <FcFileText className="w-4 h-4 text-[#001A4D] shrink-0" />
+          <h3 className="text-sm font-bold text-[#001A4D]">
+            Approved Club-Funded Activities &amp; Liquidation Tracker
+          </h3>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-[#001A4D]">
+            {activityRows.length} {activityRows.length === 1 ? 'Activity' : 'Activities'}
+          </span>
+          {missingSyncCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+              {missingSyncCount} Pending Ledger Deduction
+            </span>
+          )}
+          {pendingSettlementCount > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
+              {pendingSettlementCount} FL Settlement Pending
+            </span>
+          )}
+        </div>
+
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 text-xs font-bold text-[#0E4EBD] cursor-pointer self-end sm:self-auto"
+        >
+          {isExpanded ? (
+            <>
+              Hide Tracker <FcChevronUp className="w-4 h-4" />
+            </>
+          ) : (
+            <>
+              View Tracker <FcChevronDown className="w-4 h-4" />
+            </>
+          )}
+        </button>
+      </div>
+
+      {isExpanded && (
+        <div className="p-4 space-y-3">
+          {/* Plain-English Budget & FL Return vs Reimbursement Guide */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+            <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+              <p className="font-bold text-[#001A4D]">1. Approved Activity Budget</p>
+              <p className="text-gray-600 mt-0.5">
+                Approved <span className="font-semibold">Organization Funds</span> proposals auto-deduct an <span className="font-semibold">Event Budget Outlay</span> expense from this ledger.
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200">
+              <p className="font-bold text-emerald-900 flex items-center gap-1">
+                <FcArrowDownLeft className="w-3.5 h-3.5 text-emerald-600" />
+                2. Disbursed &gt; Actual Expenses (Surplus)
+              </p>
+              <p className="text-emerald-800 mt-0.5">
+                Officer <span className="font-semibold">Returns Unspent Cash</span> to Club Funds. Recorded as <span className="font-semibold">+ Income</span> once FL proof is verified.
+              </p>
+            </div>
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-200">
+              <p className="font-bold text-amber-900 flex items-center gap-1">
+                <FcArrowUpRight className="w-3.5 h-3.5 text-amber-600" />
+                3. Actual Expenses &gt; Disbursed (Deficit)
+              </p>
+              <p className="text-amber-800 mt-0.5">
+                Club Treasury <span className="font-semibold">Reimburses the Officer</span> for out-of-pocket spending. Recorded as <span className="font-semibold">- Expense</span> once verified.
+              </p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200 text-[11px] font-bold text-gray-600 uppercase">
+                  <th className="py-2.5 px-3">Approved Activity</th>
+                  <th className="py-2.5 px-3 text-right">Approved Budget</th>
+                  <th className="py-2.5 px-3">Budget Outlay Status</th>
+                  <th className="py-2.5 px-3">Financial Liquidation &amp; Return / Reimburse</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {activityRows.map((row) => (
+                  <tr key={row.event.id} className="hover:bg-gray-50/60">
+                    <td className="py-2.5 px-3">
+                      <p className="font-bold text-[#001A4D]">{row.title}</p>
+                      {row.referenceId && (
+                        <p className="text-[11px] text-gray-500 font-mono">{row.referenceId}</p>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-bold text-gray-900">
+                      {fcFormatCurrency(row.approvedBudget)}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {row.allocTx ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold text-[11px]">
+                          <FcCheckCircle2 className="w-3.5 h-3.5" />
+                          Deducted ({fcFormatCurrency(row.allocTx.amount)})
+                        </span>
+                      ) : !isPast ? (
+                        <button
+                          type="button"
+                          disabled={syncingEventId === row.event.id}
+                          onClick={async () => {
+                            setSyncingEventId(row.event.id);
+                            try {
+                              const txId = await deductApprovedEventBudget(
+                                {
+                                  ...row.event,
+                                  hostingOrgId:
+                                    row.event.hostingOrgId ||
+                                    row.event.organizationId ||
+                                    organizationId,
+                                },
+                                row.event.id,
+                                actorName
+                              );
+                              if (txId) {
+                                fcToast.success(
+                                  `Recorded ${fcFormatCurrency(row.approvedBudget)} budget allocation for "${row.title}".`
+                                );
+                              } else {
+                                fcToast.info(
+                                  `Budget deduction for "${row.title}" is already recorded or zero.`
+                                );
+                              }
+                            } catch (err: any) {
+                              fcToast.error(
+                                err?.message || 'Failed to record activity budget allocation.'
+                              );
+                            } finally {
+                              setSyncingEventId(null);
+                            }
+                          }}
+                          className="px-2.5 py-1 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-md font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                        >
+                          {syncingEventId === row.event.id
+                            ? 'Recording...'
+                            : 'Record Allocation'}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-amber-700 font-semibold">
+                          Not Recorded in Term Ledger
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {!row.fl ? (
+                        <span className="text-gray-400">No FL filed yet</span>
+                      ) : (
+                        <div className="space-y-0.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {row.diff > 0 ? (
+                              <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[11px]">
+                                Return {fcFormatCurrency(row.diff)} to Club Funds (+ Income)
+                              </span>
+                            ) : row.diff < 0 ? (
+                              <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[11px]">
+                                Reimburse Officer {fcFormatCurrency(Math.abs(row.diff))} (- Expense)
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-semibold text-[11px]">
+                                Exact Break-Even ({fcFormatCurrency(0)})
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[11px] text-gray-500">
+                            FL: <span className="font-semibold capitalize">{row.fl.status.replace(/_/g, ' ')}</span>
+                            {' • '}
+                            Actual: {fcFormatCurrency(row.actual)} / Disbursed: {fcFormatCurrency(row.disbursed)}
+                            {row.settlementTx ? (
+                              <span className="ml-1.5 text-emerald-700 font-bold">
+                                &bull; Ledger Settled ✓
+                              </span>
+                            ) : row.diff !== 0 && row.fl.cashierSettlementStatus ? (
+                              <span className="ml-1.5 text-blue-700 font-semibold capitalize">
+                                &bull; {row.fl.cashierSettlementStatus.replace(/_/g, ' ')}
+                              </span>
+                            ) : null}
+                          </p>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 import { RecordPaymentModal } from '../components/RecordPaymentModal';
 import { ExportFinancialReportModal, formatTransactionSource } from '../../modules/finance/components/ExportFinancialReportModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
@@ -789,6 +1110,12 @@ function BudgetTrackerTab({
 
   return (
     <div className="space-y-4">
+      <ApprovedOrgActivitiesPanel
+        organizationId={organizationId}
+        ledgerData={ledgerData}
+        isPast={isPast}
+        officerName={officerStudentId}
+      />
       <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 px-5 py-4 border-b border-gray-100">
           <div className="border-l-4 border-[#0E4EBD] pl-3">
@@ -1481,8 +1808,16 @@ function StudentCollectionsAndPayablesTab({
 
   // Modals
   const [viewCollection, setViewCollection] = useState<StudentEventCollectionGroup | null>(null);
-  const [showGenerateDues, setShowGenerateDues] = useState(false);
+  const [showPayableExport, setShowPayableExport] = useState(false);
   const [showAddPayable, setShowAddPayable] = useState(false);
+  const { profile: fcOfficerProfile } = useOfficerProfile();
+  const { data: fcOrganizations = [] } = useOrganizationStream();
+  const currentOrgForRules = useMemo(
+    () => fcOrganizations.find((o) => o.id === organizationId) || null,
+    [fcOrganizations, organizationId]
+  );
+  const [togglingRuleId, setTogglingRuleId] = useState<string | null>(null);
+  const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null);
   const [paymentModalData, setPaymentModalData] = useState<{
     payables: PayableDocument[];
     defaultPayableId?: string;
@@ -1751,21 +2086,21 @@ function StudentCollectionsAndPayablesTab({
             <h3 className="font-bold text-[#001A4D] text-base">Student Collections & Payables</h3>
             <p className="text-gray-500 text-xs mt-0.5">Membership Dues, Event Fees, Club Fines, and Member Assessments</p>
           </div>
-          {!isPast && (
-            <div className="flex items-center gap-2 flex-wrap">
-              {pendingTransferTotal > 0 && (
-                <div className="px-3 py-2 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs">
-                  <Clock className="w-4 h-4 text-amber-600" />
-                  Ready to Transfer: {formatCurrency(pendingTransferTotal)}
-                </div>
-              )}
-              <button
-                onClick={() => setShowGenerateDues(true)}
-                className="px-3.5 py-2 bg-[#0E4EBD] text-white rounded-lg text-xs font-bold hover:bg-[#0A3D94] transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
-              >
-                <Coins className="w-4 h-4 text-[#FFD41C]" />
-                Generate Membership Dues
-              </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            {!isPast && pendingTransferTotal > 0 && (
+              <div className="px-3 py-2 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-2xs">
+                <Clock className="w-4 h-4 text-amber-600" />
+                Ready to Transfer: {formatCurrency(pendingTransferTotal)}
+              </div>
+            )}
+            <button
+              onClick={() => setShowPayableExport(true)}
+              className="px-3.5 py-2 bg-white border border-gray-300 text-[#001A4D] rounded-lg text-xs font-bold hover:bg-gray-50 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <FcDownload className="w-4 h-4 text-[#0E4EBD]" />
+              Export Payable Roster
+            </button>
+            {!isPast && (
               <button
                 onClick={() => setShowAddPayable(true)}
                 className="px-3.5 py-2 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
@@ -1773,8 +2108,8 @@ function StudentCollectionsAndPayablesTab({
                 <Plus className="w-4 h-4 text-[#FFD41C]" />
                 Add Payable / Fine
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* 4-KPI Metric Row */}
@@ -1797,6 +2132,100 @@ function StudentCollectionsAndPayablesTab({
           </div>
         </div>
       </div>
+
+      {/* Auto-Assign Rules on Club Entry */}
+      {(currentOrgForRules?.autoPayableRules?.length ?? 0) > 0 && (
+        <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-4 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <FcSparkles className="w-4 h-4 text-[#0E4EBD]" />
+              <h4 className="text-xs font-bold text-[#001A4D] uppercase tracking-wider">
+                Auto-Assigned Payables When Students Join This Club ({currentOrgForRules!.autoPayableRules!.length})
+              </h4>
+            </div>
+            <span className="text-[11px] text-blue-700 font-medium">
+              Automatically billed to incoming active members & synced to the Student Mobile App
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            {currentOrgForRules!.autoPayableRules!.map((rule) => (
+              <div
+                key={rule.id}
+                className={`flex items-center justify-between gap-3 px-3.5 py-2.5 rounded-lg border text-xs bg-white ${
+                  rule.isActive ? 'border-blue-200' : 'border-gray-200 opacity-70'
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-bold text-[#001A4D] truncate">{rule.title}</span>
+                    <span
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        rule.isActive ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-600'
+                      }`}
+                    >
+                      {rule.isActive ? 'Active' : 'Paused'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-0.5 truncate">
+                    {fcFormatCurrency(rule.amount || 0)} &bull;{' '}
+                    {rule.type === 'membership_due' ? 'Membership Due' : 'Club Fine'}
+                    {rule.targetYearLevels && rule.targetYearLevels.length > 0
+                      ? ` • ${rule.targetYearLevels.join(', ')}`
+                      : ' • All Years'}
+                    {rule.targetSections && rule.targetSections.length > 0
+                      ? ` • Sec ${rule.targetSections.join(', ')}`
+                      : ''}
+                  </p>
+                </div>
+                {!isPast && (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      disabled={togglingRuleId === rule.id}
+                      onClick={async () => {
+                        setTogglingRuleId(rule.id);
+                        try {
+                          await toggleOrgAutoPayableRule(organizationId, rule.id, !rule.isActive);
+                          fcToast.success(
+                            rule.isActive ? `Paused auto-billing for "${rule.title}"` : `Activated auto-billing for "${rule.title}"`
+                          );
+                        } catch (err: any) {
+                          fcToast.error(err?.message || 'Failed to update auto-payable rule.');
+                        } finally {
+                          setTogglingRuleId(null);
+                        }
+                      }}
+                      title={rule.isActive ? 'Pause auto-billing for new members' : 'Resume auto-billing for new members'}
+                      className="p-1.5 rounded-md border border-gray-200 hover:bg-gray-100 text-gray-600 cursor-pointer disabled:opacity-50"
+                    >
+                      <FcPower className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={deletingRuleId === rule.id}
+                      onClick={async () => {
+                        setDeletingRuleId(rule.id);
+                        try {
+                          await removeOrgAutoPayableRule(organizationId, rule.id);
+                          fcToast.success(`Removed auto-assign rule "${rule.title}". Existing student payables remain intact.`);
+                        } catch (err: any) {
+                          fcToast.error(err?.message || 'Failed to remove auto-payable rule.');
+                        } finally {
+                          setDeletingRuleId(null);
+                        }
+                      }}
+                      title="Remove auto-assign rule (keeps existing student payables)"
+                      className="p-1.5 rounded-md border border-red-200 hover:bg-red-50 text-red-600 cursor-pointer disabled:opacity-50"
+                    >
+                      <FcTrash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Sub-View Navigation Tabs */}
       <div className="flex gap-1 border-b border-gray-200">
@@ -2372,13 +2801,16 @@ function StudentCollectionsAndPayablesTab({
         />
       )}
 
-      {showGenerateDues && (
-        <GenerateDuesModal
-          isOpen={showGenerateDues}
-          onClose={() => setShowGenerateDues(false)}
+      {showPayableExport && (
+        <ExportFinancialReportModal
+          isOpen={showPayableExport}
+          onClose={() => setShowPayableExport(false)}
           organizationId={organizationId}
           organizationName={organizationName}
-          addedBy={officerStudentId}
+          ledgerData={[]}
+          payablesData={payables}
+          initialMode="payables"
+          officerName={fcOfficerProfile?.studentName || officerStudentId}
         />
       )}
 
@@ -2522,6 +2954,7 @@ export default function FinanceCenter() {
           ledgerData={ledgerData}
           currentSemesterId={selectedSemId}
           officerName={officerName}
+          initialMode={activeTab === 'budget' ? 'ledger' : 'payables'}
         />
       )}
     </div>

@@ -818,6 +818,42 @@ export function generateOfficerMembershipDirectory(
   };
 }
 
+export interface PayableTrackingFilterOptions {
+  payableName?: string;
+  paymentStatusFilter?: 'ALL' | 'PAID' | 'UNPAID';
+  semesterId?: string;
+}
+
+function getPayableDisplayLabel(p: PayableDocument): string {
+  return (
+    (p as any).eventName ||
+    (p as any).title ||
+    p.description ||
+    (p as any).feeTitle ||
+    'Club Payable'
+  )
+    .toString()
+    .trim();
+}
+
+function formatPayableTimestamp(val: any): string {
+  if (!val) return 'Pending Payment';
+  try {
+    let dt: Date | null = null;
+    if (typeof val.toDate === 'function') dt = val.toDate();
+    else if (typeof val.toMillis === 'function') dt = new Date(val.toMillis());
+    else if (typeof val.seconds === 'number') dt = new Date(val.seconds * 1000);
+    else if (val instanceof Date) dt = val;
+    else if (typeof val === 'string' || typeof val === 'number') {
+      const parsed = new Date(val);
+      if (!isNaN(parsed.getTime())) dt = parsed;
+    }
+    return dt && !isNaN(dt.getTime()) ? dt.toLocaleDateString() : 'Pending Payment';
+  } catch {
+    return 'Pending Payment';
+  }
+}
+
 /**
  * Officer Report 5: Member Dues & Payables Collection Tracking Report
  */
@@ -827,33 +863,121 @@ export function generateOfficerDuesTrackingReport(
   filter: ReportFilterOptions,
   officerName = 'Organization Treasurer',
   presidentName = 'Club President',
-  adviserName = 'Club Adviser'
+  adviserName = 'Club Adviser',
+  payableFilter?: PayableTrackingFilterOptions,
+  students: StudentDocument[] = []
 ): GeneratedReportData {
-  const orgPayables = payables.filter((p) => p.organizationId === org.id);
+  const studentMap = new Map<string, StudentDocument>();
+  students.forEach((s) => {
+    if (s.id) studentMap.set(s.id.toLowerCase().trim(), s);
+    if (s.authUid) studentMap.set(s.authUid.toLowerCase().trim(), s);
+    if (s.studentId) studentMap.set(s.studentId.toLowerCase().trim(), s);
+  });
 
-  const totalAssessed = orgPayables.reduce((sum, p) => sum + (p.amount || 0), 0);
-  const totalPaid = orgPayables
-    .filter((p) => p.status === 'paid' || p.paymentStatus === 'PAID')
-    .reduce((sum, p) => sum + (p.amount || 0), 0);
-  const totalUnpaid = totalAssessed - totalPaid;
+  const targetPayableName = payableFilter?.payableName || 'ALL';
+  const targetStatusFilter = payableFilter?.paymentStatusFilter || 'ALL';
+  const targetSemesterId = payableFilter?.semesterId || 'ALL';
 
-  const rows = orgPayables.map((p) => ({
-    studentId: p.studentId || '—',
-    studentName: p.studentName || 'Member',
-    feeTitle: p.title || p.feeTitle || 'Semester Membership Due',
-    type: (p.type || 'dues').toUpperCase(),
-    amount: `₱${(p.amount || 0).toLocaleString()}`,
-    status: (p.paymentStatus || p.status || 'UNPAID').toUpperCase(),
-    datePaid: p.paidAt ? new Date(p.paidAt).toLocaleDateString() : 'Pending Payment',
+  const normalized = payables
+    .filter((p) => {
+      if (p.organizationId !== org.id) return false;
+      if (targetSemesterId !== 'ALL' && p.semesterId && p.semesterId !== targetSemesterId) {
+        return false;
+      }
+      if (targetPayableName !== 'ALL' && getPayableDisplayLabel(p) !== targetPayableName) {
+        return false;
+      }
+      return true;
+    })
+    .map((p) => {
+      const assigned = Number(p.assignedAmount ?? (p as any).amount ?? 0);
+      const rawStatus = (p.status || (p as any).paymentStatus || '').toString().trim().toLowerCase();
+      const isRefunded = rawStatus === 'refunded';
+      const paid = Number(p.paidAmount ?? (rawStatus === 'paid' ? assigned : 0));
+      const balance =
+        p.balance !== undefined ? Math.max(0, Number(p.balance)) : Math.max(0, assigned - paid);
+      const isPaid = !isRefunded && (rawStatus === 'paid' || (assigned > 0 && balance <= 0));
+
+      const sDoc =
+        studentMap.get((p.studentId || '').toLowerCase().trim()) ||
+        studentMap.get((p.studentSchoolId || '').toLowerCase().trim());
+
+      const studentIdStr = sDoc?.studentId || p.studentSchoolId || p.studentId || '—';
+      const studentNameStr = p.studentName || (sDoc ? formatPersonName(sDoc) : 'Member');
+      const yr = sDoc?.yearLevel || (sDoc as any)?.year || (p as any).yearLevel || '';
+      const sec = sDoc?.section || (p as any).section || '';
+      const yearSectionStr = [yr, sec].filter(Boolean).join(' / ') || '—';
+      const feeTitle = getPayableDisplayLabel(p);
+      const rawType = (p.type || 'membership_due').toString().replace(/_/g, ' ');
+      const typeLabel = rawType.replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+      return {
+        studentId: studentIdStr,
+        studentName: studentNameStr,
+        yearSection: yearSectionStr,
+        feeTitle,
+        type: typeLabel,
+        assigned,
+        paid,
+        balance,
+        isPaid,
+        isRefunded,
+        statusLabel: isRefunded
+          ? 'REFUNDED'
+          : isPaid
+            ? 'PAID'
+            : paid > 0
+              ? 'NOT PAID YET (PARTIAL)'
+              : 'NOT PAID YET',
+        datePaid: isPaid || paid > 0 ? formatPayableTimestamp((p as any).paidAt) : 'Pending Payment',
+      };
+    })
+    .filter((item) => {
+      if (targetStatusFilter === 'PAID') return item.isPaid;
+      if (targetStatusFilter === 'UNPAID') return !item.isPaid && !item.isRefunded;
+      return true;
+    })
+    .sort((a, b) => {
+      if (a.isPaid !== b.isPaid) return a.isPaid ? 1 : -1;
+      return a.studentName.localeCompare(b.studentName);
+    });
+
+  const activeRows = normalized.filter((r) => !r.isRefunded);
+  const totalAssessed = activeRows.reduce((sum, r) => sum + r.assigned, 0);
+  const totalPaid = activeRows.reduce((sum, r) => sum + r.paid, 0);
+  const totalUnpaid = Math.max(0, totalAssessed - totalPaid);
+  const paidCount = activeRows.filter((r) => r.isPaid).length;
+  const unpaidCount = activeRows.filter((r) => !r.isPaid).length;
+
+  const rows = normalized.map((r) => ({
+    studentId: r.studentId,
+    studentName: r.studentName,
+    yearSection: r.yearSection,
+    feeTitle: r.feeTitle,
+    type: r.type,
+    assigned: `₱${r.assigned.toLocaleString()}`,
+    paid: `₱${r.paid.toLocaleString()}`,
+    balance: `₱${r.balance.toLocaleString()}`,
+    status: r.statusLabel,
+    datePaid: r.datePaid,
   }));
+
+  const statusText =
+    targetStatusFilter === 'PAID'
+      ? 'Paid Students Only'
+      : targetStatusFilter === 'UNPAID'
+        ? 'Not Paid Yet Only'
+        : 'All Students (Paid & Not Paid Yet)';
+  const payableLabelText =
+    targetPayableName === 'ALL' ? 'All Organization Payables' : targetPayableName;
 
   return {
     id: 'OFFICER_DUES_PAYABLES_TRACKING',
-    title: `${org.name} — Member Dues & Collection Tracking Report`,
+    title: `${org.name} — Member Dues & Payables Tracking Report`,
     category: 'ORGANIZATION',
     metadata: {
-      title: `${org.name} — Member Dues Tracking`,
-      subtitle: `Audit ledger of membership dues and event fee collections per club member.`,
+      title: `${org.name} — Payables Roster (${payableLabelText})`,
+      subtitle: `Payable: ${payableLabelText} • Filter: ${statusText}`,
       academicYear: filter.academicYear,
       semester: filter.semester,
       scope: (org.academicLevel as ReportScope) || 'ALL',
@@ -865,16 +989,19 @@ export function generateOfficerDuesTrackingReport(
     },
     kpis: [
       { label: 'Total Assessed Dues', value: `₱${totalAssessed.toLocaleString()}` },
-      { label: 'Total Collected Dues', value: `₱${totalPaid.toLocaleString()}` },
-      { label: 'Unpaid / Delinquent Balance', value: `₱${totalUnpaid.toLocaleString()}` },
+      { label: `Paid Students (${paidCount})`, value: `₱${totalPaid.toLocaleString()}` },
+      { label: `Not Paid Yet (${unpaidCount})`, value: `₱${totalUnpaid.toLocaleString()}` },
       { label: 'Collection Rate', value: `${totalAssessed > 0 ? Math.round((totalPaid / totalAssessed) * 100) : 0}%` },
     ],
     columns: [
       { key: 'studentId', header: 'Student ID' },
       { key: 'studentName', header: 'Member Full Name' },
-      { key: 'feeTitle', header: 'Due Description' },
+      { key: 'yearSection', header: 'Year / Section' },
+      { key: 'feeTitle', header: 'Payable Name' },
       { key: 'type', header: 'Fee Type' },
-      { key: 'amount', header: 'Amount' },
+      { key: 'assigned', header: 'Assigned' },
+      { key: 'paid', header: 'Paid' },
+      { key: 'balance', header: 'Balance' },
       { key: 'status', header: 'Payment Status' },
       { key: 'datePaid', header: 'Date Paid' },
     ],

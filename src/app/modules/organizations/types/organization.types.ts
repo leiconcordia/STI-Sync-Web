@@ -31,6 +31,21 @@ export interface OrgAdviserData {
   accountProvisioning?: 'created' | 'reused';
 }
 
+export interface OrgAutoPayableRule {
+  id: string;
+  type: 'membership_due' | 'org_fine' | 'custom';
+  label: string;
+  description: string;
+  amount: number;
+  dueDate: string | null;
+  semesterId?: string;
+  semester?: string;
+  schoolYear?: string;
+  isActive: boolean;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface OrganizationDocument {
   id: string;
   name: string;
@@ -56,6 +71,7 @@ export interface OrganizationDocument {
   memberCount: number;
   logoUrl: string | null;
   membershipFee?: number;
+  autoPayableRules?: OrgAutoPayableRule[];
 
   // ─── Timestamps ───
   createdAt: Timestamp;

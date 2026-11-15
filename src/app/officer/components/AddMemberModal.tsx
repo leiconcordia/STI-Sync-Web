@@ -29,10 +29,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
   
   const [formData, setFormData] = useState({
     studentId: '',
+    authUid: '',
     studentName: '',
     email: '',
     course: '',
     year: '',
+    section: '',
     department: '',
     contactNumber: '',
     paymentStatus: 'outstanding' as 'paid' | 'outstanding',
@@ -44,10 +46,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
       setShowDropdown(false);
       setFormData({
         studentId: '',
+        authUid: '',
         studentName: '',
         email: '',
         course: '',
         year: '',
+        section: '',
         department: '',
         contactNumber: '',
         paymentStatus: 'outstanding',
@@ -90,10 +94,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     setFormData({
       ...formData,
       studentId: student.studentId || student.id || '',
+      authUid: student.authUid || student.id || '',
       studentName: formatPersonName(student),
       email: student.email || '',
       course: student.courseCode || student.courseName || '',
       year: student.yearLevel || '',
+      section: student.section || '',
       department: student.department || student.departmentName || '',
       contactNumber: student.contactNumber || student.phone || '',
     });
@@ -127,10 +133,12 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
       const payload: AddMemberPayload = {
         ...formData,
         studentId: (formData.studentId || '').trim(),
+        authUid: (formData.authUid || '').trim() || undefined,
         studentName: (formData.studentName || '').trim(),
         email: (formData.email || '').trim().toLowerCase(),
         course: formData.course || '',
         year: formData.year || '',
+        section: formData.section || '',
         department: formData.department || '',
         contactNumber: formData.contactNumber || '',
         organizationId,

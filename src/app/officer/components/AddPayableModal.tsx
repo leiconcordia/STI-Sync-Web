@@ -6,18 +6,25 @@ import {
   Check,
   Search,
   Users,
-  DollarSign,
-  Calendar,
-  AlertCircle,
   Shield,
   Tag,
   GraduationCap,
   Coins,
-  FileText,
+  AlertCircle,
+  UserPlus,
 } from 'lucide-react';
-import { useSemesters, useCourses } from '../../modules/academic';
+import { useSemesters } from '../../modules/academic';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
-import { createPayable } from '../../modules/finance/services/payable.service';
+import { useStudents } from '../../modules/students/hooks/useStudentStream';
+import { useOrgPayables } from '../../modules/finance/hooks/usePayableStream';
+import { saveOrgAutoPayableRule } from '../../modules/organizations/services/organization.service';
+import {
+  createPayable,
+  buildStudentsLookupMap,
+  resolvePayableStudentUid,
+  resolveActivePeriodForLevel,
+  lookupStudentAuthUidByIdentifiers,
+} from '../../modules/finance/services/payable.service';
 import type { PayableType } from '../../modules/finance/types/payable.types';
 import { toast } from 'sonner';
 import { formatCurrency } from '../../utils/currency';
@@ -43,11 +50,9 @@ export function AddPayableModal({
   const { data: semesters = [] } = useSemesters();
   const activeSemester = semesters.find((s) => s.status === 'ACTIVE') || semesters[0];
 
-  // Dynamic database courses
-  const { data: dbCourses = [] } = useCourses();
-  const activeCourses = useMemo(() => dbCourses.filter((c) => !c.archived), [dbCourses]);
-
   const { members = [], loading: loadingMembers } = useOrgMembers(organizationId);
+  const { data: allStudents = [] } = useStudents();
+  const { data: existingPayables = [] } = useOrgPayables(organizationId, 'all');
 
   const [payableType, setPayableType] = useState<PayableType>('custom');
   const [label, setLabel] = useState('');
@@ -55,99 +60,196 @@ export function AddPayableModal({
   const [amount, setAmount] = useState<number | ''>('');
   const [dueDate, setDueDate] = useState('');
 
-  // Target selection mode: 'specific' | 'all'
-  const [targetMode, setTargetMode] = useState<'specific' | 'all'>('specific');
-  const [courseFilter, setCourseFilter] = useState('all');
+  // Application timing checkboxes
+  const [applyToExisting, setApplyToExisting] = useState(true);
+  const [autoAssignNewMembers, setAutoAssignNewMembers] = useState(false);
+
+  // Target selection mode: 'all' (All / Year+Section Filtered) | 'specific' (Pick checkboxes)
+  const [targetMode, setTargetMode] = useState<'specific' | 'all'>('all');
   const [yearFilter, setYearFilter] = useState('all');
+  const [sectionFilter, setSectionFilter] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedMemberIds, setSelectedMemberIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Active club members pool
-  const activeMembers = useMemo(() => {
-    return (members || []).filter((m) => m && m.status === 'active');
-  }, [members]);
+  // Fast student lookup so club payables resolve real Firebase authUid, Year Level, and Section
+  const studentLookup = useMemo(() => {
+    return buildStudentsLookupMap(allStudents);
+  }, [allStudents]);
 
-  // Pre-select member if preselectedMemberId provided
+  // Strictly enforce active club membership only + enrich with student record
+  const activeMembers = useMemo(() => {
+    return (members || [])
+      .filter((m) => m && m.status === 'active' && (!m.organizationId || m.organizationId === organizationId))
+      .map((m) => {
+        const sIdKey = String(m.studentId || '').trim().toLowerCase();
+        const schoolKey = String((m as any).studentSchoolId || '').trim().toLowerCase();
+        const authKey = String((m as any).authUid || (m as any).studentAuthUid || '').trim().toLowerCase();
+        const emailKey = String(m.email || '').trim().toLowerCase();
+        const matched =
+          (authKey && studentLookup.get(authKey)) ||
+          (sIdKey && studentLookup.get(sIdKey)) ||
+          (schoolKey && studentLookup.get(schoolKey)) ||
+          (emailKey && studentLookup.get(emailKey)) ||
+          studentLookup.get(String(m.id || '').trim().toLowerCase());
+
+        const resolvedYear = matched?.yearLevel || (m as any).yearLevel || (m as any).year || '';
+        const resolvedSection = matched?.section || (m as any).section || '';
+        const resolvedSchoolId = matched?.studentId || (m as any).studentSchoolId || m.studentId || m.id;
+        const resolvedAuthUid = resolvePayableStudentUid(
+          matched,
+          (m as any).authUid || (m as any).studentAuthUid || resolvedSchoolId
+        );
+        const hasLinkedAuthUid = Boolean(
+          String(matched?.authUid || (m as any).authUid || (m as any).studentAuthUid || '').trim()
+        );
+        const resolvedAcademicLevel =
+          matched?.academicLevel ||
+          (m as any).academicLevel ||
+          (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE');
+
+        return {
+          ...m,
+          resolvedAuthUid,
+          hasLinkedAuthUid,
+          resolvedSchoolId,
+          resolvedYear,
+          resolvedSection,
+          resolvedCourseCode: matched?.courseCode || (m as any).courseCode || (m as any).course || '',
+          resolvedCourseName: matched?.courseName || (m as any).courseName || '',
+          resolvedDepartmentId: matched?.departmentId || (m as any).departmentId || '',
+          resolvedDepartmentName: matched?.departmentName || matched?.department || (m as any).department || '',
+          resolvedAcademicLevel,
+          selectionKey: resolvedSchoolId || m.id,
+        };
+      });
+  }, [members, organizationId, studentLookup]);
+
+  // Reset form & pre-select member when modal opens
   useEffect(() => {
     if (isOpen) {
+      setPayableType('custom');
+      setLabel('');
+      setDescription('');
+      setAmount('');
+      setDueDate('');
+      setApplyToExisting(true);
+      setAutoAssignNewMembers(false);
+      setYearFilter('all');
+      setSectionFilter('all');
+      setSearchQuery('');
       if (preselectedMemberId) {
         setTargetMode('specific');
         const match = activeMembers.find(
-          (m) => m.id === preselectedMemberId || m.studentId === preselectedMemberId
+          (m) =>
+            m.id === preselectedMemberId ||
+            m.studentId === preselectedMemberId ||
+            m.resolvedSchoolId === preselectedMemberId ||
+            m.resolvedAuthUid === preselectedMemberId
         );
-        const mId = match ? (match.studentId || match.id) : preselectedMemberId;
-        setSelectedMemberIds([mId]);
+        setSelectedMemberIds(match ? [match.selectionKey] : []);
       } else {
+        setTargetMode('all');
         setSelectedMemberIds([]);
       }
     }
+  }, [isOpen, preselectedMemberId]);
+
+  // Re-sync preselected member if members/students streams load after opening
+  useEffect(() => {
+    if (!isOpen || !preselectedMemberId) return;
+    const match = activeMembers.find(
+      (m) =>
+        m.id === preselectedMemberId ||
+        m.studentId === preselectedMemberId ||
+        m.resolvedSchoolId === preselectedMemberId ||
+        m.resolvedAuthUid === preselectedMemberId
+    );
+    if (match) {
+      setSelectedMemberIds((prev) =>
+        prev.includes(match.selectionKey) ? prev : [match.selectionKey]
+      );
+    }
   }, [isOpen, preselectedMemberId, activeMembers]);
 
-  // Dynamic year levels derived from selected course or standards
+  // Available Year Levels across active members
   const dynamicYearLevels = useMemo(() => {
-    if (courseFilter !== 'all') {
-      const selectedCourse = activeCourses.find((c) => c.id === courseFilter || c.code === courseFilter);
-      if (selectedCourse) {
-        if (selectedCourse.academicLevel === 'SHS' || selectedCourse.yearLevels === 2) {
-          return ['Grade 11', 'Grade 12'];
-        }
-        const maxYears = selectedCourse.yearLevels || 4;
-        const collegeYears = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year'];
-        return collegeYears.slice(0, maxYears);
-      }
-    }
-    return ['1st Year', '2nd Year', '3rd Year', '4th Year', 'Grade 11', 'Grade 12'];
-  }, [courseFilter, activeCourses]);
+    const standardOrder = ['1st Year', '2nd Year', '3rd Year', '4th Year', '5th Year', 'Grade 11', 'Grade 12'];
+    const found = new Set<string>();
+    activeMembers.forEach((m) => {
+      const yr = String(m.resolvedYear || '').trim();
+      if (yr) found.add(yr);
+    });
+    return Array.from(found).sort((a, b) => {
+      const ia = standardOrder.indexOf(a);
+      const ib = standardOrder.indexOf(b);
+      if (ia !== -1 && ib !== -1) return ia - ib;
+      if (ia !== -1) return -1;
+      if (ib !== -1) return 1;
+      return a.localeCompare(b);
+    });
+  }, [activeMembers]);
 
-  // Filtered members based on search, course, and year
+  // Available Sections across active members (scoped to yearFilter if chosen)
+  const dynamicSections = useMemo(() => {
+    const found = new Set<string>();
+    activeMembers.forEach((m) => {
+      if (yearFilter !== 'all') {
+        const mYear = String(m.resolvedYear || '').toLowerCase().trim();
+        if (mYear !== yearFilter.toLowerCase() && !mYear.includes(yearFilter.toLowerCase())) {
+          return;
+        }
+      }
+      const sec = String(m.resolvedSection || '').trim();
+      if (sec) found.add(sec);
+    });
+    return Array.from(found).sort((a, b) => a.localeCompare(b));
+  }, [activeMembers, yearFilter]);
+
+  useEffect(() => {
+    if (sectionFilter !== 'all' && !dynamicSections.includes(sectionFilter)) {
+      setSectionFilter('all');
+    }
+  }, [dynamicSections, sectionFilter]);
+
+  // Filtered members based on search, year level, and section (No Programs filter)
   const filteredMembers = useMemo(() => {
     return activeMembers.filter((m) => {
       const q = searchQuery.toLowerCase().trim();
       const name = (m.studentName || '').toLowerCase();
-      const id = (m.studentId || (m as any).studentSchoolId || m.id || '').toLowerCase();
-      const matchesSearch = !q || name.includes(q) || id.includes(q);
+      const id = (m.resolvedSchoolId || m.studentId || m.id || '').toLowerCase();
+      const sec = String(m.resolvedSection || '').toLowerCase();
+      const matchesSearch = !q || name.includes(q) || id.includes(q) || sec.includes(q);
 
-      // Match course/program
-      let matchesCourse = true;
-      if (courseFilter !== 'all') {
-        const targetCourse = activeCourses.find(
-          (c) => c.id === courseFilter || c.code === courseFilter
-        );
-        if (targetCourse) {
-          const mCourseCode = ((m as any).courseCode || (m as any).course || '').toLowerCase().trim();
-          const mCourseName = ((m as any).courseName || (m as any).department || '').toLowerCase().trim();
-          matchesCourse =
-            mCourseCode === targetCourse.code.toLowerCase() ||
-            mCourseName.includes(targetCourse.code.toLowerCase()) ||
-            mCourseName.includes(targetCourse.name.toLowerCase());
-        }
-      }
-
-      // Match year level
       let matchesYear = true;
       if (yearFilter !== 'all') {
-        const mYear = String((m as any).yearLevel || (m as any).year || '').toLowerCase().trim();
+        const mYear = String(m.resolvedYear || '').toLowerCase().trim();
         matchesYear = mYear === yearFilter.toLowerCase() || mYear.includes(yearFilter.toLowerCase());
       }
 
-      return matchesSearch && matchesCourse && matchesYear;
+      let matchesSection = true;
+      if (sectionFilter !== 'all') {
+        const mSec = String(m.resolvedSection || '').toLowerCase().trim();
+        matchesSection = mSec === sectionFilter.toLowerCase().trim();
+      }
+
+      return matchesSearch && matchesYear && matchesSection;
     });
-  }, [activeMembers, searchQuery, courseFilter, yearFilter, activeCourses]);
+  }, [activeMembers, searchQuery, yearFilter, sectionFilter]);
 
   if (!isOpen) return null;
 
-  const toggleMemberSelection = (id: string) => {
-    if (selectedMemberIds.includes(id)) {
-      setSelectedMemberIds(selectedMemberIds.filter((mId) => mId !== id));
+  const toggleMemberSelection = (selectionKey: string) => {
+    if (selectedMemberIds.includes(selectionKey)) {
+      setSelectedMemberIds(selectedMemberIds.filter((mId) => mId !== selectionKey));
     } else {
-      setSelectedMemberIds([...selectedMemberIds, id]);
+      setSelectedMemberIds([...selectedMemberIds, selectionKey]);
     }
   };
 
   const handleSelectAllFiltered = () => {
-    const filteredIds = filteredMembers.map((m) => m.studentId || m.id);
-    const allSelected = filteredIds.every((id) => selectedMemberIds.includes(id));
+    const filteredIds = filteredMembers.map((m) => m.selectionKey);
+    const allSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedMemberIds.includes(id));
     if (allSelected) {
       setSelectedMemberIds(selectedMemberIds.filter((id) => !filteredIds.includes(id)));
     } else {
@@ -158,10 +260,10 @@ export function AddPayableModal({
 
   const categoryName =
     payableType === 'org_fine'
-      ? 'Organization Fine'
+      ? 'Fine'
       : payableType === 'membership_due'
       ? 'Membership Due'
-      : 'Event Contribution';
+      : 'Club Assessment';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,73 +274,154 @@ export function AddPayableModal({
     }
 
     if (!amount || Number(amount) <= 0) {
-      toast.error('Please enter a valid amount.');
+      toast.error('Please enter a valid amount greater than ₱0.');
       return;
     }
 
-    const semId = activeSemester?.id || semesters.find((s) => s.status === 'ACTIVE')?.id || semesters[0]?.id;
-    if (!semId) {
-      toast.error('No active academic semester found. Please contact administration.');
+    if (!applyToExisting && !autoAssignNewMembers) {
+      toast.error('Please choose whether to apply to existing club members and/or auto-assign to new members upon joining.');
       return;
     }
 
-    const selectedSemesterObj = semesters.find((s) => s.id === semId) || activeSemester;
+    const targetMembers = !applyToExisting
+      ? []
+      : targetMode === 'all'
+      ? filteredMembers
+      : activeMembers.filter((m) => selectedMemberIds.includes(m.selectionKey));
 
-    // Determine target members
-    const targetMembers =
-      targetMode === 'all'
-        ? activeMembers
-        : activeMembers.filter(
-            (m) =>
-              selectedMemberIds.includes(m.studentId || m.id) ||
-              selectedMemberIds.includes(m.id) ||
-              (m.studentId && selectedMemberIds.includes(m.studentId))
-          );
-
-    if (targetMembers.length === 0) {
-      toast.error('Please select at least one active member to assign this payable.');
+    if (applyToExisting && targetMembers.length === 0) {
+      toast.error('No active club members match your target selection.');
       return;
     }
+
+    const defaultPeriod = resolveActivePeriodForLevel(
+      semesters,
+      targetMembers[0]?.resolvedAcademicLevel || activeMembers[0]?.resolvedAcademicLevel || 'COLLEGE'
+    );
 
     setIsSubmitting(true);
 
     try {
-      let createdCount = 0;
-      for (const m of targetMembers) {
-        const authUid = (m as any).authUid || (m as any).studentAuthUid || m.id || m.studentId;
-        const schoolId = (m as any).studentSchoolId || m.studentId || m.id;
+      let savedRuleId: string | null = null;
+      const normalizedLabel = label.trim().toLowerCase();
 
-        // Full mobile app compatibility + event fee parity
-        await createPayable({
-          studentId: authUid,
-          studentName: m.studentName || 'Member',
-          studentSchoolId: schoolId,
+      if (autoAssignNewMembers) {
+        const savedRule = await saveOrgAutoPayableRule(organizationId, {
           type: payableType,
           label: label.trim(),
-          title: label.trim(),
-          feeTitle: label.trim(),
-          category: categoryName,
           description: description.trim() || `Assessment for ${organizationName}`,
-          organizationId: organizationId,
-          organizationName: organizationName,
-          semesterId: semId,
-          semester: selectedSemesterObj?.label || selectedSemesterObj?.semester || '',
-          schoolYear: selectedSemesterObj?.academicYear || '',
-          assignedAmount: Number(amount),
           amount: Number(amount),
-          paymentStatus: 'UNPAID',
-          dueDate: dueDate ? new Date(dueDate) : null,
-          courseCode: (m as any).courseCode || (m as any).course || '',
-          courseName: (m as any).courseName || '',
-          yearLevel: (m as any).yearLevel || (m as any).year || '',
-          section: (m as any).section || '',
-          academicLevel: (m as any).academicLevel || (String((m as any).yearLevel || '').includes('Grade') ? 'SHS' : 'COLLEGE'),
+          dueDate: dueDate || null,
+          semesterId: defaultPeriod.id,
+          semester: defaultPeriod.semester || defaultPeriod.label,
+          schoolYear: defaultPeriod.schoolYear,
           createdBy: addedBy,
         });
-        createdCount++;
+        savedRuleId = savedRule.id;
       }
 
-      toast.success(`Successfully assigned "${label}" to ${createdCount} member(s).`);
+      let createdCount = 0;
+      let skippedDuplicateCount = 0;
+
+      if (applyToExisting) {
+        for (const m of targetMembers) {
+          const memberPeriod = resolveActivePeriodForLevel(semesters, m.resolvedAcademicLevel);
+          const resolvedStudentUid = m.hasLinkedAuthUid
+            ? m.resolvedAuthUid
+            : await lookupStudentAuthUidByIdentifiers({
+                authUid: (m as any).authUid || (m as any).studentAuthUid,
+                schoolId: m.resolvedSchoolId,
+                studentId: m.studentId,
+                docId: m.id,
+                email: m.email,
+              });
+
+          // Deduplicate when rule/auto-assign or same-term membership_due already exists for this member
+          const alreadyHasPayable = existingPayables.some((p) => {
+            if (p.status === 'waived' || p.status === 'refunded') return false;
+            const pSid = String(p.studentId || '').trim().toLowerCase();
+            const pSchool = String(p.studentSchoolId || '').trim().toLowerCase();
+            const matchMember =
+              pSid === resolvedStudentUid.toLowerCase() ||
+              pSid === m.resolvedAuthUid.toLowerCase() ||
+              pSchool === m.resolvedSchoolId.toLowerCase() ||
+              pSid === m.resolvedSchoolId.toLowerCase();
+            if (!matchMember) return false;
+            if (savedRuleId && p.autoRuleId === savedRuleId) return true;
+            if (payableType === 'membership_due' && p.type === 'membership_due') {
+              if (memberPeriod.id && p.semesterId) {
+                return p.semesterId === memberPeriod.id;
+              }
+              if (memberPeriod.semester && memberPeriod.schoolYear && p.semester && p.schoolYear) {
+                return (
+                  String(p.semester).trim().toLowerCase() === memberPeriod.semester.trim().toLowerCase() &&
+                  String(p.schoolYear).trim().toLowerCase() === memberPeriod.schoolYear.trim().toLowerCase()
+                );
+              }
+              return String(p.label || p.title || '').trim().toLowerCase() === normalizedLabel;
+            }
+            if (autoAssignNewMembers && String(p.label || p.title || '').trim().toLowerCase() === normalizedLabel) {
+              return true;
+            }
+            return false;
+          });
+
+          if (alreadyHasPayable) {
+            skippedDuplicateCount++;
+            continue;
+          }
+
+          await createPayable({
+            studentId: resolvedStudentUid,
+            studentName: m.studentName || 'Member',
+            studentSchoolId: m.resolvedSchoolId,
+            type: payableType,
+            label: label.trim(),
+            title: label.trim(),
+            feeTitle: label.trim(),
+            eventTitle: label.trim(),
+            category: categoryName,
+            description: description.trim() || `Assessment for ${organizationName}`,
+            organizationId,
+            organizationName,
+            semesterId: memberPeriod.id,
+            semester: memberPeriod.semester || memberPeriod.label,
+            schoolYear: memberPeriod.schoolYear,
+            autoRuleId: savedRuleId,
+            assignedAmount: Number(amount),
+            amount: Number(amount),
+            paymentStatus: 'UNPAID',
+            dueDate: dueDate ? new Date(dueDate) : null,
+            courseCode: m.resolvedCourseCode,
+            courseName: m.resolvedCourseName,
+            departmentId: m.resolvedDepartmentId,
+            departmentName: m.resolvedDepartmentName,
+            yearLevel: m.resolvedYear,
+            section: m.resolvedSection,
+            academicLevel: m.resolvedAcademicLevel,
+            createdBy: addedBy,
+          });
+          createdCount++;
+        }
+      }
+
+      if (autoAssignNewMembers && applyToExisting) {
+        toast.success(
+          `Assigned "${label.trim()}" to ${createdCount} active member(s) and enabled auto-assign for future members.${
+            skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} already billed)` : ''
+          }`
+        );
+      } else if (autoAssignNewMembers) {
+        toast.success(
+          `Saved "${label.trim()}" — every new student who enters ${organizationName} will receive this payable automatically.`
+        );
+      } else {
+        toast.success(
+          `Successfully assigned "${label.trim()}" to ${createdCount} member(s).${
+            skippedDuplicateCount > 0 ? ` (${skippedDuplicateCount} skipped as already assigned)` : ''
+          }`
+        );
+      }
       onClose();
     } catch (err: any) {
       console.error('[AddPayableModal] Creation error:', err);
@@ -414,97 +597,140 @@ export function AddPayableModal({
             />
           </div>
 
-          {/* Target Selection */}
-          <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
-                <GraduationCap className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                Target Club Members
+          {/* Effective Scope / When This Payable Applies */}
+          <div className="border border-blue-200 bg-blue-50/40 rounded-xl p-4 space-y-2.5">
+            <label className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+              <UserPlus className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              When Does This Payable Apply?
+            </label>
+            <div className="space-y-2">
+              <label className="flex items-start gap-2.5 p-2.5 bg-white border border-gray-200 rounded-lg cursor-pointer hover:border-[#0E4EBD] transition-colors">
+                <input
+                  type="checkbox"
+                  checked={applyToExisting}
+                  onChange={(e) => setApplyToExisting(e.target.checked)}
+                  className="mt-0.5 rounded border-gray-300 text-[#001A4D] focus:ring-[#001A4D] cursor-pointer"
+                />
+                <div className="text-xs">
+                  <p className="font-bold text-[#001A4D]">Apply immediately to existing active club members</p>
+                  <p className="text-gray-500 text-[11px]">
+                    Bills targeted students who are already active members of {organizationName} right now (and syncs to their Mobile App).
+                  </p>
+                </div>
               </label>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTargetMode('specific')}
-                  className={`px-3 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer ${
-                    targetMode === 'specific'
-                      ? 'bg-[#001A4D] text-white shadow-2xs'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  Select Specific ({selectedMemberIds.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTargetMode('all')}
-                  className={`px-3 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer ${
-                    targetMode === 'all'
-                      ? 'bg-[#001A4D] text-white shadow-2xs'
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  All Active Members ({activeMembers.length})
-                </button>
-              </div>
+
+              <label className="flex items-start gap-2.5 p-2.5 bg-white border border-gray-200 rounded-lg cursor-pointer hover:border-[#0E4EBD] transition-colors">
+                <input
+                  type="checkbox"
+                  checked={autoAssignNewMembers}
+                  onChange={(e) => setAutoAssignNewMembers(e.target.checked)}
+                  className="mt-0.5 rounded border-gray-300 text-[#001A4D] focus:ring-[#001A4D] cursor-pointer"
+                />
+                <div className="text-xs">
+                  <p className="font-bold text-[#001A4D]">Auto-assign when a new student enters / joins this club</p>
+                  <p className="text-gray-500 text-[11px]">
+                    Automatically assigns this payable to incoming students the moment their membership is added or approved.
+                  </p>
+                </div>
+              </label>
             </div>
+          </div>
 
-            {targetMode === 'all' ? (
-              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 flex items-center gap-2">
-                <Users className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
-                <span>
-                  This payable of{' '}
-                  <strong>{amount ? formatCurrency(Number(amount)) : '₱0.00'}</strong> will be
-                  assigned to all{' '}
-                  <strong>{activeMembers.length} active members</strong> of {organizationName}.
-                </span>
+          {/* Target Selection */}
+          {applyToExisting ? (
+            <div className="border border-gray-200 rounded-xl p-4 bg-gray-50/50 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-xs font-bold text-[#001A4D] uppercase tracking-wider flex items-center gap-1.5">
+                  <GraduationCap className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                  Target Active Club Members
+                </label>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTargetMode('all')}
+                    className={`px-3 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer ${
+                      targetMode === 'all'
+                        ? 'bg-[#001A4D] text-white shadow-2xs'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    All Matching Members ({filteredMembers.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTargetMode('specific')}
+                    className={`px-3 py-1 text-xs rounded-lg font-bold transition-all cursor-pointer ${
+                      targetMode === 'specific'
+                        ? 'bg-[#001A4D] text-white shadow-2xs'
+                        : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                    }`}
+                  >
+                    Pick Members ({selectedMemberIds.length})
+                  </button>
+                </div>
               </div>
-            ) : (
-              <div className="space-y-3">
-                {/* Database-backed Program & Year Filters */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  <div className="relative sm:col-span-1">
-                    <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search member name or ID..."
-                      className="w-full pl-8 pr-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-[#001A4D]/20"
-                    />
-                  </div>
 
-                  {/* Database Program Filter */}
-                  <select
-                    value={courseFilter}
-                    onChange={(e) => {
-                      setCourseFilter(e.target.value);
-                      setYearFilter('all');
-                    }}
-                    className="px-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none cursor-pointer"
-                  >
-                    <option value="all">All Programs ({activeCourses.length})</option>
-                    {activeCourses.map((course) => (
-                      <option key={course.id} value={course.id}>
-                        {course.code} — {course.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* Dynamic Year Level Filter */}
-                  <select
-                    value={yearFilter}
-                    onChange={(e) => setYearFilter(e.target.value)}
-                    className="px-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none cursor-pointer"
-                  >
-                    <option value="all">All Year Levels</option>
-                    {dynamicYearLevels.map((yr) => (
-                      <option key={yr} value={yr}>
-                        {yr}
-                      </option>
-                    ))}
-                  </select>
+              {/* Search, Year Level, and Section Filters (No Programs filter) */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="relative sm:col-span-1">
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search member or ID..."
+                    className="w-full pl-8 pr-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none focus:ring-2 focus:ring-[#001A4D]/20"
+                  />
                 </div>
 
-                {/* Member Selection Roster */}
+                <select
+                  value={yearFilter}
+                  onChange={(e) => setYearFilter(e.target.value)}
+                  className="px-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none cursor-pointer"
+                >
+                  <option value="all">All Year Levels ({dynamicYearLevels.length})</option>
+                  {dynamicYearLevels.map((yr) => (
+                    <option key={yr} value={yr}>
+                      {yr}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={sectionFilter}
+                  onChange={(e) => setSectionFilter(e.target.value)}
+                  className="px-2 py-1.5 text-xs bg-white border border-gray-300 rounded-lg outline-none cursor-pointer"
+                >
+                  <option value="all">All Sections ({dynamicSections.length})</option>
+                  {dynamicSections.map((sec) => (
+                    <option key={sec} value={sec}>
+                      {sec}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {targetMode === 'all' ? (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#0E4EBD] flex-shrink-0" />
+                  <span>
+                    This payable of{' '}
+                    <strong>{amount ? formatCurrency(Number(amount)) : '₱0.00'}</strong> will be assigned to{' '}
+                    <strong>
+                      {filteredMembers.length} active member{filteredMembers.length === 1 ? '' : 's'}
+                    </strong>
+                    {yearFilter !== 'all' || sectionFilter !== 'all'
+                      ? ` matching ${[
+                          yearFilter !== 'all' ? yearFilter : null,
+                          sectionFilter !== 'all' ? `Section ${sectionFilter}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}`
+                      : ` of ${organizationName}`}
+                    .
+                  </span>
+                </div>
+              ) : (
                 <div className="border border-gray-200 rounded-lg bg-white overflow-hidden max-h-48 overflow-y-auto">
                   <div className="px-3 py-1.5 bg-gray-50 border-b border-gray-200 flex items-center justify-between text-xs font-semibold text-gray-600">
                     <button
@@ -520,19 +746,18 @@ export function AddPayableModal({
                   {loadingMembers ? (
                     <div className="p-6 text-center text-xs text-gray-400">Loading member directory...</div>
                   ) : filteredMembers.length === 0 ? (
-                    <div className="p-6 text-center text-xs text-gray-400">No members match filter criteria.</div>
+                    <div className="p-6 text-center text-xs text-gray-400">No active club members match filter criteria.</div>
                   ) : (
                     <div className="divide-y divide-gray-100">
                       {filteredMembers.map((m) => {
-                        const mId = m.studentId || m.id;
-                        const isSelected = selectedMemberIds.includes(mId);
-                        const progDisplay = (m as any).courseCode || (m as any).course || (m as any).department || 'N/A';
-                        const yrDisplay = (m as any).yearLevel || (m as any).year || '';
+                        const isSelected = selectedMemberIds.includes(m.selectionKey);
+                        const yrDisplay = m.resolvedYear || 'No Year';
+                        const secDisplay = m.resolvedSection || 'No Section';
 
                         return (
                           <div
-                            key={mId}
-                            onClick={() => toggleMemberSelection(mId)}
+                            key={m.id || m.selectionKey}
+                            onClick={() => toggleMemberSelection(m.selectionKey)}
                             className={`px-3 py-2 flex items-center justify-between text-xs cursor-pointer transition-colors ${
                               isSelected ? 'bg-blue-50/70 font-semibold' : 'hover:bg-gray-50'
                             }`}
@@ -548,17 +773,15 @@ export function AddPayableModal({
                               <div>
                                 <span className="text-[#001A4D]">{m.studentName}</span>
                                 <span className="text-gray-400 ml-1.5 font-mono">
-                                  ({(m as any).studentSchoolId || m.studentId || m.id})
+                                  ({m.resolvedSchoolId})
                                 </span>
                               </div>
                             </div>
                             <div className="text-right">
-                              <span className="text-gray-600 font-medium">{progDisplay}</span>
-                              {yrDisplay && (
-                                <span className="text-gray-400 text-[11px] ml-1.5">
-                                  · {yrDisplay}
-                                </span>
-                              )}
+                              <span className="text-gray-600 font-medium">{yrDisplay}</span>
+                              <span className="text-gray-400 text-[11px] ml-1.5">
+                                · {secDisplay}
+                              </span>
                             </div>
                           </div>
                         );
@@ -566,9 +789,17 @@ export function AddPayableModal({
                     </div>
                   )}
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-start gap-2.5">
+              <UserPlus className="w-4 h-4 text-[#0E4EBD] flex-shrink-0 mt-0.5" />
+              <span>
+                Existing members will not be billed right now. Instead,{' '}
+                <strong>"{label.trim() || 'this payable'}"</strong> will automatically apply the moment a new student enters or is approved as an active member of <strong>{organizationName}</strong>.
+              </span>
+            </div>
+          )}
 
           {/* Footer Action Buttons */}
           <div className="flex items-center justify-end gap-3 pt-2">
@@ -588,12 +819,14 @@ export function AddPayableModal({
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />
-                  Assigning Payables...
+                  {applyToExisting ? 'Assigning Payables...' : 'Saving Auto-Assign Rule...'}
                 </>
               ) : (
                 <>
                   <Plus className="w-4 h-4 text-[#FFD41C]" />
-                  Create & Assign Payable
+                  {!applyToExisting && autoAssignNewMembers
+                    ? 'Save Auto-Assign Rule'
+                    : 'Create & Assign Payable'}
                 </>
               )}
             </button>

@@ -1366,10 +1366,34 @@ export async function endorseProposal(
 
     // Encumber club treasury ledger if club-funded
     const effectiveFunding = (data as any).fundingSource || (data.isOfficerProposal ? 'organization_funds' : 'school_budget');
-    const totalExp = Number(data.financialProjections?.totalExpenses || (data as any).totalApprovedBudget || 0);
+    const totalExp = Number(
+      data.financialProjections?.totalExpenses ||
+      (data as any).totalApprovedBudget ||
+      (data as any).allocatedBudget ||
+      0
+    );
     if (effectiveFunding === 'organization_funds' && totalExp > 0) {
       try {
-        await deductApprovedEventBudget(proposalId, userUid || signatory.uid || 'system');
+        const resolvedOrgId =
+          data.hostingOrgId ||
+          (data as any).organizationId ||
+          (data as any).submittedByOrgId ||
+          '';
+        await deductApprovedEventBudget(
+          {
+            ...data,
+            id: proposalId,
+            hostingOrgId: resolvedOrgId,
+            organizationId: resolvedOrgId,
+            fundingSource: effectiveFunding,
+            totalApprovedBudget: totalExp,
+            allocatedBudget: totalExp,
+            title: data.title || (data as any).eventName || 'Approved Activity',
+            semesterId: (data as any).semesterId || null,
+          },
+          proposalId,
+          userUid || signatory.uid || 'system'
+        );
       } catch (deductErr) {
         console.warn('[endorseProposal] Club ledger encumbrance notice:', deductErr);
       }

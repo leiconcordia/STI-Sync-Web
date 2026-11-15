@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { X, Loader2, CheckCircle, Wallet, Tag, CreditCard, Receipt, AlertCircle, Info, Coins, Banknote, Calendar } from 'lucide-react';
+import { X, Loader2, CheckCircle, Wallet, Tag, AlertCircle, Info, Coins, Banknote, Calendar } from 'lucide-react';
 import { recordPayment } from '../../modules/finance/services/payable.service';
 import type { PayableDocument } from '../../modules/finance/types/payable.types';
 import { formatCurrency } from '../../utils/currency';
@@ -45,8 +45,6 @@ export function RecordPaymentModal({
 
   const [selectedPayableId, setSelectedPayableId] = useState<string>('');
   const [paymentAmount, setPaymentAmount] = useState<number | ''>('');
-  const [paymentMethod, setPaymentMethod] = useState<string>('cash');
-  const [receiptNumber, setReceiptNumber] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -134,9 +132,9 @@ export function RecordPaymentModal({
         currentPayable.id,
         numAmount,
         recordedBy,
-        paymentMethod,
+        'cash',
         undefined,
-        receiptNumber.trim() || undefined,
+        undefined,
         notes.trim() || undefined
       );
 
@@ -417,39 +415,6 @@ export function RecordPaymentModal({
                   </span>
                 </div>
               )}
-            </div>
-          </div>
-
-          {/* Payment Method & OR # */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                Payment Method
-              </label>
-              <select
-                value={paymentMethod}
-                onChange={(e) => setPaymentMethod(e.target.value)}
-                className="w-full px-3 py-2 text-xs font-medium border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0E4EBD]/20 focus:border-[#0E4EBD] bg-white cursor-pointer"
-              >
-                <option value="cash">Cash (Over the Counter)</option>
-                <option value="gcash">GCash (e-Wallet)</option>
-                <option value="maya">Maya (e-Wallet)</option>
-                <option value="bank_transfer">Bank Deposit / Transfer</option>
-                <option value="other">Other Official Receipt</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1.5">
-                OR # / Ref # <span className="text-gray-400 font-normal">(Optional)</span>
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. OR# 10482 or GCash Ref"
-                value={receiptNumber}
-                onChange={(e) => setReceiptNumber(e.target.value)}
-                className="w-full px-3 py-2 text-xs border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0E4EBD]/20 focus:border-[#0E4EBD]"
-              />
             </div>
           </div>
 

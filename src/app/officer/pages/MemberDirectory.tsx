@@ -697,7 +697,7 @@ export default function MemberDirectory() {
                           >
                             View Profile
                           </button>
-                          {canManageMembers && (
+                          {canManageMembers && member.status === 'active' && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1188,7 +1188,7 @@ export default function MemberDirectory() {
                             </span>
                           </td>
                           <td className="px-5 py-3.5 text-right">
-                            {canManageMembers && (
+                            {canManageMembers && member.status === 'active' && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();

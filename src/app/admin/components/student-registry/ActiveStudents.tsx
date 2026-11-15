@@ -1,5 +1,5 @@
 import { formatPersonName } from '../../../utils/name.utils';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
 import BulkImportRegistrarModal from './BulkImportRegistrarModal';
