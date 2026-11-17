@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus,
   Receipt,
@@ -44,6 +44,13 @@ import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { useOrgEvents } from '../../modules/events/hooks/useEventStream';
+import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
+import {
+  buildAvailableSchoolYears,
+  compareLiquidations,
+  matchesSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from '../../modules/workflow/utils/table-priority-sort.utils';
 
 type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -128,26 +135,49 @@ export default function FinancialLiquidation() {
   const { events = [] } = useOrgEvents(orgId);
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { configs: miscConfigs = [], activeConfig: activeMiscConfig } = useMiscFeeConfigs();
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig: activeMiscConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+  const lastAutoPeriodRef = useRef<string>('');
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    events.forEach((ev) => map.set(ev.id, ev));
+    return map;
+  }, [events]);
 
-  // Initialize filter to Current Active Semester
+  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
   useEffect(() => {
-    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
-      const active = activeCollegePeriod || activeShsPeriod;
-      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
-      if (active?.semester) setFilterSemester(active.semester);
+    if (!unifiedActiveTerm.schoolYear) return;
+    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
+      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
+      setFilterSemester(unifiedActiveTerm.semester || 'all');
       setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = periodKey;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = periodKey;
     }
-  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+  }, [unifiedActiveTerm, hasInitializedPeriod]);
 
   // Derived available school years and semesters
-  const availableSchoolYears = useMemo(() => {
-    const set = new Set<string>();
-    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
-    liquidations.forEach((l) => { if (l.schoolYear) set.add(l.schoolYear); });
-    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
-    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
-    return Array.from(set).sort().reverse();
-  }, [semesters, liquidations, events, activeCollegePeriod]);
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: [...liquidations, ...events],
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, liquidations, events, unifiedActiveTerm.schoolYear]
+  );
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -181,17 +211,19 @@ export default function FinancialLiquidation() {
           return false;
         }
 
-        // School Year Filter
+        // School Year Filter (strict: untagged legacy records stay in baseline SY only)
         if (filterSchoolYear !== 'all') {
-          const parentEvent = report.eventId ? events.find((e) => e.id === report.eventId) : null;
+          const parentEvent = report.eventId ? eventsById.get(report.eventId) : null;
           const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
           const sy = report.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
-          if (sy && sy !== filterSchoolYear) return false;
+          if (!matchesSchoolYearFilter({ recordSchoolYear: sy, filterSchoolYear, availableSchoolYears })) {
+            return false;
+          }
         }
 
         // Semester Filter
         if (filterSemester !== 'all') {
-          const parentEvent = report.eventId ? events.find((e) => e.id === report.eventId) : null;
+          const parentEvent = report.eventId ? eventsById.get(report.eventId) : null;
           const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
           const term = report.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
           if (term && term !== filterSemester) return false;
@@ -207,8 +239,8 @@ export default function FinancialLiquidation() {
 
         return true;
       })
-      .sort((a, b) => getLiquidationTimestamp(b) - getLiquidationTimestamp(a));
-  }, [liquidations, activeTab, searchQuery, filterSchoolYear, filterSemester, events, semesters]);
+      .sort((a, b) => compareLiquidations(a, b, eventsById));
+  }, [liquidations, activeTab, searchQuery, filterSchoolYear, filterSemester, eventsById, availableSchoolYears, semesters]);
 
   // Counts
   const counts = {
@@ -231,12 +263,6 @@ export default function FinancialLiquidation() {
       .filter((l) => l.status === 'approved')
       .reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
   }, [liquidations]);
-
-  const eventsById = useMemo(() => {
-    const map = new Map<string, any>();
-    events.forEach((e) => map.set(e.id, e));
-    return map;
-  }, [events]);
 
   const pendingFlDues = useMemo(() => {
     return events
@@ -544,7 +570,7 @@ export default function FinancialLiquidation() {
               <option value="all">All School Years</option>
               {availableSchoolYears.map((sy) => (
                 <option key={sy} value={sy}>
-                  A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                  A.Y. {sy} {unifiedActiveTerm.schoolYear === sy ? '• Current SY' : ''}
                 </option>
               ))}
             </select>
@@ -561,17 +587,17 @@ export default function FinancialLiquidation() {
               <option value="all">All Semesters</option>
               {availableSemesters.map((term) => (
                 <option key={term} value={term}>
-                  {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                  {term} {unifiedActiveTerm.semester === term ? '• Active Term' : ''}
                 </option>
               ))}
             </select>
 
-            {(filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')) && (
+            {(filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all')) && (
               <button
                 type="button"
                 onClick={() => {
-                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
-                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
+                  setFilterSemester(unifiedActiveTerm.semester || 'all');
                   setCurrentPage(1);
                 }}
                 className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"

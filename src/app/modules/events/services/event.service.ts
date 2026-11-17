@@ -1987,8 +1987,11 @@ export async function saveEventDisbursementVoucher(
         performedBy: voucher.uploadedByName || 'User',
       });
     }
-  } catch (miscErr) {
-    console.warn('[saveEventDisbursementVoucher] Misc fee bucket deduction notice:', miscErr);
+  } catch (miscErr: any) {
+    console.error('[saveEventDisbursementVoucher] Misc fee bucket deduction error:', miscErr);
+    throw new Error(
+      miscErr?.message || 'Disbursement voucher was saved, but the Miscellaneous Fee bucket deduction failed.'
+    );
   }
 
   // If a financial liquidation already exists for this event, sync the voucher & header

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useOutletContext, useSearchParams, useNavigate } from "react-router";
 import { toast } from "sonner";
 import {
@@ -18,6 +18,13 @@ import { useAllEvents, useDraftEvents } from "../../modules/events/hooks/useEven
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
 import { useEventCategoriesStream, useVenuesStream } from "../../modules/events/hooks/useEventConfigStream";
 import { useSemesters, useActiveAcademicPeriods } from "../../modules/academic/hooks/useAcademicStream";
+import { useMiscFeeConfigs } from "../../modules/finance/hooks/useMiscFeeStream";
+import {
+  buildAvailableSchoolYears,
+  compareActivityProposals,
+  matchesSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from "../../modules/workflow/utils/table-priority-sort.utils";
 import {
   CancelEventModal,
   canCancelEvent,
@@ -190,25 +197,44 @@ export function EventApprovals() {
   const { venues } = useVenuesStream();
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { configs: miscConfigs = [], activeConfig: activeMiscConfig } = useMiscFeeConfigs();
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig: activeMiscConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+  const lastAutoPeriodRef = useRef<string>("");
 
-  // Initialize filter to Current Active Semester
+  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
   useEffect(() => {
-    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
-      const active = activeCollegePeriod || activeShsPeriod;
-      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
-      if (active?.semester) setFilterSemester(active.semester);
+    if (!unifiedActiveTerm.schoolYear) return;
+    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
+      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
+      setFilterSemester(unifiedActiveTerm.semester || "all");
       setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = periodKey;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = periodKey;
     }
-  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+  }, [unifiedActiveTerm, hasInitializedPeriod]);
 
   // Derived available school years and semesters
-  const availableSchoolYears = useMemo(() => {
-    const set = new Set<string>();
-    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
-    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
-    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
-    return Array.from(set).sort().reverse();
-  }, [semesters, events, activeCollegePeriod]);
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: events,
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, events, unifiedActiveTerm.schoolYear]
+  );
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -417,11 +443,13 @@ export function EventApprovals() {
         }
         if (activeTab === "rejected" && event.proposalStatus !== "rejected") return false;
 
-        // School Year filter
+        // School Year filter (strict: untagged legacy records stay in baseline SY only)
         if (filterSchoolYear !== "all") {
           const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
           const evSy = event.schoolYear || sem?.academicYear;
-          if (evSy && evSy !== filterSchoolYear) return false;
+          if (!matchesSchoolYearFilter({ recordSchoolYear: evSy, filterSchoolYear, availableSchoolYears })) {
+            return false;
+          }
         }
 
         // Semester filter
@@ -458,15 +486,10 @@ export function EventApprovals() {
 
         return true;
       })
-      .sort((a, b) => {
-        const aUrgent = Boolean((a as any).isUrgent) && (a.proposalStatus === "pending" || a.proposalStatus === "pending_review" || a.proposalStatus === "under_review");
-        const bUrgent = Boolean((b as any).isUrgent) && (b.proposalStatus === "pending" || b.proposalStatus === "pending_review" || b.proposalStatus === "under_review");
-        if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
-        return getEventTimestamp(b) - getEventTimestamp(a);
-      });
-  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters]);
+      .sort(compareActivityProposals);
+  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters, availableSchoolYears]);
 
-  // Filtered drafts list (Sorted LATEST FIRST)
+  // Filtered drafts list (Urgents first, then latest submissions)
   const filteredDrafts = useMemo(() => {
     return drafts
       .filter((draft) => {
@@ -481,7 +504,9 @@ export function EventApprovals() {
         if (filterSchoolYear !== "all") {
           const sem = draft.semesterId ? semesters.find((s) => s.id === draft.semesterId) : null;
           const draftSy = draft.schoolYear || sem?.academicYear;
-          if (draftSy && draftSy !== filterSchoolYear) return false;
+          if (!matchesSchoolYearFilter({ recordSchoolYear: draftSy, filterSchoolYear, availableSchoolYears })) {
+            return false;
+          }
         }
 
         // Semester filter
@@ -502,13 +527,8 @@ export function EventApprovals() {
         if (q && !draft.title?.toLowerCase().includes(q) && !draft.referenceId?.toLowerCase().includes(q)) return false;
         return true;
       })
-      .sort((a, b) => {
-        const aUrgent = Boolean((a as any).isUrgent) && (a.proposalStatus === "pending" || a.proposalStatus === "pending_review" || a.proposalStatus === "under_review");
-        const bUrgent = Boolean((b as any).isUrgent) && (b.proposalStatus === "pending" || b.proposalStatus === "pending_review" || b.proposalStatus === "under_review");
-        if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
-        return getEventTimestamp(b) - getEventTimestamp(a);
-      });
-  }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSchoolYear, filterSemester, searchQuery, semesters]);
+      .sort(compareActivityProposals);
+  }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSchoolYear, filterSemester, searchQuery, semesters, availableSchoolYears]);
 
   // Counts (excluding archived & soft-deleted from active tallies)
   const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
@@ -676,8 +696,8 @@ export function EventApprovals() {
   };
 
   const resetFilters = () => {
-    setFilterSchoolYear(activeCollegePeriod?.academicYear || "all");
-    setFilterSemester(activeCollegePeriod?.semester || "all");
+    setFilterSchoolYear(unifiedActiveTerm.schoolYear || "all");
+    setFilterSemester(unifiedActiveTerm.semester || "all");
     setFilterOrg("all");
     setFilterDateRange("all");
     setFilterCategory("all");
@@ -687,8 +707,8 @@ export function EventApprovals() {
   };
 
   const hasActiveFilters =
-    filterSchoolYear !== (activeCollegePeriod?.academicYear || "all") ||
-    filterSemester !== (activeCollegePeriod?.semester || "all") ||
+    filterSchoolYear !== (unifiedActiveTerm.schoolYear || "all") ||
+    filterSemester !== (unifiedActiveTerm.semester || "all") ||
     filterOrg !== "all" ||
     filterDateRange !== "all" ||
     filterCategory !== "all" ||
@@ -1065,7 +1085,7 @@ export function EventApprovals() {
                 <option value="all">All School Years</option>
                 {availableSchoolYears.map((sy) => (
                   <option key={sy} value={sy}>
-                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? "• Current SY" : ""}
+                    A.Y. {sy} {unifiedActiveTerm.schoolYear === sy ? "• Current SY" : ""}
                   </option>
                 ))}
               </select>
@@ -1082,7 +1102,7 @@ export function EventApprovals() {
                 <option value="all">All Semesters</option>
                 {availableSemesters.map((term) => (
                   <option key={term} value={term}>
-                    {term} {activeCollegePeriod?.semester === term ? "• Active Term" : ""}
+                    {term} {unifiedActiveTerm.semester === term ? "• Active Term" : ""}
                   </option>
                 ))}
               </select>

@@ -1703,17 +1703,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
             <span>{currentStatus.label}</span>
           </div>
 
-          {/* Export PDF (Form AP-01 Official Engine) */}
-          <button
-            onClick={handleExportPDF}
-            disabled={exportingPdf}
-            className="px-3.5 py-1.5 bg-[#FFD41C] text-[#001A4D] hover:bg-amber-400 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-            title="Download Official Activity Proposal PDF"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>{exportingPdf ? 'Generating PDF...' : 'Export PDF'}</span>
-          </button>
-
           {/* Activity Utilities (Utils Dropdown Menu — STI Clean Theme) */}
           <div className="relative" ref={utilsDropdownRef}>
             <button
@@ -2690,127 +2679,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </h4>
                     <p className="text-xs text-slate-500 mt-0.5">
                       {isOrgManagedEvent
-                        ? 'View promotional mobile banners, ticket scanners, and actual expense liquidations submitted by student officers.'
-                        : 'Configure mobile app publishing, manage ticket scanners, and liquidate actual expenditures with official receipts.'}
+                        ? 'View promotional mobile banners, ticket scanners, and actual expense liquidations via the top-right Utils menu.'
+                        : 'Configure mobile app publishing, ticket scanners, and financial liquidation via the top-right Utils menu.'}
                     </p>
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    {isAlreadyPublished ? (
-                      <button
-                        type="button"
-                        disabled
-                        className="px-3 py-2 bg-emerald-950/40 text-emerald-300 border border-emerald-500/30 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 cursor-not-allowed select-none"
-                        title="Activity is already published and live on the student mobile app"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Already Published</span>
-                        <span className="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Live
-                        </span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => setIsPublishModalOpen(true)}
-                        className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer ${
-                          isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900' : 'bg-blue-600 hover:bg-blue-700'
-                        }`}
-                      >
-                        {isOrgManagedEvent ? <Eye className="w-3.5 h-3.5 text-sky-300" /> : <Smartphone className="w-3.5 h-3.5 text-sky-200" />}
-                        <span>{isOrgManagedEvent ? 'View Publishing & Banner' : 'Publishing & Banner'}</span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      disabled={!isAlreadyPublished}
-                      onClick={() => {
-                        if (!isAlreadyPublished) {
-                          toast.error('Locked: Activity must be published to the mobile app first before configuring attendance & scanners.');
-                          return;
-                        }
-                        setIsAttendanceModalOpen(true);
-                      }}
-                      className={`px-3 py-2 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
-                        !isAlreadyPublished
-                          ? 'bg-slate-300 text-slate-500 cursor-not-allowed select-none'
-                          : isOrgManagedEvent
-                          ? 'bg-slate-800 hover:bg-slate-900 cursor-pointer'
-                          : 'bg-indigo-600 hover:bg-indigo-700 cursor-pointer'
-                      }`}
-                    >
-                      {!isAlreadyPublished ? (
-                        <>
-                          <Lock className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Attendance & Scanners (Locked)</span>
-                        </>
-                      ) : isOrgManagedEvent ? (
-                        <>
-                          <Eye className="w-3.5 h-3.5 text-indigo-300" />
-                          <span>View Attendance & Scanners</span>
-                        </>
-                      ) : (
-                        <>
-                          <QrCode className="w-3.5 h-3.5 text-indigo-200" />
-                          <span>Attendance & Scanners</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher}
-                      onClick={() => {
-                        if (isLiquidationExempt) {
-                          toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
-                          return;
-                        }
-                        if (isVoucherRequired && !hasDisbursementVoucher) {
-                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before financial liquidation.');
-                          return;
-                        }
-                        setIsCashModalOpen(true);
-                      }}
-                      className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
-                        !isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher
-                          ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
-                          : isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900 text-[#FFD41C] cursor-pointer' : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
-                      }`}
-                    >
-                      {!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher ? (
-                        <>
-                          <Lock className="w-3.5 h-3.5 text-slate-400" />
-                          <span>Liquidation (Voucher Required)</span>
-                        </>
-                      ) : isLiquidationExempt ? (
-                        <>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
-                          <span>Liquidation (Exempt - ₱0)</span>
-                        </>
-                      ) : isOrgManagedEvent ? (
-                        <>
-                          <Eye className="w-3.5 h-3.5 text-[#FFD41C]" />
-                          <span>View Financial Liquidation</span>
-                        </>
-                      ) : (
-                        <>
-                          <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
-                          <span>Financial Liquidation</span>
-                        </>
-                      )}
-                    </button>
-                    {(effectiveFundingSource === 'student_contributions' ||
-                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
-                      <button
-                        type="button"
-                        onClick={() => setIsPayablesModalOpen(true)}
-                        className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
-                      >
-                        <Users className="w-3.5 h-3.5 text-emerald-100" />
-                        <span>
-                          {isOrgManagedEvent ? 'View Student Payables' : 'Student Contributions & Cashier File'}
-                        </span>
-                      </button>
-                    )}
                   </div>
                 </div>
 

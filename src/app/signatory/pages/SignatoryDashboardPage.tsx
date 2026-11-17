@@ -24,6 +24,7 @@ import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { useCampusActivityData } from '../hooks/useCampusActivityData';
 import CampusActivityOverview from '../components/CampusActivityOverview';
 import { resolveActivityName } from '../../modules/events/utils/activity-compliance.utils';
+import { getSubmissionTimestampMs } from '../../modules/workflow/utils/table-priority-sort.utils';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
 import LiquidationEndorsementModal from '../components/LiquidationEndorsementModal';
 import PAREndorsementModal from '../components/PAREndorsementModal';
@@ -104,7 +105,11 @@ export default function SignatoryDashboardPage() {
       urgentJustification: '',
       raw: par,
     })),
-  ].sort((a, b) => Number(b.isUrgent) - Number(a.isUrgent));
+  ].sort((a, b) => {
+    const urgDiff = Number(b.isUrgent) - Number(a.isUrgent);
+    if (urgDiff !== 0) return urgDiff;
+    return getSubmissionTimestampMs(b.raw) - getSubmissionTimestampMs(a.raw);
+  });
 
   const handleOpenItem = (item: (typeof urgentQueue)[0]) => {
     if (item.docType === 'proposal') {

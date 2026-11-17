@@ -32,6 +32,33 @@ export function normalizeMiscSchoolYear(sy?: string | null): string {
     .trim();
 }
 
+/**
+ * Filters Miscellaneous Fee ledger entries strictly to the specified School Year and Term
+ * so prior-year or other-semester deductions never leak into the active cycle's metrics.
+ */
+export function filterMiscLedgerForPeriod<T extends { schoolYear?: string; semester?: string }>(
+  entries: T[],
+  schoolYear?: string | null,
+  activeSemester?: string | null
+): T[] {
+  const syNorm = normalizeMiscSchoolYear(schoolYear).toLowerCase();
+  const termRaw = String(activeSemester || '').toLowerCase().trim();
+  const hasTermFilter = termRaw.includes('1st') || termRaw.includes('2nd');
+  const wantSecond = termRaw.includes('2nd');
+
+  return (entries || []).filter((entry) => {
+    const entrySyNorm = normalizeMiscSchoolYear(entry.schoolYear).toLowerCase();
+    if (syNorm) {
+      if (!entrySyNorm || entrySyNorm !== syNorm) return false;
+    }
+    if (hasTermFilter && entry.semester) {
+      const entryIsSecond = String(entry.semester).toLowerCase().includes('2nd');
+      if (entryIsSecond !== wantSecond) return false;
+    }
+    return true;
+  });
+}
+
 export function buildMiscFeeDocId(schoolYear: string): string {
   const clean = normalizeMiscSchoolYear(schoolYear || '2026-2027').replace(/[^0-9-]/g, '');
   return `SY_${clean || '2026-2027'}`;
@@ -319,6 +346,112 @@ function pickPreferredMiscConfig(docs: MiscFeeConfigDocument[]): MiscFeeConfigDo
 }
 
 /**
+ * Resolves the current active School Year & Term from Miscellaneous Fee Configs.
+ * Used by AP, PAR, and FL services when stamping schoolYear / semester on creation.
+ */
+export async function getActiveMiscFeeAcademicContext(): Promise<{
+  schoolYear: string;
+  semester: MiscFeeSemesterTerm;
+} | null> {
+  try {
+    const snap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+    if (snap.empty) return null;
+    const docs = snap.docs.map(
+      (d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument)
+    );
+    const preferred = pickPreferredMiscConfig(docs);
+    if (!preferred) return null;
+    const cleanSy = normalizeMiscSchoolYear(preferred.schoolYear);
+    if (!cleanSy) return null;
+    return {
+      schoolYear: cleanSy,
+      semester:
+        preferred.activeSemester === '2nd Semester' ? '2nd Semester' : '1st Semester',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function configHasMatchingBucket(
+  cfg: MiscFeeConfigDocument | null | undefined,
+  targetBucketIds: string[],
+  bucketName?: string
+): boolean {
+  if (!cfg || !Array.isArray(cfg.buckets) || cfg.buckets.length === 0) return false;
+  const cleanIds = targetBucketIds.map((id) => String(id || '').trim()).filter(Boolean);
+  const nameTokens = String(bucketName || '')
+    .split('+')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (cleanIds.length === 0 && nameTokens.length === 0) return cfg.buckets.length > 0;
+  return cfg.buckets.some(
+    (b) =>
+      cleanIds.includes(b.id) ||
+      (b.particular && nameTokens.includes(b.particular.trim().toLowerCase()))
+  );
+}
+
+/**
+ * Resolves the MiscFeeConfigDocument that genuinely owns the target bucket(s).
+ * Prevents closed or stale-SY AP metadata (e.g. SY 2026-2027) from silently writing
+ * into a closed year when the selected bucket belongs to the active School Year.
+ */
+async function resolveTargetMiscFeeConfig(params: {
+  schoolYear?: string | null;
+  targetBucketIds?: string[];
+  bucketName?: string;
+}): Promise<MiscFeeConfigDocument | null> {
+  const targetIds = Array.isArray(params.targetBucketIds)
+    ? params.targetBucketIds.filter(Boolean)
+    : [];
+  const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+  if (allSnap.empty) {
+    return params.schoolYear ? createDefaultMiscFeeConfig(params.schoolYear) : null;
+  }
+
+  const docs = allSnap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument))
+    .sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')));
+
+  const activeDoc = pickPreferredMiscConfig(docs);
+  const reqSyNorm = normalizeMiscSchoolYear(params.schoolYear).toLowerCase();
+  const syDoc = reqSyNorm
+    ? docs.find((c) => normalizeMiscSchoolYear(c.schoolYear).toLowerCase() === reqSyNorm) || null
+    : null;
+
+  if (syDoc && syDoc.status !== 'CLOSED' && configHasMatchingBucket(syDoc, targetIds, params.bucketName)) {
+    return syDoc;
+  }
+  if (activeDoc && configHasMatchingBucket(activeDoc, targetIds, params.bucketName)) {
+    return activeDoc;
+  }
+  if (syDoc && configHasMatchingBucket(syDoc, targetIds, params.bucketName)) {
+    return syDoc;
+  }
+  const anyMatchingDoc = docs.find((c) => configHasMatchingBucket(c, targetIds, params.bucketName));
+  if (anyMatchingDoc) {
+    return anyMatchingDoc;
+  }
+
+  return activeDoc || syDoc || docs[0] || null;
+}
+
+function resolveEffectiveIsSecondSem(
+  configDoc: MiscFeeConfigDocument,
+  requestedSemester?: string | null
+): boolean {
+  if (configDoc.status !== 'CLOSED') {
+    return configDoc.activeSemester === '2nd Semester';
+  }
+  return (
+    String(requestedSemester || configDoc.activeSemester || '')
+      .toLowerCase()
+      .includes('2nd') || configDoc.activeSemester === '2nd Semester'
+  );
+}
+
+/**
  * Automatically deducts the disbursed amount from the selected Miscellaneous Fee bucket(s)
  * when a Disbursement Voucher is uploaded/saved.
  * Supports single or multiple selected buckets proportionally and is idempotent per eventId.
@@ -351,48 +484,79 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
       ].filter(Boolean)
     )
   );
-  if (!eventId || targetBucketIds.length === 0 || amount <= 0) return;
+  if (!eventId || (targetBucketIds.length === 0 && !params.bucketName) || amount <= 0) return;
 
-  // Locate target config doc (by schoolYear or latest available config)
-  let configDoc: MiscFeeConfigDocument | null = null;
-  if (params.schoolYear) {
-    const syId = buildMiscFeeDocId(params.schoolYear);
-    const snap = await getDoc(doc(db, MISC_FEE_CONFIGS_COLLECTION, syId));
-    if (snap.exists()) {
-      configDoc = { id: snap.id, ...(snap.data() as any) };
-    }
-  }
-
+  const configDoc = await resolveTargetMiscFeeConfig({
+    schoolYear: params.schoolYear,
+    targetBucketIds,
+    bucketName: params.bucketName,
+  });
   if (!configDoc) {
-    const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
-    if (!allSnap.empty) {
-      const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      configDoc = pickPreferredMiscConfig(docs);
-    }
-    if (!configDoc) {
-      configDoc = createDefaultMiscFeeConfig(params.schoolYear || '2026-2027');
-    }
+    throw new Error('No active Miscellaneous Fee configuration found to deduct this disbursement.');
   }
 
-  const isSecondSem =
-    String(params.semester || configDoc.activeSemester || '')
-      .toLowerCase()
-      .includes('2nd') || configDoc.activeSemester === '2nd Semester';
+  const isSecondSem = resolveEffectiveIsSecondSem(configDoc, params.semester);
 
   const ledgerDocId = `disb_${eventId}`;
   const ledgerRef = doc(db, MISC_FEE_LEDGER_COLLECTION, ledgerDocId);
   const existingLedgerSnap = await getDoc(ledgerRef);
-  const prevAllocations: Array<{ bucketId: string; bucketName: string; amount: number }> = existingLedgerSnap.exists()
-    ? Array.isArray(existingLedgerSnap.data()?.allocations)
-      ? existingLedgerSnap.data()!.allocations
+  const existingLedgerData = existingLedgerSnap.exists() ? (existingLedgerSnap.data() as any) : null;
+  const existingLedgerSyNorm = normalizeMiscSchoolYear(existingLedgerData?.schoolYear).toLowerCase();
+  const resolvedSyNorm = normalizeMiscSchoolYear(configDoc.schoolYear).toLowerCase();
+  const prevWasSecondSem = existingLedgerData
+    ? String(existingLedgerData.semester || '').toLowerCase().includes('2nd')
+    : isSecondSem;
+
+  const prevAllocations: Array<{ bucketId: string; bucketName: string; amount: number }> = existingLedgerData
+    ? Array.isArray(existingLedgerData.allocations)
+      ? existingLedgerData.allocations
       : [
           {
-            bucketId: String(existingLedgerSnap.data()?.bucketId || bucketId),
-            bucketName: String(existingLedgerSnap.data()?.bucketName || ''),
-            amount: Number(existingLedgerSnap.data()?.amount || 0),
+            bucketId: String(existingLedgerData.bucketId || bucketId),
+            bucketName: String(existingLedgerData.bucketName || ''),
+            amount: Number(existingLedgerData.amount || 0),
           },
         ]
     : [];
+
+  // Roll back orphaned prior deductions if ledger previously pointed at a different School Year
+  if (
+    existingLedgerData &&
+    prevAllocations.length > 0 &&
+    existingLedgerSyNorm &&
+    resolvedSyNorm &&
+    existingLedgerSyNorm !== resolvedSyNorm
+  ) {
+    const oldSyId = buildMiscFeeDocId(existingLedgerData.schoolYear);
+    const oldSnap = await getDoc(doc(db, MISC_FEE_CONFIGS_COLLECTION, oldSyId));
+    if (oldSnap.exists()) {
+      const oldConfig = { id: oldSnap.id, ...(oldSnap.data() as any) } as MiscFeeConfigDocument;
+      let oldChanged = false;
+      const rolledOldBuckets = (oldConfig.buckets || []).map((b) => {
+        let next = { ...b };
+        for (const prev of prevAllocations) {
+          if (
+            b.id === prev.bucketId ||
+            (prev.bucketName && b.particular.toLowerCase() === prev.bucketName.trim().toLowerCase())
+          ) {
+            oldChanged = true;
+            if (prevWasSecondSem) {
+              next.disbursed2ndSem = Math.max(0, (Number(next.disbursed2ndSem) || 0) - prev.amount);
+            } else {
+              next.disbursed1stSem = Math.max(0, (Number(next.disbursed1stSem) || 0) - prev.amount);
+            }
+          }
+        }
+        return next;
+      });
+      if (oldChanged) {
+        await saveMiscFeeConfig(
+          { ...oldConfig, buckets: rolledOldBuckets },
+          params.performedBy || 'Disbursement Re-alignment'
+        );
+      }
+    }
+  }
 
   // Use explicit maker-specified allocatedAmount if provided; otherwise distribute proportionally by available weight
   const explicitAllocatedMap = new Map<string, number>();
@@ -404,13 +568,21 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
     }
     allocWeightMap.set(a.bucketId, Math.max(0, Number(a.availableAmount) || 0));
   });
-  const matchedBuckets = configDoc.buckets.filter(
+  const nameTokens = String(params.bucketName || '')
+    .split('+')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const matchedBuckets = (configDoc.buckets || []).filter(
     (b) =>
       targetBucketIds.includes(b.id) ||
-      (targetBucketIds.length === 1 &&
-        b.particular.toLowerCase() === (params.bucketName || '').toLowerCase())
+      (targetBucketIds.length <= 1 && nameTokens.includes(b.particular.trim().toLowerCase()))
   );
-  const resolvedTargets = matchedBuckets.length > 0 ? matchedBuckets.map((b) => b.id) : targetBucketIds;
+  if (matchedBuckets.length === 0) {
+    throw new Error(
+      `Miscellaneous Fee bucket "${params.bucketName || targetBucketIds[0]}" was not found in SY ${configDoc.schoolYear}.`
+    );
+  }
+  const resolvedTargets = matchedBuckets.map((b) => b.id);
 
   const hasExplicitSplits =
     explicitAllocatedMap.size > 0 &&
@@ -419,7 +591,7 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
   const newAllocations: Array<{ bucketId: string; bucketName: string; amount: number }> = [];
   if (hasExplicitSplits) {
     resolvedTargets.forEach((id) => {
-      const matchedBucket = configDoc!.buckets.find((b) => b.id === id);
+      const matchedBucket = configDoc.buckets.find((b) => b.id === id);
       const bName = matchedBucket?.particular || params.bucketName || id;
       newAllocations.push({
         bucketId: id,
@@ -432,7 +604,7 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
     let remainingToAssign = Math.round(amount * 100) / 100;
 
     resolvedTargets.forEach((id, idx) => {
-      const matchedBucket = configDoc!.buckets.find((b) => b.id === id);
+      const matchedBucket = configDoc.buckets.find((b) => b.id === id);
       const bName = matchedBucket?.particular || params.bucketName || id;
       let share = 0;
       if (idx === resolvedTargets.length - 1) {
@@ -449,21 +621,24 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
     });
   }
 
+  const sameSyRollback = !existingLedgerSyNorm || existingLedgerSyNorm === resolvedSyNorm;
   const updatedBuckets = configDoc.buckets.map((b) => {
     let next = { ...b };
-    // Roll back prior deductions for idempotency on voucher re-upload
-    for (const prev of prevAllocations) {
-      if (b.id === prev.bucketId || (prev.bucketName && b.particular.toLowerCase() === prev.bucketName.toLowerCase())) {
-        if (isSecondSem) {
-          next.disbursed2ndSem = Math.max(0, (Number(next.disbursed2ndSem) || 0) - prev.amount);
-        } else {
-          next.disbursed1stSem = Math.max(0, (Number(next.disbursed1stSem) || 0) - prev.amount);
+    // Roll back prior deductions for idempotency on voucher re-upload within same SY
+    if (sameSyRollback) {
+      for (const prev of prevAllocations) {
+        if (b.id === prev.bucketId || (prev.bucketName && b.particular.toLowerCase() === prev.bucketName.trim().toLowerCase())) {
+          if (prevWasSecondSem) {
+            next.disbursed2ndSem = Math.max(0, (Number(next.disbursed2ndSem) || 0) - prev.amount);
+          } else {
+            next.disbursed1stSem = Math.max(0, (Number(next.disbursed1stSem) || 0) - prev.amount);
+          }
         }
       }
     }
     // Apply updated allocation(s)
     for (const curr of newAllocations) {
-      if (b.id === curr.bucketId || (curr.bucketName && b.particular.toLowerCase() === curr.bucketName.toLowerCase())) {
+      if (b.id === curr.bucketId || (curr.bucketName && b.particular.toLowerCase() === curr.bucketName.trim().toLowerCase())) {
         if (isSecondSem) {
           next.disbursed2ndSem = Math.max(0, (Number(next.disbursed2ndSem) || 0) + curr.amount);
         } else {
@@ -609,32 +784,15 @@ export async function creditMiscFeeBucketOnLiquidationSurplus(params: {
     } catch {}
   }
 
-  let configDoc: MiscFeeConfigDocument | null = null;
-  if (params.schoolYear) {
-    const syId = buildMiscFeeDocId(params.schoolYear);
-    const snap = await getDoc(doc(db, MISC_FEE_CONFIGS_COLLECTION, syId));
-    if (snap.exists()) {
-      configDoc = { id: snap.id, ...(snap.data() as any) };
-    }
-  }
-
-  if (!configDoc) {
-    const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
-    if (!allSnap.empty) {
-      const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      configDoc =
-        docs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
-        docs.find((c) => c.status !== 'CLOSED') ||
-        [...docs].sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')))[0];
-    }
-  }
+  const configDoc = await resolveTargetMiscFeeConfig({
+    schoolYear: params.schoolYear,
+    targetBucketIds,
+    bucketName: params.bucketName,
+  });
 
   if (!configDoc) return;
 
-  const isSecondSem =
-    String(params.semester || configDoc.activeSemester || '')
-      .toLowerCase()
-      .includes('2nd') || configDoc.activeSemester === '2nd Semester';
+  const isSecondSem = resolveEffectiveIsSecondSem(configDoc, params.semester);
 
   // Use explicit SAS/Admin return split if provided; otherwise compute proportional return
   const returnAllocs: Array<{ bucketId: string; bucketName: string; amount: number }> = [];
@@ -810,34 +968,17 @@ export async function debitMiscFeeBucketOnLiquidationDeficit(params: {
   );
   if (!liquidationId || targetRows.length === 0) return;
 
-  let configDoc: MiscFeeConfigDocument | null = null;
-  if (params.schoolYear) {
-    const syId = buildMiscFeeDocId(params.schoolYear);
-    const snap = await getDoc(doc(db, MISC_FEE_CONFIGS_COLLECTION, syId));
-    if (snap.exists()) {
-      configDoc = { id: snap.id, ...(snap.data() as any) };
-    }
-  }
-
-  if (!configDoc) {
-    const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
-    if (!allSnap.empty) {
-      const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      configDoc =
-        docs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
-        docs.find((c) => c.status !== 'CLOSED') ||
-        [...docs].sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')))[0];
-    }
-  }
+  const configDoc = await resolveTargetMiscFeeConfig({
+    schoolYear: params.schoolYear,
+    targetBucketIds: targetRows.map((r) => r.bucketId),
+    bucketName: targetRows.map((r) => r.bucketName).filter(Boolean).join(' + '),
+  });
 
   if (!configDoc) {
     throw new Error('Active Miscellaneous Fee configuration not found for deficit deduction.');
   }
 
-  const isSecondSem =
-    String(params.semester || configDoc.activeSemester || '')
-      .toLowerCase()
-      .includes('2nd') || configDoc.activeSemester === '2nd Semester';
+  const isSecondSem = resolveEffectiveIsSecondSem(configDoc, params.semester);
 
   const headcounts = await resolveMiscFeeHeadcountsForService(configDoc);
   const rowsToPost: Array<{

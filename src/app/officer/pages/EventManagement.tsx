@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import {
   Calendar,
@@ -31,6 +31,13 @@ import {
   useVenuesStream,
 } from '../../modules/events/hooks/useEventConfigStream';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
+import {
+  buildAvailableSchoolYears,
+  compareActivityProposals,
+  matchesSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from '../../modules/workflow/utils/table-priority-sort.utils';
 import { deleteEvent, withdrawProposal } from '../../modules/events/services/event.service';
 import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, getSignatoryProgress, isEventCancelled, isEventCancellationPending } from '../../modules/events/utils/event-lifecycle.utils';
 import type { EventDocument } from '../../modules/events/types/event.types';
@@ -185,16 +192,32 @@ export default function EventManagement() {
   const { venues = [] } = useVenuesStream();
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { configs: miscConfigs = [], activeConfig: activeMiscConfig } = useMiscFeeConfigs();
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig: activeMiscConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+  const lastAutoPeriodRef = useRef<string>('');
 
-  // Initialize filter to Current Active Semester
+  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
   useEffect(() => {
-    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
-      const active = activeCollegePeriod || activeShsPeriod;
-      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
-      if (active?.semester) setFilterSemester(active.semester);
+    if (!unifiedActiveTerm.schoolYear) return;
+    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
+      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
+      setFilterSemester(unifiedActiveTerm.semester || 'All');
       setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = periodKey;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = periodKey;
     }
-  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+  }, [unifiedActiveTerm, hasInitializedPeriod]);
 
   const activeOrgId = profile?.activeOrganizationId || '';
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
@@ -310,13 +333,16 @@ export default function EventManagement() {
   };
 
   // Derived available school years and semesters
-  const availableSchoolYears = useMemo(() => {
-    const set = new Set<string>();
-    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
-    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
-    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
-    return Array.from(set).sort().reverse();
-  }, [semesters, events, activeCollegePeriod]);
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: events,
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, events, unifiedActiveTerm.schoolYear]
+  );
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -374,12 +400,16 @@ export default function EventManagement() {
 
         const matchesCategory = filterCategory === 'All' || event.eventCategoryId === filterCategory;
         const matchesVenue = filterVenue === 'All' || event.venueId === filterVenue;
-        // School Year Filter
+        // School Year Filter (strict: untagged legacy records stay in baseline SY only)
         let matchesSchoolYear = true;
         if (filterSchoolYear !== 'All') {
           const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
           const evSy = event.schoolYear || sem?.academicYear;
-          if (evSy && evSy !== filterSchoolYear) matchesSchoolYear = false;
+          matchesSchoolYear = matchesSchoolYearFilter({
+            recordSchoolYear: evSy,
+            filterSchoolYear,
+            availableSchoolYears,
+          });
         }
 
         // Semester Filter
@@ -397,8 +427,8 @@ export default function EventManagement() {
 
         return statusMatch && matchesSearch && matchesCategory && matchesVenue && matchesSchoolYear && matchesSemester;
       })
-      .sort((a, b) => getEventTimestamp(b) - getEventTimestamp(a));
-  }, [events, activeStatus, searchQuery, filterCategory, filterVenue, filterSchoolYear, filterSemester, semesters]);
+      .sort(compareActivityProposals);
+  }, [events, activeStatus, searchQuery, filterCategory, filterVenue, filterSchoolYear, filterSemester, semesters, availableSchoolYears]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / ITEMS_PER_PAGE));
@@ -850,7 +880,7 @@ export default function EventManagement() {
                 <option value="All">All School Years</option>
                 {availableSchoolYears.map((sy) => (
                   <option key={sy} value={sy}>
-                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                    A.Y. {sy} {unifiedActiveTerm.schoolYear === sy ? '• Current SY' : ''}
                   </option>
                 ))}
               </select>
@@ -867,7 +897,7 @@ export default function EventManagement() {
                 <option value="All">All Semesters</option>
                 {availableSemesters.map((term) => (
                   <option key={term} value={term}>
-                    {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                    {term} {unifiedActiveTerm.semester === term ? '• Active Term' : ''}
                   </option>
                 ))}
               </select>
@@ -905,11 +935,11 @@ export default function EventManagement() {
               </select>
             </div>
 
-            {(filterCategory !== 'All' || filterVenue !== 'All' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'All') || filterSemester !== (activeCollegePeriod?.semester || 'All')) && (
+            {(filterCategory !== 'All' || filterVenue !== 'All' || filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'All') || filterSemester !== (unifiedActiveTerm.semester || 'All')) && (
               <button
                 onClick={() => {
-                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'All');
-                  setFilterSemester(activeCollegePeriod?.semester || 'All');
+                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'All');
+                  setFilterSemester(unifiedActiveTerm.semester || 'All');
                   setFilterCategory('All');
                   setFilterVenue('All');
                 }}

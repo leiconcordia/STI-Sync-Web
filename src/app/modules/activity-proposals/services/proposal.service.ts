@@ -35,6 +35,7 @@ import {
   removeLedgerTransactionsForEvent,
   deductApprovedEventBudget,
 } from '../../finance/services/finance.service';
+import { getActiveMiscFeeAcademicContext } from '../../finance/services/misc-fee.service';
 import { autoArchiveApprovedEvent } from '../../reports/services/report-archive.service';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { createNotification } from '../../notifications';
@@ -138,6 +139,18 @@ export async function syncProposalToEventsCollection(
         : 'COLLEGE';
 
     const currentYear = new Date().getFullYear();
+    const activeMiscCtx = await getActiveMiscFeeAcademicContext();
+    const resolvedSchoolYear =
+      (proposal as any).schoolYear ||
+      existingData.schoolYear ||
+      activeMiscCtx?.schoolYear ||
+      `${currentYear}-${currentYear + 1}`;
+    const resolvedSemester =
+      (proposal as any).semester ||
+      existingData.semester ||
+      (existingData as any).term ||
+      activeMiscCtx?.semester ||
+      '1st Semester';
     const status = mappedStatus === 'approved' ? 'approved' : mappedStatus === 'completed' ? 'completed' : mappedStatus;
     const lifecycleStatus =
       mappedStatus === 'approved'
@@ -247,7 +260,8 @@ export async function syncProposalToEventsCollection(
           ? stripSasPhrases(existingData.organizationName)
           : (isOfficerProposalVal ? null : 'Student Affairs & Services (SAS)'),
         semesterId: (proposal as any).semesterId || existingData.semesterId || 'current_semester',
-        schoolYear: (proposal as any).schoolYear || existingData.schoolYear || `${currentYear}-${currentYear + 1}`,
+        schoolYear: resolvedSchoolYear,
+        semester: resolvedSemester,
         // Operational targeting defaults to All Students unless explicitly configured during Publish / Attendance
         targetAcademicLevel:
           existingData.publishAudienceConfigured || existingData.attendanceAudienceConfigured
@@ -518,11 +532,14 @@ export async function saveProposalDraft(
     ? cleanedDraftOrganizers
     : (isOfficer ? [formData.organizationName || 'Student Organization'] : []);
 
+  const activeMiscCtx = await getActiveMiscFeeAcademicContext();
   const payload: any = {
     ...formData,
     organizers: finalDraftOrganizers,
     id: docId,
     referenceNo,
+    schoolYear: (formData as any).schoolYear || activeMiscCtx?.schoolYear || '',
+    semester: (formData as any).semester || activeMiscCtx?.semester || '1st Semester',
     status: (formData.status as ProposalStatus) || 'draft',
     currentStepIndex: formData.currentStepIndex ?? 0,
     createdByUid: formData.createdByUid || user.uid,
@@ -751,11 +768,15 @@ export async function submitProposalForReview(
     ? cleanedSubmissionOrganizers
     : (isOfficer ? [formData.organizationName || 'Student Organization'] : []);
 
+  const activeMiscCtx = await getActiveMiscFeeAcademicContext();
   const payload: any = {
     ...formData,
     organizers: finalSubmissionOrganizers,
     id: docId,
     referenceNo,
+    schoolYear: (formData as any).schoolYear || activeMiscCtx?.schoolYear || '',
+    semester: (formData as any).semester || activeMiscCtx?.semester || '1st Semester',
+    submittedAt: serverTimestamp(),
     status: 'under_review' as ProposalStatus,
     proposalStatus: 'pending',
     lifecycleStatus: 'pending_review',

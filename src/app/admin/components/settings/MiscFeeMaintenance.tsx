@@ -28,6 +28,7 @@ import {
   cloneMiscFeeConfigForNewSchoolYear,
   buildMiscFeeDocId,
   normalizeMiscSchoolYear,
+  filterMiscLedgerForPeriod,
   validateNewSchoolYear,
   getSuggestedNextSchoolYear,
 } from '../../../modules/finance/services/misc-fee.service';
@@ -95,15 +96,15 @@ export default function MiscFeeMaintenance() {
     }
   }, [viewedConfig]);
 
-  const filteredMiscLedger = useMemo(() => {
-    const syNorm = normalizeMiscSchoolYear(draftConfig.schoolYear).toLowerCase();
-    if (!syNorm) return miscFeeLedger;
-    return miscFeeLedger.filter(
-      (entry) =>
-        !entry.schoolYear ||
-        normalizeMiscSchoolYear(entry.schoolYear).toLowerCase() === syNorm
-    );
-  }, [miscFeeLedger, draftConfig.schoolYear]);
+  const filteredMiscLedger = useMemo(
+    () =>
+      filterMiscLedgerForPeriod(
+        miscFeeLedger,
+        draftConfig.schoolYear,
+        draftConfig.activeSemester
+      ),
+    [miscFeeLedger, draftConfig.schoolYear, draftConfig.activeSemester]
+  );
 
   const effectiveCounts = useMemo(() => {
     if (draftConfig.headcountSource === 'student_registry') {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   Receipt,
@@ -28,6 +28,12 @@ import { Button } from '../../components/ui/button';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
+import {
+  buildAvailableSchoolYears,
+  compareLiquidations,
+  matchesSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from '../../modules/workflow/utils/table-priority-sort.utils';
 import {
   approveLiquidationReport,
   returnLiquidationReport,
@@ -440,30 +446,53 @@ export function FinancialLiquidations() {
   const [filterSemester, setFilterSemester] = useState('all');
   const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
 
-  // Streams
+  // Streams (reuses activeConfig from useMiscFeeConfigs above)
+  const { configs: miscConfigs = [] } = useMiscFeeConfigs();
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
   const { events = [] } = useAllEvents();
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+  const lastAutoPeriodRef = useRef<string>('');
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    events.forEach((ev) => map.set(ev.id, ev));
+    return map;
+  }, [events]);
 
-  // Initialize filter to Current Active Semester
+  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
   useEffect(() => {
-    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
-      const active = activeCollegePeriod || activeShsPeriod;
-      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
-      if (active?.semester) setFilterSemester(active.semester);
+    if (!unifiedActiveTerm.schoolYear) return;
+    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
+      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
+      setFilterSemester(unifiedActiveTerm.semester || 'all');
       setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = periodKey;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = periodKey;
     }
-  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+  }, [unifiedActiveTerm, hasInitializedPeriod]);
 
   // Derived available school years and semesters
-  const availableSchoolYears = useMemo(() => {
-    const set = new Set<string>();
-    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
-    liquidations.forEach((l) => { if (l.schoolYear) set.add(l.schoolYear); });
-    events.forEach((e) => { if (e.schoolYear) set.add(e.schoolYear); });
-    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
-    return Array.from(set).sort().reverse();
-  }, [semesters, liquidations, events, activeCollegePeriod]);
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: [...liquidations, ...events],
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, liquidations, events, unifiedActiveTerm.schoolYear]
+  );
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -567,17 +596,19 @@ export function FinancialLiquidations() {
         }
         if (filterOrg !== 'all' && liq.organizationName !== filterOrg) return false;
 
-        // School Year Filter
+        // School Year Filter (strict: untagged legacy records stay in baseline SY only)
         if (filterSchoolYear !== 'all') {
-          const parentEvent = liq.eventId ? events.find((e) => e.id === liq.eventId) : null;
+          const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
           const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
           const sy = liq.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
-          if (sy && sy !== filterSchoolYear) return false;
+          if (!matchesSchoolYearFilter({ recordSchoolYear: sy, filterSchoolYear, availableSchoolYears })) {
+            return false;
+          }
         }
 
         // Semester Filter
         if (filterSemester !== 'all') {
-          const parentEvent = liq.eventId ? events.find((e) => e.id === liq.eventId) : null;
+          const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
           const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
           const term = liq.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
           if (term && term !== filterSemester) return false;
@@ -594,8 +625,8 @@ export function FinancialLiquidations() {
 
         return true;
       })
-      .sort((a, b) => getLiquidationTimestamp(b) - getLiquidationTimestamp(a));
-  }, [liquidations, activeTab, filterOrg, filterSchoolYear, filterSemester, searchQuery, events, semesters]);
+      .sort((a, b) => compareLiquidations(a, b, eventsById));
+  }, [liquidations, activeTab, filterOrg, filterSchoolYear, filterSemester, searchQuery, eventsById, availableSchoolYears, semesters]);
 
   // KPI calculations
   const pendingItems = useMemo(
@@ -613,12 +644,6 @@ export function FinancialLiquidations() {
   const approvedAmount = useMemo(() => {
     return approvedItems.reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
   }, [approvedItems]);
-
-  const eventsById = useMemo(() => {
-    const map = new Map<string, any>();
-    events.forEach((e) => map.set(e.id, e));
-    return map;
-  }, [events]);
 
   const pendingFlDues = useMemo(() => {
     return events
@@ -1255,7 +1280,7 @@ export function FinancialLiquidations() {
                 <option value="all">All School Years</option>
                 {availableSchoolYears.map((sy) => (
                   <option key={sy} value={sy}>
-                    A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                    A.Y. {sy} {unifiedActiveTerm.schoolYear === sy ? '• Current SY' : ''}
                   </option>
                 ))}
               </select>
@@ -1272,7 +1297,7 @@ export function FinancialLiquidations() {
                 <option value="all">All Semesters</option>
                 {availableSemesters.map((term) => (
                   <option key={term} value={term}>
-                    {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                    {term} {unifiedActiveTerm.semester === term ? '• Active Term' : ''}
                   </option>
                 ))}
               </select>
@@ -1294,12 +1319,12 @@ export function FinancialLiquidations() {
               </select>
             </div>
 
-            {(filterOrg !== 'all' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')) && (
+            {(filterOrg !== 'all' || filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all')) && (
               <button
                 onClick={() => {
                   setFilterOrg('all');
-                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
-                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
+                  setFilterSemester(unifiedActiveTerm.semester || 'all');
                 }}
                 className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 cursor-pointer"
               >

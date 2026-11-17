@@ -29,6 +29,7 @@ import {
 } from '../../utils/proposal-calculations';
 import { useOrgLedger } from '../../../finance/hooks/useFinanceStream';
 import { useMiscFeeConfigs, useMiscFeeLedger } from '../../../finance/hooks/useMiscFeeStream';
+import { filterMiscLedgerForPeriod } from '../../../finance/services/misc-fee.service';
 import { useRetainedActivityFunds } from '../../../finance/hooks/useRetainedFundStream';
 import type { ComputedBucketBalance } from '../../../finance/types/misc-fee.types';
 import { useStudents } from '../../../students/hooks/useStudentStream';
@@ -551,10 +552,15 @@ export default function FundingSourceSelector({
     }).format(val);
   };
 
+  const periodScopedMiscLedger = useMemo(
+    () => filterMiscLedgerForPeriod(miscFeeLedger || [], activeConfig?.schoolYear, activeConfig?.activeSemester),
+    [miscFeeLedger, activeConfig?.schoolYear, activeConfig?.activeSemester]
+  );
+
   const getRecentBucketMetrics = (cb: ComputedBucketBalance) => {
     const bId = cb.bucket.id;
     const bNameLower = (cb.bucket.particular || '').toLowerCase();
-    const matching = (miscFeeLedger || []).filter((entry) => {
+    const matching = periodScopedMiscLedger.filter((entry) => {
       const mPrimary =
         entry.bucketId === bId ||
         (entry.bucketName && bNameLower && entry.bucketName.toLowerCase().includes(bNameLower));
@@ -1485,7 +1491,7 @@ export default function FundingSourceSelector({
         bucket={inspectedMiscBucket}
         schoolYear={activeConfig.schoolYear}
         activeSemester={activeConfig.activeSemester}
-        ledgerEntries={miscFeeLedger}
+        ledgerEntries={periodScopedMiscLedger}
       />
 
       {/* Target Contributing Students Preview Modal */}

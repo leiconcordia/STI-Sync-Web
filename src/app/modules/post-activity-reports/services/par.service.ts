@@ -44,6 +44,7 @@ import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.u
 import { parSubmissionDeadline } from '../../events/utils/activity-compliance.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
+import { getActiveMiscFeeAcademicContext } from '../../finance/services/misc-fee.service';
 
 export const PAR_COLLECTION = 'post_activity_reports';
 
@@ -679,6 +680,12 @@ export async function saveOrSubmitPAR(
     parSubmissionDeadline(eventData, formData as any) ||
     '';
 
+  const activeMiscCtx =
+    (!eventData.schoolYear && !(formData as any).schoolYear) ||
+    (!eventData.semester && !(formData as any).semester)
+      ? await getActiveMiscFeeAcademicContext()
+      : null;
+
   const payload: any = cleanPayload({
     ...formData,
     id: docId,
@@ -690,8 +697,8 @@ export async function saveOrSubmitPAR(
     liquidationRefNumber: targetLiquidationRef,
     submissionDeadline: computedParDeadline || undefined,
     semesterId: eventData.semesterId || formData.semesterId || '',
-    schoolYear: eventData.schoolYear || formData.schoolYear || '',
-    semester: eventData.semester || formData.semester || '',
+    schoolYear: eventData.schoolYear || formData.schoolYear || activeMiscCtx?.schoolYear || '',
+    semester: eventData.semester || formData.semester || activeMiscCtx?.semester || '',
     fundingSource: (formData as any).fundingSource || eventData.fundingSource || (isOfficer ? 'organization_funds' : 'school_budget'),
     isPendingSasVetting: submit ? requiresSasPreApprovalGate : false,
     sasVettedAt: null,

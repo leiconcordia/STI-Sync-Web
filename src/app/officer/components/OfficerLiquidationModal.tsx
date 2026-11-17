@@ -468,6 +468,8 @@ export default function OfficerLiquidationModal({
   const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
   const [cashierRefDraft, setCashierRefDraft] = useState('');
   const [savingCashierProof, setSavingCashierProof] = useState(false);
+  const [showCashierProofConfirmModal, setShowCashierProofConfirmModal] = useState(false);
+  const [cashierProofSubmittedLocal, setCashierProofSubmittedLocal] = useState(false);
   const [settlementSourceAllocations, setSettlementSourceAllocations] = useState<ProposalBucketAllocation[]>([]);
   const [surplusAllocationRows, setSurplusAllocationRows] = useState<SurplusReturnAllocation[]>([]);
   const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
@@ -488,9 +490,12 @@ export default function OfficerLiquidationModal({
     selectedEvent?.id || ''
   );
 
-  // Derive active report from prop, tracked ID, linked event, or existing list
+  // Derive active report from prop, tracked ID, linked event, or existing list (prefer live stream doc)
   const effectiveReport = useMemo(() => {
-    if (editingReport) return editingReport;
+    if (editingReport) {
+      const liveMatch = liquidationsList.find((l) => l.id === editingReport.id);
+      return liveMatch || editingReport;
+    }
     if (activeReportId) {
       const found = liquidationsList.find((l) => l.id === activeReportId);
       if (found) return found;
@@ -532,8 +537,10 @@ export default function OfficerLiquidationModal({
   useEffect(() => {
     if (!isOpen) {
       setLocalStatusOverride(null);
+      setShowCashierProofConfirmModal(false);
+      setCashierProofSubmittedLocal(false);
     }
-  }, [isOpen]);
+  }, [isOpen, effectiveReport?.id]);
 
   const currentStatus = localStatusOverride || effectiveReport?.status || (editingReport?.status ?? 'draft');
 
@@ -3427,13 +3434,18 @@ export default function OfficerLiquidationModal({
                   </div>
                 ) : (
                   <>
-                    {approvedReportSurplus > 0.009 && settlementSourceAllocations.length >= 2 && (
+                    {approvedReportSurplus > 0.009 && settlementSourceAllocations.length >= 2 && (() => {
+                      const isLocked =
+                        effectiveReport.cashierSettlementStatus === 'proof_uploaded' ||
+                        effectiveReport.cashierSettlementStatus === 'verified' ||
+                        cashierProofSubmittedLocal;
+                      return (
                       <div className="p-3 rounded-xl bg-white border border-blue-200 space-y-2 text-xs">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-bold text-[#001A4D] uppercase text-[11px]">
                             Surplus Return Bucket Split ({formatCurrency(approvedReportSurplus)})
                           </span>
-                          {effectiveReport.cashierSettlementStatus !== 'verified' && (
+                          {!isLocked && (
                             <button
                               type="button"
                               onClick={() =>
@@ -3460,7 +3472,7 @@ export default function OfficerLiquidationModal({
                               min="0"
                               max={row.originalAllocatedAmount > 0 ? row.originalAllocatedAmount : approvedReportSurplus}
                               step="0.01"
-                              disabled={effectiveReport.cashierSettlementStatus === 'verified'}
+                              disabled={isLocked}
                               value={row.returnAmount}
                               onChange={(e) => {
                                 const val = e.target.value === '' ? 0 : Math.max(0, parseFloat(e.target.value) || 0);
@@ -3473,113 +3485,109 @@ export default function OfficerLiquidationModal({
                                   })
                                 );
                               }}
-                              className="w-28 px-2 py-1 border border-slate-300 rounded text-right font-mono font-bold text-xs"
+                              className="w-28 px-2 py-1 border border-slate-300 rounded text-right font-mono font-bold text-xs disabled:bg-slate-100"
                             />
                           </div>
                         ))}
                       </div>
-                    )}
-                    {approvedReportDeficit > 0.009 && (
-                      <DeficitCoverageAllocationPanel
-                        totalDeficit={approvedReportDeficit}
-                        rows={deficitAllocationRows}
-                        onChange={setDeficitAllocationRows}
-                        supplementalOptions={deficitSupplementalOptions}
-                        disabled={savingCashierProof}
-                        readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
-                      />
-                    )}
+                      );
+                    })()}
+                    {(() => {
+                      const isCashierProofReadOnly =
+                        effectiveReport.cashierSettlementStatus === 'proof_uploaded' ||
+                        effectiveReport.cashierSettlementStatus === 'verified' ||
+                        cashierProofSubmittedLocal;
+                      return (
+                        <>
+                          {approvedReportDeficit > 0.009 && (
+                            <DeficitCoverageAllocationPanel
+                              totalDeficit={approvedReportDeficit}
+                              rows={deficitAllocationRows}
+                              onChange={setDeficitAllocationRows}
+                              supplementalOptions={deficitSupplementalOptions}
+                              disabled={savingCashierProof}
+                              readOnly={isCashierProofReadOnly}
+                            />
+                          )}
 
-                    <CashierProofUploader
-                      proofs={
-                        cashierProofDrafts.length > 0
-                          ? cashierProofDrafts
-                          : effectiveReport.cashierSettlementProofs || []
-                      }
-                      onChange={setCashierProofDrafts}
-                      cashierReferenceNo={
-                        cashierRefDraft || effectiveReport.cashierReferenceNo || ''
-                      }
-                      onReferenceNoChange={setCashierRefDraft}
-                      folderKey={effectiveReport.id}
-                      disabled={savingCashierProof}
-                      readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
-                      title={
-                        approvedReportDeficit > 0.009
-                          ? `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
-                          : isSasStudentContribSettlement
-                            ? `Required Return Proof / Receipt (Return: ${formatCurrency(approvedReportSurplus)})`
-                            : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
-                                Number(
-                                  (effectiveReport as any).amountToReturn ??
-                                    effectiveReport.surplusOrDeficit ??
-                                    0
-                                )
-                              )})`
-                      }
-                      description={
-                        approvedReportDeficit > 0.009
-                          ? 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
-                          : isSasStudentContribSettlement
-                            ? 'Attach the Return Proof / Receipt to credit the unspent surplus into SAS Student Contribution & Retained Funds.'
-                            : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
-                      }
-                    />
-
-                    {effectiveReport.cashierSettlementStatus !== 'verified' && (
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          disabled={
-                            savingCashierProof ||
-                            (approvedReportDeficit > 0.009 && !deficitCoverageValidation.isValid) ||
-                            (approvedReportSurplus > 0.009 && !surplusReturnValidation.isValid) ||
-                            (cashierProofDrafts.length === 0 &&
-                              (!effectiveReport.cashierSettlementProofs ||
-                                effectiveReport.cashierSettlementProofs.length === 0))
-                          }
-                          onClick={async () => {
-                            const proofsToSave =
+                          <CashierProofUploader
+                            proofs={
                               cashierProofDrafts.length > 0
                                 ? cashierProofDrafts
-                                : effectiveReport.cashierSettlementProofs || [];
-                            setSavingCashierProof(true);
-                            try {
-                              await attachCashierSettlementProofs(
-                                effectiveReport.id,
-                                proofsToSave,
-                                cashierRefDraft || effectiveReport.cashierReferenceNo || '',
-                                {
-                                  uid: currentUserId || 'officer',
-                                  name: currentUserName || 'Officer',
-                                  role: userRole === 'admin' ? 'admin' : 'officer',
-                                },
-                                approvedReportDeficit > 0.009
-                                  ? { deficitDeductionAllocations: deficitAllocationRows }
-                                  : { surplusReturnAllocations: surplusAllocationRows }
-                              );
-                              toast.success(
-                                approvedReportDeficit > 0.009
-                                  ? 'Overspend bucket coverage and proof submitted to SAS!'
-                                  : 'Cashier return receipt uploaded and submitted to SAS!'
-                              );
-                            } catch (err: any) {
-                              toast.error(err?.message || 'Failed to save settlement proof.');
-                            } finally {
-                              setSavingCashierProof(false);
+                                : effectiveReport.cashierSettlementProofs || []
                             }
-                          }}
-                          className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                        >
-                          {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                          <span>
-                            {approvedReportDeficit > 0.009
-                              ? 'Save Coverage & Submit Proof'
-                              : 'Save & Submit Cashier Proof'}
-                          </span>
-                        </button>
-                      </div>
-                    )}
+                            onChange={setCashierProofDrafts}
+                            cashierReferenceNo={
+                              cashierRefDraft || effectiveReport.cashierReferenceNo || ''
+                            }
+                            onReferenceNoChange={setCashierRefDraft}
+                            folderKey={effectiveReport.id}
+                            disabled={savingCashierProof}
+                            readOnly={isCashierProofReadOnly}
+                            title={
+                              approvedReportDeficit > 0.009
+                                ? `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
+                                : isSasStudentContribSettlement
+                                  ? `Required Return Proof / Receipt (Return: ${formatCurrency(approvedReportSurplus)})`
+                                  : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
+                                      Number(
+                                        (effectiveReport as any).amountToReturn ??
+                                          effectiveReport.surplusOrDeficit ??
+                                          0
+                                      )
+                                    )})`
+                            }
+                            description={
+                              approvedReportDeficit > 0.009
+                                ? 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
+                                : isSasStudentContribSettlement
+                                  ? 'Attach the Return Proof / Receipt to credit the unspent surplus into SAS Student Contribution & Retained Funds.'
+                                  : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
+                            }
+                          />
+
+                          {isCashierProofReadOnly ? (
+                            <div
+                              className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                                effectiveReport.cashierSettlementStatus === 'verified'
+                                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                                  : 'bg-blue-50 border-blue-200 text-[#001A4D]'
+                              }`}
+                            >
+                              <Lock className="w-4 h-4 shrink-0" />
+                              <span>
+                                {effectiveReport.cashierSettlementStatus === 'verified'
+                                  ? 'Settlement verified by SAS Admin and posted. This section is locked as read-only.'
+                                  : 'Cashier settlement proof has been submitted and locked as read-only while awaiting SAS verification.'}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                disabled={
+                                  savingCashierProof ||
+                                  (approvedReportDeficit > 0.009 && !deficitCoverageValidation.isValid) ||
+                                  (approvedReportSurplus > 0.009 && !surplusReturnValidation.isValid) ||
+                                  (cashierProofDrafts.length === 0 &&
+                                    (!effectiveReport.cashierSettlementProofs ||
+                                      effectiveReport.cashierSettlementProofs.length === 0))
+                                }
+                                onClick={() => setShowCashierProofConfirmModal(true)}
+                                className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                              >
+                                {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                <span>
+                                  {approvedReportDeficit > 0.009
+                                    ? 'Save Coverage & Submit Proof'
+                                    : 'Save & Submit Cashier Proof'}
+                                </span>
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </>
                 )}
               </div>
@@ -3749,6 +3757,136 @@ export default function OfficerLiquidationModal({
           >
             <X className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Cashier Proof Submission Confirmation Modal */}
+      {showCashierProofConfirmModal && effectiveReport && (
+        <div
+          className="fixed inset-0 z-[80] bg-black/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => !savingCashierProof && setShowCashierProofConfirmModal(false)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl border border-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-bold text-[#001A4D]">
+                  {approvedReportDeficit > 0.009
+                    ? 'Confirm Coverage & Proof Submission'
+                    : 'Confirm Cashier Settlement Proof Submission'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Please review your Cashier settlement details before submitting.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={savingCashierProof}
+                onClick={() => setShowCashierProofConfirmModal(false)}
+                className="p-1 text-gray-400 hover:text-gray-700 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-500">Activity:</span>
+                <span className="font-bold text-[#001A4D] text-right truncate max-w-[230px]">
+                  {effectiveReport.eventTitle}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-500">
+                  {approvedReportDeficit > 0.009 ? 'Overspend Coverage:' : 'Surplus to Return:'}
+                </span>
+                <span className="font-mono font-black text-[#001A4D]">
+                  {formatCurrency(
+                    approvedReportDeficit > 0.009
+                      ? approvedReportDeficit
+                      : Number((effectiveReport as any).amountToReturn ?? effectiveReport.surplusOrDeficit ?? 0)
+                  )}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-500">Official Receipt / Slip #:</span>
+                <span className="font-mono font-semibold text-gray-800">
+                  {(cashierRefDraft || effectiveReport.cashierReferenceNo || '').trim() || 'Not specified'}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-gray-500">Attached Proof File(s):</span>
+                <span className="font-semibold text-[#0E4EBD]">
+                  {(cashierProofDrafts.length > 0
+                    ? cashierProofDrafts
+                    : effectiveReport.cashierSettlementProofs || []
+                  ).length}{' '}
+                  file(s)
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 flex items-start gap-2">
+              <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <span>
+                Once submitted, this Cashier settlement proof will be locked as <strong>read-only</strong> and routed to SAS Admin for verification.
+              </span>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={savingCashierProof}
+                onClick={() => setShowCashierProofConfirmModal(false)}
+                className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 hover:bg-gray-50 cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingCashierProof}
+                onClick={async () => {
+                  const proofsToSave =
+                    cashierProofDrafts.length > 0
+                      ? cashierProofDrafts
+                      : effectiveReport.cashierSettlementProofs || [];
+                  setSavingCashierProof(true);
+                  try {
+                    await attachCashierSettlementProofs(
+                      effectiveReport.id,
+                      proofsToSave,
+                      cashierRefDraft || effectiveReport.cashierReferenceNo || '',
+                      {
+                        uid: userUid || officerProfile?.uid || officerProfile?.studentId || 'officer',
+                        name: userName || officerProfile?.studentName || 'Officer',
+                        role: userRole === 'admin' ? 'admin' : 'officer',
+                      },
+                      approvedReportDeficit > 0.009
+                        ? { deficitDeductionAllocations: deficitAllocationRows }
+                        : { surplusReturnAllocations: surplusAllocationRows }
+                    );
+                    setCashierProofSubmittedLocal(true);
+                    setShowCashierProofConfirmModal(false);
+                    toast.success(
+                      approvedReportDeficit > 0.009
+                        ? 'Overspend bucket coverage and proof submitted to SAS!'
+                        : 'Cashier return receipt submitted to SAS and locked!'
+                    );
+                  } catch (err: any) {
+                    toast.error(err?.message || 'Failed to save settlement proof.');
+                  } finally {
+                    setSavingCashierProof(false);
+                  }
+                }}
+                className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>{savingCashierProof ? 'Submitting...' : 'Confirm & Submit Proof'}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

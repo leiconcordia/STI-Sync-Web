@@ -6,6 +6,7 @@ import type {
   MiscFeeSemesterTerm,
 } from '../types/misc-fee.types';
 import { useUserNameResolver } from '../hooks/useUserNameResolver';
+import { filterMiscLedgerForPeriod } from '../services/misc-fee.service';
 import { formatCurrency } from '../../../utils/currency';
 
 type LedgerEntryWithAlloc = MiscFeeLedgerEntry & {
@@ -36,7 +37,8 @@ export function MiscFeeBucketTransactionsModal({
     if (!bucket) return [];
     const bucketId = bucket.bucket.id;
     const particularLower = (bucket.bucket.particular || '').toLowerCase();
-    return (ledgerEntries || []).filter((entry) => {
+    const scopedEntries = filterMiscLedgerForPeriod(ledgerEntries || [], schoolYear, activeSemester);
+    return scopedEntries.filter((entry) => {
       const matchesPrimary =
         entry.bucketId === bucketId ||
         (entry.bucketName && particularLower && entry.bucketName.toLowerCase().includes(particularLower));
@@ -44,7 +46,7 @@ export function MiscFeeBucketTransactionsModal({
         Array.isArray(entry.allocations) && entry.allocations.some((a) => a.bucketId === bucketId);
       return matchesPrimary || matchesAlloc;
     });
-  }, [bucket, ledgerEntries]);
+  }, [bucket, ledgerEntries, schoolYear, activeSemester]);
 
   if (!isOpen || !bucket) return null;
 

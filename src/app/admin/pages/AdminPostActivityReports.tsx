@@ -1,5 +1,5 @@
 import { useSearchParams } from 'react-router';
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   FileCheck2,
   Calendar,
@@ -39,6 +39,14 @@ import {
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { useAllEvents } from '../../modules/events/hooks/useEventStream';
+import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
+import {
+  buildAvailableSchoolYears,
+  comparePostActivityReports,
+  matchesSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from '../../modules/workflow/utils/table-priority-sort.utils';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
 import {
   getCachedSasSignatoryConfig,
@@ -97,25 +105,50 @@ export default function AdminPostActivityReports() {
   // Streams
   const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { events: allEvents = [] } = useAllEvents();
+  const { configs: miscConfigs = [], activeConfig: activeMiscConfig } = useMiscFeeConfigs();
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig: activeMiscConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+  const lastAutoPeriodRef = useRef<string>('');
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    allEvents.forEach((ev) => map.set(ev.id, ev));
+    return map;
+  }, [allEvents]);
 
-  // Initialize filter to Current Active Semester
+  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
   useEffect(() => {
-    if (!hasInitializedPeriod && (activeCollegePeriod || activeShsPeriod)) {
-      const active = activeCollegePeriod || activeShsPeriod;
-      if (active?.academicYear) setFilterSchoolYear(active.academicYear);
-      if (active?.semester) setFilterSemester(active.semester);
+    if (!unifiedActiveTerm.schoolYear) return;
+    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
+      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
+      setFilterSemester(unifiedActiveTerm.semester || 'all');
       setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = periodKey;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = periodKey;
     }
-  }, [activeCollegePeriod, activeShsPeriod, hasInitializedPeriod]);
+  }, [unifiedActiveTerm, hasInitializedPeriod]);
 
   // Derived available school years and semesters
-  const availableSchoolYears = useMemo(() => {
-    const set = new Set<string>();
-    semesters.forEach((s) => { if (s.academicYear) set.add(s.academicYear); });
-    pars.forEach((p) => { if (p.schoolYear) set.add(p.schoolYear); });
-    if (activeCollegePeriod?.academicYear) set.add(activeCollegePeriod.academicYear);
-    return Array.from(set).sort().reverse();
-  }, [semesters, pars, activeCollegePeriod]);
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: pars,
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, pars, unifiedActiveTerm.schoolYear]
+  );
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -183,11 +216,14 @@ export default function AdminPostActivityReports() {
 
       if (selectedOrgFilter !== 'all' && p.organizationName !== selectedOrgFilter) return false;
 
-      // School Year filter
+      // School Year filter (strict: untagged legacy records stay in baseline SY only)
       if (filterSchoolYear !== 'all') {
+        const parentEvent = p.eventId ? eventsById.get(p.eventId) : null;
         const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
-        const pSy = p.schoolYear || sem?.academicYear;
-        if (pSy && pSy !== filterSchoolYear) return false;
+        const pSy = p.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
+        if (!matchesSchoolYearFilter({ recordSchoolYear: pSy, filterSchoolYear, availableSchoolYears })) {
+          return false;
+        }
       }
 
       // Semester filter
@@ -206,8 +242,8 @@ export default function AdminPostActivityReports() {
       }
 
       return true;
-    });
-  }, [pars, activeTab, selectedOrgFilter, filterSchoolYear, filterSemester, searchQuery, semesters]);
+    }).sort((a, b) => comparePostActivityReports(a, b, eventsById));
+  }, [pars, activeTab, selectedOrgFilter, filterSchoolYear, filterSemester, searchQuery, semesters, availableSchoolYears, eventsById]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredPars.length / ITEMS_PER_PAGE));
@@ -496,7 +532,7 @@ export default function AdminPostActivityReports() {
               <option value="all">All School Years</option>
               {availableSchoolYears.map((sy) => (
                 <option key={sy} value={sy}>
-                  A.Y. {sy} {activeCollegePeriod?.academicYear === sy ? '• Current SY' : ''}
+                  A.Y. {sy} {unifiedActiveTerm.schoolYear === sy ? '• Current SY' : ''}
                 </option>
               ))}
             </select>
@@ -513,7 +549,7 @@ export default function AdminPostActivityReports() {
               <option value="all">All Semesters</option>
               {availableSemesters.map((term) => (
                 <option key={term} value={term}>
-                  {term} {activeCollegePeriod?.semester === term ? '• Active Term' : ''}
+                  {term} {unifiedActiveTerm.semester === term ? '• Active Term' : ''}
                 </option>
               ))}
             </select>
@@ -535,12 +571,12 @@ export default function AdminPostActivityReports() {
               ))}
             </select>
 
-            {(filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all') || selectedOrgFilter !== 'all') && (
+            {(filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all') || selectedOrgFilter !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
-                  setFilterSchoolYear(activeCollegePeriod?.academicYear || 'all');
-                  setFilterSemester(activeCollegePeriod?.semester || 'all');
+                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
+                  setFilterSemester(unifiedActiveTerm.semester || 'all');
                   setSelectedOrgFilter('all');
                   setCurrentPage(1);
                 }}

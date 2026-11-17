@@ -15,6 +15,7 @@ import {
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import { removeLedgerTransactionsForLiquidation } from './finance.service';
+import { getActiveMiscFeeAcademicContext } from './misc-fee.service';
 import type { 
   LiquidationDocument, 
   LiquidationRemark, 
@@ -491,10 +492,16 @@ export const createLiquidationReport = async (
     timestamp: new Date().toISOString(),
   };
 
+  const activeMiscCtx =
+    (!data.schoolYear && !eventMetadata.schoolYear) ||
+    (!data.semester && !eventMetadata.semester)
+      ? await getActiveMiscFeeAcademicContext()
+      : null;
+
   const payload: Partial<LiquidationDocument> = {
     ...data,
-    schoolYear: data.schoolYear || eventMetadata.schoolYear || '',
-    semester: data.semester || eventMetadata.semester || '',
+    schoolYear: data.schoolYear || eventMetadata.schoolYear || activeMiscCtx?.schoolYear || '',
+    semester: data.semester || eventMetadata.semester || activeMiscCtx?.semester || '',
     semesterId: data.semesterId || eventMetadata.semesterId || '',
     totalActualSpending,
     surplusOrDeficit,
