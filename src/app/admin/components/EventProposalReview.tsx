@@ -51,6 +51,14 @@ import {
 } from '../../modules/events';
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import DisbursementVoucherModal from '../../modules/finance/components/DisbursementVoucherModal';
+import { EventPayablesQRControl } from '../../modules/finance/components/EventPayablesQRControl';
+import { useEventPayablesStream } from '../../modules/finance/hooks/usePayableStream';
+import { useStudents } from '../../modules/students/hooks/useStudentStream';
+import { useTargetAudienceStructure } from '../../modules/academic';
+import {
+  filterActiveStudents,
+  filterMatchingStudents,
+} from '../../modules/activity-proposals/utils/student-reach.utils';
 import { useAdviserProfile } from '../../modules/auth/hooks/useAdviserProfile';
 import stiOrmocLogo from '../../../imports/STI_ORMOC_LOGO.jpg';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
@@ -869,6 +877,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isCashModalOpen, setIsCashModalOpen] = useState(false);
+  const [isPayablesModalOpen, setIsPayablesModalOpen] = useState(false);
+  const [showTargetRosterPreview, setShowTargetRosterPreview] = useState(false);
+  const [targetRosterSearch, setTargetRosterSearch] = useState('');
   const [isDisbursementVoucherModalOpen, setIsDisbursementVoucherModalOpen] = useState(false);
   const currentDisbursementVoucher =
     (activeEvent as any)?.disbursementVoucher ||
@@ -890,17 +901,107 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const isOrgLedger = effectiveFundingSource === 'organization_funds';
   const isZeroBudget = effectiveFundingSource === 'zero_budget';
   const isSchoolBudget = effectiveFundingSource === 'school_budget';
+  const isRetainedOrStudentContribution =
+    effectiveFundingSource === 'retained_sao_fund' ||
+    effectiveFundingSource === 'student_contributions';
+  const isStudentContributionEvent = effectiveFundingSource === 'student_contributions';
+
+  const { data: eventPayables = [] } = useEventPayablesStream(
+    isStudentContributionEvent ? event?.id || '' : ''
+  );
+  const { data: allStudentsList = [] } = useStudents();
+  const audienceStructure = useTargetAudienceStructure();
+
+  const contribTargetStudents = useMemo(() => {
+    if (!isStudentContributionEvent) return [];
+    const activeStudents = filterActiveStudents(allStudentsList);
+    const filterCfg =
+      (fullProposal as any)?.studentContributionFilter ||
+      (activeEvent as any)?.studentContributionFilter;
+    if (!filterCfg) return activeStudents;
+    return filterMatchingStudents(activeStudents, {
+      mode: filterCfg.mode || 'all',
+      years: Array.isArray(filterCfg.selectedYears) ? filterCfg.selectedYears : [],
+      courseCodes: Array.isArray(filterCfg.selectedCourses) ? filterCfg.selectedCourses : [],
+      sections: Array.isArray(filterCfg.selectedSections) ? filterCfg.selectedSections : [],
+      shsCourseCodes: audienceStructure.shsCourseCodes,
+      activeCourses: audienceStructure.courses,
+    });
+  }, [
+    isStudentContributionEvent,
+    allStudentsList,
+    fullProposal,
+    activeEvent,
+    audienceStructure.shsCourseCodes,
+    audienceStructure.courses,
+  ]);
+
+  const contribCashOverview = useMemo(() => {
+    const collected =
+      Math.round(
+        eventPayables
+          .filter((p) => String(p.status || '').toLowerCase() === 'paid')
+          .reduce((s, p) => s + (Number(p.paidAmount) || Number(p.assignedAmount) || 0), 0) * 100
+      ) / 100;
+    const paidCount = eventPayables.filter((p) => String(p.status || '').toLowerCase() === 'paid').length;
+    const allocs: any[] = Array.isArray((fullProposal as any)?.allocations)
+      ? (fullProposal as any).allocations
+      : Array.isArray((activeEvent as any)?.allocations)
+      ? (activeEvent as any).allocations
+      : [];
+    const retainedApplied =
+      Math.round(
+        allocs
+          .filter((a) => a.fundType === 'student_contribution_retained')
+          .reduce((s, a) => s + (Number(a.allocatedAmount) || 0), 0) * 100
+      ) / 100;
+    const projectedFromPayables =
+      Math.round(
+        eventPayables
+          .filter((p) => !['cancelled', 'waived', 'refunded'].includes(String(p.status || '').toLowerCase()))
+          .reduce((s, p) => s + (Number(p.assignedAmount) || 0), 0) * 100
+      ) / 100;
+    const fallbackProjected =
+      Number((fullProposal as any)?.studentContributionRate || (activeEvent as any)?.studentContributionRate || 0) *
+      Number((fullProposal as any)?.studentContributionTargetCount || contribTargetStudents.length || 0);
+    const totalProjected = projectedFromPayables > 0 ? projectedFromPayables : fallbackProjected;
+    const cashOnHand = Math.round((collected + retainedApplied) * 100) / 100;
+    return {
+      collected,
+      paidCount,
+      totalBilled: eventPayables.length,
+      retainedApplied,
+      totalProjected,
+      cashOnHand,
+      uncollected: Math.max(0, Math.round((totalProjected - collected) * 100) / 100),
+    };
+  }, [eventPayables, fullProposal, activeEvent, contribTargetStudents.length]);
 
   const isLiquidationExempt = useMemo(() => {
     return isEventLiquidationExempt(unifiedEventEntity);
   }, [unifiedEventEntity]);
 
-  // School disbursement voucher is strictly only required if funded by the school with an expense budget > 0
+  // School disbursement voucher is strictly required if funded by school misc fee OR SAS student contribution with budget > 0
   const isVoucherRequired = useMemo(() => {
-    if (isLiquidationExempt || !isSchoolBudget) return false;
+    if (isLiquidationExempt) return false;
+    if (!isSchoolBudget && !(isStudentContributionEvent && !isOrgManagedEvent)) return false;
     const totalExp = Number(totalExpenseAmount || (event as any).totalApprovedBudget || (activeEvent as any).totalApprovedBudget || 0);
     return totalExp > 0;
-  }, [isLiquidationExempt, isSchoolBudget, totalExpenseAmount, event, activeEvent]);
+  }, [isLiquidationExempt, isSchoolBudget, isStudentContributionEvent, isOrgManagedEvent, totalExpenseAmount, event, activeEvent]);
+
+  const contribProposedBudget = Number(
+    totalExpenseAmount || (event as any).totalApprovedBudget || (activeEvent as any)?.totalApprovedBudget || 0
+  );
+  const isContributionFundSufficient =
+    !isStudentContributionEvent ||
+    isOrgManagedEvent ||
+    contribProposedBudget <= 0 ||
+    contribCashOverview.cashOnHand + 0.009 >= contribProposedBudget;
+  const isVoucherLockedByCollectionGap =
+    isStudentContributionEvent &&
+    !isOrgManagedEvent &&
+    !hasDisbursementVoucher &&
+    !isContributionFundSufficient;
 
   const [isUtilsOpen, setIsUtilsOpen] = useState(false);
   const utilsDropdownRef = useRef<HTMLDivElement>(null);
@@ -917,7 +1018,14 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [isUtilsOpen]);
 
-  const handleUpdateFundingSource = async (newSource: 'organization_funds' | 'school_budget' | 'zero_budget') => {
+  const handleUpdateFundingSource = async (
+    newSource:
+      | 'organization_funds'
+      | 'school_budget'
+      | 'retained_sao_fund'
+      | 'student_contributions'
+      | 'zero_budget'
+  ) => {
     try {
       if (event?.id) {
         await updateDoc(doc(db, 'events', event.id), {
@@ -942,9 +1050,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       toast.success(
         newSource === 'organization_funds'
           ? 'Funding set to Organization Treasury Ledger. School disbursement voucher not required.'
+          : newSource === 'retained_sao_fund'
+          ? 'Funding set to SAO Retained Student Activity Fund (isolated from Misc Fees).'
+          : newSource === 'student_contributions'
+          ? 'Funding set to Student Contribution.'
           : newSource === 'zero_budget'
           ? 'Funding set to Zero Budget (₱0.00).'
-          : 'Funding set to School Budget (Institutional Voucher required).'
+          : 'Funding set to School Miscellaneous Fee Budget (Institutional Voucher required).'
       );
     } catch (err) {
       console.error('Failed to update funding source:', err);
@@ -1723,17 +1835,27 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     {isApproved && (
                       <button
                         type="button"
-                        disabled={isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher}
+                        disabled={
+                          (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
+                          isVoucherLockedByCollectionGap
+                        }
                         onClick={() => {
                           if (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) {
                             toast.info('Organization Ledger Funded: No school disbursement voucher is required.');
+                            return;
+                          }
+                          if (isVoucherLockedByCollectionGap) {
+                            toast.error(
+                              `Disbursement Voucher Locked: Collected funds (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the proposed budget (${formatPHP(contribProposedBudget)}).`
+                            );
                             return;
                           }
                           setIsUtilsOpen(false);
                           setIsDisbursementVoucherModalOpen(true);
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                          isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher
+                          (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
+                          isVoucherLockedByCollectionGap
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                             : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                         }`}
@@ -1742,6 +1864,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
                             hasDisbursementVoucher
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                              : isVoucherLockedByCollectionGap
+                              ? 'bg-amber-50 text-amber-600 border border-amber-200'
                               : isOrgLedger
                               ? 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
                               : isVoucherRequired
@@ -1750,6 +1874,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           }`}>
                             {hasDisbursementVoucher ? (
                               <CheckCircle2 className="w-4 h-4" />
+                            ) : isVoucherLockedByCollectionGap ? (
+                              <Lock className="w-4 h-4" />
                             ) : isOrgLedger ? (
                               <FileText className="w-4 h-4" />
                             ) : isVoucherRequired ? (
@@ -1767,10 +1893,12 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             <div className="text-[11px] text-gray-500 truncate">
                               {hasDisbursementVoucher
                                 ? 'Official voucher/slip attached'
+                                : isVoucherLockedByCollectionGap
+                                ? `Locked: Collected ${formatPHP(contribCashOverview.cashOnHand)} / ${formatPHP(contribProposedBudget)}`
                                 : isOrgManagedEvent && isOrgLedger
                                 ? 'Exempt • Club treasury funds'
                                 : isVoucherRequired
-                                ? 'Required from school accounting'
+                                ? (isStudentContributionEvent ? 'Fund reached • Ready to input voucher' : 'Required from school accounting')
                                 : 'Optional acknowledgment copy'}
                             </div>
                           </div>
@@ -1780,13 +1908,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                               Attached
                             </span>
+                          ) : isVoucherLockedByCollectionGap ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                              Locked
+                            </span>
                           ) : isOrgManagedEvent && isOrgLedger ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
                               Exempt
                             </span>
                           ) : isVoucherRequired ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                              Required
+                              {isStudentContributionEvent ? 'Ready' : 'Required'}
                             </span>
                           ) : (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
@@ -1797,79 +1929,108 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       </button>
                     )}
 
-                    {/* 4. Cash Custodians & Liquidation */}
+                    {/* 4. Financial Liquidation */}
                     <button
                       type="button"
-                      disabled={!isApproved || (isVoucherRequired && !hasDisbursementVoucher)}
+                      disabled={!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)}
                       onClick={() => {
+                        if (isLiquidationExempt) {
+                          toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
+                          return;
+                        }
                         if (!isApproved) {
-                          toast.error('Locked: Proposal must be approved before allocating cash advance amounts.');
+                          toast.error('Locked: Proposal must be approved before submitting financial liquidation.');
                           return;
                         }
                         if (isVoucherRequired && !hasDisbursementVoucher) {
-                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash advance amounts.');
+                          toast.error('Locked: Official Disbursement Voucher must be uploaded first.');
                           return;
                         }
                         setIsUtilsOpen(false);
                         setIsCashModalOpen(true);
                       }}
                       className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        !isApproved || (isVoucherRequired && !hasDisbursementVoucher)
+                        !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
                           ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                           : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          !isApproved || (isVoucherRequired && !hasDisbursementVoucher)
+                          !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
                             ? 'bg-amber-50 text-amber-600 border border-amber-200'
-                            : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                            : 'bg-blue-50 text-[#001A4D] border border-blue-200'
                         }`}>
-                          {!isApproved || (isVoucherRequired && !hasDisbursementVoucher) ? (
+                          {!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher) ? (
                             <Lock className="w-4 h-4" />
                           ) : (
-                            <Coins className="w-4 h-4" />
+                            <Receipt className="w-4 h-4" />
                           )}
                         </div>
                         <div className="min-w-0">
                           <div className="font-bold text-gray-900 truncate">
-                            {isOrgManagedEvent ? 'Cash Custodians (View Only)' : 'Cash Custodians & Liquidation'}
+                            {isOrgManagedEvent ? 'Financial Liquidation (View Only)' : 'Financial Liquidation'}
                           </div>
                           <div className="text-[11px] text-gray-500 truncate">
                             {isLiquidationExempt
                               ? 'Non-monetary (₱0) • Exempt'
                               : !isApproved
                               ? 'Locked: Approval required'
-                              : (isVoucherRequired && !hasDisbursementVoucher)
+                              : isVoucherRequired && !hasDisbursementVoucher
                               ? 'Locked: Voucher needed first'
-                              : 'Manage cash advances & liquidation'}
+                              : 'Liquidate expenses with official receipts'}
                           </div>
                         </div>
                       </div>
-                      <div className="shrink-0">
-                        {isLiquidationExempt ? (
-                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            Exempt (₱0)
-                          </span>
-                        ) : !isApproved ? (
-                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                            Locked
-                          </span>
-                        ) : (isVoucherRequired && !hasDisbursementVoucher) ? (
-                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                            Voucher Needed
-                          </span>
-                        ) : isOrgManagedEvent ? (
-                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
-                            Club
-                          </span>
-                        ) : (
-                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            Open
-                          </span>
-                        )}
-                      </div>
+                      <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#001A4D] border border-blue-200">
+                        {isLiquidationExempt ? 'Exempt' : !isApproved || (isVoucherRequired && !hasDisbursementVoucher) ? 'Locked' : 'Report'}
+                      </span>
                     </button>
+
+                    {/* 5. Student Contribution Payables & Cashier Upload */}
+                    {(effectiveFundingSource === 'student_contributions' ||
+                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
+                      <button
+                        type="button"
+                        disabled={!isApproved}
+                        onClick={() => {
+                          if (!isApproved) {
+                            toast.error('Locked: Proposal must be approved before managing student contribution payables.');
+                            return;
+                          }
+                          setIsUtilsOpen(false);
+                          setIsPayablesModalOpen(true);
+                        }}
+                        className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                          !isApproved
+                            ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
+                            : 'hover:bg-emerald-50/60 cursor-pointer active:scale-[0.99]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center shrink-0">
+                            <Users className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-900 truncate">
+                              {isOrgManagedEvent
+                                ? 'Student Payables (View Only)'
+                                : 'Student Contribution & Cashier Upload'}
+                            </div>
+                            <div className="text-[11px] text-gray-500 truncate">
+                              {!isApproved
+                                ? 'Locked: Approval required'
+                                : isOrgManagedEvent
+                                ? 'Org-managed collections'
+                                : 'Export roster & upload Cashier paid list'}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          {isOrgManagedEvent ? 'Club' : 'Cashier'}
+                        </span>
+                      </button>
+                    )}
                   </div>
 
                   {/* Section 3: Proposal Revisions (if hasRevisions) */}
@@ -2458,46 +2619,102 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </button>
                     <button
                       type="button"
-                      disabled={isVoucherRequired && !hasDisbursementVoucher}
+                      disabled={!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher}
                       onClick={() => {
+                        if (isLiquidationExempt) {
+                          toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
+                          return;
+                        }
                         if (isVoucherRequired && !hasDisbursementVoucher) {
-                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before allocating cash custodians.');
+                          toast.error('Locked: Official Disbursement Voucher must be uploaded first before financial liquidation.');
                           return;
                         }
                         setIsCashModalOpen(true);
                       }}
                       className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
-                        isVoucherRequired && !hasDisbursementVoucher
+                        !isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher
                           ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
                           : isOrgManagedEvent ? 'bg-slate-800 hover:bg-slate-900 text-[#FFD41C] cursor-pointer' : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                       }`}
                     >
-                      {isVoucherRequired && !hasDisbursementVoucher ? (
+                      {!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher ? (
                         <>
                           <Lock className="w-3.5 h-3.5 text-slate-400" />
-                          <span>Custodians (Voucher Required)</span>
+                          <span>Liquidation (Voucher Required)</span>
                         </>
                       ) : isLiquidationExempt ? (
                         <>
-                          <Coins className="w-3.5 h-3.5 text-emerald-300" />
-                          <span>Custodians (Exempt - ₱0)</span>
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+                          <span>Liquidation (Exempt - ₱0)</span>
                         </>
                       ) : isOrgManagedEvent ? (
                         <>
                           <Eye className="w-3.5 h-3.5 text-[#FFD41C]" />
-                          <span>View Budget Custodians</span>
+                          <span>View Financial Liquidation</span>
                         </>
                       ) : (
                         <>
-                          <Coins className="w-3.5 h-3.5 text-[#FFD41C]" />
-                          <span>Allocate Cash Custodians</span>
+                          <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
+                          <span>Financial Liquidation</span>
                         </>
                       )}
                     </button>
+                    {(effectiveFundingSource === 'student_contributions' ||
+                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsPayablesModalOpen(true)}
+                        className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <Users className="w-3.5 h-3.5 text-emerald-100" />
+                        <span>
+                          {isOrgManagedEvent ? 'View Student Payables' : 'Student Contributions & Cashier File'}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
                 
+                {/* Student Contribution Live Cash-On-Hand Strip */}
+                {isStudentContributionEvent && (
+                  <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-2xl space-y-2 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-emerald-950 flex items-center gap-1.5">
+                        <Coins className="w-4 h-4 text-emerald-600" />
+                        Student Contribution Live Cash On Hand (Strict Cash-On-Hand Rule)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsPayablesModalOpen(true)}
+                        className="text-[11px] font-bold text-emerald-800 hover:underline cursor-pointer"
+                      >
+                        Manage Roster &amp; Upload Cashier File →
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="p-2 bg-white rounded-xl border border-emerald-200/80">
+                        <span className="text-[10px] text-slate-500 block uppercase font-bold">Projected Target</span>
+                        <strong className="font-mono text-slate-900">{formatPHP(contribCashOverview.totalProjected)}</strong>
+                      </div>
+                      <div className="p-2 bg-white rounded-xl border border-emerald-200/80">
+                        <span className="text-[10px] text-emerald-700 block uppercase font-bold">Collected (Cashier)</span>
+                        <strong className="font-mono text-emerald-800">
+                          {formatPHP(contribCashOverview.collected)} ({contribCashOverview.paidCount}/{contribCashOverview.totalBilled})
+                        </strong>
+                      </div>
+                      <div className="p-2 bg-white rounded-xl border border-blue-200/80">
+                        <span className="text-[10px] text-blue-700 block uppercase font-bold">Spendable Cash On Hand</span>
+                        <strong className="font-mono text-[#001A4D]">{formatPHP(contribCashOverview.cashOnHand)}</strong>
+                      </div>
+                      <div className="p-2 bg-white rounded-xl border border-amber-200/80">
+                        <span className="text-[10px] text-amber-800 block uppercase font-bold">Uncollected Gap</span>
+                        <strong className="font-mono text-amber-900">{formatPHP(contribCashOverview.uncollected)}</strong>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Disbursement Voucher Status Banner */}
                 {hasDisbursementVoucher ? (
                   <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-emerald-950">
@@ -2513,7 +2730,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           </span>
                         </span>
                         <p className="text-[11px] text-emerald-800 mt-0.5 font-mono">
-                          Check #{currentDisbursementVoucher.chequeNumber || 'N/A'} • Released: {currentDisbursementVoucher.disbursementDate || 'N/A'} • ₱{formatPHP(currentDisbursementVoucher.amountDisbursed || 0)}
+                          Check #{currentDisbursementVoucher.chequeNumber || 'N/A'} • Released: {currentDisbursementVoucher.disbursementDate || 'N/A'} • {formatPHP(currentDisbursementVoucher.amountDisbursed || 0)}
                         </p>
                       </div>
                     </div>
@@ -2571,6 +2788,33 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         This activity has no monetary budget allocation. No disbursement voucher or cash advance allocation is required.
                       </p>
                     </div>
+                  </div>
+                ) : isVoucherLockedByCollectionGap ? (
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                        <Lock className="w-4 h-4 text-amber-700" />
+                      </div>
+                      <div>
+                        <span className="font-bold flex items-center gap-2 text-amber-900">
+                          Disbursement Voucher Locked — Waiting for Student Contribution Funds
+                          <span className="text-[10px] font-mono px-2 py-0.2 rounded-full bg-amber-200 text-amber-900 border border-amber-300">
+                            {formatPHP(contribCashOverview.cashOnHand)} / {formatPHP(contribProposedBudget)}
+                          </span>
+                        </span>
+                        <p className="text-[11px] text-amber-800 mt-0.5">
+                          Total Cashier collections plus applied retained funds must equal or exceed the proposed budget (<strong>{formatPHP(contribProposedBudget)}</strong>) before entering the Disbursement Voucher. Shortfall remaining: <strong>{formatPHP(Math.max(0, contribProposedBudget - contribCashOverview.cashOnHand))}</strong>.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsPayablesModalOpen(true)}
+                      className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer shrink-0 shadow-xs"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Upload Cashier Collected File</span>
+                    </button>
                   </div>
                 ) : (
                   <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
@@ -3074,10 +3318,25 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
               {/* Revenues Table (if present and not non-monetary) */}
               {financialProjections.revenues && financialProjections.revenues.length > 0 && !isZeroBudget && (
                 <div>
-                  <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                    Revenue Sources / Subsidies
-                  </h4>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                    <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                      Revenue Sources / Subsidies
+                    </h4>
+                    {isStudentContributionEvent && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTargetRosterSearch('');
+                          setShowTargetRosterPreview(true);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-[11px] font-bold inline-flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Users className="w-3.5 h-3.5" />
+                        <span>View Target Contributor List ({contribTargetStudents.length.toLocaleString()})</span>
+                      </button>
+                    )}
+                  </div>
                   <div className="border border-gray-200 rounded-xl overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead className="bg-emerald-50/60 border-b border-gray-200 text-gray-600 font-bold uppercase">
@@ -3094,7 +3353,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         {financialProjections.revenues.map((rev: any, i: number) => (
                           <tr key={rev.id || i} className="hover:bg-emerald-50/20">
                             <td className="px-3 py-2 text-gray-400 font-mono">{i + 1}</td>
-                            <td className="px-3 py-2 font-medium text-gray-900">{rev.description}</td>
+                            <td className="px-3 py-2 font-medium text-gray-900 whitespace-pre-wrap align-top leading-relaxed">
+                              {rev.description}
+                            </td>
                             <td className="px-3 py-2 text-right font-mono text-gray-500">
                               {formatPHP(rev.lastYearActual || 0)}
                               {rev.originalLastYearActual !== undefined && rev.lastYearActual !== rev.originalLastYearActual && (
@@ -4516,6 +4777,146 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           initialEventId={event.id}
           initialEvent={event}
         />
+      )}
+
+      {/* 4. STUDENT CONTRIBUTION PAYABLES & CASHIER FILE MODAL */}
+      {isPayablesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs">
+          <div className="relative w-full max-w-6xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl bg-white">
+            <div className="sticky top-0 z-20 flex items-center justify-between px-5 py-3 bg-[#001A4D] text-white border-b border-white/10">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#FFD41C]">
+                Student Contribution Payables &amp; Cashier Collections
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsPayablesModalOpen(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              <EventPayablesQRControl
+                eventId={event.id}
+                eventTitle={fullProposal?.title || event.title}
+                referenceId={fullProposal?.referenceNo || (activeEvent as any)?.referenceId || event.referenceId}
+                adminFeeAmount={
+                  Number((fullProposal as any)?.studentContributionRate) ||
+                  Number((activeEvent as any)?.studentContributionRate) ||
+                  Number((activeEvent as any)?.suggestedFeePerStudent) ||
+                  Number((fullProposal as any)?.feeAmount) ||
+                  Number((activeEvent as any)?.feeAmount) ||
+                  Number((activeEvent as any)?.adminFeeOverride) ||
+                  0
+                }
+                recordedByUid={profile?.uid || 'admin'}
+                recordedByName={profile?.displayName || 'SAS Administrator'}
+                isOfficer={false}
+                isClubEvent={isOrgManagedEvent}
+                hostingOrgName={
+                  event.hostingOrgName || (event as any).organizationName || undefined
+                }
+                readOnly={isOrgManagedEvent}
+                isCancelled={isCancelled}
+                isQREnabled={Boolean(
+                  (activeEvent as any)?.enableQRTickets || (activeEvent as any)?.enableQR
+                )}
+                semesterId={(activeEvent as any)?.semesterId || (fullProposal as any)?.semesterId}
+                schoolYear={(activeEvent as any)?.schoolYear || (fullProposal as any)?.schoolYear}
+                semester={(activeEvent as any)?.semester || (fullProposal as any)?.semester}
+                appliedRetainedAmount={contribCashOverview.retainedApplied}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4b. TARGET CONTRIBUTOR LIST PREVIEW MODAL (FOR SIGNATORIES & ADMIN) */}
+      {showTargetRosterPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs">
+          <div className="w-full max-w-4xl max-h-[88vh] bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col">
+            <div className="bg-[#001A4D] text-white px-5 py-4 flex items-center justify-between">
+              <div>
+                <h4 className="text-sm font-bold flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#FFD41C]" />
+                  Target Contributing Students ({contribTargetStudents.length.toLocaleString()})
+                </h4>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  {((fullProposal as any)?.studentContributionFilter?.audienceSummary) ||
+                    'Filtered enrolled students assigned to this Student Contribution proposal'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowTargetRosterPreview(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={targetRosterSearch}
+                  onChange={(e) => setTargetRosterSearch(e.target.value)}
+                  placeholder="Search Student ID, name, program, year, or section..."
+                  className="w-full px-3.5 py-2 text-xs border border-slate-300 rounded-xl bg-white outline-none focus:ring-2 focus:ring-[#001A4D]"
+                />
+              </div>
+              <span className="text-xs font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl">
+                Rate: {formatPHP(Number((fullProposal as any)?.studentContributionRate || (activeEvent as any)?.studentContributionRate || 0))} / student
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-100 sticky top-0 text-[10px] font-bold uppercase text-slate-600 border-b border-slate-200">
+                  <tr>
+                    <th className="px-4 py-2.5">Student ID</th>
+                    <th className="px-4 py-2.5">Name</th>
+                    <th className="px-4 py-2.5">Program / Strand</th>
+                    <th className="px-4 py-2.5">Year Level</th>
+                    <th className="px-4 py-2.5">Section</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {contribTargetStudents
+                    .filter((s: any) => {
+                      const q = targetRosterSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      const fullName = `${s.firstName || ''} ${s.lastName || ''} ${s.name || ''}`.toLowerCase();
+                      const sid = String(s.studentId || s.schoolId || '').toLowerCase();
+                      const crs = String(s.courseCode || s.course || '').toLowerCase();
+                      const yr = String(s.yearLevel || '').toLowerCase();
+                      const sec = String(s.section || '').toLowerCase();
+                      return fullName.includes(q) || sid.includes(q) || crs.includes(q) || yr.includes(q) || sec.includes(q);
+                    })
+                    .slice(0, 300)
+                    .map((s: any, idx: number) => (
+                      <tr key={s.id || idx} className="hover:bg-slate-50">
+                        <td className="px-4 py-2 font-mono text-slate-700">{s.studentId || s.schoolId || '—'}</td>
+                        <td className="px-4 py-2 font-semibold text-slate-900">
+                          {`${s.firstName || ''} ${s.lastName || ''}`.trim() || s.name || 'Student'}
+                        </td>
+                        <td className="px-4 py-2 text-slate-600">{s.courseCode || s.course || '—'}</td>
+                        <td className="px-4 py-2 text-slate-600">{s.yearLevel || '—'}</td>
+                        <td className="px-4 py-2 text-slate-600">{s.section || '—'}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowTargetRosterPreview(false)}
+                className="px-4 py-2 rounded-xl bg-[#001A4D] text-white text-xs font-bold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Author Withdraw Modal */}

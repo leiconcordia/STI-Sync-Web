@@ -65,8 +65,15 @@ export default function PARDocumentsAndVoucherModal({
 
   const allEntries: PreviewEntry[] = useMemo(() => {
     const list: PreviewEntry[] = [];
+    const seenUrls = new Set<string>();
+    const pushEntry = (entry: PreviewEntry) => {
+      if (!entry.url || seenUrls.has(entry.url)) return;
+      seenUrls.add(entry.url);
+      list.push(entry);
+    };
+
     if (voucher?.fileUrl) {
-      list.push({
+      pushEntry({
         id: 'disbursement-voucher',
         name: voucher.fileName || 'Disbursement Voucher',
         url: voucher.fileUrl,
@@ -77,18 +84,58 @@ export default function PARDocumentsAndVoucherModal({
       });
     }
 
+    const isDeficitReport = Number(linkedLiquidation?.surplusOrDeficit ?? 0) < -0.009;
+    const settlementLabel = isDeficitReport ? 'Reimbursement / Supplemental Proof' : 'Cashier Return Receipt / Proof';
     (linkedLiquidation?.cashierSettlementProofs || []).forEach((p, idx) => {
-      list.push({
+      pushEntry({
         id: p.id || `cashier-proof-${idx}`,
-        name: p.name || `Cashier Settlement Proof ${idx + 1}`,
+        name: p.name || `${settlementLabel} ${idx + 1}`,
         url: p.url,
-        category: 'Cashier Settlement Proof',
+        category: settlementLabel,
         fileType: p.fileType,
       });
     });
 
+    if (linkedLiquidation && Array.isArray(linkedLiquidation.lineItems)) {
+      linkedLiquidation.lineItems.forEach((li, liIdx) => {
+        const desc = li.description || li.category || `Expense Item #${liIdx + 1}`;
+        const tag = li.isLostReceipt ? 'FL Lost Receipt Affidavit' : 'FL Official Receipt';
+        if (Array.isArray(li.receiptFiles) && li.receiptFiles.length > 0) {
+          li.receiptFiles.forEach((rf, fIdx) => {
+            if (!rf?.url) return;
+            pushEntry({
+              id: rf.id || `fl-line-${liIdx}-${fIdx}`,
+              name: rf.name || `${desc} — ${tag}`,
+              url: rf.url,
+              category: `${tag} (${desc})`,
+              fileType: rf.fileType,
+            });
+          });
+        } else if (Array.isArray(li.receiptUrls) && li.receiptUrls.length > 0) {
+          li.receiptUrls.forEach((url, uIdx) => {
+            if (!url) return;
+            pushEntry({
+              id: `fl-line-url-${liIdx}-${uIdx}`,
+              name: `${desc} — ${tag} #${uIdx + 1}`,
+              url,
+              category: `${tag} (${desc})`,
+              fileType: /\.pdf(\?|#|$)/i.test(url) ? 'pdf' : 'image',
+            });
+          });
+        } else if (li.receiptUrl) {
+          pushEntry({
+            id: `fl-line-legacy-${liIdx}`,
+            name: `${desc} — ${tag}`,
+            url: li.receiptUrl,
+            category: `${tag} (${desc})`,
+            fileType: /\.pdf(\?|#|$)/i.test(li.receiptUrl) ? 'pdf' : 'image',
+          });
+        }
+      });
+    }
+
     attachments.forEach((att) => {
-      list.push({
+      pushEntry({
         id: att.id,
         name: att.name,
         url: att.url,

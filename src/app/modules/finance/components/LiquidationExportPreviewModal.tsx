@@ -244,14 +244,16 @@ export function LiquidationExportPreviewModal({
               }));
             }
 
-            // Determine actual Activity End Date from event sessions (last session date)
+            // Prioritize actual event conclusion date (`concludedAt` / `completedAt`), then last session date
+            eventEndParsed = parseLocalDate(eventData.concludedAt || eventData.completedAt);
+
             if (
               eventData.sessions &&
               Array.isArray(eventData.sessions) &&
               eventData.sessions.length > 0
             ) {
               const validSessions = eventData.sessions.filter((s: any) => s && s.date);
-              if (validSessions.length > 0) {
+              if (!eventEndParsed && validSessions.length > 0) {
                 validSessions.sort((a: any, b: any) => (a.date > b.date ? 1 : -1));
                 const lastSession = validSessions[validSessions.length - 1];
                 eventEndParsed = parseLocalDate(lastSession.date);
@@ -263,7 +265,7 @@ export function LiquidationExportPreviewModal({
             }
 
             if (!eventEndParsed) {
-              eventEndParsed = parseLocalDate(eventData.completedAt || eventData.createdAt);
+              eventEndParsed = parseLocalDate(eventData.createdAt);
             }
 
             if (!eventReleasedDate) {
@@ -730,6 +732,62 @@ export function LiquidationExportPreviewModal({
                       OR NO: {orNumber}
                     </span>
                   </div>
+
+                  {((enrichedReport.surplusReturnAllocations?.length || 0) > 0 ||
+                    (enrichedReport.allocations?.length || 0) > 0) && (
+                    <div className="pt-3 mt-2 border-t border-black/30">
+                      <div className="font-bold text-[11px] uppercase tracking-wider mb-1">
+                        Fund Source Allocation &amp; Surplus Return Breakdown
+                      </div>
+                      <table className="w-full border-collapse border border-black text-[11px]">
+                        <thead>
+                          <tr className="bg-gray-100 border-b border-black font-bold">
+                            <th className="border-r border-black px-2 py-1 text-left">Source Bucket</th>
+                            <th className="border-r border-black px-2 py-1 text-left">Fund Type</th>
+                            <th className="border-r border-black px-2 py-1 text-right">Pulled / Allocated</th>
+                            <th className="px-2 py-1 text-right">Returned Surplus</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(enrichedReport.surplusReturnAllocations?.length
+                            ? enrichedReport.surplusReturnAllocations.map((r) => ({
+                                bucketId: r.bucketId,
+                                bucketName: r.bucketName,
+                                fundType: r.fundType,
+                                pulled: r.originalAllocatedAmount,
+                                returned: r.returnAmount,
+                              }))
+                            : (enrichedReport.allocations || []).map((a) => ({
+                                bucketId: a.bucketId,
+                                bucketName: a.bucketName,
+                                fundType: a.fundType,
+                                pulled: a.allocatedAmount,
+                                returned: 0,
+                              }))
+                          ).map((row) => (
+                            <tr key={row.bucketId} className="border-t border-black/60">
+                              <td className="border-r border-black px-2 py-1 font-semibold">
+                                {row.bucketName}
+                              </td>
+                              <td className="border-r border-black px-2 py-1">
+                                {row.fundType === 'misc_fee'
+                                  ? 'Miscellaneous Fee'
+                                  : row.fundType === 'org_treasury'
+                                    ? 'Organization Treasury'
+                                    : 'Retained Student Contribution'}
+                              </td>
+                              <td className="border-r border-black px-2 py-1 text-right font-mono">
+                                {formatCurrency(row.pulled)}
+                              </td>
+                              <td className="px-2 py-1 text-right font-mono font-bold">
+                                {formatCurrency(row.returned)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
 
                 {/* 5. Official Signatories Block matching Rows 51-76 (Arial 10pt) */}

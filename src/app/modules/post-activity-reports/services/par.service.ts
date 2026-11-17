@@ -41,6 +41,7 @@ import type {
 } from '../types/par.types';
 import { autoArchiveApprovedPAR } from '../../reports/services/report-archive.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { parSubmissionDeadline } from '../../events/utils/activity-compliance.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
@@ -646,10 +647,15 @@ export async function saveOrSubmitPAR(
     }
   }
 
-  const isOrgFunds =
-    (formData as any).fundingSource === 'organization_funds' ||
-    eventData.fundingSource === 'organization_funds';
-  const requiresSasPreApprovalGate = isOfficer && !isOrgFunds;
+  const resolvedSource =
+    (formData as any).fundingSource ||
+    eventData.fundingSource ||
+    (isOfficer ? 'organization_funds' : 'school_budget');
+  const isOrgDirectSas =
+    resolvedSource === 'organization_funds' ||
+    (isOfficer &&
+      (resolvedSource === 'student_contributions' || resolvedSource === 'zero_budget'));
+  const requiresSasPreApprovalGate = isOfficer && !isOrgDirectSas;
 
   if (submit && approvalChain && approvalChain.length > 0) {
     approvalChain = approvalChain.map((step: any) => {
@@ -668,6 +674,11 @@ export async function saveOrSubmitPAR(
     });
   }
 
+  const computedParDeadline =
+    (formData as any).submissionDeadline ||
+    parSubmissionDeadline(eventData, formData as any) ||
+    '';
+
   const payload: any = cleanPayload({
     ...formData,
     id: docId,
@@ -677,6 +688,7 @@ export async function saveOrSubmitPAR(
     eventReferenceId: eventData.referenceId || '',
     liquidationId: targetLiquidationId,
     liquidationRefNumber: targetLiquidationRef,
+    submissionDeadline: computedParDeadline || undefined,
     semesterId: eventData.semesterId || formData.semesterId || '',
     schoolYear: eventData.schoolYear || formData.schoolYear || '',
     semester: eventData.semester || formData.semester || '',
@@ -1151,8 +1163,11 @@ export async function approvePAR(
   if (!snap.exists()) throw new Error('Post-Activity Report not found.');
 
   const data = snap.data() as PostActivityReportDocument;
+  const repSrc = (data as any).fundingSource;
   const isOrgFunds =
-    (data as any).fundingSource === 'organization_funds' ||
+    repSrc === 'organization_funds' ||
+    (Boolean((data as any).isOfficerPar) &&
+      (repSrc === 'student_contributions' || repSrc === 'zero_budget')) ||
     ((data.approvalChain || []).length === 1 && (data.approvalChain || [])[0].role === 'sas_head');
 
   // If School Budget with Signatory Pipeline awaiting SAS clearance, release to Stage 1 Signatories!

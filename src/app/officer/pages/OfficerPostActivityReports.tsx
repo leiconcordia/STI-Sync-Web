@@ -34,6 +34,11 @@ import PostActivityReportDetailModal from '../../modules/post-activity-reports/c
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
 import { deletePAR } from '../../modules/post-activity-reports/services/par.service';
 import { formatCurrency, formatVariance } from '../../utils/currency';
+import { formatAppDate } from '../../utils/date';
+import {
+  parSubmissionDeadline,
+  calendarDaysRemaining,
+} from '../../modules/events/utils/activity-compliance.utils';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { useSemesters, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
@@ -358,6 +363,58 @@ export default function OfficerPostActivityReports() {
         </div>
       </div>
 
+      {/* ── 15-Day Post-Conclusion PAR Dues Tracker ── */}
+      {eligibleEvents.length > 0 && (
+        <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+              <Clock className="w-4 h-4 text-amber-600" />
+              <span>15-Day Post-Activity Report Dues ({eligibleEvents.length})</span>
+            </div>
+            <span className="text-[11px] text-amber-800 font-medium">
+              Counted 15 calendar days after event conclusion
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {eligibleEvents.map((ev) => {
+              const deadline = parSubmissionDeadline(ev);
+              const rem = deadline ? calendarDaysRemaining(deadline) : null;
+              const isOverdue = rem !== null && rem < 0;
+              return (
+                <button
+                  key={ev.id}
+                  type="button"
+                  onClick={() => handleCreateForEvent(ev.id)}
+                  className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white hover:bg-blue-50/40 transition-colors cursor-pointer ${
+                    isOverdue ? 'border-rose-300' : 'border-amber-200'
+                  }`}
+                >
+                  <span className="font-bold text-[#001A4D] truncate max-w-[200px]">
+                    {ev.title}
+                  </span>
+                  <span
+                    className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                      isOverdue
+                        ? 'bg-rose-100 text-rose-800'
+                        : rem !== null && rem <= 3
+                        ? 'bg-amber-100 text-amber-900'
+                        : 'bg-blue-50 text-[#001A4D]'
+                    }`}
+                  >
+                    {deadline ? `Due ${formatAppDate(deadline)}` : 'Due'}{' '}
+                    {rem !== null
+                      ? isOverdue
+                        ? `(${Math.abs(rem)}d overdue)`
+                        : `(${rem}d left)`
+                      : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ── Main Container: Tabs + Search + Table + Pagination ── */}
       <div className="bg-white border border-[#E5E7EB] rounded-2xl shadow-xs overflow-hidden">
         {/* Top Control Bar */}
@@ -542,7 +599,20 @@ export default function OfficerPostActivityReports() {
                         {formatVariance(net)}
                       </td>
                       <td className="py-3 px-4 text-center">
-                        {renderStatusBadge(r.status)}
+                        <div className="flex flex-col items-center gap-1">
+                          {renderStatusBadge(r.status)}
+                          {(r.status === 'draft' || r.status === 'returned') && (() => {
+                            const dead = (r as any).submissionDeadline;
+                            if (!dead) return null;
+                            const rem = calendarDaysRemaining(dead);
+                            const ov = rem !== null && rem < 0;
+                            return (
+                              <span className={`text-[10px] font-bold ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
+                                Due {formatAppDate(dead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
+                              </span>
+                            );
+                          })()}
+                        </div>
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div

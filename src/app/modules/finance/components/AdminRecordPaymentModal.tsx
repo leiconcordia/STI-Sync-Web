@@ -28,7 +28,7 @@ export function AdminRecordPaymentModal({
   const displaySchoolId = resolvedSchoolId || payable.studentSchoolId || (payable as any).schoolId || payable.studentId || 'N/A';
 
   const [paymentAmount, setPaymentAmount] = useState<number>(remaining);
-  const [unlockQRTicket, setUnlockQRTicket] = useState<boolean>(true);
+  const [unlockQRTicket, setUnlockQRTicket] = useState<boolean>(Boolean(isQREnabled));
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const isPayableClosed =

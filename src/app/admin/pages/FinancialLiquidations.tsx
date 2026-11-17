@@ -35,8 +35,28 @@ import {
   withdrawLiquidationReport,
   attachCashierSettlementProofs,
   verifyCashierSettlementProofs,
+  absorbRemainingCollectionDeficit,
+  resolveLiquidationSourceAllocations,
 } from '../../modules/finance/services/liquidation.service';
+import type {
+  ProposalBucketAllocation,
+  SurplusReturnAllocation,
+  DeficitDeductionAllocation,
+} from '../../modules/activity-proposals/types/proposal.types';
+import {
+  validateSurplusReturnAllocations,
+  validateDeficitDeductionAllocations,
+  rebalanceSurplusReturnAllocations,
+} from '../../modules/activity-proposals/utils/proposal-calculations';
 import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
+import {
+  DeficitCoverageAllocationPanel,
+  buildDeficitSeedAndSupplementalOptions,
+  type SupplementalBucketOption,
+} from '../../modules/finance/components/DeficitCoverageAllocationPanel';
+import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
+import { useRetainedActivityFunds } from '../../modules/finance/hooks/useRetainedFundStream';
+import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
 import type { ReceiptAttachment } from '../../modules/finance/types/liquidation.types';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
@@ -52,10 +72,17 @@ import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFe
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import StepReturnRevisionModal from '../../modules/workflow/components/StepReturnRevisionModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
-import { formatAppDateTime } from '../../utils/date';
+import { formatAppDate, formatAppDateTime } from '../../utils/date';
+import {
+  isActivityConcluded,
+  liquidationSubmissionDeadline,
+  calendarDaysRemaining,
+} from '../../modules/events/utils/activity-compliance.utils';
+import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
+import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 
 const ITEMS_PER_PAGE = 8;
 type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
@@ -113,16 +140,294 @@ export function FinancialLiquidations() {
   const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
   const [cashierRefDraft, setCashierRefDraft] = useState('');
   const [savingCashierProof, setSavingCashierProof] = useState(false);
+  const [sourceAllocations, setSourceAllocations] = useState<ProposalBucketAllocation[]>([]);
+  const [returnAllocationRows, setReturnAllocationRows] = useState<SurplusReturnAllocation[]>([]);
+  const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
+  const [deficitSupplementalOptions, setDeficitSupplementalOptions] = useState<SupplementalBucketOption[]>([]);
+  const [collectionAbsorbRows, setCollectionAbsorbRows] = useState<DeficitDeductionAllocation[]>([]);
+  const [collectionAbsorbOptions, setCollectionAbsorbOptions] = useState<SupplementalBucketOption[]>([]);
+  const [absorbNoteDraft, setAbsorbNoteDraft] = useState('');
+  const [isAbsorbingDeficit, setIsAbsorbingDeficit] = useState(false);
+
+  const { computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
+  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(selectedReport?.organizationId || null);
+  const { data: selectedOrgLedger = [] } = useOrgLedger(selectedReport?.organizationId || null);
+
+  const selectedOrgLedgerBalance = useMemo(() => {
+    if (!selectedOrgLedger || selectedOrgLedger.length === 0) return 0;
+    const inc = selectedOrgLedger
+      .filter((t) => String(t.type || '').toLowerCase() === 'income')
+      .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const exp = selectedOrgLedger
+      .filter((t) => String(t.type || '').toLowerCase() === 'expense')
+      .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    return Math.max(0, inc - exp);
+  }, [selectedOrgLedger]);
+
+  const selectedReportRawVariance = useMemo(() => {
+    if (!selectedReport) return 0;
+    return (
+      Number(
+        selectedReport.surplusOrDeficit ??
+          ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
+      ) || 0
+    );
+  }, [selectedReport]);
+
+  const selectedReportSurplus = Math.max(0, selectedReportRawVariance);
+  const selectedReportDeficit = Math.max(0, -selectedReportRawVariance);
+  const selectedCollectionDeficit = Math.max(
+    0,
+    Number((selectedReport as any)?.collectionDeficitAmount || 0)
+  );
+  const isRecoveringStudentContribution = Boolean(
+    selectedReport &&
+      (selectedReport as any).fundingSource === 'student_contributions' &&
+      (selectedReport as any).collectionSettlementStatus === 'deficit_recovering' &&
+      selectedCollectionDeficit > 0.009
+  );
 
   useEffect(() => {
+    let active = true;
     if (selectedReport) {
       setCashierProofDrafts(selectedReport.cashierSettlementProofs || []);
       setCashierRefDraft(selectedReport.cashierReferenceNo || '');
+      setActionError(null);
+
+      resolveLiquidationSourceAllocations(selectedReport)
+        .then((allocs) => {
+          if (!active) return;
+          setSourceAllocations(allocs);
+          const variance =
+            Number(
+              selectedReport.surplusOrDeficit ??
+                ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
+            ) || 0;
+          const surplus = Math.max(0, variance);
+          const deficit = Math.max(0, -variance);
+
+          const savedReturns = Array.isArray(selectedReport.surplusReturnAllocations)
+            ? selectedReport.surplusReturnAllocations
+            : [];
+          const repOrgLower = String(selectedReport.organizationId || '').trim().toLowerCase();
+          const isSasOwner =
+            selectedReport.fundingSource !== 'organization_funds' &&
+            (!repOrgLower ||
+              ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(repOrgLower) ||
+              (selectedReport as any)?.createdByRole === 'admin');
+          if (savedReturns.length > 0) {
+            setReturnAllocationRows(savedReturns);
+          } else if (allocs.length === 1) {
+            const only = allocs[0];
+            const isSasContribBucket =
+              isSasOwner &&
+              (only.fundType === 'student_contributions' ||
+                only.fundType === 'student_contribution_retained' ||
+                only.bucketId === 'CONTRIB_NEW' ||
+                only.bucketId === 'SAO_CAMPUS');
+            setReturnAllocationRows([
+              {
+                bucketId: isSasContribBucket ? 'SAO_CAMPUS' : only.bucketId,
+                bucketName: isSasContribBucket
+                  ? 'SAS Student Contribution & Retained Funds'
+                  : only.bucketName,
+                fundType: only.fundType,
+                originalAllocatedAmount: Number(only.allocatedAmount ?? selectedReport.allocatedBudget ?? 0),
+                returnAmount: Math.round(surplus * 100) / 100,
+              },
+            ]);
+          } else if (allocs.length >= 2) {
+            const baseRows: SurplusReturnAllocation[] = allocs.map((a) => ({
+              bucketId:
+                isSasOwner && (a.fundType === 'student_contributions' || a.bucketId === 'CONTRIB_NEW')
+                  ? 'SAO_CAMPUS'
+                  : a.bucketId,
+              bucketName:
+                isSasOwner && (a.fundType === 'student_contributions' || a.bucketId === 'CONTRIB_NEW')
+                  ? 'SAS Student Contribution & Retained Funds'
+                  : a.bucketName,
+              fundType: a.fundType,
+              originalAllocatedAmount: Number(a.allocatedAmount) || 0,
+              returnAmount: 0,
+            }));
+            setReturnAllocationRows(
+              rebalanceSurplusReturnAllocations({
+                totalSurplus: surplus,
+                rows: baseRows,
+              })
+            );
+          } else {
+            setReturnAllocationRows([]);
+          }
+
+          if (deficit > 0.009) {
+            const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
+              totalDeficit: deficit,
+              sourceAllocations: allocs,
+              savedDeficitRows: selectedReport.deficitDeductionAllocations || [],
+              computedBuckets,
+              saoEligibleBuckets,
+              saoRetainedFund,
+              orgRetainedFunds,
+              targetOrgId: selectedReport.organizationId,
+              targetOrgName: selectedReport.organizationName,
+              orgLedgerBalance: selectedOrgLedgerBalance,
+            });
+            setDeficitAllocationRows(initialRows);
+            setDeficitSupplementalOptions(supplementalOptions);
+          } else {
+            setDeficitAllocationRows([]);
+            setDeficitSupplementalOptions([]);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setSourceAllocations([]);
+            setReturnAllocationRows([]);
+            setDeficitAllocationRows([]);
+            setDeficitSupplementalOptions([]);
+          }
+        });
     } else {
       setCashierProofDrafts([]);
       setCashierRefDraft('');
+      setSourceAllocations([]);
+      setReturnAllocationRows([]);
+      setDeficitAllocationRows([]);
+      setDeficitSupplementalOptions([]);
     }
+    return () => {
+      active = false;
+    };
   }, [selectedReport?.id]);
+
+  // Keep live bucket balances & supplemental choices synchronized while modal is open
+  useEffect(() => {
+    if (!selectedReport || selectedReportDeficit <= 0.009) return;
+    const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
+      totalDeficit: selectedReportDeficit,
+      sourceAllocations,
+      savedDeficitRows: selectedReport.deficitDeductionAllocations || [],
+      computedBuckets,
+      saoEligibleBuckets,
+      saoRetainedFund,
+      orgRetainedFunds,
+      targetOrgId: selectedReport.organizationId,
+      targetOrgName: selectedReport.organizationName,
+      orgLedgerBalance: selectedOrgLedgerBalance,
+    });
+    setDeficitSupplementalOptions(supplementalOptions);
+    setDeficitAllocationRows((prev) => {
+      if (prev.length === 0) return initialRows;
+      const availMap = new Map<string, number>();
+      initialRows.forEach((r) => availMap.set(r.bucketId, r.availableBalance));
+      supplementalOptions.forEach((o) => availMap.set(o.bucketId, o.availableBalance));
+      const allZero = prev.every((r) => Number(r.deductAmount) === 0);
+      if (allZero && !(selectedReport.deficitDeductionAllocations?.length)) {
+        return initialRows;
+      }
+      return prev.map((r) => ({
+        ...r,
+        availableBalance: availMap.has(r.bucketId) ? availMap.get(r.bucketId)! : r.availableBalance,
+      }));
+    });
+  }, [
+    selectedReport?.id,
+    selectedReportDeficit,
+    sourceAllocations,
+    computedBuckets,
+    saoEligibleBuckets,
+    saoRetainedFund,
+    orgRetainedFunds,
+    selectedOrgLedgerBalance,
+  ]);
+
+  const isSasSelectedLiquidation = useMemo(() => {
+    if (!selectedReport) return false;
+    if (selectedReport.fundingSource === 'organization_funds') return false;
+    const orgLower = String(selectedReport.organizationId || '').trim().toLowerCase();
+    return (
+      !orgLower ||
+      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgLower) ||
+      (selectedReport as any)?.createdByRole === 'admin'
+    );
+  }, [selectedReport]);
+
+  const surplusReturnValidation = useMemo(() => {
+    return validateSurplusReturnAllocations({
+      totalSurplus: selectedReportSurplus,
+      rows: returnAllocationRows,
+      isSasEvent: isSasSelectedLiquidation,
+    });
+  }, [selectedReportSurplus, returnAllocationRows, isSasSelectedLiquidation]);
+
+  const deficitCoverageValidation = useMemo(() => {
+    return validateDeficitDeductionAllocations({
+      totalDeficit: selectedReportDeficit,
+      rows: deficitAllocationRows,
+    });
+  }, [selectedReportDeficit, deficitAllocationRows]);
+
+  useEffect(() => {
+    if (!selectedReport || !isRecoveringStudentContribution) {
+      setCollectionAbsorbRows([]);
+      setCollectionAbsorbOptions([]);
+      return;
+    }
+    const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
+      totalDeficit: selectedCollectionDeficit,
+      sourceAllocations,
+      savedDeficitRows: [],
+      computedBuckets,
+      saoEligibleBuckets,
+      saoRetainedFund,
+      orgRetainedFunds,
+      targetOrgId: selectedReport.organizationId,
+      targetOrgName: selectedReport.organizationName,
+      orgLedgerBalance: selectedOrgLedgerBalance,
+    });
+    setCollectionAbsorbRows(initialRows);
+    setCollectionAbsorbOptions(supplementalOptions);
+  }, [
+    selectedReport?.id,
+    isRecoveringStudentContribution,
+    selectedCollectionDeficit,
+    sourceAllocations,
+    computedBuckets,
+    saoEligibleBuckets,
+    saoRetainedFund,
+    orgRetainedFunds,
+    selectedOrgLedgerBalance,
+  ]);
+
+  const collectionAbsorbValidation = useMemo(() => {
+    return validateDeficitDeductionAllocations({
+      totalDeficit: selectedCollectionDeficit,
+      rows: collectionAbsorbRows,
+    });
+  }, [selectedCollectionDeficit, collectionAbsorbRows]);
+
+  const handleAutoProportionalSurplus = () => {
+    if (returnAllocationRows.length < 2 || selectedReportSurplus <= 0) return;
+    const totalOrig = returnAllocationRows.reduce(
+      (s, r) => s + (Number(r.originalAllocatedAmount) || 0),
+      0
+    );
+    let rem = Math.round(selectedReportSurplus * 100) / 100;
+    const updated = returnAllocationRows.map((row, idx) => {
+      const cap = Math.max(0, Number(row.originalAllocatedAmount) || 0);
+      let share =
+        idx === returnAllocationRows.length - 1
+          ? Math.max(0, Math.round(rem * 100) / 100)
+          : totalOrig > 0
+            ? Math.round(selectedReportSurplus * (cap / totalOrig) * 100) / 100
+            : Math.round((selectedReportSurplus / returnAllocationRows.length) * 100) / 100;
+      if (cap > 0) share = Math.min(share, cap);
+      rem = Math.round((rem - share) * 100) / 100;
+      return { ...row, returnAmount: share };
+    });
+    setReturnAllocationRows(updated);
+  };
 
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -182,6 +487,8 @@ export function FinancialLiquidations() {
   const { profile: adviserProfile } = useAdviserProfile();
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
+  const [showAdminCreateModal, setShowAdminCreateModal] = useState(false);
+  const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
 
   const currentUser = useMemo(() => ({
     uid: adviserProfile?.uid || 'sao_admin_user',
@@ -304,6 +611,34 @@ export function FinancialLiquidations() {
     return approvedItems.reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
   }, [approvedItems]);
 
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    events.forEach((e) => map.set(e.id, e));
+    return map;
+  }, [events]);
+
+  const pendingFlDues = useMemo(() => {
+    return events
+      .filter((e) => !e.isDeleted && isActivityConcluded(e) && !isEventLiquidationExempt(e))
+      .map((e) => {
+        const liq = liquidations.find(
+          (l) => !l.isDeleted && l.status !== 'voided' && l.eventId === e.id
+        );
+        if (liq && !['draft', 'returned'].includes(liq.status)) return null;
+        const deadline = liquidationSubmissionDeadline(e, liq);
+        const daysRemaining = deadline ? calendarDaysRemaining(deadline) : null;
+        return {
+          event: e,
+          liq,
+          deadline,
+          daysRemaining,
+          isOverdue: daysRemaining !== null && daysRemaining < 0,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((a, b) => (a.daysRemaining ?? 999) - (b.daysRemaining ?? 999));
+  }, [events, liquidations]);
+
   const pendingCount = pendingItems.length;
   const approvedCount = approvedItems.length;
   const returnedCount = returnedItems.length;
@@ -330,19 +665,43 @@ export function FinancialLiquidations() {
     if (!selectedReport) return;
     setIsProcessing(true);
     setActionError(null);
+    const isReleaseAction =
+      (selectedReport as any).fundingSource !== 'organization_funds' &&
+      (selectedReport as any).isPendingSasVetting === true;
     try {
       await approveLiquidationReport(
         selectedReport.id,
-        'sao_admin_user',
+        currentUser.uid || 'sao_admin_user',
         reviewRemarks,
-        selectedReport
+        selectedReport,
+        {
+          reviewerName: currentUser.name,
+        }
       );
-      toast.success(`Liquidation report for "${selectedReport.eventTitle}" approved.`);
-      setSelectedReport(null);
+      if (!isReleaseAction && Math.abs(selectedReportRawVariance) >= 0.01) {
+        toast.success(
+          `Liquidation for "${selectedReport.eventTitle}" approved! Configure bucket settlement below.`
+        );
+        setSelectedReport({
+          ...selectedReport,
+          status: 'approved',
+          isPendingSasVetting: false,
+          cashierSettlementStatus: 'pending_proof',
+        });
+      } else {
+        toast.success(
+          isReleaseAction
+            ? `Liquidation for "${selectedReport.eventTitle}" released to signatories.`
+            : `Liquidation report for "${selectedReport.eventTitle}" approved.`
+        );
+        setSelectedReport(null);
+      }
       setReviewRemarks('');
     } catch (err: any) {
       console.error('[FinancialLiquidations] Approve failed:', err);
-      setActionError(err?.message || 'Failed to approve liquidation report.');
+      const errMsg = err?.message || 'Failed to approve liquidation report.';
+      setActionError(errMsg);
+      toast.error(errMsg);
     } finally {
       setIsProcessing(false);
     }
@@ -457,6 +816,246 @@ export function FinancialLiquidations() {
     return (words[0][0] + words[1][0]).toUpperCase();
   };
 
+  const renderSurplusRoutingContent = (readOnlyMode: boolean, contextLabel: 'pre_approval' | 'post_approval') => {
+    if (!selectedReport || selectedReportSurplus <= 0.009 || sourceAllocations.length === 0) {
+      return null;
+    }
+
+    const actionNoun = contextLabel === 'post_approval' ? 'settling' : 'approving';
+
+    return (
+      <div className="space-y-3">
+        {sourceAllocations.length === 1 ? (
+          <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="font-bold text-emerald-950 text-xs uppercase tracking-wider">
+                  Surplus Return Allocation (Single Source Bucket)
+                </h4>
+                <p className="text-xs text-emerald-800 mt-0.5">
+                  100% of unspent surplus (
+                  <strong className="font-mono">{formatCurrency(selectedReportSurplus)}</strong>
+                  ) returns automatically to <strong>{sourceAllocations[0].bucketName}</strong>.
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase bg-emerald-600 text-white">
+                Auto-Selected • No Manual Input
+              </span>
+            </div>
+
+            {sourceAllocations[0].fundType !== 'misc_fee' && !isSasSelectedLiquidation && (
+              <div className="p-3 rounded-xl bg-white/80 border border-emerald-200 text-xs text-emerald-900">
+                <strong>No Cashier Return Receipt needed</strong> — this surplus returns directly to{' '}
+                <strong>{sourceAllocations[0].bucketName}</strong> (Club Treasury).
+              </div>
+            )}
+            {isSasSelectedLiquidation &&
+              (sourceAllocations[0].fundType === 'student_contributions' ||
+                sourceAllocations[0].fundType === 'student_contribution_retained') && (
+              <div className="p-3 rounded-xl bg-white/80 border border-emerald-200 text-xs text-emerald-900">
+                <strong>Destination: SAS Student Contribution &amp; Retained Funds</strong> — attach the return proof below to credit the{' '}
+                <strong className="font-mono">{formatCurrency(selectedReportSurplus)}</strong> unspent surplus into SAS Retained Funds.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                  Surplus Return Allocation (Multi-Bucket Split)
+                </h4>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Auto-populated to match{' '}
+                  <strong className="font-mono text-[#001A4D]">
+                    {formatCurrency(selectedReportSurplus)}
+                  </strong>{' '}
+                  unspent surplus. Adjusting one bucket automatically fills the remainder across the other bucket(s).
+                </p>
+              </div>
+              {!readOnlyMode && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setReturnAllocationRows(
+                      rebalanceSurplusReturnAllocations({
+                        totalSurplus: selectedReportSurplus,
+                        rows: returnAllocationRows,
+                      })
+                    )
+                  }
+                  className="px-3 py-1.5 rounded-lg bg-white border border-blue-300 text-[11px] font-bold text-[#001A4D] hover:bg-blue-50 cursor-pointer"
+                >
+                  Auto-Proportional Split
+                </button>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              {returnAllocationRows.map((row) => {
+                const rowErr = surplusReturnValidation.perBucketErrors[row.bucketId];
+                return (
+                  <div
+                    key={row.bucketId}
+                    className={`p-3 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-gray-200'
+                    }`}
+                  >
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-[#001A4D] truncate">
+                          {row.bucketName}
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-700">
+                          {row.fundType === 'misc_fee'
+                            ? 'Misc Fee'
+                            : row.fundType === 'org_treasury'
+                              ? 'Org Treasury'
+                              : 'Retained Fund'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-500 font-mono">
+                        Originally Pulled: <strong>{formatCurrency(row.originalAllocatedAmount)}</strong>
+                      </p>
+                      {rowErr && <p className="text-[11px] font-semibold text-rose-600">{rowErr}</p>}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <label className="text-[11px] font-bold text-gray-700 whitespace-nowrap">
+                        Return Amount (₱):
+                      </label>
+                      {readOnlyMode ? (
+                        <span className="font-mono font-bold text-xs text-emerald-900 px-2.5 py-1.5 bg-emerald-50 rounded-lg border border-emerald-200">
+                          +{formatCurrency(row.returnAmount)}
+                        </span>
+                      ) : (
+                        <input
+                          type="number"
+                          min="0"
+                          max={row.originalAllocatedAmount > 0 ? row.originalAllocatedAmount : selectedReportSurplus}
+                          step="0.01"
+                          value={row.returnAmount}
+                          onChange={(e) => {
+                            const val =
+                              e.target.value === ''
+                                ? 0
+                                : Math.max(0, parseFloat(e.target.value) || 0);
+                            setReturnAllocationRows((prev) =>
+                              rebalanceSurplusReturnAllocations({
+                                totalSurplus: selectedReportSurplus,
+                                rows: prev,
+                                editedBucketId: row.bucketId,
+                                editedAmount: val,
+                              })
+                            );
+                          }}
+                          className={`w-36 px-2.5 py-1.5 border rounded-lg text-xs text-right font-mono font-bold outline-none ${
+                            rowErr
+                              ? 'border-rose-400 bg-rose-50 text-rose-900'
+                              : 'border-blue-300 bg-white text-[#001A4D]'
+                          }`}
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div
+              className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
+                surplusReturnValidation.isValid
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                  : 'bg-amber-50 border-amber-300 text-amber-950'
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-4 font-mono">
+                <span>
+                  Total Surplus: <strong>{formatCurrency(selectedReportSurplus)}</strong>
+                </span>
+                <span>
+                  Total Assigned: <strong>{formatCurrency(surplusReturnValidation.totalReturned)}</strong>
+                </span>
+                <span>
+                  Remaining: <strong>{formatCurrency(surplusReturnValidation.remainingSurplusToAssign)}</strong>
+                </span>
+              </div>
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                  surplusReturnValidation.isValid
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-amber-600 text-white'
+                }`}
+              >
+                {surplusReturnValidation.isValid ? 'Exact Match' : 'Split Required'}
+              </span>
+            </div>
+
+            {surplusReturnValidation.summaryError && (
+              <p className="text-xs font-semibold text-rose-700">
+                {surplusReturnValidation.summaryError}
+              </p>
+            )}
+
+            {!surplusReturnValidation.requiresCashierReceipt && surplusReturnValidation.isValid && (
+              <div className="p-3 rounded-xl bg-white/80 border border-emerald-200 text-xs text-emerald-900">
+                <strong>No Cashier Return Receipt needed</strong> — all assigned return amounts go to non-Miscellaneous fund bucket(s).
+              </div>
+            )}
+          </div>
+        )}
+
+        {(surplusReturnValidation.requiresCashierReceipt ||
+          (sourceAllocations.length === 1 && sourceAllocations[0].fundType === 'misc_fee') ||
+          (isSasSelectedLiquidation &&
+            sourceAllocations.some(
+              (a) =>
+                a.fundType === 'student_contributions' ||
+                a.fundType === 'student_contribution_retained'
+            )) ||
+          cashierProofDrafts.length > 0) && (
+          <div className="space-y-2">
+            <CashierProofUploader
+              proofs={cashierProofDrafts}
+              onChange={setCashierProofDrafts}
+              cashierReferenceNo={cashierRefDraft}
+              onReferenceNoChange={setCashierRefDraft}
+              folderKey={selectedReport.id}
+              disabled={isProcessing || savingCashierProof}
+              readOnly={readOnlyMode}
+              title={`Required Return Proof / Receipt (${formatCurrency(selectedReportSurplus)})`}
+              description={
+                isSasSelectedLiquidation &&
+                sourceAllocations.some(
+                  (a) =>
+                    a.fundType === 'student_contributions' ||
+                    a.fundType === 'student_contribution_retained'
+                )
+                  ? `Required before ${actionNoun} to prove the unspent money was returned into SAS Student Contribution & Retained Funds.`
+                  : `Required before ${actionNoun} because unspent surplus returns to Miscellaneous Fee bucket(s).`
+              }
+            />
+            {!readOnlyMode &&
+              (surplusReturnValidation.requiresCashierReceipt ||
+                (sourceAllocations.length === 1 && sourceAllocations[0].fundType === 'misc_fee')) &&
+              cashierProofDrafts.length === 0 && (
+                <p className="text-xs font-bold text-rose-700">
+                  {isSasSelectedLiquidation &&
+                  sourceAllocations.some(
+                    (a) =>
+                      a.fundType === 'student_contributions' ||
+                      a.fundType === 'student_contribution_retained'
+                  )
+                    ? `Return Proof / Receipt required before ${actionNoun} so the unspent surplus credits SAS Student Contribution & Retained Funds.`
+                    : `Cashier Return Receipt required before ${actionNoun} because a Miscellaneous Fee bucket receives a return amount > ₱0.00.`}
+                </p>
+              )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-5 w-full">
       {/* ── Header ── */}
@@ -517,6 +1116,51 @@ export function FinancialLiquidations() {
           </div>
         </div>
       </div>
+
+      {/* ── 15-Day Post-Conclusion FL Dues Tracker ── */}
+      {pendingFlDues.length > 0 && (
+        <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+              <Clock className="w-4 h-4 text-amber-600" />
+              <span>15-Day Financial Liquidation Dues ({pendingFlDues.length})</span>
+            </div>
+            <span className="text-[11px] text-amber-800 font-medium">
+              Counted 15 calendar days after event conclusion
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingFlDues.slice(0, 8).map((due) => (
+              <div
+                key={due.event.id}
+                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white ${
+                  due.isOverdue ? 'border-rose-300' : 'border-amber-200'
+                }`}
+              >
+                <span className="font-bold text-[#001A4D] truncate max-w-[200px]">
+                  {due.event.title}
+                </span>
+                <span
+                  className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                    due.isOverdue
+                      ? 'bg-rose-100 text-rose-800'
+                      : due.daysRemaining !== null && due.daysRemaining <= 3
+                      ? 'bg-amber-100 text-amber-900'
+                      : 'bg-blue-50 text-[#001A4D]'
+                  }`}
+                >
+                  {due.deadline ? `Due ${formatAppDate(due.deadline)}` : 'Due'}{' '}
+                  {due.daysRemaining !== null
+                    ? due.isOverdue
+                      ? `(${Math.abs(due.daysRemaining)}d overdue)`
+                      : `(${due.daysRemaining}d left)`
+                    : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Main Container: Tabs + Search/Export + Fixed Height Table + Pagination ── */}
       <div className="bg-white border border-[#E5E7EB] rounded-2xl shadow-xs overflow-hidden">
@@ -800,7 +1444,18 @@ export function FinancialLiquidations() {
 
                       {/* Submitted Date */}
                       <td className="py-3.5 px-4 whitespace-nowrap text-gray-500 text-xs">
-                        {formatSubmittedDate(liq.createdAt)}
+                        <div>{formatSubmittedDate(liq.createdAt)}</div>
+                        {(liq.status === 'draft' || isReturned) && (() => {
+                          const flDead = liquidationSubmissionDeadline(eventsById.get(liq.eventId), liq);
+                          if (!flDead) return null;
+                          const rem = calendarDaysRemaining(flDead);
+                          const ov = rem !== null && rem < 0;
+                          return (
+                            <div className={`text-[10px] font-bold mt-0.5 ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
+                              Due {formatAppDate(flDead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Status */}
@@ -1146,118 +1801,303 @@ export function FinancialLiquidations() {
                 </div>
               </div>
 
-              {/* Post-Approval Cashier Settlement Proof (Multi-File) */}
-              {selectedReport.status === 'approved' &&
-                (Number(selectedReport.surplusOrDeficit || 0) !== 0 ||
-                  Number(selectedReport.amountToReturn || 0) > 0 ||
-                  (selectedReport.cashierSettlementProofs && selectedReport.cashierSettlementProofs.length > 0)) && (
-                  <div className="space-y-3 pt-2 border-t border-gray-200">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
-                        Post-Approval Cashier Settlement Proof
-                      </h4>
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
-                          selectedReport.cashierSettlementStatus === 'verified'
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            : selectedReport.cashierSettlementStatus === 'proof_uploaded'
-                              ? 'bg-blue-50 text-blue-700 border-blue-200'
-                              : 'bg-amber-50 text-amber-800 border-amber-200'
-                        }`}
-                      >
-                        {selectedReport.cashierSettlementStatus === 'verified'
-                          ? 'Cashier Proof Verified'
-                          : selectedReport.cashierSettlementStatus === 'proof_uploaded'
-                            ? 'Proof Uploaded • Awaiting SAS Verification'
-                            : 'Pending Cashier Proof'}
-                      </span>
+              {/* Student Contribution Two-Axis Collection Recovery & Semester-End Closeout */}
+              {(selectedReport as any).fundingSource === 'student_contributions' && (
+                <div className="space-y-3 pt-2 border-t border-gray-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                      Student Contribution Two-Axis Collection Tracker
+                    </h4>
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                        (selectedReport as any).collectionSettlementStatus === 'fully_recovered'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : (selectedReport as any).collectionSettlementStatus === 'deficit_absorbed'
+                            ? 'bg-slate-100 text-slate-700 border-slate-300'
+                            : 'bg-amber-50 text-amber-800 border-amber-200'
+                      }`}
+                    >
+                      {(selectedReport as any).collectionSettlementStatus === 'fully_recovered'
+                        ? 'Fully Covered by Collections'
+                        : (selectedReport as any).collectionSettlementStatus === 'deficit_absorbed'
+                          ? 'Semester-End Deficit Absorbed'
+                          : 'Recovering via Late Cashier Uploads'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                    <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                      <span className="text-[10px] font-bold uppercase text-slate-500 block">Projected Target</span>
+                      <strong className="font-mono text-slate-900">
+                        {formatCurrency(Number((selectedReport as any).totalProjectedCollection || 0))}
+                      </strong>
                     </div>
+                    <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200">
+                      <span className="text-[10px] font-bold uppercase text-emerald-700 block">Collected to Date</span>
+                      <strong className="font-mono text-emerald-900">
+                        {formatCurrency(Number((selectedReport as any).totalCollectedAtLiquidation ?? selectedReport.allocatedBudget ?? 0))}
+                      </strong>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200">
+                      <span className="text-[10px] font-bold uppercase text-amber-800 block">Uncollected Receivables</span>
+                      <strong className="font-mono text-amber-900">
+                        {formatCurrency(Number((selectedReport as any).uncollectedReceivablesAtLiquidation || 0))}
+                      </strong>
+                    </div>
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200">
+                      <span className="text-[10px] font-bold uppercase text-rose-700 block">Collection Deficit</span>
+                      <strong className="font-mono text-rose-900">
+                        {formatCurrency(selectedCollectionDeficit)}
+                      </strong>
+                    </div>
+                  </div>
 
-                    <CashierProofUploader
-                      proofs={cashierProofDrafts}
-                      onChange={setCashierProofDrafts}
-                      cashierReferenceNo={cashierRefDraft}
-                      onReferenceNoChange={setCashierRefDraft}
-                      folderKey={selectedReport.id}
-                      disabled={savingCashierProof}
-                      readOnly={selectedReport.cashierSettlementStatus === 'verified'}
-                      title={
-                        Number(selectedReport.surplusOrDeficit || 0) < 0
-                          ? `Cashier Reimbursement Proof (Deficit: ${formatCurrency(Math.abs(Number(selectedReport.surplusOrDeficit || 0)))})`
-                          : `Cashier Surplus / Return Proof (${formatCurrency(Number(selectedReport.amountToReturn ?? selectedReport.surplusOrDeficit ?? 0))})`
-                      }
-                      description="Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers after approval."
-                    />
-
-                    {selectedReport.cashierSettlementStatus !== 'verified' && (
-                      <div className="flex flex-wrap items-center justify-end gap-2">
+                  {selectedReport.status === 'approved' && isRecoveringStudentContribution && (
+                    <div className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200 space-y-3">
+                      <p className="text-xs text-amber-950">
+                        Unpaid student payables remain active so late Cashier uploads automatically reduce this collection deficit. At semester end, if remaining students will no longer pay, allocate buckets below to close and absorb the remaining <strong>{formatCurrency(selectedCollectionDeficit)}</strong> shortfall.
+                      </p>
+                      <DeficitCoverageAllocationPanel
+                        totalDeficit={selectedCollectionDeficit}
+                        rows={collectionAbsorbRows}
+                        onChange={setCollectionAbsorbRows}
+                        supplementalOptions={collectionAbsorbOptions}
+                        disabled={isAbsorbingDeficit}
+                      />
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <input
+                          type="text"
+                          value={absorbNoteDraft}
+                          onChange={(e) => setAbsorbNoteDraft(e.target.value)}
+                          placeholder="Optional semester-end closeout note..."
+                          className="flex-1 px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs outline-none focus:ring-2 focus:ring-[#001A4D]"
+                        />
                         <Button
                           type="button"
-                          disabled={savingCashierProof || cashierProofDrafts.length === 0}
+                          disabled={isAbsorbingDeficit || !collectionAbsorbValidation.isValid}
                           onClick={async () => {
-                            setSavingCashierProof(true);
+                            setIsAbsorbingDeficit(true);
                             try {
-                              await attachCashierSettlementProofs(
+                              await absorbRemainingCollectionDeficit(
                                 selectedReport.id,
-                                cashierProofDrafts,
-                                cashierRefDraft,
                                 {
-                                  uid: adviserProfile?.uid || 'sao_admin',
-                                  name: adviserProfile?.displayName || 'SAS Admin',
-                                  role: 'admin',
+                                  uid: adviserProfile?.uid || currentUser.uid,
+                                  name: currentUser.name,
+                                },
+                                {
+                                  deficitDeductionAllocations: collectionAbsorbRows,
+                                  note: absorbNoteDraft,
                                 }
                               );
                               setSelectedReport({
                                 ...selectedReport,
-                                cashierSettlementProofs: cashierProofDrafts,
-                                cashierReferenceNo: cashierRefDraft,
-                                cashierSettlementStatus: 'proof_uploaded',
+                                collectionDeficitAmount: 0,
+                                collectionSettlementStatus: 'deficit_absorbed',
                               });
-                              toast.success('Cashier settlement proof saved.');
+                              setAbsorbNoteDraft('');
+                              toast.success('Remaining collection deficit closed and absorbed cleanly.');
                             } catch (err: any) {
-                              toast.error(err?.message || 'Failed to save Cashier proof.');
+                              toast.error(err?.message || 'Failed to absorb remaining collection deficit.');
                             } finally {
-                              setSavingCashierProof(false);
+                              setIsAbsorbingDeficit(false);
                             }
                           }}
-                          className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold cursor-pointer"
+                          className="bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold cursor-pointer shrink-0"
                         >
-                          {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
-                          Save Cashier Proof
+                          {isAbsorbingDeficit && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+                          Close &amp; Absorb Remaining Collection Deficit
                         </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
-                        {(selectedReport.cashierSettlementProofs?.length || 0) > 0 && (
+              {/* Post-Approval Settlement Proof & Bucket Routing */}
+              {selectedReport.status === 'approved' &&
+                (Number(selectedReport.surplusOrDeficit || 0) !== 0 ||
+                  Number(selectedReport.amountToReturn || 0) > 0 ||
+                  (selectedReport.cashierSettlementProofs && selectedReport.cashierSettlementProofs.length > 0)) && (() => {
+                  const isVerified = selectedReport.cashierSettlementStatus === 'verified';
+                  const isDeficitReport = selectedReportDeficit > 0.009;
+                  const isSasStudentContribSettlement =
+                    isSasSelectedLiquidation &&
+                    sourceAllocations.some(
+                      (a) =>
+                        a.fundType === 'student_contributions' ||
+                        a.fundType === 'student_contribution_retained'
+                    );
+                  const requiresProofForSettlement =
+                    isDeficitReport ||
+                    surplusReturnValidation.requiresCashierReceipt ||
+                    isSasStudentContribSettlement ||
+                    (sourceAllocations.length === 1 && sourceAllocations[0]?.fundType === 'misc_fee');
+                  const settlementInvalid = isDeficitReport
+                    ? !deficitCoverageValidation.isValid || cashierProofDrafts.length === 0
+                    : !surplusReturnValidation.isValid || (requiresProofForSettlement && cashierProofDrafts.length === 0);
+
+                  return (
+                    <div className="space-y-3 pt-2 border-t border-gray-200">
+                      <div className="flex items-center justify-between gap-2">
+                        <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                          {isDeficitReport
+                            ? 'Post-Approval Overspend Coverage & Proof'
+                            : requiresProofForSettlement
+                              ? 'Post-Approval Cashier Return & Bucket Routing'
+                              : 'Post-Approval Non-Misc Surplus Bucket Return'}
+                        </h4>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                            isVerified
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : selectedReport.cashierSettlementStatus === 'proof_uploaded'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : 'bg-amber-50 text-amber-800 border-amber-200'
+                          }`}
+                        >
+                          {isVerified
+                            ? 'Verified & Posted to Buckets'
+                            : selectedReport.cashierSettlementStatus === 'proof_uploaded'
+                              ? 'Proof Uploaded • Awaiting SAS Verification'
+                              : isDeficitReport
+                                ? 'Pending Coverage & Proof'
+                                : requiresProofForSettlement
+                                  ? 'Pending Cashier Return Receipt'
+                                  : 'Awaiting Bucket Return Confirmation'}
+                        </span>
+                      </div>
+
+                      {selectedReportSurplus > 0.009 ? (
+                        renderSurplusRoutingContent(isVerified, 'post_approval')
+                      ) : isDeficitReport ? (
+                        <div className="space-y-3">
+                          <DeficitCoverageAllocationPanel
+                            totalDeficit={selectedReportDeficit}
+                            rows={deficitAllocationRows}
+                            onChange={setDeficitAllocationRows}
+                            supplementalOptions={deficitSupplementalOptions}
+                            disabled={savingCashierProof}
+                            readOnly={isVerified}
+                          />
+                          <CashierProofUploader
+                            proofs={cashierProofDrafts}
+                            onChange={setCashierProofDrafts}
+                            cashierReferenceNo={cashierRefDraft}
+                            onReferenceNoChange={setCashierRefDraft}
+                            folderKey={selectedReport.id}
+                            disabled={savingCashierProof}
+                            readOnly={isVerified}
+                            title={`Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`}
+                            description="Attach signed Reimbursement Voucher / Supplemental Disbursement Proof before deducting from the bucket(s) above."
+                          />
+                        </div>
+                      ) : null}
+
+                      {!isVerified && (
+                        <div className="flex flex-wrap items-center justify-end gap-2">
+                          {cashierProofDrafts.length > 0 && (
+                            <Button
+                              type="button"
+                              disabled={savingCashierProof || (isDeficitReport && !deficitCoverageValidation.isValid)}
+                              onClick={async () => {
+                                setSavingCashierProof(true);
+                                try {
+                                  await attachCashierSettlementProofs(
+                                    selectedReport.id,
+                                    cashierProofDrafts,
+                                    cashierRefDraft,
+                                    {
+                                      uid: adviserProfile?.uid || currentUser.uid,
+                                      name: currentUser.name,
+                                      role: 'admin',
+                                    },
+                                    isDeficitReport
+                                      ? { deficitDeductionAllocations: deficitAllocationRows }
+                                      : { surplusReturnAllocations: returnAllocationRows }
+                                  );
+                                  setSelectedReport({
+                                    ...selectedReport,
+                                    cashierSettlementProofs: cashierProofDrafts,
+                                    cashierReferenceNo: cashierRefDraft,
+                                    cashierSettlementStatus: 'proof_uploaded',
+                                    ...(isDeficitReport
+                                      ? { deficitDeductionAllocations: deficitAllocationRows }
+                                      : { surplusReturnAllocations: returnAllocationRows }),
+                                  });
+                                  toast.success('Settlement proof & bucket allocation saved.');
+                                } catch (err: any) {
+                                  toast.error(err?.message || 'Failed to save settlement proof.');
+                                } finally {
+                                  setSavingCashierProof(false);
+                                }
+                              }}
+                              className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold cursor-pointer"
+                            >
+                              {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+                              Save Draft Proof &amp; Split
+                            </Button>
+                          )}
+
                           <Button
                             type="button"
-                            disabled={savingCashierProof}
+                            disabled={savingCashierProof || settlementInvalid}
                             onClick={async () => {
                               setSavingCashierProof(true);
+                              setActionError(null);
                               try {
-                                await verifyCashierSettlementProofs(selectedReport.id, {
-                                  uid: adviserProfile?.uid || 'sao_admin',
-                                  name: adviserProfile?.displayName || 'SAS Admin',
-                                });
+                                await verifyCashierSettlementProofs(
+                                  selectedReport.id,
+                                  {
+                                    uid: adviserProfile?.uid || currentUser.uid,
+                                    name: currentUser.name,
+                                  },
+                                  {
+                                    surplusReturnAllocations: selectedReportSurplus > 0.009 ? returnAllocationRows : undefined,
+                                    deficitDeductionAllocations: isDeficitReport ? deficitAllocationRows : undefined,
+                                    cashierSettlementProofs: cashierProofDrafts,
+                                    cashierReferenceNo: cashierRefDraft,
+                                  }
+                                );
                                 setSelectedReport({
                                   ...selectedReport,
+                                  cashierSettlementProofs: cashierProofDrafts,
+                                  cashierReferenceNo: cashierRefDraft,
                                   cashierSettlementStatus: 'verified',
+                                  ...(selectedReportSurplus > 0.009
+                                    ? { surplusReturnAllocations: returnAllocationRows }
+                                    : {}),
+                                  ...(isDeficitReport
+                                    ? { deficitDeductionAllocations: deficitAllocationRows }
+                                    : {}),
                                 });
-                                toast.success('Cashier settlement proof verified and closed!');
+                                toast.success(
+                                  isDeficitReport
+                                    ? 'Overspend proof verified & deducted from bucket(s)!'
+                                    : 'Surplus return verified & posted to bucket(s)!'
+                                );
                               } catch (err: any) {
-                                toast.error(err?.message || 'Failed to verify Cashier proof.');
+                                const msg = err?.message || 'Failed to verify and settle liquidation.';
+                                setActionError(msg);
+                                toast.error(msg);
                               } finally {
                                 setSavingCashierProof(false);
                               }
                             }}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer"
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
                           >
+                            {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
                             <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                            Verify &amp; Close Settlement
+                            {isDeficitReport
+                              ? 'Verify Proof & Deduct from Bucket(s)'
+                              : requiresProofForSettlement
+                                ? 'Verify Proof & Return to Bucket(s)'
+                                : 'Confirm & Return to Bucket(s)'}
                           </Button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
               {/* Multi-Stage Institutional Signatory Pipeline */}
               <div className="space-y-2 pt-2 border-t border-gray-200">
@@ -1291,6 +2131,21 @@ export function FinancialLiquidations() {
                 </div>
               )}
 
+              {/* Pre-Approval Read-Only Settlement Notice (Configuration unlocks strictly after Approval) */}
+              {(selectedReport.status === 'pending' || selectedReport.status === 'under_review') &&
+                (selectedReportSurplus > 0.009 || selectedReportDeficit > 0.009) && (
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+                    <p className="font-bold text-[#001A4D] uppercase tracking-wider text-[11px]">
+                      Post-Approval Settlement Preview (Read-Only)
+                    </p>
+                    <p>
+                      {selectedReportDeficit > 0.009
+                        ? `Once this report is approved, you will confirm which bucket(s) cover the ${formatCurrency(selectedReportDeficit)} overspend and attach Reimbursement Proof.`
+                        : `Once this report is approved, you will confirm how the ${formatCurrency(selectedReportSurplus)} unspent surplus returns to the approved source bucket(s)${surplusReturnValidation.requiresCashierReceipt || (sourceAllocations.length === 1 && sourceAllocations[0]?.fundType === 'misc_fee') || (isSasSelectedLiquidation && sourceAllocations.some((a) => a.fundType === 'student_contributions' || a.fundType === 'student_contribution_retained')) ? ' and upload the Return Receipt / Proof' : ''}.`}
+                    </p>
+                  </div>
+                )}
+
               {/* SAO Adviser Remarks - Only for pending submissions under review */}
               {(selectedReport.status === 'pending' || selectedReport.status === 'under_review') && (
                 <div>
@@ -1303,6 +2158,13 @@ export function FinancialLiquidations() {
                     placeholder="Enter approval notes or specific instructions if returning for revision..."
                     className="w-full p-3 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] h-24"
                   />
+                </div>
+              )}
+
+              {actionError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-2 text-xs text-rose-900">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span className="font-semibold">{actionError}</span>
                 </div>
               )}
             </div>
@@ -1369,19 +2231,24 @@ export function FinancialLiquidations() {
                         </Button>
                       )}
 
-                      {permissions.canApprove && (
-                        <Button
-                          onClick={() => setShowApproveConfirmModal(true)}
-                          disabled={isProcessing}
-                          className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
-                        >
-                          {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                          {(selectedReport as any).fundingSource !== 'organization_funds' &&
-                          (selectedReport as any).isPendingSasVetting === true
-                            ? 'Approve & Release to Signatories'
-                            : 'Approve & Sign as SAS'}
-                        </Button>
-                      )}
+                      {permissions.canApprove && (() => {
+                        const isReleaseAction =
+                          (selectedReport as any).fundingSource !== 'organization_funds' &&
+                          (selectedReport as any).isPendingSasVetting === true;
+
+                        return (
+                          <Button
+                            onClick={() => setShowApproveConfirmModal(true)}
+                            disabled={isProcessing}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer disabled:opacity-50"
+                          >
+                            {isProcessing && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                            {isReleaseAction
+                              ? 'Approve & Release to Signatories'
+                              : 'Approve & Sign as SAS'}
+                          </Button>
+                        );
+                      })()}
                     </>
                   )}
                 </div>
@@ -1619,6 +2486,34 @@ export function FinancialLiquidations() {
           </div>
         );
       })()}
+
+      {/* SAS Admin Create / Edit Draft / Revise Liquidation Modal */}
+      {showAdminCreateModal && (
+        <OfficerLiquidationModal
+          isOpen={showAdminCreateModal}
+          onClose={() => {
+            setShowAdminCreateModal(false);
+            setEditingReport(null);
+          }}
+          orgId={editingReport?.organizationId || 'sao_admin'}
+          orgName={editingReport?.organizationName || 'Student Affairs Services (SAS)'}
+          userUid={currentUser.uid}
+          userName={currentUser.name}
+          userRole="admin"
+          userSignatureUrl={
+            adviserProfile?.signatureUrl ||
+            (adviserProfile as any)?.signatureDataUrl ||
+            null
+          }
+          isAdviser={true}
+          editingReport={editingReport}
+          existingLiquidations={liquidations}
+          initialEventId={editingReport?.eventId}
+          initialEvent={
+            editingReport?.eventId ? eventsById.get(editingReport.eventId) : undefined
+          }
+        />
+      )}
     </div>
   );
 }

@@ -35,6 +35,7 @@ import { ACTIVITIES_COLLECTION } from '../services/event.service';
 import type { EventDocument, BudgetCustodianAllocation } from '../types/event.types';
 import type { FinancialProjections, FinancialLineItem } from '../../activity-proposals/types/proposal.types';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
+import { useEventPayablesStream } from '../../finance/hooks/usePayableStream';
 import { toast } from 'sonner';
 
 interface CashCustodiansModalProps {
@@ -59,6 +60,40 @@ export default function CashCustodiansModal({
 }: CashCustodiansModalProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [custodians, setCustodians] = useState<BudgetCustodianAllocation[]>([]);
+  const isStudentContributionSource =
+    (activity as any)?.fundingSource === 'student_contributions';
+  const { data: eventPayables = [] } = useEventPayablesStream(
+    isStudentContributionSource ? activity?.id || '' : ''
+  );
+
+  const contribCashStats = useMemo(() => {
+    const collected =
+      Math.round(
+        eventPayables
+          .filter((p) => String(p.status || '').toLowerCase() === 'paid')
+          .reduce((s, p) => s + (Number(p.paidAmount) || Number(p.assignedAmount) || 0), 0) * 100
+      ) / 100;
+    const retainedApplied =
+      Math.round(
+        (Array.isArray((activity as any)?.allocations) ? (activity as any).allocations : [])
+          .filter((a: any) => a.fundType === 'student_contribution_retained')
+          .reduce((s: number, a: any) => s + (Number(a.allocatedAmount) || 0), 0) * 100
+      ) / 100;
+    const projected =
+      Math.round(
+        eventPayables
+          .filter((p) => !['cancelled', 'waived', 'refunded'].includes(String(p.status || '').toLowerCase()))
+          .reduce((s, p) => s + (Number(p.assignedAmount) || 0), 0) * 100
+      ) / 100;
+    const cashOnHand = Math.round((collected + retainedApplied) * 100) / 100;
+    return {
+      collected,
+      retainedApplied,
+      cashOnHand,
+      projected,
+      uncollected: Math.max(0, Math.round((projected - collected) * 100) / 100),
+    };
+  }, [eventPayables, activity]);
 
   // Compute Total Approved Budget Pool
   const totalApprovedBudget = useMemo(() => {
@@ -162,9 +197,14 @@ export default function CashCustodiansModal({
   );
 
   const baseOperationalAllocated = totalAllocated - contingencyAllocated;
-  const remainingBudget = totalApprovedBudget - totalAllocated;
-  const isOverBudget = remainingBudget < -0.01;
-  const isFullyAllocated = Math.abs(remainingBudget) < 0.01 && totalApprovedBudget > 0;
+  const effectiveReleasableCap = isStudentContributionSource
+    ? Math.min(totalApprovedBudget, contribCashStats.cashOnHand)
+    : totalApprovedBudget;
+  const remainingBudget = effectiveReleasableCap - totalAllocated;
+  const isOverBudget = totalAllocated - totalApprovedBudget > 0.01;
+  const exceedsCashOnHand = isStudentContributionSource && totalAllocated - contribCashStats.cashOnHand > 0.01;
+  const isBlockedToSave = isOverBudget || exceedsCashOnHand;
+  const isFullyAllocated = Math.abs(remainingBudget) < 0.01 && effectiveReleasableCap > 0;
 
   // Check if allocations are sealed / read-only for completed event or admin view
   const isLocked = Boolean(
@@ -275,7 +315,13 @@ export default function CashCustodiansModal({
     }
     if (isOverBudget) {
       toast.error(
-        `Cannot save: Total allocated (${formatPHP(totalAllocated)}) exceeds approved budget (${formatPHP(totalApprovedBudget)}) by ${formatPHP(Math.abs(remainingBudget))}.`
+        `Cannot save: Total allocated (${formatPHP(totalAllocated)}) exceeds approved budget (${formatPHP(totalApprovedBudget)}).`
+      );
+      return;
+    }
+    if (exceedsCashOnHand) {
+      toast.error(
+        `Cannot allocate unfunded budget: Cash on hand is only ${formatPHP(contribCashStats.cashOnHand)} (${formatPHP(totalAllocated - contribCashStats.cashOnHand)} short). Upload more Cashier paid batches first.`
       );
       return;
     }
@@ -445,6 +491,47 @@ export default function CashCustodiansModal({
                   This event is concluded. Cash custodian allocations are sealed for post-event financial liquidation and auditing. These exact allocations will be referenced when attaching official receipts.
                 </p>
               </div>
+            </div>
+          )}
+
+          {/* Live Student Contribution Cash-On-Hand Guardrail Banner */}
+          {isStudentContributionSource && (
+            <div className="p-4 bg-white border-2 border-emerald-200 rounded-2xl space-y-3 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-emerald-950 uppercase tracking-wider flex items-center gap-1.5">
+                  <Coins className="w-4 h-4 text-emerald-600" />
+                  Student Contribution — Progressive Cash-On-Hand Cap
+                </span>
+                <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300">
+                  Strict Cash-On-Hand Rule
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+                  <span className="text-[10px] font-bold uppercase text-slate-500 block">AP Approved Target</span>
+                  <strong className="text-sm font-black font-mono text-slate-900">{formatPHP(totalApprovedBudget)}</strong>
+                </div>
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200">
+                  <span className="text-[10px] font-bold uppercase text-emerald-700 block">Spendable Cash On Hand Now</span>
+                  <strong className="text-sm font-black font-mono text-emerald-900">{formatPHP(contribCashStats.cashOnHand)}</strong>
+                  <span className="text-[10px] text-emerald-700 block">
+                    Collected {formatPHP(contribCashStats.collected)}
+                    {contribCashStats.retainedApplied > 0 ? ` + Retained ${formatPHP(contribCashStats.retainedApplied)}` : ''}
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200">
+                  <span className="text-[10px] font-bold uppercase text-amber-800 block">Uncollected Receivables Gap</span>
+                  <strong className="text-sm font-black font-mono text-amber-900">{formatPHP(contribCashStats.uncollected)}</strong>
+                </div>
+              </div>
+              {exceedsCashOnHand && (
+                <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-[11px] text-rose-900 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>
+                    Allocated advances (<strong>{formatPHP(totalAllocated)}</strong>) exceed Cash On Hand (<strong>{formatPHP(contribCashStats.cashOnHand)}</strong>) by <strong>{formatPHP(totalAllocated - contribCashStats.cashOnHand)}</strong>. Lower allocations or upload new Cashier payment batches first.
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
@@ -701,9 +788,11 @@ export default function CashCustodiansModal({
                 (incl. {formatPHP(contingencyAllocated)} Contingency)
               </span>
             )}
-            {isOverBudget && (
+            {(isOverBudget || exceedsCashOnHand) && (
               <span className="text-rose-600 font-bold ml-2">
-                (Exceeds ceiling by {formatPHP(Math.abs(remainingBudget))})
+                {exceedsCashOnHand
+                  ? `(Exceeds Cash On Hand by ${formatPHP(totalAllocated - contribCashStats.cashOnHand)})`
+                  : `(Exceeds ceiling by ${formatPHP(Math.abs(remainingBudget))})`}
               </span>
             )}
           </div>
@@ -735,7 +824,7 @@ export default function CashCustodiansModal({
                 <button
                   type="button"
                   onClick={handleSave}
-                  disabled={isSaving || isOverBudget}
+                  disabled={isSaving || isBlockedToSave}
                   className="px-5 py-2.5 bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
                 >
                   <Save className="w-4 h-4" />

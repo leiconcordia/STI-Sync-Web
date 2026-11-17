@@ -1,6 +1,7 @@
 import { parseDateSafe } from '../../../utils/date';
 
 export const LIQUIDATION_SUBMISSION_DAYS = 15;
+export const PAR_SUBMISSION_DAYS = 15;
 export const CAMPUS_TIME_ZONE = 'Asia/Manila';
 
 /** Date-only schedules stay date-only; timestamps use the campus calendar day. */
@@ -50,12 +51,38 @@ export function calendarDaysRemaining(deadline: string, now: Date = new Date()):
   return Math.round((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${campusDateKey(now)}T00:00:00Z`)) / 86400000);
 }
 
-/** A saved deadline takes precedence. Never invent a conclusion date from createdAt. */
+/** Both FL and PAR deadlines start counting +15 calendar days ONLY after event conclusion. */
 export function liquidationSubmissionDeadline(activity: any, liquidation?: any): string {
-  const saved = campusDateKey(liquidation?.submissionDeadline);
-  if (saved) return saved;
   if (!isActivityConcluded(activity)) return '';
+  const saved = campusDateKey(liquidation?.submissionDeadline || activity?.liquidationDeadline);
+  if (saved) return saved;
   return addCalendarDays(activityConclusionDate(activity), LIQUIDATION_SUBMISSION_DAYS);
+}
+
+/** 15-calendar-day Post-Activity Report (PAR) submission deadline after event conclusion. */
+export function parSubmissionDeadline(activity: any, par?: any): string {
+  if (!isActivityConcluded(activity)) return '';
+  const saved = campusDateKey(par?.submissionDeadline || activity?.parDeadline);
+  if (saved) return saved;
+  return addCalendarDays(activityConclusionDate(activity), PAR_SUBMISSION_DAYS);
+}
+
+export interface DueCountdownInfo {
+  deadline: string;
+  daysRemaining: number | null;
+  isOverdue: boolean;
+  isDueSoon: boolean;
+}
+
+export function getDueCountdownInfo(deadline: string, now: Date = new Date()): DueCountdownInfo {
+  const clean = campusDateKey(deadline);
+  const daysRemaining = clean ? calendarDaysRemaining(clean, now) : null;
+  return {
+    deadline: clean,
+    daysRemaining,
+    isOverdue: daysRemaining !== null && daysRemaining < 0,
+    isDueSoon: daysRemaining !== null && daysRemaining >= 0 && daysRemaining <= 3,
+  };
 }
 
 export function resolveActivityName(document: any, activities: any[] = []): string {

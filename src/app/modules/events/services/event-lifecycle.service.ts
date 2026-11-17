@@ -31,6 +31,12 @@ import { finalizeEventAttendance } from '../../attendance/services/attendance.se
 import { reconcilePendingMemberRemovalsForOrg } from '../../organizations/services/member.service';
 import type { EventDocument, EventProposalHistoryLog } from '../types/event.types';
 import { getEventTimingStatus, areEventSessionsOver, canConcludeEvent, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
+import {
+  addCalendarDays,
+  campusDateKey,
+  LIQUIDATION_SUBMISSION_DAYS,
+  PAR_SUBMISSION_DAYS,
+} from '../utils/activity-compliance.utils';
 import { isEventLiquidationExempt } from '../utils/organization-display.utils';
 
 export interface EventArchiveReadinessSummary {
@@ -202,13 +208,23 @@ export async function concludeEvent(
           : 'Activity schedule concluded and officially closed.'),
   });
 
+  const concludedDateKey = campusDateKey(new Date());
+  const parDeadlineKey = addCalendarDays(concludedDateKey, PAR_SUBMISSION_DAYS);
+  const liquidationDeadlineKey = isLiquidationRequired
+    ? addCalendarDays(concludedDateKey, LIQUIDATION_SUBMISSION_DAYS)
+    : undefined;
+
   const updatePayload = cleanUndefined({
     status: 'completed',
     proposalStatus: 'completed',
     lifecycleStatus: 'completed',
+    concludedAt: serverTimestamp(),
+    concludedDate: concludedDateKey,
     completedAt: serverTimestamp(),
     completedBy: adminUid || 'administrator',
     completedByName: adminName || 'Administrator',
+    parDeadline: parDeadlineKey || undefined,
+    liquidationDeadline: liquidationDeadlineKey,
     attendanceLocked: usesAttendance ? true : undefined,
     attendanceFinalized: shouldFinalizeAttendance,
     scannerStatus: usesAttendance ? 'concluded' : undefined,

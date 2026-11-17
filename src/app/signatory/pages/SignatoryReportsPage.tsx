@@ -6,13 +6,13 @@ import { useSignatoryDocuments } from '../hooks/useSignatoryDocuments';
 import { useCampusActivityData } from '../hooks/useCampusActivityData';
 import { campusActivitySummary, DEFAULT_CAMPUS_FILTERS, filterCampusActivityRows, STATUS_LABELS } from '../utils/campus-activity-report';
 import type { CampusReportFilters } from '../utils/campus-activity-report';
-import { activityDateLabel, activityDeadlineLabel, campusReportSnapshot, downloadCampusCSV, downloadCampusPDF } from '../utils/campus-report-export';
+import { activityDateLabel, activityDeadlineLabel, activityParDeadlineLabel, campusReportSnapshot, downloadCampusCSV, downloadCampusPDF } from '../utils/campus-report-export';
 import CampusActivityDetail from '../components/CampusActivityDetail';
 import CampusStatusBadge from '../components/CampusStatusBadge';
 
 const QUICK_FILTERS = [
   ['ALL', 'All activities'], ['needs_action', 'Needs action'], ['missing_par', 'Missing PAR'], ['missing_fl', 'Missing FL'],
-  ['returned', 'Returned'], ['my_signature', 'Awaiting My Signature'], ['cleared', 'Fully Cleared'], ['overdue', 'Overdue FL'],
+  ['returned', 'Returned'], ['my_signature', 'Awaiting My Signature'], ['cleared', 'Fully Cleared'], ['overdue', 'Overdue FL'], ['overdue_par', 'Overdue PAR'],
 ] as const;
 const SELECT_CLASS = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-600';
 function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
@@ -95,7 +95,7 @@ export default function SignatoryReportsPage() {
           <FilterSelect label="PAR status" value={filters.parStatus} onChange={(parStatus) => change({ parStatus })} options={statusOptions(['missing', 'draft', 'under_review', 'returned', 'approved', 'not_due', 'not_required', 'archived'])} />
         </div>
       </details>
-      <p className="text-xs text-slate-500">Dates filter individual activity sessions. Zero-budget activities are excluded from FL requirements. PAR has no configured overdue policy.</p>
+      <p className="text-xs text-slate-500">Dates filter individual activity sessions. Financial Liquidation (FL) and Post-Activity Report (PAR) deadlines count 15 calendar days after event conclusion. Zero-budget activities are excluded from FL requirements.</p>
       {invalidDates && <p role="alert" className="text-xs text-rose-700">The end date must be on or after the start date.</p>}
       {!data.loading && !data.error && filters.period === 'ACTIVE' && !data.periods.some((period) => period.status === 'ACTIVE' && !period.archived) && <p role="status" className="text-xs text-amber-800">No active academic period is configured. Select “All academic periods” to view historical records.</p>}
     </section>
@@ -103,7 +103,7 @@ export default function SignatoryReportsPage() {
       : data.loading ? <p role="status" className="rounded-xl border bg-white p-10 text-center text-sm text-slate-500">Loading campus activity records…</p>
       : <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
         <div className="overflow-x-auto"><table className="w-full min-w-[1350px] text-left text-xs" aria-label="Campus activity compliance report">
-          <thead className="bg-slate-50 text-slate-600"><tr>{['Activity Name / Reference', 'Organizer', 'Activity Dates', 'Proposal', 'Activity Status', 'FL', 'PAR', 'Outstanding Requirements', 'FL Deadline', 'Actions'].map((heading) => <th key={heading} scope="col" className="px-4 py-3 font-semibold">{heading}</th>)}</tr></thead>
+          <thead className="bg-slate-50 text-slate-600"><tr>{['Activity Name / Reference', 'Organizer', 'Activity Dates', 'Proposal', 'Activity Status', 'FL', 'PAR', 'Outstanding Requirements', '15-Day Deadline', 'Actions'].map((heading) => <th key={heading} scope="col" className="px-4 py-3 font-semibold">{heading}</th>)}</tr></thead>
           <tbody className="divide-y divide-slate-100">
             {!visibleRows.length && <tr><td colSpan={10} className="p-12 text-center text-sm text-slate-500">No activities match the selected filters.</td></tr>}
             {visibleRows.map((row) => <tr key={row.id} data-activity-id={row.id} className="hover:bg-slate-50">
@@ -112,7 +112,14 @@ export default function SignatoryReportsPage() {
               <td className="px-4 py-4"><CampusStatusBadge status={row.proposalStatus} /></td><td className="px-4 py-4"><CampusStatusBadge status={row.activityState} /></td>
               <td className="min-w-[120px] px-4 py-4"><CampusStatusBadge status={row.flStatus} /></td><td className="min-w-[110px] px-4 py-4"><CampusStatusBadge status={row.parStatus} /></td>
               <td className="min-w-[180px] max-w-[250px] px-4 py-4 text-slate-600">{row.outstanding}{row.awaitingMySignature && <span className="mt-1 block font-semibold text-blue-700">Awaiting your signature</span>}</td>
-              <td className={`min-w-[130px] px-4 py-4 ${row.overdue ? 'font-semibold text-rose-700' : 'text-slate-500'}`}>{activityDeadlineLabel(row)}</td>
+              <td className={`min-w-[160px] px-4 py-4 ${(row.overdue || row.parOverdue) ? 'font-semibold text-rose-700' : 'text-slate-500'}`}>
+                <div>{activityDeadlineLabel(row)}</div>
+                {row.parDeadline && (
+                  <div className={`mt-1 text-[11px] ${row.parOverdue ? 'font-semibold text-rose-700' : 'text-slate-500'}`}>
+                    PAR: {activityParDeadlineLabel(row)}
+                  </div>
+                )}
+              </td>
               <td className="px-4 py-4"><button type="button" onClick={() => selectActivity(row.id)} aria-label={`View activity ${row.title}`} className="whitespace-nowrap rounded-lg border border-slate-200 px-3 py-2 font-semibold text-blue-700 hover:bg-blue-50">View Activity</button></td>
             </tr>)}
           </tbody>

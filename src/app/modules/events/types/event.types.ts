@@ -66,8 +66,26 @@ export interface EventDocument extends SoftDeletable, Archivable {
   scannerUserIds: string[];                // denormalized officerUserIds for mobile query
 
   // ─── Budget ───
-  fundingSource?: 'organization_funds' | 'school_budget' | 'zero_budget';
+  fundingSource?:
+    | 'organization_funds'
+    | 'school_budget'
+    | 'student_contributions'
+    | 'retained_sao_fund'
+    | 'zero_budget';
   fundingSourceNote?: string;
+  miscFeeBucketId?: string;
+  miscFeeBucketName?: string;
+  miscFeeBucketIds?: string[];
+  miscFeeBucketNames?: string[];
+  miscFeeBucketAllocations?: Array<{
+    bucketId: string;
+    bucketName: string;
+    poolAmount: number;
+    availableAmount: number;
+  }>;
+  allocations?: import('../../activity-proposals/types/proposal.types').ProposalBucketAllocation[];
+  studentContributionRate?: number;
+  studentContributionTargetCount?: number;
   historicalReference?: any | null;
   budgetItems: BudgetLineItem[];
   totalApprovedBudget: number;

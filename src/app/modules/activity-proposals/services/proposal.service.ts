@@ -355,6 +355,42 @@ export async function syncProposalToEventsCollection(
           existingData.fundingSource ||
           (isOfficerProposalVal ? 'organization_funds' : 'school_budget'),
         fundingSourceNote: proposal.fundingSourceNote || existingData.fundingSourceNote || null,
+        miscFeeBucketId: (proposal as any).miscFeeBucketId || existingData.miscFeeBucketId || null,
+        miscFeeBucketName: (proposal as any).miscFeeBucketName || existingData.miscFeeBucketName || null,
+        miscFeeBucketAvailableAtSubmission:
+          (proposal as any).miscFeeBucketAvailableAtSubmission ??
+          existingData.miscFeeBucketAvailableAtSubmission ??
+          null,
+        miscFeeBucketIds: (proposal as any).miscFeeBucketIds || existingData.miscFeeBucketIds || null,
+        miscFeeBucketNames: (proposal as any).miscFeeBucketNames || existingData.miscFeeBucketNames || null,
+        miscFeeBucketAllocations:
+          (proposal as any).miscFeeBucketAllocations || existingData.miscFeeBucketAllocations || null,
+        allocations:
+          (proposal as any).allocations || existingData.allocations || null,
+        studentContributionRate:
+          (proposal as any).studentContributionRate ?? existingData.studentContributionRate ?? null,
+        studentContributionTargetCount:
+          (proposal as any).studentContributionTargetCount ?? existingData.studentContributionTargetCount ?? null,
+        studentContributionFilter:
+          (proposal as any).studentContributionFilter ?? existingData.studentContributionFilter ?? null,
+        studentPayablesEnabled:
+          (proposal as any).studentPayablesEnabled !== undefined
+            ? Boolean((proposal as any).studentPayablesEnabled)
+            : (proposal.fundingSource === 'student_contributions' && Number((proposal as any).studentContributionRate || 0) > 0) ||
+              Boolean(existingData.studentPayablesEnabled),
+        suggestedFeePerStudent:
+          (proposal as any).suggestedFeePerStudent ??
+          (proposal as any).studentContributionRate ??
+          existingData.suggestedFeePerStudent ??
+          null,
+        feeAmount:
+          (proposal as any).feeAmount ??
+          (proposal as any).suggestedFeePerStudent ??
+          (proposal as any).studentContributionRate ??
+          existingData.feeAmount ??
+          null,
+        retainedFundBalanceAtSubmission:
+          (proposal as any).retainedFundBalanceAtSubmission ?? existingData.retainedFundBalanceAtSubmission ?? null,
         organizationLedgerBalanceAtSubmission:
           proposal.organizationLedgerBalanceAtSubmission ??
           existingData.organizationLedgerBalanceAtSubmission ??
@@ -665,9 +701,13 @@ export async function submitProposalForReview(
   }
 
   // Initialize or reset approval chain statuses for multi-stage execution (strictly normalized 1..M)
-  const isOrgFunds = formData.fundingSource === 'organization_funds';
-  // Student Org proposals using School Budget require SAS Pre-Approval Vetting BEFORE Stage 1 signatories can see or sign
-  const requiresSasPreApprovalGate = isOfficer && !isOrgFunds;
+  const isOrgDirectSas =
+    isOfficer &&
+    (formData.fundingSource === 'organization_funds' ||
+      formData.fundingSource === 'student_contributions' ||
+      formData.fundingSource === 'zero_budget');
+  // Student Org proposals using School Budget (Misc Fees) require SAS Pre-Approval Vetting BEFORE Stage 1 signatories can see or sign
+  const requiresSasPreApprovalGate = isOfficer && !isOrgDirectSas;
 
   const chain = normalizeApprovalStages(formData.approvalChain || []);
   const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
@@ -1364,7 +1404,7 @@ export async function endorseProposal(
       console.warn('[endorseProposal] Approved report storage notice:', archErr);
     }
 
-    // Encumber club treasury ledger if club-funded
+    // AP Approval Ledger Deduction: Deduct each bucket's exact allocatedAmount
     const effectiveFunding = (data as any).fundingSource || (data.isOfficerProposal ? 'organization_funds' : 'school_budget');
     const totalExp = Number(
       data.financialProjections?.totalExpenses ||
@@ -1372,8 +1412,99 @@ export async function endorseProposal(
       (data as any).allocatedBudget ||
       0
     );
+    const savedAllocs: Array<{
+      bucketId: string;
+      bucketName: string;
+      fundType: string;
+      allocatedAmount: number;
+      availableAmount?: number;
+    }> = Array.isArray((data as any).allocations) ? (data as any).allocations : [];
+
+    // 1. Misc Fee bucket deductions (single or maker-specified multi-bucket split)
+    const miscAllocs = savedAllocs.filter(
+      (a) => a.fundType === 'misc_fee' && Number(a.allocatedAmount) > 0
+    );
+    if (miscAllocs.length > 0) {
+      try {
+        const { deductMiscFeeBucketOnDisbursement } = await import('../../finance/services/misc-fee.service');
+        await deductMiscFeeBucketOnDisbursement({
+          eventId: proposalId,
+          eventTitle: data.title || (data as any).eventName || 'Approved Activity',
+          bucketId: miscAllocs[0].bucketId,
+          bucketIds: miscAllocs.map((a) => a.bucketId),
+          bucketAllocations: miscAllocs.map((a) => ({
+            bucketId: a.bucketId,
+            bucketName: a.bucketName,
+            availableAmount: a.availableAmount,
+            allocatedAmount: a.allocatedAmount,
+          })),
+          bucketName: miscAllocs.map((a) => a.bucketName).join(' + '),
+          amount: miscAllocs.reduce((s, a) => s + (Number(a.allocatedAmount) || 0), 0),
+          schoolYear: (data as any).schoolYear,
+          semester: (data as any).semester,
+          performedBy: signerName || signatory.email || 'AP Final Approval',
+        });
+      } catch (miscDeductErr) {
+        console.warn('[endorseProposal] Misc fee approval deduction notice:', miscDeductErr);
+      }
+    } else if (
+      effectiveFunding === 'school_budget' &&
+      totalExp > 0 &&
+      ((data as any).miscFeeBucketId || (data as any).miscFeeBucketIds?.length)
+    ) {
+      try {
+        const { deductMiscFeeBucketOnDisbursement } = await import('../../finance/services/misc-fee.service');
+        const bIds: string[] = Array.isArray((data as any).miscFeeBucketIds)
+          ? (data as any).miscFeeBucketIds
+          : [];
+        const bId = (data as any).miscFeeBucketId || bIds[0];
+        await deductMiscFeeBucketOnDisbursement({
+          eventId: proposalId,
+          eventTitle: data.title || (data as any).eventName || 'Approved Activity',
+          bucketId: bId,
+          bucketIds: bIds.length > 0 ? bIds : [bId],
+          bucketAllocations: (data as any).miscFeeBucketAllocations,
+          bucketName: (data as any).miscFeeBucketName || bId,
+          amount: totalExp,
+          schoolYear: (data as any).schoolYear,
+          semester: (data as any).semester,
+          performedBy: signerName || signatory.email || 'AP Final Approval',
+        });
+      } catch (miscDeductErr) {
+        console.warn('[endorseProposal] Legacy misc fee approval deduction notice:', miscDeductErr);
+      }
+    }
+
+    // 2. Retained Student Contribution bucket deductions (SAO_CAMPUS only; Orgs use single Club Treasury Ledger)
+    const retainedAllocs = savedAllocs.filter(
+      (a) =>
+        a.fundType === 'student_contribution_retained' &&
+        Number(a.allocatedAmount) > 0 &&
+        !String(a.bucketId || '').startsWith('ORG_')
+    );
+    for (const rAlloc of retainedAllocs) {
+      try {
+        const { deductRetainedFundOnProposalApproval } = await import('../../finance/services/retained-fund.service');
+        await deductRetainedFundOnProposalApproval({
+          eventId: proposalId,
+          eventTitle: data.title || (data as any).eventName || 'Approved Activity',
+          amount: rAlloc.allocatedAmount,
+          organizationId: 'sas',
+          organizationName: rAlloc.bucketName,
+          schoolYear: (data as any).schoolYear,
+          semester: (data as any).semester,
+          performedBy: signerName || signatory.email || 'AP Final Approval',
+        });
+      } catch (retErr) {
+        console.warn('[endorseProposal] Retained bucket deduction notice:', retErr);
+      }
+    }
+
+    // 3. Club treasury ledger encumbrance if organization_funds
     if (effectiveFunding === 'organization_funds' && totalExp > 0) {
       try {
+        const orgAlloc = savedAllocs.find((a) => a.fundType === 'org_treasury');
+        const orgDeductAmount = orgAlloc ? Number(orgAlloc.allocatedAmount) || totalExp : totalExp;
         const resolvedOrgId =
           data.hostingOrgId ||
           (data as any).organizationId ||
@@ -1386,8 +1517,8 @@ export async function endorseProposal(
             hostingOrgId: resolvedOrgId,
             organizationId: resolvedOrgId,
             fundingSource: effectiveFunding,
-            totalApprovedBudget: totalExp,
-            allocatedBudget: totalExp,
+            totalApprovedBudget: orgDeductAmount,
+            allocatedBudget: orgDeductAmount,
             title: data.title || (data as any).eventName || 'Approved Activity',
             semesterId: (data as any).semesterId || null,
           },
@@ -1396,6 +1527,40 @@ export async function endorseProposal(
         );
       } catch (deductErr) {
         console.warn('[endorseProposal] Club ledger encumbrance notice:', deductErr);
+      }
+    }
+
+    // 4. Auto-generate Student Payables (Mobile Sync) for Student Contribution or payable-enabled proposals
+    const contribRate =
+      Number((data as any).studentContributionRate) ||
+      Number((data as any).suggestedFeePerStudent) ||
+      Number((data as any).feeAmount) ||
+      0;
+    const shouldGeneratePayables =
+      (effectiveFunding === 'student_contributions' && contribRate > 0) ||
+      Boolean((data as any).studentPayablesEnabled && contribRate > 0) ||
+      Boolean((data as any).enableQRTickets === true || (data as any).enableQR === true);
+
+    if (shouldGeneratePayables) {
+      try {
+        const { generatePayablesForEvent } = await import('../../events/services/event.service');
+        await generatePayablesForEvent(
+          {
+            ...data,
+            id: proposalId,
+            proposalStatus: 'approved',
+            isApproved: true,
+            fundingSource: effectiveFunding,
+            studentPayablesEnabled:
+              Boolean((data as any).studentPayablesEnabled) ||
+              (effectiveFunding === 'student_contributions' && contribRate > 0),
+            feeAmount: contribRate,
+          },
+          proposalId,
+          userUid || signatory.uid || 'system'
+        );
+      } catch (payableErr) {
+        console.warn('[endorseProposal] Non-blocking student payables generation notice:', payableErr);
       }
     }
   }
@@ -1899,12 +2064,16 @@ export async function withdrawProposal(
         Boolean(s.signedAt) ||
         Boolean(s.signatureUrl))
   );
-  const isOrgFunds = data.fundingSource === 'organization_funds';
+  const isOrgDirectSas =
+    Boolean(data.isOfficerProposal) &&
+    (data.fundingSource === 'organization_funds' ||
+      data.fundingSource === 'student_contributions' ||
+      data.fundingSource === 'zero_budget');
 
-  if (isOrgFunds) {
+  if (isOrgDirectSas) {
     if (anySignatorySigned || Boolean(data.sasSignedAt) || Boolean(data.isApproved) || Boolean(data.approvedBy)) {
       throw new Error(
-        'Cannot withdraw: SAS has already digitally signed and approved this Organization Funds proposal.'
+        'Cannot withdraw: SAS has already digitally signed and approved this organization proposal.'
       );
     }
   } else if (anySignatorySigned) {

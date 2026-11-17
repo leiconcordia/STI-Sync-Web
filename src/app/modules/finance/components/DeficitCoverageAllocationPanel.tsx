@@ -1,0 +1,471 @@
+import React, { useMemo, useState } from 'react';
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  CheckCircle2,
+  Plus,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
+import type {
+  DeficitDeductionAllocation,
+  FundAllocationFundType,
+  ProposalBucketAllocation,
+} from '../../activity-proposals/types/proposal.types';
+import type { ComputedBucketBalance } from '../types/misc-fee.types';
+import type { RetainedActivityFundDocument } from '../types/retained-fund.types';
+import {
+  computeWaterfallDeficitAllocations,
+  rebalanceDeficitDeductionAllocations,
+  validateDeficitDeductionAllocations,
+} from '../../activity-proposals/utils/proposal-calculations';
+
+export interface SupplementalBucketOption {
+  bucketId: string;
+  bucketName: string;
+  fundType: FundAllocationFundType;
+  availableBalance: number;
+}
+
+export function resolveLiveBucketAvailableBalance(params: {
+  bucketId: string;
+  bucketName?: string;
+  fundType: FundAllocationFundType;
+  computedBuckets: ComputedBucketBalance[];
+  saoRetainedFund?: RetainedActivityFundDocument | null;
+  orgRetainedFunds?: RetainedActivityFundDocument[];
+  orgLedgerBalance?: number;
+}): number {
+  const { bucketId, bucketName, fundType, computedBuckets, saoRetainedFund, orgRetainedFunds = [], orgLedgerBalance } = params;
+  if (fundType === 'misc_fee') {
+    const match = computedBuckets.find(
+      (cb) =>
+        cb.bucket.id === bucketId ||
+        (bucketName && cb.bucket.particular.toLowerCase() === bucketName.toLowerCase())
+    );
+    return match ? Math.max(0, Number(match.currentAvailable) || 0) : 0;
+  }
+
+  if (bucketId === 'SAO_CAMPUS' || fundType === 'student_contribution_retained') {
+    if (bucketId.startsWith('ORG_')) {
+      const orgMatch = orgRetainedFunds.find((f) => f.id === bucketId);
+      const retBal = Number(orgMatch?.availableBalance) || 0;
+      return retBal > 0 ? retBal : Math.max(0, Number(orgLedgerBalance) || 0);
+    }
+    return Math.max(0, Number(saoRetainedFund?.availableBalance) || 0);
+  }
+
+  const orgMatch = orgRetainedFunds.find(
+    (f) => f.id === bucketId || (bucketName && f.organizationName?.toLowerCase() === bucketName.toLowerCase())
+  );
+  const retBal = Number(orgMatch?.availableBalance) || 0;
+  return retBal > 0 ? retBal : Math.max(0, Number(orgLedgerBalance) || 0);
+}
+
+export function buildDeficitSeedAndSupplementalOptions(params: {
+  totalDeficit: number;
+  sourceAllocations: ProposalBucketAllocation[];
+  savedDeficitRows?: DeficitDeductionAllocation[];
+  computedBuckets: ComputedBucketBalance[];
+  saoEligibleBuckets: ComputedBucketBalance[];
+  saoRetainedFund?: RetainedActivityFundDocument | null;
+  orgRetainedFunds?: RetainedActivityFundDocument[];
+  targetOrgId?: string | null;
+  targetOrgName?: string | null;
+  orgLedgerBalance?: number;
+}): {
+  initialRows: DeficitDeductionAllocation[];
+  supplementalOptions: SupplementalBucketOption[];
+} {
+  const {
+    totalDeficit,
+    sourceAllocations,
+    savedDeficitRows = [],
+    computedBuckets,
+    saoEligibleBuckets,
+    saoRetainedFund,
+    orgRetainedFunds = [],
+    targetOrgId,
+    targetOrgName,
+    orgLedgerBalance,
+  } = params;
+
+  const getLiveAvail = (bucketId: string, bucketName: string, fundType: FundAllocationFundType) =>
+    resolveLiveBucketAvailableBalance({
+      bucketId,
+      bucketName,
+      fundType,
+      computedBuckets,
+      saoRetainedFund,
+      orgRetainedFunds,
+      orgLedgerBalance,
+    });
+
+  let initialRows: DeficitDeductionAllocation[] = [];
+  if (savedDeficitRows.length > 0) {
+    initialRows = savedDeficitRows.map((r) => ({
+      ...r,
+      availableBalance: getLiveAvail(r.bucketId, r.bucketName, r.fundType),
+    }));
+  } else if (sourceAllocations.length > 0) {
+    const baseRows: DeficitDeductionAllocation[] = sourceAllocations.map((a) => ({
+      bucketId: a.bucketId,
+      bucketName: a.bucketName,
+      fundType: a.fundType,
+      originalAllocatedAmount: Number(a.allocatedAmount) || 0,
+      availableBalance: getLiveAvail(a.bucketId, a.bucketName, a.fundType),
+      deductAmount: 0,
+      isSupplementalSource: false,
+    }));
+    initialRows = computeWaterfallDeficitAllocations({
+      totalDeficit,
+      rows: baseRows,
+    });
+  }
+
+  const supplementalOptions: SupplementalBucketOption[] = [];
+  for (const cb of saoEligibleBuckets) {
+    supplementalOptions.push({
+      bucketId: cb.bucket.id,
+      bucketName: cb.bucket.particular,
+      fundType: 'misc_fee',
+      availableBalance: Math.max(0, Number(cb.currentAvailable) || 0),
+    });
+  }
+  if (saoRetainedFund && (Number(saoRetainedFund.availableBalance) || 0) > 0) {
+    supplementalOptions.push({
+      bucketId: saoRetainedFund.id,
+      bucketName: saoRetainedFund.organizationName || 'Campus Student Contribution Retained Bucket',
+      fundType: 'student_contribution_retained',
+      availableBalance: Math.max(0, Number(saoRetainedFund.availableBalance) || 0),
+    });
+  }
+  const cleanOrgId = String(targetOrgId || '').trim();
+  if (
+    cleanOrgId &&
+    !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(cleanOrgId.toLowerCase())
+  ) {
+    const orgAvail = getLiveAvail(`ORG_${cleanOrgId}`, targetOrgName || 'Organization Treasury', 'org_treasury');
+    if (orgAvail > 0) {
+      supplementalOptions.push({
+        bucketId: `ORG_${cleanOrgId}`,
+        bucketName: `${targetOrgName || 'Organization'} Treasury`,
+        fundType: 'org_treasury',
+        availableBalance: orgAvail,
+      });
+    }
+  }
+
+  return { initialRows, supplementalOptions };
+}
+
+interface DeficitCoverageAllocationPanelProps {
+  totalDeficit: number;
+  rows: DeficitDeductionAllocation[];
+  onChange: (rows: DeficitDeductionAllocation[]) => void;
+  supplementalOptions: SupplementalBucketOption[];
+  disabled?: boolean;
+  readOnly?: boolean;
+  title?: string;
+}
+
+const formatPHP = (n: number) =>
+  `₱${Number(n || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+export function DeficitCoverageAllocationPanel({
+  totalDeficit,
+  rows,
+  onChange,
+  supplementalOptions,
+  disabled = false,
+  readOnly = false,
+  title = 'Overspend Coverage Routing (Bucket Waterfall & Supplemental Selection)',
+}: DeficitCoverageAllocationPanelProps) {
+  const [selectedSuppId, setSelectedSuppId] = useState('');
+
+  const validation = useMemo(
+    () =>
+      validateDeficitDeductionAllocations({
+        totalDeficit,
+        rows,
+      }),
+    [totalDeficit, rows]
+  );
+
+  const unusedSupplementalOptions = useMemo(() => {
+    const usedIds = new Set(rows.map((r) => r.bucketId));
+    return supplementalOptions.filter(
+      (opt) => !usedIds.has(opt.bucketId) && opt.availableBalance > 0.009
+    );
+  }, [supplementalOptions, rows]);
+
+  const handleAutoWaterfall = () => {
+    if (disabled || readOnly || rows.length === 0) return;
+    onChange(
+      computeWaterfallDeficitAllocations({
+        totalDeficit,
+        rows,
+      })
+    );
+  };
+
+  const handleAddSupplementalBucket = (bucketIdToAdd: string) => {
+    const targetId = bucketIdToAdd || selectedSuppId;
+    if (!targetId) return;
+    const match = unusedSupplementalOptions.find((o) => o.bucketId === targetId);
+    if (!match) return;
+
+    const currentAssigned = rows.reduce((s, r) => s + (Number(r.deductAmount) || 0), 0);
+    const remainingNeeded = Math.max(0, Math.round((totalDeficit - currentAssigned) * 100) / 100);
+    const autoTake = Math.min(remainingNeeded, Math.round(match.availableBalance * 100) / 100);
+
+    onChange([
+      ...rows,
+      {
+        bucketId: match.bucketId,
+        bucketName: match.bucketName,
+        fundType: match.fundType,
+        originalAllocatedAmount: 0,
+        availableBalance: match.availableBalance,
+        deductAmount: autoTake,
+        isSupplementalSource: true,
+      },
+    ]);
+    setSelectedSuppId('');
+  };
+
+  return (
+    <div className="p-4 rounded-2xl bg-rose-50/60 border border-rose-200 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h4 className="font-bold text-rose-950 text-xs uppercase tracking-wider flex items-center gap-1.5">
+            <ArrowDownRight className="w-3.5 h-3.5 text-rose-700" />
+            {title}
+          </h4>
+          <p className="text-xs text-rose-900/80 mt-0.5">
+            Assign 100% of the <strong className="font-mono">{formatPHP(totalDeficit)}</strong> overspend
+            to bucket(s) with sufficient available balance. No unrecorded absorption is allowed.
+          </p>
+        </div>
+
+        {!readOnly && rows.length > 0 && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={handleAutoWaterfall}
+            className="px-3 py-1.5 rounded-lg bg-white border border-rose-300 text-[11px] font-bold text-rose-900 hover:bg-rose-50 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+          >
+            <Sparkles className="w-3 h-3 text-rose-600" />
+            Auto-Waterfall Cover
+          </button>
+        )}
+      </div>
+
+      {/* Selected / AP Buckets List */}
+      <div className="space-y-2">
+        {rows.map((row, idx) => {
+          const rowErr = validation.perBucketErrors[row.bucketId];
+          const fundLabel =
+            row.fundType === 'misc_fee'
+              ? 'Misc Fee'
+              : row.fundType === 'org_treasury'
+                ? 'Org Treasury'
+                : 'Retained Fund';
+          return (
+            <div
+              key={row.bucketId}
+              className={`p-3 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-rose-200/80'
+              }`}
+            >
+              <div className="min-w-0 space-y-0.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                    #{idx + 1}
+                  </span>
+                  <span className="text-xs font-bold text-[#001A4D] truncate">
+                    {row.bucketName}
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-700">
+                    {fundLabel}
+                  </span>
+                  {row.isSupplementalSource ? (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800">
+                      Supplemental Bucket
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">
+                      Approved AP Source
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-600 font-mono flex flex-wrap items-center gap-3">
+                  {row.originalAllocatedAmount > 0 && (
+                    <span>
+                      Originally Pulled: <strong>{formatPHP(row.originalAllocatedAmount)}</strong>
+                    </span>
+                  )}
+                  <span
+                    className={
+                      row.availableBalance <= 0.009 ? 'text-rose-700 font-semibold' : 'text-emerald-700 font-semibold'
+                    }
+                  >
+                    Live Available Balance: <strong>{formatPHP(row.availableBalance)}</strong>
+                  </span>
+                </p>
+                {rowErr && <p className="text-[11px] font-semibold text-rose-600">{rowErr}</p>}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <label className="text-[11px] font-bold text-gray-700 whitespace-nowrap">
+                  Deduct (₱):
+                </label>
+                {readOnly || (rows.length === 1 && row.availableBalance + 0.009 >= totalDeficit) ? (
+                  <span className="font-mono font-bold text-xs text-rose-900 px-2.5 py-1.5 bg-rose-50 rounded-lg border border-rose-200">
+                    -{formatPHP(row.deductAmount)}
+                  </span>
+                ) : (
+                  <>
+                    <input
+                      type="number"
+                      min="0"
+                      max={Math.max(0, row.availableBalance)}
+                      step="0.01"
+                      disabled={disabled || row.availableBalance <= 0.009}
+                      value={row.deductAmount}
+                      onChange={(e) => {
+                        const rawVal =
+                          e.target.value === ''
+                            ? 0
+                            : Math.max(0, parseFloat(e.target.value) || 0);
+                        onChange(
+                          rebalanceDeficitDeductionAllocations({
+                            totalDeficit,
+                            rows,
+                            editedBucketId: row.bucketId,
+                            editedAmount: rawVal,
+                          })
+                        );
+                      }}
+                      className={`w-36 px-2.5 py-1.5 border rounded-lg text-xs text-right font-mono font-bold outline-none ${
+                        rowErr
+                          ? 'border-rose-400 bg-rose-50 text-rose-900'
+                          : 'border-rose-300 bg-white text-[#001A4D]'
+                      } disabled:bg-gray-100 disabled:text-gray-400`}
+                    />
+                    {row.isSupplementalSource && (
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => {
+                          const filtered = rows.filter((r) => r.bucketId !== row.bucketId);
+                          onChange(
+                            computeWaterfallDeficitAllocations({
+                              totalDeficit,
+                              rows: filtered,
+                            })
+                          );
+                        }}
+                        title="Remove supplemental bucket"
+                        className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-100 cursor-pointer disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add Supplemental Bucket when AP buckets fall short or user wants to add another bucket */}
+      {!readOnly && unusedSupplementalOptions.length > 0 && (
+        <div
+          className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center gap-2 ${
+            validation.needsAdditionalBucket || rows.length === 0
+              ? 'bg-amber-50 border-amber-300'
+              : 'bg-white/80 border-rose-200'
+          }`}
+        >
+          <div className="flex-1 min-w-0">
+            <p className="text-[11px] font-bold text-[#001A4D]">
+              {validation.needsAdditionalBucket
+                ? `Additional Bucket Needed (Short by ${formatPHP(Math.max(0, totalDeficit - validation.totalCapacityAvailable))})`
+                : 'Select Additional Bucket (Optional)'}
+            </p>
+            <select
+              value={selectedSuppId}
+              disabled={disabled}
+              onChange={(e) => setSelectedSuppId(e.target.value)}
+              className="mt-1 w-full px-2.5 py-1.5 rounded-lg border border-gray-300 bg-white text-xs text-gray-800 outline-none focus:border-[#0E4EBD]"
+            >
+              <option value="">-- Choose another bucket with available balance --</option>
+              {unusedSupplementalOptions.map((opt) => (
+                <option key={opt.bucketId} value={opt.bucketId}>
+                  {opt.bucketName} ({opt.fundType === 'misc_fee' ? 'Misc Fee' : opt.fundType === 'org_treasury' ? 'Org Treasury' : 'Retained Fund'} • Avail: {formatPHP(opt.availableBalance)})
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            disabled={disabled || !selectedSuppId}
+            onClick={() => handleAddSupplementalBucket(selectedSuppId)}
+            className="px-3 py-2 rounded-lg bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-40 shrink-0 sm:mt-4"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add Bucket
+          </button>
+        </div>
+      )}
+
+      {/* Totals & Exact Coverage Status */}
+      <div
+        className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
+          validation.isValid
+            ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+            : 'bg-amber-50 border-amber-300 text-amber-950'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-4 font-mono">
+          <span>
+            Total Overspend: <strong>{formatPHP(totalDeficit)}</strong>
+          </span>
+          <span>
+            Total Assigned: <strong>{formatPHP(validation.totalDeducted)}</strong>
+          </span>
+          <span>
+            Unassigned:{' '}
+            <strong>{formatPHP(validation.remainingDeficitToAssign)}</strong>
+          </span>
+        </div>
+        <span
+          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase inline-flex items-center gap-1 ${
+            validation.isValid ? 'bg-emerald-600 text-white' : 'bg-amber-600 text-white'
+          }`}
+        >
+          {validation.isValid ? (
+            <>
+              <CheckCircle2 className="w-3 h-3" />
+              100% Covered
+            </>
+          ) : (
+            <>
+              <AlertTriangle className="w-3 h-3" />
+              Coverage Required
+            </>
+          )}
+        </span>
+      </div>
+
+      {validation.summaryError && (
+        <p className="text-xs font-semibold text-rose-700">{validation.summaryError}</p>
+      )}
+    </div>
+  );
+}

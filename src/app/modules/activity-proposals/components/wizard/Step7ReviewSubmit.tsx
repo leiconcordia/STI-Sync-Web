@@ -349,6 +349,10 @@ export default function Step7ReviewSubmit({
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
                     💼 Club Treasury
                   </span>
+                ) : formData.fundingSource === 'student_contributions' ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                    👥 Student Contribution
+                  </span>
                 ) : formData.fundingSource === 'zero_budget' ? (
                   <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                     📄 Non-Monetary (₱0)
@@ -729,49 +733,67 @@ export default function Step7ReviewSubmit({
           </div>
 
           {/* 16. Signatories & Dynamic Multi-Stage Approval Flow */}
-          <div className="space-y-4 pt-2">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                16. Signatory & Approval Pipeline
-              </h3>
-              {formData.fundingSource === 'organization_funds' ? (
-                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
-                  Direct SAS Approval
-                </span>
-              ) : (
-                <span className="text-[11px] text-slate-500 font-medium">
-                  {approvalChain.length} Designated Signatories
-                </span>
-              )}
-            </div>
+          {(() => {
+            const isOrgDirectSasApproval =
+              Boolean(formData.isOfficerProposal) &&
+              (formData.fundingSource === 'organization_funds' ||
+                formData.fundingSource === 'student_contributions' ||
+                formData.fundingSource === 'zero_budget');
+            return (
+              <div className="space-y-4 pt-2">
+                <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                    16. Signatory &amp; Approval Pipeline
+                  </h3>
+                  {isOrgDirectSasApproval ? (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+                      Direct SAS Approval
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-500 font-medium">
+                      {approvalChain.length} Designated Signatories
+                    </span>
+                  )}
+                </div>
 
-            {formData.fundingSource === 'organization_funds' ? (
-              <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex items-start gap-3.5 shadow-xs">
-                <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800 shrink-0">
-                  <Coins className="w-5 h-5 text-emerald-700" />
-                </div>
-                <div className="space-y-1">
-                  <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
-                    Organization Internal Funds — Direct SAS Approval
-                  </h4>
-                  <p className="text-xs text-emerald-900/90 leading-relaxed">
-                    This activity is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
-                  </p>
-                </div>
+                {isOrgDirectSasApproval ? (
+                  <div className="p-4 bg-emerald-50/90 border border-emerald-300 rounded-2xl flex items-start gap-3.5 shadow-xs">
+                    <div className="p-2 bg-emerald-100 rounded-xl text-emerald-800 shrink-0">
+                      <Coins className="w-5 h-5 text-emerald-700" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
+                        {formData.fundingSource === 'student_contributions'
+                          ? 'Organization Student Contributions — Direct SAS Approval'
+                          : formData.fundingSource === 'zero_budget'
+                            ? 'Organization Non-Monetary Activity — Direct SAS Approval'
+                            : 'Organization Internal Funds — Direct SAS Approval'}
+                      </h4>
+                      <p className="text-xs text-emerald-900/90 leading-relaxed">
+                        {formData.fundingSource === 'student_contributions'
+                          ? 'Student contribution collections and settlements for this organization activity use the Club Treasury Ledger (no School Miscellaneous Fees). '
+                          : formData.fundingSource === 'zero_budget'
+                            ? 'This organization activity requires no monetary budget or School Miscellaneous Fees. '
+                            : 'This activity is funded entirely from organization treasury funds. '}
+                        Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs &amp; Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <ProposalFlowBuilder
+                    approvalChain={approvalChain}
+                    onChange={(newChain) => onChange({ approvalChain: newChain })}
+                    activeSignatories={signatories}
+                    targetAudience={formData.targetAudience}
+                    creatorName={formData.createdByName}
+                    creatorEmail={formData.createdByEmail}
+                    creatorRole={formData.creatorRole}
+                    fundingSource={formData.fundingSource}
+                  />
+                )}
               </div>
-            ) : (
-              <ProposalFlowBuilder
-                approvalChain={approvalChain}
-                onChange={(newChain) => onChange({ approvalChain: newChain })}
-                activeSignatories={signatories}
-                targetAudience={formData.targetAudience}
-                creatorName={formData.createdByName}
-                creatorEmail={formData.createdByEmail}
-                creatorRole={formData.creatorRole}
-                fundingSource={formData.fundingSource}
-              />
-            )}
-          </div>
+            );
+          })()}
         </div>
       </div>
 

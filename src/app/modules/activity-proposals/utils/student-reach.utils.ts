@@ -49,9 +49,8 @@ export interface ReachFilterCriteria {
 
 const EXCLUDED_STUDENT_STATUSES = new Set([
   'INACTIVE',
+  'SUSPENDED',
   'ARCHIVED',
-  'RETURNED',
-  'DROPPED',
 ]);
 
 const SHS_FALLBACK_KEYWORDS = [
@@ -98,12 +97,12 @@ function matchesShsFallback(text: string): boolean {
 }
 
 /**
- * Filter student records to active (non-archived, non-dropped/returned/inactive) students.
+ * Filter student records to active students matching StudentRegistry.tsx categorization.
  */
 export function filterActiveStudents<T extends ReachStudentLike>(students: T[]): T[] {
   return students.filter((student) => {
     const status = normalizeUpper(student.status || 'ACTIVE');
-    return !student.archived && !EXCLUDED_STUDENT_STATUSES.has(status);
+    return !EXCLUDED_STUDENT_STATUSES.has(status);
   });
 }
 

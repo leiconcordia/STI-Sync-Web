@@ -15,7 +15,46 @@ export type ProposalStatus =
   | 'approved_president'
   | 'activated';
 
-export type ActivityFundingSource = 'organization_funds' | 'school_budget' | 'zero_budget';
+export type FundAllocationFundType =
+  | 'misc_fee'
+  | 'org_treasury'
+  | 'student_contribution_retained'
+  | 'student_contributions';
+
+export interface ProposalBucketAllocation {
+  bucketId: string;
+  bucketName: string;
+  fundType: FundAllocationFundType;
+  allocatedAmount: number;
+  availableAmount?: number;
+  poolAmount?: number;
+  disbursedAmount?: number;
+}
+
+export interface SurplusReturnAllocation {
+  bucketId: string;
+  bucketName: string;
+  fundType: FundAllocationFundType;
+  originalAllocatedAmount: number;
+  returnAmount: number;
+}
+
+export interface DeficitDeductionAllocation {
+  bucketId: string;
+  bucketName: string;
+  fundType: FundAllocationFundType;
+  originalAllocatedAmount: number;
+  availableBalance: number;
+  deductAmount: number;
+  isSupplementalSource?: boolean;
+}
+
+export type ActivityFundingSource =
+  | 'organization_funds'
+  | 'school_budget'
+  | 'student_contributions'
+  | 'retained_sao_fund'
+  | 'zero_budget';
 
 export interface ProposalHistoricalReference {
   eventId: string;
@@ -132,6 +171,16 @@ export interface ProposalSectionRemark {
   createdAt: any;
 }
 
+export interface StudentContributionFilterConfig {
+  mode: 'all' | 'shs' | 'college' | 'custom';
+  selectedYears: string[];
+  selectedCourses: string[];
+  selectedSections: string[];
+  manualCountEnabled?: boolean;
+  manualStudentCount?: number;
+  audienceSummary?: string;
+}
+
 export interface ActivityProposal extends SoftDeletable, Archivable {
   id: string;
   referenceNo: string; // e.g., "AP-2026-SAS-001"
@@ -197,6 +246,24 @@ export interface ActivityProposal extends SoftDeletable, Archivable {
   financialProjections: FinancialProjections;
   fundingSource?: ActivityFundingSource;
   fundingSourceNote?: string;
+  miscFeeBucketId?: string;
+  miscFeeBucketName?: string;
+  miscFeeBucketAvailableAtSubmission?: number;
+  miscFeeBucketIds?: string[];
+  miscFeeBucketNames?: string[];
+  miscFeeBucketAllocations?: Array<{
+    bucketId: string;
+    bucketName: string;
+    poolAmount: number;
+    availableAmount: number;
+  }>;
+  allocations?: ProposalBucketAllocation[];
+  studentContributionRate?: number;
+  studentContributionTargetCount?: number;
+  studentContributionFilter?: StudentContributionFilterConfig;
+  studentPayablesEnabled?: boolean;
+  suggestedFeePerStudent?: number;
+  retainedFundBalanceAtSubmission?: number;
   organizationLedgerBalanceAtSubmission?: number;
   historicalReference?: ProposalHistoricalReference | null;
 

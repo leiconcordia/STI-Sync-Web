@@ -119,12 +119,22 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
     attendanceListName?: string;
   };
 
-  // ─── Section 3: Financial Report (Copied from Financial Liquidation) ───
+  // ─── Section 3: Financial Report (Copied from Financial Liquidation + AP Comparison) ───
   financialSummary: {
     totalRevenue: number;
     totalDisbursed: number;
     surplusOrDeficit: number;
     copiedFromLiquidation?: boolean;
+    anticipatedExpenses?: number;
+    allocatedBudget?: number;
+    liquidationStatus?: string;
+    cashierSettlementStatus?: string;
+    anticipatedLineItems?: Array<{
+      description: string;
+      quantity?: number;
+      unitAmount: number;
+      totalAmount: number;
+    }>;
     lineItems: Array<{
       description: string;
       unitAmount: number;

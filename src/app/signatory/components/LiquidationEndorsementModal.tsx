@@ -760,7 +760,11 @@ export default function LiquidationEndorsementModal({
                   {formatVariance(surplusOrDeficit)}
                 </span>
                 <span className={`text-[10px] font-medium ${isDeficit ? 'text-rose-700' : 'text-emerald-700'}`}>
-                  {isDeficit ? 'Requires ledger deficit absorption' : 'Refundable to student organization'}
+                  {Math.abs(surplusOrDeficit) < 0.01
+                    ? 'Exact budget utilization (no settlement needed)'
+                    : isDeficit
+                      ? 'Overspent — bucket coverage & proof verified post-approval'
+                      : 'Unspent surplus — bucket/Cashier return verified post-approval'}
                 </span>
               </div>
             </div>

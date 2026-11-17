@@ -32,7 +32,13 @@ import { deleteLiquidationReport, withdrawLiquidationReport } from '../../module
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
-import { formatAppDateTime } from '../../utils/date';
+import { formatAppDate, formatAppDateTime } from '../../utils/date';
+import {
+  isActivityConcluded,
+  liquidationSubmissionDeadline,
+  calendarDaysRemaining,
+} from '../../modules/events/utils/activity-compliance.utils';
+import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
@@ -226,6 +232,34 @@ export default function FinancialLiquidation() {
       .reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
   }, [liquidations]);
 
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    events.forEach((e) => map.set(e.id, e));
+    return map;
+  }, [events]);
+
+  const pendingFlDues = useMemo(() => {
+    return events
+      .filter((e) => !e.isDeleted && isActivityConcluded(e) && !isEventLiquidationExempt(e))
+      .map((e) => {
+        const liq = liquidations.find(
+          (l) => !l.isDeleted && l.status !== 'voided' && l.eventId === e.id
+        );
+        if (liq && !['draft', 'returned'].includes(liq.status)) return null;
+        const deadline = liquidationSubmissionDeadline(e, liq);
+        const daysRemaining = deadline ? calendarDaysRemaining(deadline) : null;
+        return {
+          event: e,
+          liq,
+          deadline,
+          daysRemaining,
+          isOverdue: daysRemaining !== null && daysRemaining < 0,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((a, b) => (a.daysRemaining ?? 999) - (b.daysRemaining ?? 999));
+  }, [events, liquidations]);
+
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredReports.length / ITEMS_PER_PAGE));
   const paginatedItems = useMemo(() => {
@@ -410,6 +444,51 @@ export default function FinancialLiquidation() {
           </div>
         </div>
       </div>
+
+      {/* ── 15-Day Post-Conclusion FL Dues Tracker ── */}
+      {pendingFlDues.length > 0 && (
+        <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
+              <Clock className="w-4 h-4 text-amber-600" />
+              <span>15-Day Financial Liquidation Dues ({pendingFlDues.length})</span>
+            </div>
+            <span className="text-[11px] text-amber-800 font-medium">
+              Counted 15 calendar days after event conclusion
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingFlDues.slice(0, 6).map((due) => (
+              <div
+                key={due.event.id}
+                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white ${
+                  due.isOverdue ? 'border-rose-300' : 'border-amber-200'
+                }`}
+              >
+                <span className="font-bold text-[#001A4D] truncate max-w-[200px]">
+                  {due.event.title}
+                </span>
+                <span
+                  className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                    due.isOverdue
+                      ? 'bg-rose-100 text-rose-800'
+                      : due.daysRemaining !== null && due.daysRemaining <= 3
+                      ? 'bg-amber-100 text-amber-900'
+                      : 'bg-blue-50 text-[#001A4D]'
+                  }`}
+                >
+                  {due.deadline ? `Due ${formatAppDate(due.deadline)}` : 'Due'}{' '}
+                  {due.daysRemaining !== null
+                    ? due.isOverdue
+                      ? `(${Math.abs(due.daysRemaining)}d overdue)`
+                      : `(${due.daysRemaining}d left)`
+                    : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Main Container: Tabs + Search + Fixed Height Table + Pagination ── */}
       <div className="bg-white border border-[#E5E7EB] rounded-2xl shadow-xs overflow-hidden">
@@ -646,7 +725,18 @@ export default function FinancialLiquidation() {
 
                       {/* Submitted */}
                       <td className="py-3.5 px-4 whitespace-nowrap text-gray-500 text-xs">
-                        {formatSubmittedDate(report.createdAt)}
+                        <div>{formatSubmittedDate(report.createdAt)}</div>
+                        {(isDraft || isReturned) && (() => {
+                          const flDead = liquidationSubmissionDeadline(eventsById.get(report.eventId), report);
+                          if (!flDead) return null;
+                          const rem = calendarDaysRemaining(flDead);
+                          const ov = rem !== null && rem < 0;
+                          return (
+                            <div className={`text-[10px] font-bold mt-0.5 ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
+                              Due {formatAppDate(flDead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
+                            </div>
+                          );
+                        })()}
                       </td>
 
                       {/* Status */}
@@ -1160,7 +1250,7 @@ export default function FinancialLiquidation() {
                   </button>
                 )}
 
-                {viewingDetailReport.status === 'returned' && (
+                {(viewingDetailReport.status === 'draft' || viewingDetailReport.status === 'returned') && (
                   <button
                     onClick={() => {
                       const toEdit = viewingDetailReport;
@@ -1169,7 +1259,8 @@ export default function FinancialLiquidation() {
                     }}
                     className="px-3.5 py-2 bg-[#001A4D] hover:bg-[#002D72] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
                   >
-                    <Edit3 className="w-3.5 h-3.5 text-[#FFD41C]" /> Edit & Resubmit
+                    <Edit3 className="w-3.5 h-3.5 text-[#FFD41C]" />{' '}
+                    {viewingDetailReport.status === 'returned' ? 'Edit & Resubmit' : 'Edit Draft'}
                   </button>
                 )}
               </div>

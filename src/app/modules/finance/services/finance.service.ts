@@ -114,6 +114,23 @@ export async function deductApprovedEventBudget(
       addedBy: adminUserId || 'SAO Approval',
       createdAt: serverTimestamp(),
     });
+
+    if (eventData.fundingSource === 'retained_sao_fund') {
+      try {
+        const { deductRetainedFundOnProposalApproval } = await import('./retained-fund.service');
+        await deductRetainedFundOnProposalApproval({
+          eventId,
+          eventTitle,
+          amount: budgetAmount,
+          organizationId: 'sas',
+          schoolYear: eventData.schoolYear,
+          semester: eventData.semester,
+          performedBy: adminUserId || 'SAO Approval',
+        });
+      } catch (err) {
+        console.warn('[deductApprovedEventBudget] Retained SAO fund deduction warning:', err);
+      }
+    }
     return docRef.id;
   } else {
     // 2. Check if deduction for this eventId already exists in organization_ledger
@@ -141,6 +158,22 @@ export async function deductApprovedEventBudget(
       addedBy: adminUserId || 'SAO Approval',
       createdAt: serverTimestamp(),
     });
+
+    try {
+      const { deductRetainedFundOnProposalApproval } = await import('./retained-fund.service');
+      await deductRetainedFundOnProposalApproval({
+        eventId,
+        eventTitle,
+        amount: budgetAmount,
+        organizationId: rawOrgId,
+        organizationName: eventData.organizationName,
+        schoolYear: eventData.schoolYear,
+        semester: eventData.semester,
+        performedBy: adminUserId || 'SAO Approval',
+      });
+    } catch (err) {
+      console.warn('[deductApprovedEventBudget] Retained Org fund deduction warning:', err);
+    }
     return docRef.id;
   }
 }

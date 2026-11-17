@@ -23,6 +23,7 @@ import AttendanceScannersModal from './AttendanceScannersModal';
 import { useAllLiquidations } from '../../finance/hooks/useLiquidationStream';
 import OfficerLiquidationModal from '../../../officer/components/OfficerLiquidationModal';
 import DisbursementVoucherModal from '../../finance/components/DisbursementVoucherModal';
+import { EventPayablesQRControl } from '../../finance/components/EventPayablesQRControl';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewerModal';
 import WithdrawConfirmModal from '../../workflow/components/WithdrawConfirmModal';
@@ -220,6 +221,7 @@ export default function OfficerEventDetailView({
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isLiquidationModalOpen, setIsLiquidationModalOpen] = useState(false);
   const [isDisbursementVoucherModalOpen, setIsDisbursementVoucherModalOpen] = useState(false);
+  const [isPayablesModalOpen, setIsPayablesModalOpen] = useState(false);
   const [isUtilsOpen, setIsUtilsOpen] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
   const utilsDropdownRef = useRef<HTMLDivElement>(null);
@@ -1855,6 +1857,17 @@ export default function OfficerEventDetailView({
                         </>
                       )}
                     </button>
+                    {((activeEvent as any)?.fundingSource === 'student_contributions' ||
+                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsPayablesModalOpen(true)}
+                        className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
+                      >
+                        <Users className="w-3.5 h-3.5 text-emerald-100" />
+                        <span>Student Contribution Payables</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -2659,6 +2672,53 @@ export default function OfficerEventDetailView({
           initialEventId={event.id}
           initialEvent={event}
         />
+      )}
+
+      {/* 3b. STUDENT CONTRIBUTION PAYABLES MODAL (OFFICER / CLUB VIEW) */}
+      {isPayablesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs">
+          <div className="relative w-full max-w-6xl max-h-[92vh] overflow-y-auto rounded-2xl shadow-2xl bg-white">
+            <div className="sticky top-0 z-20 flex items-center justify-between px-5 py-3 bg-[#001A4D] text-white border-b border-white/10">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#FFD41C]">
+                Organization Student Contribution Payables
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsPayablesModalOpen(false)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              <EventPayablesQRControl
+                eventId={event.id}
+                eventTitle={fullProposal?.title || event.title}
+                adminFeeAmount={
+                  Number((fullProposal as any)?.studentContributionRate) ||
+                  Number((activeEvent as any)?.studentContributionRate) ||
+                  Number((activeEvent as any)?.suggestedFeePerStudent) ||
+                  0
+                }
+                recordedByUid={profile?.uid || 'officer'}
+                recordedByName={profile?.studentName || profile?.displayName || 'Officer'}
+                isOfficer={true}
+                isClubEvent={!isSasCreated}
+                hostingOrgName={
+                  event.hostingOrgName || (event as any).organizationName || profile?.activeOrgName || undefined
+                }
+                readOnly={isSasCreated}
+                isCancelled={isCancelled}
+                isQREnabled={Boolean(
+                  (activeEvent as any)?.enableQRTickets || (activeEvent as any)?.enableQR
+                )}
+                semesterId={(activeEvent as any)?.semesterId || (fullProposal as any)?.semesterId}
+                schoolYear={(activeEvent as any)?.schoolYear || (fullProposal as any)?.schoolYear}
+                semester={(activeEvent as any)?.semester || (fullProposal as any)?.semester}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* 4. REVISION DIFF VIEWER MODAL */}

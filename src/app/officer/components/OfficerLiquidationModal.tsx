@@ -29,6 +29,7 @@ import {
   Undo2,
   Download,
   Coins,
+  Info,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { doc, getDoc } from 'firebase/firestore';
@@ -41,6 +42,12 @@ import {
   isSasInstitutionalActivity,
   isEventConcluded,
 } from '../../modules/events/utils/event-lifecycle.utils';
+import {
+  activityConclusionDate,
+  addCalendarDays,
+  isActivityConcluded,
+  LIQUIDATION_SUBMISSION_DAYS,
+} from '../../modules/events/utils/activity-compliance.utils';
 import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import {
   createLiquidationReport,
@@ -49,8 +56,23 @@ import {
   withdrawLiquidationReport,
   generateDefaultLiquidationChain,
   attachCashierSettlementProofs,
+  resolveLiquidationSourceAllocations,
 } from '../../modules/finance/services/liquidation.service';
 import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
+import {
+  DeficitCoverageAllocationPanel,
+  buildDeficitSeedAndSupplementalOptions,
+  type SupplementalBucketOption,
+} from '../../modules/finance/components/DeficitCoverageAllocationPanel';
+import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
+import { useRetainedActivityFunds } from '../../modules/finance/hooks/useRetainedFundStream';
+import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
+import { useEventPayablesStream } from '../../modules/finance/hooks/usePayableStream';
+import { validateDeficitDeductionAllocations } from '../../modules/activity-proposals/utils/proposal-calculations';
+import type {
+  DeficitDeductionAllocation,
+  ProposalBucketAllocation,
+} from '../../modules/activity-proposals/types/proposal.types';
 import { subscribeToSignatories } from '../../modules/signatories/services/signatory.service';
 import type { InstitutionalSignatory } from '../../modules/signatories/types/signatory.types';
 import type {
@@ -434,6 +456,9 @@ export default function OfficerLiquidationModal({
   const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
   const [cashierRefDraft, setCashierRefDraft] = useState('');
   const [savingCashierProof, setSavingCashierProof] = useState(false);
+  const [settlementSourceAllocations, setSettlementSourceAllocations] = useState<ProposalBucketAllocation[]>([]);
+  const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
+  const [deficitSupplementalOptions, setDeficitSupplementalOptions] = useState<SupplementalBucketOption[]>([]);
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   const selectedEvent = useMemo(() => {
@@ -445,6 +470,10 @@ export default function OfficerLiquidationModal({
       null
     );
   }, [eligibleEvents, allEvents, selectedEventId, initialEvent]);
+
+  const { data: eventPayables = [], loading: eventPayablesLoading } = useEventPayablesStream(
+    selectedEvent?.id || ''
+  );
 
   // Derive active report from prop, tracked ID, linked event, or existing list
   const effectiveReport = useMemo(() => {
@@ -502,6 +531,62 @@ export default function OfficerLiquidationModal({
      currentStatus === 'approved')
   );
   const isEffectiveReadOnly = Boolean(readOnly || isReportSubmittedOrApproved);
+
+  const isStudentContributionSource =
+    ((selectedEvent as any)?.fundingSource || effectiveReport?.fundingSource) === 'student_contributions';
+
+  const actualContribCollected = useMemo(() => {
+    if (!isStudentContributionSource) return 0;
+    return (
+      Math.round(
+        eventPayables
+          .filter((p) => String(p.status || '').toLowerCase() === 'paid')
+          .reduce((s, p) => s + (Number(p.paidAmount) || Number(p.assignedAmount) || 0), 0) * 100
+      ) / 100
+    );
+  }, [isStudentContributionSource, eventPayables]);
+
+  const paidContribCount = useMemo(
+    () => eventPayables.filter((p) => String(p.status || '').toLowerCase() === 'paid').length,
+    [eventPayables]
+  );
+
+  const retainedContribTopUp = useMemo(() => {
+    if (!isStudentContributionSource) return 0;
+    const allocs = Array.isArray((selectedEvent as any)?.allocations)
+      ? (selectedEvent as any).allocations
+      : [];
+    return (
+      Math.round(
+        allocs
+          .filter((a: any) => a.fundType === 'student_contribution_retained')
+          .reduce((s: number, a: any) => s + (Number(a.allocatedAmount) || 0), 0) * 100
+      ) / 100
+    );
+  }, [isStudentContributionSource, selectedEvent]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !isStudentContributionSource ||
+      isEffectiveReadOnly ||
+      eventPayablesLoading ||
+      Number(activeDisbursementVoucher?.amountDisbursed || 0) > 0
+    ) {
+      return;
+    }
+    const computedBasis = Math.round((actualContribCollected + retainedContribTopUp) * 100) / 100;
+    setAllocatedBudget(computedBasis);
+    setAmountAdvanced(computedBasis);
+  }, [
+    isOpen,
+    isStudentContributionSource,
+    isEffectiveReadOnly,
+    eventPayablesLoading,
+    actualContribCollected,
+    retainedContribTopUp,
+    activeDisbursementVoucher?.amountDisbursed,
+  ]);
 
   const handleWithdraw = async () => {
     if (!effectiveReport) return;
@@ -591,9 +676,104 @@ export default function OfficerLiquidationModal({
     return isEventLiquidationExempt(selectedEvent);
   }, [selectedEvent]);
 
+  const effectiveSource = (selectedEvent as any)?.fundingSource || effectiveReport?.fundingSource || '';
   const isOrgFunds = useMemo(() => {
-    return (selectedEvent as any)?.fundingSource === 'organization_funds' || effectiveReport?.fundingSource === 'organization_funds';
+    const src = (selectedEvent as any)?.fundingSource || effectiveReport?.fundingSource || '';
+    return src === 'organization_funds' || src === 'retained_sao_fund' || src === 'student_contributions';
   }, [selectedEvent, effectiveReport]);
+  const isRetainedClubFund =
+    effectiveSource === 'organization_funds' || effectiveSource === 'student_contributions';
+
+  const { computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
+  const effectiveSettlementOrgId = effectiveReport?.organizationId || orgId || null;
+  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(effectiveSettlementOrgId);
+  const { data: settlementOrgLedger = [] } = useOrgLedger(effectiveSettlementOrgId);
+
+  const settlementOrgLedgerBalance = useMemo(() => {
+    if (!settlementOrgLedger || settlementOrgLedger.length === 0) return 0;
+    const inc = settlementOrgLedger
+      .filter((t) => String(t.type || '').toLowerCase() === 'income')
+      .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    const exp = settlementOrgLedger
+      .filter((t) => String(t.type || '').toLowerCase() === 'expense')
+      .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+    return Math.max(0, inc - exp);
+  }, [settlementOrgLedger]);
+
+  const approvedReportSurplus = useMemo(() => {
+    if (!effectiveReport) return 0;
+    return Number(
+      effectiveReport.surplusOrDeficit ??
+        ((effectiveReport.allocatedBudget ?? 0) - (effectiveReport.totalActualSpending ?? 0))
+    ) || 0;
+  }, [effectiveReport]);
+
+  const approvedReportDeficit = Math.max(0, -approvedReportSurplus);
+
+  useEffect(() => {
+    let active = true;
+    if (effectiveReport && effectiveReport.status === 'approved') {
+      resolveLiquidationSourceAllocations(effectiveReport)
+        .then((allocs) => {
+          if (!active) return;
+          setSettlementSourceAllocations(allocs);
+          if (approvedReportDeficit > 0.009) {
+            const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
+              totalDeficit: approvedReportDeficit,
+              sourceAllocations: allocs,
+              savedDeficitRows: effectiveReport.deficitDeductionAllocations || [],
+              computedBuckets,
+              saoEligibleBuckets,
+              saoRetainedFund,
+              orgRetainedFunds,
+              targetOrgId: effectiveReport.organizationId || orgId,
+              targetOrgName: effectiveReport.organizationName || orgName,
+              orgLedgerBalance: settlementOrgLedgerBalance,
+            });
+            setDeficitAllocationRows(initialRows);
+            setDeficitSupplementalOptions(supplementalOptions);
+          } else {
+            setDeficitAllocationRows([]);
+            setDeficitSupplementalOptions([]);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setSettlementSourceAllocations([]);
+            setDeficitAllocationRows([]);
+            setDeficitSupplementalOptions([]);
+          }
+        });
+    } else {
+      setSettlementSourceAllocations([]);
+      setDeficitAllocationRows([]);
+      setDeficitSupplementalOptions([]);
+    }
+    return () => {
+      active = false;
+    };
+  }, [
+    effectiveReport?.id,
+    effectiveReport?.status,
+    approvedReportDeficit,
+    computedBuckets,
+    saoEligibleBuckets,
+    saoRetainedFund,
+    orgRetainedFunds,
+    settlementOrgLedgerBalance,
+  ]);
+
+  const deficitCoverageValidation = useMemo(() => {
+    return validateDeficitDeductionAllocations({
+      totalDeficit: approvedReportDeficit,
+      rows: deficitAllocationRows,
+    });
+  }, [approvedReportDeficit, deficitAllocationRows]);
+
+  const hasMiscFeeInSettlement = useMemo(() => {
+    if (settlementSourceAllocations.some((a) => a.fundType === 'misc_fee')) return true;
+    return !isOrgFunds && effectiveSource === 'school_budget';
+  }, [settlementSourceAllocations, isOrgFunds, effectiveSource]);
 
   // Form LF-01 Official Header Information
   const [employeeName, setEmployeeName] = useState<string>('');
@@ -786,28 +966,40 @@ export default function OfficerLiquidationModal({
     }
     setDateReleased(resolvedDateReleased);
 
+    const concluded = isActivityConcluded(selectedEvent);
+    const canonicalEndDate = concluded ? activityConclusionDate(selectedEvent) : '';
+
     let resolvedEndDate = '';
     if (targetReport?.activityEndDate) {
       const pReportEnd = parseDateSafely(targetReport.activityEndDate);
       resolvedEndDate = pReportEnd ? format(pReportEnd, 'yyyy-MM-dd') : targetReport.activityEndDate;
+    } else if (canonicalEndDate) {
+      resolvedEndDate = canonicalEndDate;
     } else if (sessionLastDate) {
       resolvedEndDate = sessionLastDate;
     } else {
-      const pCompleted = parseDateSafely(selectedEvent.completedAt || selectedEvent.createdAt);
+      const pCompleted = parseDateSafely(
+        (selectedEvent as any).concludedAt || selectedEvent.completedAt || selectedEvent.createdAt
+      );
       if (pCompleted) resolvedEndDate = format(pCompleted, 'yyyy-MM-dd');
     }
     setActivityEndDate(resolvedEndDate);
 
-    // F. Deadline (+15 days from activityEndDate)
+    // F. Deadline (+15 calendar days strictly after conclusion of event)
     let resolvedDeadline = '';
     if (targetReport?.submissionDeadline) {
       const pDead = parseDateSafely(targetReport.submissionDeadline);
       resolvedDeadline = pDead ? format(pDead, 'yyyy-MM-dd') : targetReport.submissionDeadline;
-    } else if (resolvedEndDate) {
-      const parsedEnd = parseDateSafely(resolvedEndDate);
-      if (parsedEnd) {
-        const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
-        resolvedDeadline = format(deadDate, 'yyyy-MM-dd');
+    } else if ((selectedEvent as any).liquidationDeadline) {
+      resolvedDeadline = String((selectedEvent as any).liquidationDeadline).slice(0, 10);
+    } else if (concluded && resolvedEndDate) {
+      resolvedDeadline = addCalendarDays(resolvedEndDate, LIQUIDATION_SUBMISSION_DAYS);
+      if (!resolvedDeadline) {
+        const parsedEnd = parseDateSafely(resolvedEndDate);
+        if (parsedEnd) {
+          const deadDate = new Date(parsedEnd.getTime() + 15 * 24 * 60 * 60 * 1000);
+          resolvedDeadline = format(deadDate, 'yyyy-MM-dd');
+        }
       }
     }
     setSubmissionDeadline(resolvedDeadline);
@@ -1341,6 +1533,11 @@ export default function OfficerLiquidationModal({
       return;
     }
 
+    const resolvedFundingSource =
+      (selectedEvent as any)?.fundingSource ||
+      effectiveReport?.fundingSource ||
+      (isOrgFunds ? 'organization_funds' : 'school_budget');
+
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
       if (!isConcluded) {
@@ -1396,12 +1593,15 @@ export default function OfficerLiquidationModal({
         showValidationError('Please attach at least one valid receipt or proof document for every expense receipt before submitting.');
         return;
       }
-      const isOrgFunds = (selectedEvent as any)?.fundingSource === 'organization_funds' || effectiveReport?.fundingSource === 'organization_funds';
-      if (!isOrgFunds && approvalChain.length === 0) {
+      const isNonSchoolSource =
+        resolvedFundingSource === 'organization_funds' ||
+        resolvedFundingSource === 'student_contributions' ||
+        resolvedFundingSource === 'retained_sao_fund';
+      if (!isNonSchoolSource && approvalChain.length === 0) {
         showValidationError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
         return;
       }
-      if (!isOrgFunds) {
+      if (!isNonSchoolSource) {
         const hasApprover = approvalChain.some(
           (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
         );
@@ -1468,7 +1668,10 @@ export default function OfficerLiquidationModal({
         eventTitle: selectedEvent?.title || eventTitle || '',
         organizationId: selectedEvent?.organizationId || selectedEvent?.hostingOrgId || orgId || '',
         organizationName: selectedEvent?.organizationName || selectedEvent?.hostingOrgName || orgName || '',
-        fundingSource: isOrgFunds ? 'organization_funds' : 'school_budget',
+        fundingSource: resolvedFundingSource,
+        miscFeeBucketId: (selectedEvent as any)?.miscFeeBucketId || (effectiveReport as any)?.miscFeeBucketId || undefined,
+        miscFeeBucketIds: (selectedEvent as any)?.miscFeeBucketIds || (effectiveReport as any)?.miscFeeBucketIds || undefined,
+        miscFeeBucketName: (selectedEvent as any)?.miscFeeBucketName || (effectiveReport as any)?.miscFeeBucketName || undefined,
         createdById: userUid || 'user',
         createdByRole: submitterRole,
         createdByName: submitterName,
@@ -1485,6 +1688,33 @@ export default function OfficerLiquidationModal({
         allocatedBudget: Number(allocatedBudget || 0),
         totalActualSpending: Number(totalActualSpending || 0),
         surplusOrDeficit: Number(surplusOrDeficit || 0),
+        ...(isStudentContributionSource
+          ? (() => {
+              const projTotal = eventPayables
+                .filter((p) => !['cancelled', 'waived', 'refunded'].includes(String(p.status || '').toLowerCase()))
+                .reduce((s, p) => s + (Number(p.assignedAmount) || 0), 0);
+              const uncoll = Math.max(0, Math.round((projTotal - actualContribCollected) * 100) / 100);
+              const colDef = Math.max(
+                0,
+                Math.round(
+                  (Number(totalActualSpending || 0) - (actualContribCollected + retainedContribTopUp)) * 100
+                ) / 100
+              );
+              return {
+                fundingSource: 'student_contributions',
+                totalProjectedCollection: Math.round(projTotal * 100) / 100,
+                totalCollectedAtLiquidation: actualContribCollected,
+                uncollectedReceivablesAtLiquidation: uncoll,
+                collectionDeficitAmount: colDef,
+                collectionSettlementStatus:
+                  effectiveReport?.collectionSettlementStatus === 'deficit_absorbed'
+                    ? 'deficit_absorbed'
+                    : colDef > 0.009
+                    ? 'deficit_recovering'
+                    : 'fully_recovered',
+              };
+            })()
+          : {}),
         status: nextStatus,
         approvalChain: finalizedChain,
         currentStageIndex: 1,
@@ -1839,7 +2069,7 @@ export default function OfficerLiquidationModal({
                       </span>
                     </span>
                     <p className="text-[11px] text-emerald-800 mt-0.5 font-mono">
-                      Check #{activeDisbursementVoucher.chequeNumber || 'N/A'} • Released: {activeDisbursementVoucher.disbursementDate || 'N/A'} • ₱{formatCurrency(activeDisbursementVoucher.amountDisbursed || 0)} (Uploaded by {activeDisbursementVoucher.uploadedByName})
+                      Check #{activeDisbursementVoucher.chequeNumber || 'N/A'} • Released: {activeDisbursementVoucher.disbursementDate || 'N/A'} • {formatCurrency(activeDisbursementVoucher.amountDisbursed || 0)} (Uploaded by {activeDisbursementVoucher.uploadedByName})
                     </p>
                   </div>
                 </div>
@@ -2004,6 +2234,22 @@ export default function OfficerLiquidationModal({
 
           {/* Live Financial Variance Summary Cards */}
           <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-3">
+            {isStudentContributionSource && (
+              <div className="px-3.5 py-2.5 rounded-lg border bg-emerald-50 border-emerald-200 text-xs text-emerald-950 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <strong className="text-emerald-900">
+                    Student Contribution Budget Basis (Actual Collected Funds):
+                  </strong>{' '}
+                  <span>
+                    {formatCurrency(actualContribCollected)} collected ({paidContribCount} / {eventPayables.length} paid)
+                    {retainedContribTopUp > 0 ? ` + ${formatCurrency(retainedContribTopUp)} Retained Bucket` : ''}
+                  </span>
+                </div>
+                <span className="font-mono text-[11px] text-emerald-800">
+                  AP Projected Target: {formatCurrency(calculateEventBudget(selectedEvent || {}))}
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
               <div className="p-3 bg-white border border-gray-100 rounded-lg shadow-2xs">
                 <div className="text-xs text-gray-500 font-medium">Disbursed / Approved Budget</div>
@@ -2815,7 +3061,7 @@ export default function OfficerLiquidationModal({
               />
             </div>
           )}
-          {/* Post-Approval Cashier Settlement Proof (Multi-File) */}
+          {/* Post-Approval Settlement Proof & Overspend Bucket Coverage */}
           {effectiveReport?.status === 'approved' &&
             (Number(effectiveReport.surplusOrDeficit || 0) !== 0 ||
               Number((effectiveReport as any).amountToReturn || 0) > 0 ||
@@ -2824,9 +3070,11 @@ export default function OfficerLiquidationModal({
               <div className="p-4 bg-blue-50/40 border border-blue-200 rounded-xl space-y-3">
                 <div className="flex items-center justify-between gap-2">
                   <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
-                    {isOrgFunds
-                      ? 'Post-Approval Club Treasury Settlement Proof'
-                      : 'Post-Approval Cashier Settlement Proof'}
+                    {approvedReportDeficit > 0.009
+                      ? 'Post-Approval Overspend Coverage & Proof'
+                      : hasMiscFeeInSettlement
+                        ? 'Post-Approval Cashier Settlement Proof'
+                        : 'Post-Approval Non-Misc Surplus Settlement'}
                   </h4>
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
@@ -2838,89 +3086,124 @@ export default function OfficerLiquidationModal({
                     }`}
                   >
                     {effectiveReport.cashierSettlementStatus === 'verified'
-                      ? (isOrgFunds ? 'Club Settlement Verified' : 'Cashier Proof Verified')
+                      ? 'Settlement Verified & Posted'
                       : effectiveReport.cashierSettlementStatus === 'proof_uploaded'
                         ? 'Proof Uploaded • Awaiting SAS Verification'
-                        : (isOrgFunds ? 'Pending Club Settlement Proof' : 'Pending Cashier Proof')}
+                        : approvedReportDeficit > 0.009
+                          ? 'Pending Coverage & Proof'
+                          : hasMiscFeeInSettlement
+                            ? 'Pending Cashier Return Receipt'
+                            : 'Awaiting SAS Bucket Return'}
                   </span>
                 </div>
 
-                <CashierProofUploader
-                  proofs={
-                    cashierProofDrafts.length > 0
-                      ? cashierProofDrafts
-                      : effectiveReport.cashierSettlementProofs || []
-                  }
-                  onChange={setCashierProofDrafts}
-                  cashierReferenceNo={
-                    cashierRefDraft || effectiveReport.cashierReferenceNo || ''
-                  }
-                  onReferenceNoChange={setCashierRefDraft}
-                  folderKey={effectiveReport.id}
-                  disabled={savingCashierProof}
-                  readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
-                  title={
-                    Number(effectiveReport.surplusOrDeficit || 0) < 0
-                      ? `${isOrgFunds ? 'Club Treasury' : 'Cashier'} Reimbursement Proof (Reimburse: ${formatCurrency(
-                          Math.abs(Number(effectiveReport.surplusOrDeficit || 0))
-                        )})`
-                      : `${isOrgFunds ? 'Club Treasury' : 'Cashier'} Surplus Return Proof (Return: ${formatCurrency(
-                          Number(
-                            (effectiveReport as any).amountToReturn ??
-                              effectiveReport.surplusOrDeficit ??
-                              0
-                          )
-                        )})`
-                  }
-                  description={
-                    isOrgFunds
-                      ? Number(effectiveReport.surplusOrDeficit || 0) < 0
-                        ? 'Disbursed budget was lower than actual expenses. Reimburse the officer from Club Funds and upload the signed Reimbursement Voucher / Proof below.'
-                        : 'Disbursed budget was higher than actual expenses. Return unspent cash to your Club Treasury (tracked automatically in Finance Center) and upload the Club Return Slip / Proof below.'
-                      : 'Your liquidation is approved. Upload multiple Cashier Official Receipts / Return Slips / Reimbursement Vouchers below.'
-                  }
-                />
-
-                {effectiveReport.cashierSettlementStatus !== 'verified' && (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      disabled={
-                        savingCashierProof ||
-                        (cashierProofDrafts.length === 0 &&
-                          (!effectiveReport.cashierSettlementProofs ||
-                            effectiveReport.cashierSettlementProofs.length === 0))
-                      }
-                      onClick={async () => {
-                        const proofsToSave =
-                          cashierProofDrafts.length > 0
-                            ? cashierProofDrafts
-                            : effectiveReport.cashierSettlementProofs || [];
-                        setSavingCashierProof(true);
-                        try {
-                          await attachCashierSettlementProofs(
-                            effectiveReport.id,
-                            proofsToSave,
-                            cashierRefDraft || effectiveReport.cashierReferenceNo || '',
-                            {
-                              uid: currentUserId || 'officer',
-                              name: currentUserName || 'Officer',
-                              role: userRole === 'admin' ? 'admin' : 'officer',
-                            }
-                          );
-                          toast.success('Cashier settlement proof uploaded and submitted to SAS!');
-                        } catch (err: any) {
-                          toast.error(err?.message || 'Failed to save Cashier proof.');
-                        } finally {
-                          setSavingCashierProof(false);
-                        }
-                      }}
-                      className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      <span>Save &amp; Submit Cashier Proof</span>
-                    </button>
+                {approvedReportSurplus > 0.009 && !hasMiscFeeInSettlement ? (
+                  <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1">
+                    <p className="font-bold">No Cashier Return Receipt Required</p>
+                    <p>
+                      This activity is funded by Organization / Student Contribution / Retained Funds (not Miscellaneous Fees), so the Campus Cashier is not liable for the{' '}
+                      <strong className="font-mono">{formatCurrency(approvedReportSurplus)}</strong> surplus. SAS will confirm returning the balance directly to the source bucket(s).
+                    </p>
                   </div>
+                ) : (
+                  <>
+                    {approvedReportDeficit > 0.009 && (
+                      <DeficitCoverageAllocationPanel
+                        totalDeficit={approvedReportDeficit}
+                        rows={deficitAllocationRows}
+                        onChange={setDeficitAllocationRows}
+                        supplementalOptions={deficitSupplementalOptions}
+                        disabled={savingCashierProof}
+                        readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
+                      />
+                    )}
+
+                    <CashierProofUploader
+                      proofs={
+                        cashierProofDrafts.length > 0
+                          ? cashierProofDrafts
+                          : effectiveReport.cashierSettlementProofs || []
+                      }
+                      onChange={setCashierProofDrafts}
+                      cashierReferenceNo={
+                        cashierRefDraft || effectiveReport.cashierReferenceNo || ''
+                      }
+                      onReferenceNoChange={setCashierRefDraft}
+                      folderKey={effectiveReport.id}
+                      disabled={savingCashierProof}
+                      readOnly={effectiveReport.cashierSettlementStatus === 'verified'}
+                      title={
+                        approvedReportDeficit > 0.009
+                          ? `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
+                          : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
+                              Number(
+                                (effectiveReport as any).amountToReturn ??
+                                  effectiveReport.surplusOrDeficit ??
+                                  0
+                              )
+                            )})`
+                      }
+                      description={
+                        approvedReportDeficit > 0.009
+                          ? 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
+                          : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
+                      }
+                    />
+
+                    {effectiveReport.cashierSettlementStatus !== 'verified' && (
+                      <div className="flex justify-end">
+                        <button
+                          type="button"
+                          disabled={
+                            savingCashierProof ||
+                            (approvedReportDeficit > 0.009 && !deficitCoverageValidation.isValid) ||
+                            (cashierProofDrafts.length === 0 &&
+                              (!effectiveReport.cashierSettlementProofs ||
+                                effectiveReport.cashierSettlementProofs.length === 0))
+                          }
+                          onClick={async () => {
+                            const proofsToSave =
+                              cashierProofDrafts.length > 0
+                                ? cashierProofDrafts
+                                : effectiveReport.cashierSettlementProofs || [];
+                            setSavingCashierProof(true);
+                            try {
+                              await attachCashierSettlementProofs(
+                                effectiveReport.id,
+                                proofsToSave,
+                                cashierRefDraft || effectiveReport.cashierReferenceNo || '',
+                                {
+                                  uid: currentUserId || 'officer',
+                                  name: currentUserName || 'Officer',
+                                  role: userRole === 'admin' ? 'admin' : 'officer',
+                                },
+                                approvedReportDeficit > 0.009
+                                  ? { deficitDeductionAllocations: deficitAllocationRows }
+                                  : undefined
+                              );
+                              toast.success(
+                                approvedReportDeficit > 0.009
+                                  ? 'Overspend bucket coverage and proof submitted to SAS!'
+                                  : 'Cashier return receipt uploaded and submitted to SAS!'
+                              );
+                            } catch (err: any) {
+                              toast.error(err?.message || 'Failed to save settlement proof.');
+                            } finally {
+                              setSavingCashierProof(false);
+                            }
+                          }}
+                          className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                          <span>
+                            {approvedReportDeficit > 0.009
+                              ? 'Save Coverage & Submit Proof'
+                              : 'Save & Submit Cashier Proof'}
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

@@ -14,6 +14,7 @@ import {
   Files,
   FileCheck2,
   UserCog,
+  Landmark,
 } from "lucide-react";
 
 const navGroups = [
@@ -35,6 +36,7 @@ const navGroups = [
   {
     title: "Finance & Documents",
     items: [
+      { icon: Landmark, label: "Miscellaneous Fees", path: "/home/misc-fees" },
       { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations" },
       { icon: FileCheck2, label: "Post-Activity Reports", path: "/home/post-activity-reports" },
       { icon: Files, label: "Document Management", path: "/home/documents" },

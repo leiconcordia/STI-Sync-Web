@@ -35,6 +35,7 @@ import type {
 import {
   calculateFinancialTotals,
   checkProjectedBalance,
+  rebalanceBucketAllocations,
   formatPHP,
   PROJECTED_REVENUE_DEFICIT_WARNING,
 } from '../../utils/proposal-calculations';
@@ -51,6 +52,13 @@ import { useStudents } from '../../../students/hooks/useStudentStream';
 import { filterActiveStudents } from '../../utils/student-reach.utils';
 import { QuickCalculatorModal } from './QuickCalculatorModal';
 import { StudentPopulationGuideModal } from './StudentPopulationGuideModal';
+import { useMiscFeeConfigs } from '../../../finance/hooks/useMiscFeeStream';
+import {
+  formatMiscFeeFundDescription,
+  formatSingleBucketDescription,
+  formatRetainedFundDescription,
+  formatStudentContributionDescription,
+} from '../../../finance/utils/fund-source-formatter';
 
 interface Step6Props {
   formData: ProposalFormData;
@@ -87,6 +95,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
 
   const isNonMonetary = formData.fundingSource === 'zero_budget';
 
+  const { activeConfig } = useMiscFeeConfigs();
   const orgTargetId = formData.hostingOrgId || formData.organizationId || null;
   const { data: orgLedgerData = [], loading: orgLedgerLoading } = useOrgLedger(isOfficerProposal ? orgTargetId : null);
 
@@ -111,10 +120,25 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
   React.useEffect(() => {
     if (!isOfficerProposal && formData.fundingSource === 'organization_funds') {
       onChange({ fundingSource: 'school_budget' });
+    } else if (isOfficerProposal && formData.fundingSource === 'retained_sao_fund') {
+      onChange({ fundingSource: 'organization_funds' });
     } else if (!formData.fundingSource) {
       onChange({ fundingSource: isOfficerProposal ? 'organization_funds' : 'school_budget' });
     }
   }, [isOfficerProposal, formData.fundingSource, onChange]);
+
+  const defaultStudentTargetCount = useMemo(() => {
+    return (
+      Number(formData.estAttendanceCount) ||
+      Number(formData.targetAudience?.demographicBreakdown?.totalPopulation) ||
+      activeStudents.length ||
+      0
+    );
+  }, [
+    formData.estAttendanceCount,
+    formData.targetAudience?.demographicBreakdown?.totalPopulation,
+    activeStudents.length,
+  ]);
 
   const rawProjections = formData.financialProjections;
   const currentProjections: FinancialProjections = useMemo(() => {
@@ -215,6 +239,113 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       historicalReference: updatedHistRef,
     });
   };
+
+  const isManagedFundRow = (r: FinancialLineItem): boolean => {
+    const idStr = String(r.id || '');
+    if (
+      idStr === 'rev-1' ||
+      idStr.startsWith('rev-bucket-') ||
+      idStr.startsWith('rev-hist-') ||
+      idStr === 'rev-contrib-new' ||
+      idStr === 'rev-contrib-retained'
+    ) {
+      return true;
+    }
+    const rem = String(r.remarks || '').trim().toLowerCase();
+    const desc = String(r.description || '').trim().toLowerCase();
+    return (
+      rem.startsWith('miscellaneous fee pool') ||
+      rem.startsWith('student contribution') ||
+      rem.startsWith('retained ') ||
+      rem.startsWith('organization treasury') ||
+      rem.startsWith('detected retained surplus') ||
+      desc.includes('miscellaneous fee') ||
+      desc.includes('1st sem carried over') ||
+      desc.includes('student contribution')
+    );
+  };
+
+  const findHistoricalRowForBucket = (
+    rows: FinancialLineItem[],
+    bucketId: string,
+    bucketName: string
+  ): FinancialLineItem | undefined => {
+    const exactIdMatch = rows.find((r) => r.id === `rev-bucket-${bucketId}`);
+    if (exactIdMatch) return exactIdMatch;
+    const cleanName = String(bucketName || '').trim().toLowerCase();
+    if (!cleanName) return undefined;
+    return rows.find((r) => {
+      const rem = String(r.remarks || '').toLowerCase();
+      const desc = String(r.description || '').toLowerCase();
+      return rem.includes(cleanName) || desc.includes(cleanName);
+    });
+  };
+
+  const getCustomRevenueRows = (rows: FinancialLineItem[]) =>
+    rows.filter((r) => !isManagedFundRow(r));
+
+  // Self-heal any already-duplicated template/bucket revenue rows on existing drafts
+  useEffect(() => {
+    const revs = currentProjections.revenues;
+    if (!revs || revs.length <= 1) return;
+    const activeBucketIds = new Set(
+      (formData.allocations || [])
+        .filter((a) => a.fundType === 'misc_fee')
+        .map((a) => a.bucketId)
+    );
+    const hasBucketRow = revs.some((r) => String(r.id).startsWith('rev-bucket-'));
+    if (!hasBucketRow && activeBucketIds.size === 0) return;
+
+    const deduped: FinancialLineItem[] = [];
+    const seenBucketParticulars = new Map<string, number>();
+
+    const extractParticularKey = (r: FinancialLineItem) => {
+      const remMatch = String(r.remarks || '').match(/\(([^)]+)\)/);
+      if (remMatch && remMatch[1]) return remMatch[1].trim().toLowerCase();
+      const lines = String(r.description || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !/^\((?:tertiary|shs|all)\)$/i.test(l));
+      return (lines[0] || '').toLowerCase();
+    };
+
+    for (const row of revs) {
+      if (!isManagedFundRow(row)) {
+        deduped.push(row);
+        continue;
+      }
+      const key = extractParticularKey(row);
+      if (!key) {
+        deduped.push(row);
+        continue;
+      }
+      if (seenBucketParticulars.has(key)) {
+        const existingIdx = seenBucketParticulars.get(key)!;
+        const existing = deduped[existingIdx];
+        const preferCurrentAsLive =
+          String(row.id).startsWith('rev-bucket-') && !String(existing.id).startsWith('rev-bucket-');
+        const primary = preferCurrentAsLive ? row : existing;
+        const secondary = preferCurrentAsLive ? existing : row;
+        const carriedLastYear = Number(primary.lastYearActual) || Number(secondary.lastYearActual) || 0;
+        const carriedOrig = primary.originalLastYearActual ?? secondary.originalLastYearActual;
+        deduped[existingIdx] = {
+          ...primary,
+          lastYearActual: carriedLastYear,
+          ...(carriedOrig !== undefined ? { originalLastYearActual: carriedOrig } : {}),
+          isHistoricalEdited: Boolean(primary.isHistoricalEdited || secondary.isHistoricalEdited),
+          adjustment: (Number(primary.thisYearProposed) || 0) - carriedLastYear,
+        };
+      } else {
+        seenBucketParticulars.set(key, deduped.length);
+        deduped.push(row);
+      }
+    }
+
+    if (deduped.length < revs.length) {
+      const recalculated = calculateFinancialTotals(deduped, currentProjections.expenses);
+      onChange({ financialProjections: recalculated });
+    }
+  }, [currentProjections.revenues, formData.allocations]);
 
   const handleSelectHistorical = (match: HistoricalActivityMatch) => {
     const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
@@ -332,8 +463,204 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl">
         <FundingSourceSelector
           value={formData.fundingSource || (isOfficerProposal ? 'organization_funds' : 'school_budget')}
+          selectedBucketId={formData.miscFeeBucketId}
+          selectedBucketIds={
+            formData.miscFeeBucketIds && formData.miscFeeBucketIds.length > 0
+              ? formData.miscFeeBucketIds
+              : formData.miscFeeBucketId
+                ? [formData.miscFeeBucketId]
+                : []
+          }
+          studentContributionRate={formData.studentContributionRate || 0}
+          studentContributionTargetCount={formData.studentContributionTargetCount}
+          studentContributionFilter={formData.studentContributionFilter}
+          defaultStudentCount={defaultStudentTargetCount}
+          allocations={formData.allocations || []}
+          onAllocationsChange={(nextAllocations) => onChange({ allocations: nextAllocations })}
+          applyRetainedBucket={currentProjections.revenues.some((r) => r.id === 'rev-contrib-retained')}
+          onRetainedBalanceResolved={(bal) => {
+            if (formData.retainedFundBalanceAtSubmission !== bal) {
+              onChange({ retainedFundBalanceAtSubmission: bal });
+            }
+          }}
+          onSelectBuckets={(selectedList) => {
+            const customRows = getCustomRevenueRows(currentProjections.revenues);
+
+            // Generate a separate Revenue Projection row for EACH selected bucket (preserving template lastYearActual)
+            const bucketRows: FinancialLineItem[] = selectedList.map((selected) => {
+              const single = formatSingleBucketDescription(selected, activeConfig.activeSemester);
+              const prevRow = findHistoricalRowForBucket(
+                currentProjections.revenues,
+                selected.bucket.id,
+                selected.bucket.particular
+              );
+              const prevLastYear = Number(prevRow?.lastYearActual) || 0;
+              return {
+                id: `rev-bucket-${selected.bucket.id}`,
+                description: single.description,
+                lastYearActual: prevLastYear,
+                originalLastYearActual: prevRow?.originalLastYearActual,
+                isHistoricalEdited: prevRow?.isHistoricalEdited,
+                thisYearProposed: single.availableAmount,
+                totalAmount: single.availableAmount,
+                adjustment: single.availableAmount - prevLastYear,
+                remarks: single.remarks,
+              };
+            });
+
+            const nextRevs =
+              bucketRows.length > 0 || customRows.length > 0
+                ? [...bucketRows, ...customRows]
+                : [
+                    {
+                      id: 'rev-1',
+                      description: '',
+                      lastYearActual: 0,
+                      thisYearProposed: 0,
+                      totalAmount: 0,
+                      adjustment: 0,
+                      remarks: '',
+                    },
+                  ];
+
+            const combined = formatMiscFeeFundDescription(
+              selectedList,
+              activeConfig.activeSemester
+            );
+            const rawAllocations = selectedList.map((s) => ({
+              bucketId: s.bucket.id,
+              bucketName: s.bucket.particular,
+              fundType: 'misc_fee' as const,
+              allocatedAmount: 0,
+              availableAmount: s.currentAvailable,
+              poolAmount: s.currentPool,
+              disbursedAmount: s.currentDisbursed,
+            }));
+            const nextAllocations = rebalanceBucketAllocations({
+              allocations: rawAllocations,
+              totalExpenses: Number(currentProjections.totalExpenses) || 0,
+            });
+            const recalculated = calculateFinancialTotals(nextRevs, currentProjections.expenses);
+            onChange({
+              fundingSource: 'school_budget',
+              miscFeeBucketId: selectedList[0]?.bucket.id || '',
+              miscFeeBucketName: selectedList.map((s) => s.bucket.particular).join(' + '),
+              miscFeeBucketAvailableAtSubmission: combined.totalAvailable,
+              miscFeeBucketIds: selectedList.map((s) => s.bucket.id),
+              miscFeeBucketNames: selectedList.map((s) => s.bucket.particular),
+              miscFeeBucketAllocations: selectedList.map((s) => ({
+                bucketId: s.bucket.id,
+                bucketName: s.bucket.particular,
+                poolAmount: s.currentPool,
+                availableAmount: s.currentAvailable,
+              })),
+              allocations: nextAllocations,
+              financialProjections: recalculated,
+            });
+          }}
+          onStudentContributionChange={(params) => {
+            const customRows = getCustomRevenueRows(currentProjections.revenues);
+
+            const prevNew =
+              currentProjections.revenues.find((r) => r.id === 'rev-contrib-new') ||
+              currentProjections.revenues.find((r) =>
+                String(r.description || '').toLowerCase().includes('student contribution') &&
+                !String(r.description || '').toLowerCase().includes('retained')
+              );
+            const newContribRow: FinancialLineItem = {
+              id: 'rev-contrib-new',
+              description: params.description,
+              lastYearActual: prevNew?.lastYearActual || 0,
+              originalLastYearActual: prevNew?.originalLastYearActual,
+              thisYearProposed: params.totalProjected,
+              totalAmount: params.totalProjected,
+              adjustment: params.totalProjected - (prevNew?.lastYearActual || 0),
+              remarks: params.remarks,
+            };
+
+            const nextRevs: FinancialLineItem[] = [newContribRow];
+            const totalExp = Math.max(0, Number(currentProjections.totalExpenses) || 0);
+            const ownerIdentityId = isOfficerProposal && orgTargetId ? `ORG_${orgTargetId}` : 'SAO_CAMPUS';
+            const ownerBucketLabel = isOfficerProposal
+              ? `${formData.organizationName || 'Organization'} Treasury`
+              : 'Previous Student Contribution Bucket (Retained Surplus)';
+
+            let contribAllocations: any[];
+            if (!isOfficerProposal && params.applyRetainedBucket && params.retainedBucketBalance > 0) {
+              const prevRet =
+                currentProjections.revenues.find((r) => r.id === 'rev-contrib-retained') ||
+                currentProjections.revenues.find((r) =>
+                  String(r.description || '').toLowerCase().includes('retained')
+                );
+              nextRevs.push({
+                id: 'rev-contrib-retained',
+                description:
+                  params.retainedDescription ||
+                  'Previous Student Contribution Bucket (Retained Surplus)',
+                lastYearActual: prevRet?.lastYearActual || 0,
+                originalLastYearActual: prevRet?.originalLastYearActual,
+                thisYearProposed: params.retainedBucketBalance,
+                totalAmount: params.retainedBucketBalance,
+                adjustment: params.retainedBucketBalance - (prevRet?.lastYearActual || 0),
+                remarks: params.retainedRemarks || 'Detected retained surplus from previous Student Contribution events.',
+              });
+              const pullFromRetained = Math.min(params.retainedBucketBalance, totalExp);
+              const pullFromNew = Math.max(0, Math.round((totalExp - pullFromRetained) * 100) / 100);
+              contribAllocations = [
+                {
+                  bucketId: ownerIdentityId,
+                  bucketName: ownerBucketLabel,
+                  fundType: 'student_contribution_retained',
+                  allocatedAmount: pullFromRetained,
+                  availableAmount: params.retainedBucketBalance,
+                },
+                {
+                  bucketId: 'CONTRIB_NEW',
+                  bucketName: 'New Student Contribution Collection',
+                  fundType: 'student_contributions',
+                  allocatedAmount: pullFromNew,
+                  availableAmount: params.totalProjected,
+                },
+              ];
+            } else {
+              contribAllocations = [
+                {
+                  bucketId: 'CONTRIB_NEW',
+                  bucketName: 'Student Contribution',
+                  fundType: 'student_contributions',
+                  allocatedAmount: totalExp,
+                  availableAmount: params.totalProjected,
+                },
+              ];
+            }
+
+            const recalculated = calculateFinancialTotals(
+              [...nextRevs, ...customRows],
+              currentProjections.expenses
+            );
+            onChange({
+              fundingSource: 'student_contributions',
+              studentContributionRate: params.rate,
+              studentContributionTargetCount: params.targetCount,
+              studentContributionFilter: params.filter,
+              studentPayablesEnabled: params.rate > 0,
+              suggestedFeePerStudent: params.rate,
+              allocations: contribAllocations,
+              financialProjections: recalculated,
+            });
+          }}
           onChange={(source) => {
             const updates: Partial<ProposalFormData> = { fundingSource: source };
+            const customRows = getCustomRevenueRows(currentProjections.revenues);
+            const defaultRow: FinancialLineItem = {
+              id: 'rev-1',
+              description: '',
+              lastYearActual: 0,
+              thisYearProposed: 0,
+              totalAmount: 0,
+              adjustment: 0,
+              remarks: '',
+            };
             if (source === 'zero_budget') {
               const zeroed = calculateFinancialTotals(
                 [],
@@ -352,28 +679,68 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               updates.financialProjections = zeroed;
               updates.historicalReference = null;
             } else if (source === 'organization_funds') {
-              const orgLabel = formData.organizationName ? `${formData.organizationName} Treasury` : 'Organization Treasury';
-              if (
-                currentProjections.revenues.length > 0 &&
-                (!currentProjections.revenues[0].description ||
-                  currentProjections.revenues[0].description.includes('Subsidy') ||
-                  currentProjections.revenues[0].description.includes('School Budget') ||
-                  currentProjections.revenues[0].description.includes('Non-Monetary'))
-              ) {
-                const list = [...currentProjections.revenues];
-                list[0] = { ...list[0], description: `${orgLabel} Ledger Funds` };
-                updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
-              }
+              const retained = formatRetainedFundDescription({
+                ownerType: 'organization',
+                organizationName: formData.organizationName,
+                availableBalance: orgTreasuryBalance,
+              });
+              updates.financialProjections = calculateFinancialTotals(
+                [
+                  {
+                    ...defaultRow,
+                    description: retained.description,
+                    thisYearProposed: orgTreasuryBalance,
+                    remarks: retained.remarks,
+                  },
+                  ...customRows,
+                ],
+                currentProjections.expenses
+              );
+              updates.retainedFundBalanceAtSubmission = orgTreasuryBalance;
+              updates.allocations = [
+                {
+                  bucketId: orgTargetId ? `ORG_${orgTargetId}` : 'ORG_TREASURY',
+                  bucketName: `${formData.organizationName || 'Organization'} Treasury`,
+                  fundType: 'org_treasury',
+                  allocatedAmount: Math.max(0, Number(currentProjections.totalExpenses) || 0),
+                  availableAmount: orgTreasuryBalance,
+                },
+              ];
+            } else if (source === 'student_contributions') {
+              const contrib = formatStudentContributionDescription({
+                ratePerStudent: formData.studentContributionRate || 0,
+                targetStudents:
+                  formData.studentContributionTargetCount ?? defaultStudentTargetCount,
+                ownerLabel: isOfficerProposal
+                  ? `${formData.organizationName || 'Organization'} Treasury`
+                  : 'Student Contribution Retained Fund',
+              });
+              updates.studentPayablesEnabled = (formData.studentContributionRate || 0) > 0;
+              updates.suggestedFeePerStudent = formData.studentContributionRate || 0;
+              updates.financialProjections = calculateFinancialTotals(
+                [
+                  {
+                    id: 'rev-contrib-new',
+                    description: contrib.description,
+                    lastYearActual: 0,
+                    thisYearProposed: contrib.totalProjected,
+                    totalAmount: contrib.totalProjected,
+                    adjustment: contrib.totalProjected,
+                    remarks: contrib.remarks,
+                  },
+                  ...customRows,
+                ],
+                currentProjections.expenses
+              );
             } else if (source === 'school_budget') {
-              if (
-                currentProjections.revenues.length > 0 &&
-                (!currentProjections.revenues[0].description ||
-                  currentProjections.revenues[0].description.includes('Treasury') ||
-                  currentProjections.revenues[0].description.includes('Non-Monetary'))
-              ) {
-                const list = [...currentProjections.revenues];
-                list[0] = { ...list[0], description: '' };
-                updates.financialProjections = calculateFinancialTotals(list, currentProjections.expenses);
+              const hasExistingBucketRows = currentProjections.revenues.some((r) =>
+                String(r.id).startsWith('rev-bucket-')
+              );
+              if (!hasExistingBucketRows) {
+                updates.financialProjections = calculateFinancialTotals(
+                  [{ ...defaultRow }, ...customRows],
+                  currentProjections.expenses
+                );
               }
             }
             onChange(updates);
@@ -392,7 +759,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <div className="text-xs">
                 <p className="font-bold">Organization Treasury Balance: ₱0.00 (No Available Funds)</p>
                 <p className="text-rose-700 mt-0.5">
-                  Your club currently has ₱0.00 in its treasury ledger. You cannot allocate an activity budget from an empty treasury. Please switch to Non-Monetary (₱0) or deposit funds to the club ledger before proceeding.
+                  Your club currently has ₱0.00 in its treasury ledger. Please select Student Contribution to collect funds from members, choose a School Miscellaneous Fee bucket, or deposit funds to the club ledger before proceeding.
                 </p>
               </div>
             </div>
@@ -435,16 +802,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <div className="flex items-center gap-1.5 ml-1">
                 <button
                   type="button"
-                  onClick={() => setShowCalculatorModal(true)}
-                  className="inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 hover:border-emerald-300 text-slate-600 hover:text-emerald-700 text-[11px] font-semibold shadow-2xs transition-colors"
-                  title="Open Quick Calculator"
-                  aria-label="Open Quick Calculator"
-                >
-                  <Calculator className="w-3.5 h-3.5 text-emerald-600" />
-                  <span className="hidden sm:inline">Calculator</span>
-                </button>
-                <button
-                  type="button"
                   onClick={() => setShowStudentGuideModal(true)}
                   className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50/70 hover:bg-blue-100/80 text-[#003575] text-[11px] font-semibold shadow-2xs transition-colors"
                   title="Open Student Population Guide (with SHS/College/Program/Section filters)"
@@ -483,15 +840,15 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <tbody className="divide-y divide-slate-100">
                 {currentProjections.revenues.map((item, idx) => (
                   <tr key={item.id || idx} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="p-2.5">
-                      <input
-                        type="text"
+                    <td className="p-2.5 align-top">
+                      <textarea
+                        rows={Math.max(2, Math.min(10, String(item.description || '').split('\n').length))}
                         value={item.description}
                         onChange={(e) =>
                           handleUpdateLineItem('revenues', idx, 'description', e.target.value)
                         }
-                        placeholder="e.g. School Budget Allocation"
-                        className="w-full px-2.5 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 font-medium"
+                        placeholder="e.g. (TERTIARY) ATHLETIC FEE 50.00 x 750 students = 37,500.00"
+                        className="w-full px-2.5 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 font-medium leading-relaxed whitespace-pre-wrap resize-y"
                       />
                     </td>
                     <td className="p-2.5">
@@ -825,15 +1182,24 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                           ? 'NON-MONETARY (₱0)'
                           : formData.fundingSource === 'organization_funds'
                             ? 'CLUB TREASURY PROPOSAL'
-                            : 'SCHOOL BUDGET REQUEST'}
+                            : formData.fundingSource === 'retained_sao_fund'
+                              ? 'SAO RETAINED STUDENT ACTIVITY FUND'
+                              : formData.fundingSource === 'student_contributions'
+                                ? 'STUDENT CONTRIBUTION'
+                                : 'MISCELLANEOUS FEE REQUEST'}
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 mt-0.5">
                       {isNonMonetary
                         ? 'Non-monetary activity requiring ₱0 funds. Automatically exempt from financial liquidation.'
                         : formData.fundingSource === 'organization_funds'
-                          ? 'Proposed budget will be allocated from the official student organization treasury.'
-                          : 'Institutional budget allocation requested for school administration review and endorsement.'}
+                          ? 'Allocated from the student organization treasury (includes retained Student Contribution surpluses).'
+                          : formData.fundingSource === 'retained_sao_fund'
+                            ? 'Allocated from SAO / Campus Retained Student Activity Fund (never mixes with Miscellaneous Fees).'
+                            : formData.fundingSource === 'student_contributions'
+                              ? `Direct student contribution event. Any unspent surplus after liquidation stays in ${isOfficerProposal ? 'Club Treasury' : 'SAO Retained Student Activity Fund'
+                              }.`
+                              : 'Institutional Miscellaneous Fee bucket allocation requested for review and Disbursement Voucher.'}
                     </p>
                   </div>
                 </div>
@@ -876,6 +1242,17 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                   <p className="text-rose-800 leading-relaxed">
                     {errors.projectedBalance || PROJECTED_REVENUE_DEFICIT_WARNING}
                   </p>
+                </div>
+              </div>
+            )}
+            {errors.bucketAllocations && (
+              <div className="p-4 rounded-2xl bg-amber-50 border-2 border-amber-300 flex items-start gap-3 text-amber-950 shadow-xs">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="text-xs space-y-1">
+                  <p className="font-bold text-amber-900">
+                    Bucket Allocation Validation Required
+                  </p>
+                  <p className="text-amber-800 leading-relaxed">{errors.bucketAllocations}</p>
                 </div>
               </div>
             )}

@@ -63,6 +63,8 @@ import StepReturnRevisionModal from '../../modules/workflow/components/StepRetur
 import PARAttendanceModal from './PARAttendanceModal';
 import PARFinancialReportModal from './PARFinancialReportModal';
 import PARDocumentsAndVoucherModal from './PARDocumentsAndVoucherModal';
+import { usePARActivityFinancials } from '../../modules/post-activity-reports/hooks/usePARActivityFinancials';
+import { PARFinancialTransactionsSection } from '../../modules/post-activity-reports/components/PARFinancialTransactionsSection';
 import { hasSignatorySignedStep, hasSignatorySignedDocument } from '../utils/campus-activity-report';
 import { peekCachedEventsById } from '../../modules/events/hooks/useEventStream';
 import { peekCachedProposalById } from '../../modules/activity-proposals/services/proposal.service';
@@ -176,6 +178,14 @@ export default function PAREndorsementModal({
   }, [isOpen, report?.id]);
 
   const activeReport = liveReport || report;
+
+  const activityFinancials = usePARActivityFinancials({
+    isOpen,
+    report: activeReport,
+    preloadedEvent: linkedEvent,
+    preloadedProposal: linkedProposal,
+    preloadedLiquidation: linkedLiquidation,
+  });
 
   // Hydrate linked Event, Activity Proposal (AP), Financial Liquidation (FL), and Maker signature
   useEffect(() => {
@@ -725,16 +735,47 @@ export default function PAREndorsementModal({
     });
   });
 
+  // Include Financial Liquidation Proofs directly so Signatories see Voucher, Settlement Proofs & Receipts
+  const voucherAttachment = (ll as any)?.disbursementVoucher || (ll as any)?.voucher || null;
+  if (voucherAttachment?.fileUrl) {
+    pushAttachment({
+      id: 'att-fl-voucher',
+      name: voucherAttachment.fileName || 'Official Disbursement Voucher',
+      url: voucherAttachment.fileUrl,
+      category: 'FL Disbursement Voucher',
+      fileType: voucherAttachment.fileType,
+    });
+  }
+  const isDeficitLiquidation = Number(ll?.surplusOrDeficit ?? 0) < -0.009;
+  (ll?.cashierSettlementProofs || []).forEach((p: any, idx: number) => {
+    if (!p?.url) return;
+    pushAttachment({
+      id: p.id || `att-fl-settlement-${idx}`,
+      name: p.name || `${isDeficitLiquidation ? 'Reimbursement Proof' : 'Cashier Return Receipt'} #${idx + 1}`,
+      url: p.url,
+      category: isDeficitLiquidation ? 'FL Reimbursement Proof' : 'FL Cashier Return Receipt',
+      fileType: p.fileType,
+    });
+  });
+  activityFinancials.lineItemReceipts.forEach((rec) => {
+    pushAttachment({
+      id: rec.id,
+      name: rec.name,
+      url: rec.url,
+      category: rec.isLostReceipt
+        ? `FL Lost Receipt Affidavit (${rec.itemDescription || 'Item'})`
+        : `FL Official Receipt (${rec.itemDescription || 'Item'})`,
+      fileType: rec.fileType,
+    });
+  });
+
   const isExemptFromFL =
     (activeReport as any).fundingSource === 'zero_budget' ||
     lp?.fundingSource === 'zero_budget' ||
     (totalRevenue === 0 && totalDisbursed === 0 && !linkedLiquidation && !activeReport.liquidationId);
 
   const photosList = activeReport.photos || [];
-  const voucherAttachment = (ll as any)?.disbursementVoucher || (ll as any)?.voucher || null;
-  const cashierProofCount = Array.isArray(ll?.cashierSettlementProofs) ? ll.cashierSettlementProofs.length : 0;
-  const totalAttachedDocsCount =
-    consolidatedAttachments.length + (voucherAttachment?.fileUrl ? 1 : 0) + cashierProofCount;
+  const totalAttachedDocsCount = consolidatedAttachments.length;
 
   const remarkCategories = [
     { key: 'recommendations.programFlow', title: '1. Program Flow and Content', data: activeReport.recommendations?.programFlow as any },
@@ -1120,61 +1161,34 @@ export default function PAREndorsementModal({
               )}
             </div>
 
-            {/* Financial report */}
-            <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs flex flex-col justify-between space-y-3">
-              <div>
-                <div className="flex items-center justify-between gap-2 mb-2.5">
-                  <div className="flex items-center gap-2">
-                    <DollarSign className="w-4 h-4 text-emerald-600" />
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                      Financial Report
-                    </h4>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowFinancialModal(true)}
-                    className="text-[11px] font-bold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-lg border border-emerald-200 flex items-center gap-1 cursor-pointer"
-                  >
-                    <Eye className="w-3.5 h-3.5" /> Inspect Financial Report
-                  </button>
-                </div>
+            {/* Financial Report, Anticipated vs. Actual & Activity Transactions */}
+            <div className="space-y-3">
+              <PARFinancialTransactionsSection
+                anticipatedExpenses={activityFinancials.anticipatedExpenses}
+                anticipatedLineItems={activityFinancials.anticipatedLineItems}
+                disbursedBudget={activityFinancials.disbursedBudget || totalRevenue}
+                actualSpent={activityFinancials.actualSpent || totalDisbursed}
+                variance={
+                  linkedLiquidation
+                    ? activityFinancials.variance
+                    : totalRevenue - totalDisbursed
+                }
+                linkedLiquidation={linkedLiquidation}
+                copiedFromLiquidation={activeReport.financialSummary?.copiedFromLiquidation}
+                sourceAllocations={activityFinancials.sourceAllocations}
+                surplusReturnAllocations={activityFinancials.surplusReturnAllocations}
+                deficitDeductionAllocations={activityFinancials.deficitDeductionAllocations}
+                ledgerTransactions={activityFinancials.ledgerTransactions}
+                voucher={activityFinancials.voucher}
+                lineItemReceipts={activityFinancials.lineItemReceipts}
+                settlementProofs={activityFinancials.settlementProofs}
+                loading={activityFinancials.loading}
+                onOpenFinancialModal={() => setShowFinancialModal(true)}
+                onOpenDocumentsModal={() => setShowDocumentsModal(true)}
+              />
 
-                <div className="grid grid-cols-3 gap-2 text-center mb-2.5">
-                  <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block">Revenue</span>
-                    <span className="text-xs font-bold text-slate-800">{formatCurrency(totalRevenue)}</span>
-                  </div>
-                  <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                    <span className="text-[10px] text-slate-500 block">Total Expenses</span>
-                    <span className="text-xs font-bold text-slate-800">{formatCurrency(totalDisbursed)}</span>
-                  </div>
-                  <div className={`p-2 rounded-lg border ${netBalance >= 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-rose-50 border-rose-200'}`}>
-                    <span className={`text-[10px] block font-medium ${netBalance >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                      Balance (Rev - Exp)
-                    </span>
-                    <span className={`text-xs font-bold ${netBalance >= 0 ? 'text-emerald-800' : 'text-rose-800'}`}>
-                      {formatVariance(netBalance)}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Proposal Budget Cross-check */}
-                {lp?.financialProjections && (
-                  <div className="text-[11px] text-slate-600 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200/80 mb-2.5 flex items-center justify-between flex-wrap gap-2">
-                    <span>
-                      <strong>AP Projected Budget:</strong>{' '}
-                      {formatCurrency(Number(lp.financialProjections.totalEstimatedExpenses || 0))} exp /{' '}
-                      {formatCurrency(Number(lp.financialProjections.totalEstimatedRevenue || 0))} rev
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      {activeReport.financialSummary?.copiedFromLiquidation || linkedLiquidation
-                        ? 'Synced from Financial Liquidation'
-                        : 'Proposal Fallback Figures'}
-                    </span>
-                  </div>
-                )}
-
-                {/* Itemized Financial Report Table matching updated PAR */}
+              {/* Itemized Financial Report Table matching updated PAR */}
+              <div className="border border-slate-200 rounded-xl p-3 bg-white shadow-2xs space-y-2">
                 <div className="border border-slate-200 rounded-lg overflow-hidden text-[11px]">
                   <table className="w-full text-left border-collapse">
                     <thead className="bg-slate-100 text-slate-700 font-bold border-b border-slate-200">
@@ -1186,7 +1200,7 @@ export default function PAREndorsementModal({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       <tr className="bg-slate-50/70 font-semibold text-slate-800">
-                        <td className="px-2.5 py-1.5">Revenue</td>
+                        <td className="px-2.5 py-1.5">Disbursed / Revenue</td>
                         <td className="px-2.5 py-1.5 text-right">—</td>
                         <td className="px-2.5 py-1.5 text-right">{formatCurrency(totalRevenue)}</td>
                       </tr>
@@ -1210,36 +1224,36 @@ export default function PAREndorsementModal({
                         </tr>
                       )}
                       <tr className="bg-slate-50 font-bold text-slate-900">
-                        <td className="px-2.5 py-1.5">TOTAL EXPENSES</td>
+                        <td className="px-2.5 py-1.5">TOTAL EXPENSES SPENT</td>
                         <td className="px-2.5 py-1.5 text-right" />
                         <td className="px-2.5 py-1.5 text-right">{formatCurrency(totalDisbursed)}</td>
                       </tr>
                       <tr className={`${netBalance >= 0 ? 'bg-emerald-50/70 text-emerald-900' : 'bg-rose-50/70 text-rose-900'} font-bold`}>
-                        <td className="px-2.5 py-1.5">Balance (Revenue less Expenses)</td>
+                        <td className="px-2.5 py-1.5">Balance (Disbursed less Spent)</td>
                         <td className="px-2.5 py-1.5 text-right" />
                         <td className="px-2.5 py-1.5 text-right">{formatVariance(netBalance)}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-              </div>
 
-              {activeReport.financialSummary?.attachments && activeReport.financialSummary.attachments.length > 0 && (
-                <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-1.5">
-                  {activeReport.financialSummary.attachments.map((file, idx) => (
-                    <a
-                      key={file.id || idx}
-                      href={file.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-semibold"
-                    >
-                      <Paperclip className="w-3 h-3" />
-                      <span className="truncate max-w-[160px]">{file.name}</span>
-                    </a>
-                  ))}
-                </div>
-              )}
+                {activeReport.financialSummary?.attachments && activeReport.financialSummary.attachments.length > 0 && (
+                  <div className="pt-2 border-t border-slate-100 flex flex-wrap gap-1.5">
+                    {activeReport.financialSummary.attachments.map((file, idx) => (
+                      <a
+                        key={file.id || idx}
+                        href={file.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-semibold"
+                      >
+                        <Paperclip className="w-3 h-3" />
+                        <span className="truncate max-w-[160px]">{file.name}</span>
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2071,6 +2085,12 @@ export default function PAREndorsementModal({
         parFinancialAttachments={activeReport.financialSummary?.attachments}
         linkedLiquidation={linkedLiquidation}
         copiedFromLiquidation={activeReport.financialSummary?.copiedFromLiquidation}
+        anticipatedExpenses={activityFinancials.anticipatedExpenses}
+        anticipatedLineItems={activityFinancials.anticipatedLineItems}
+        ledgerTransactions={activityFinancials.ledgerTransactions}
+        sourceAllocations={activityFinancials.sourceAllocations}
+        surplusReturnAllocations={activityFinancials.surplusReturnAllocations}
+        deficitDeductionAllocations={activityFinancials.deficitDeductionAllocations}
       />
 
       {/* Dedicated PAR Disbursement Voucher & Supporting Documents Viewer */}

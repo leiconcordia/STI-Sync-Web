@@ -42,7 +42,13 @@ import {
   isEventLiquidationExempt,
 } from '../../../modules/events/utils/organization-display.utils';
 import { formatAppDate, format12HourTime } from '../../../utils/date';
-import { activityConclusionDate, calendarDaysRemaining, isActivityConcluded, liquidationSubmissionDeadline } from '../../../modules/events/utils/activity-compliance.utils';
+import {
+  activityConclusionDate,
+  calendarDaysRemaining,
+  isActivityConcluded,
+  liquidationSubmissionDeadline,
+  parSubmissionDeadline,
+} from '../../../modules/events/utils/activity-compliance.utils';
 
 export interface CalendarAndActivityMonitorPaneProps {
   activities: EventDocument[];
@@ -200,6 +206,10 @@ export function CalendarAndActivityMonitorPane({
         (p) => !p.isDeleted && !['voided', 'cancelled'].includes(p.status) && (p.eventId === act.id || act.parId === p.id)
       );
 
+      const parDeadline = parSubmissionDeadline(act, matchingPAR);
+      const parDaysRemaining = parDeadline ? calendarDaysRemaining(parDeadline, today) : null;
+      const parDeadlineDateStr = formatAppDate(parDeadline);
+
       let parStatus: 'approved' | 'under_review' | 'returned' | 'missing' | 'upcoming' = 'upcoming';
       if (matchingPAR) {
         const s = (matchingPAR.status || '').toLowerCase();
@@ -235,6 +245,8 @@ export function CalendarAndActivityMonitorPane({
         concludedDateStr,
         deadlineDateStr,
         daysRemaining,
+        parDeadlineDateStr,
+        parDaysRemaining,
         flStatus,
         parStatus,
         isZeroBudget,
@@ -528,8 +540,20 @@ export function CalendarAndActivityMonitorPane({
                               PAR Reviewing
                             </span>
                           ) : item.parStatus === 'missing' ? (
-                            <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                              No PAR
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
+                                item.parDaysRemaining !== null && item.parDaysRemaining < 0
+                                  ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                  : item.parDaysRemaining !== null && item.parDaysRemaining <= 3
+                                  ? 'bg-amber-100 text-amber-800 border-amber-200 animate-pulse'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200'
+                              }`}
+                            >
+                              {item.parDaysRemaining === null
+                                ? 'No PAR'
+                                : item.parDaysRemaining < 0
+                                  ? `No PAR (Overdue: ${Math.abs(item.parDaysRemaining)}d)`
+                                  : `No PAR (${item.parDaysRemaining}d left)`}
                             </span>
                           ) : (
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-gray-100 text-gray-500">
@@ -745,14 +769,18 @@ export function CalendarAndActivityMonitorPane({
                           ) : item.parStatus === 'missing' ? (
                             <span
                               className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                                item.daysRemaining < 0
+                                item.parDaysRemaining !== null && item.parDaysRemaining < 0
                                   ? 'bg-rose-100 text-rose-800 border-rose-200'
+                                  : item.parDaysRemaining !== null && item.parDaysRemaining <= 3
+                                  ? 'bg-amber-100 text-amber-800 border-amber-200 animate-pulse'
                                   : 'bg-amber-100 text-amber-800 border-amber-200'
                               }`}
                             >
-                              {item.daysRemaining < 0
-                                ? `Lacks PAR (Overdue: ${Math.abs(item.daysRemaining)}d)`
-                                : `Lacks PAR`}
+                              {item.parDaysRemaining === null
+                                ? 'Lacks PAR'
+                                : item.parDaysRemaining < 0
+                                  ? `Lacks PAR (Overdue: ${Math.abs(item.parDaysRemaining)}d)`
+                                  : `Lacks PAR (${item.parDaysRemaining}d left)`}
                             </span>
                           ) : (
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-gray-100 text-gray-500">

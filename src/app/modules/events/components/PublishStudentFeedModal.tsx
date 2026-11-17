@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
-import { ACTIVITIES_COLLECTION } from '../services/event.service';
+import { ACTIVITIES_COLLECTION, generatePayablesForEvent } from '../services/event.service';
 import type { EventDocument } from '../types/event.types';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { toast } from 'sonner';
@@ -179,10 +179,53 @@ export default function PublishStudentFeedModal({
           status: activity.status || 'approved',
           proposalStatus: activity.proposalStatus || 'approved',
           isActivityProposal: true,
+          fundingSource: (activity as any).fundingSource || null,
+          studentContributionRate: (activity as any).studentContributionRate ?? null,
+          studentContributionTargetCount: (activity as any).studentContributionTargetCount ?? null,
+          studentContributionFilter: (activity as any).studentContributionFilter ?? null,
+          studentPayablesEnabled:
+            Boolean((activity as any).studentPayablesEnabled) ||
+            ((activity as any).fundingSource === 'student_contributions' &&
+              Number((activity as any).studentContributionRate || 0) > 0),
+          suggestedFeePerStudent:
+            (activity as any).suggestedFeePerStudent ??
+            (activity as any).studentContributionRate ??
+            null,
+          feeAmount:
+            (activity as any).feeAmount ??
+            (activity as any).suggestedFeePerStudent ??
+            (activity as any).studentContributionRate ??
+            null,
         };
         await setDoc(eventDocRef, eventPayload, { merge: true });
       } catch (evtErr) {
         console.warn('[PublishStudentFeedModal] Failed to mirror to events collection:', evtErr);
+      }
+
+      // Ensure student payables exist in /payables for Student Contribution or fee-enabled events when published to mobile
+      const feeRate =
+        Number((activity as any).studentContributionRate) ||
+        Number((activity as any).suggestedFeePerStudent) ||
+        Number((activity as any).feeAmount) ||
+        0;
+      if (
+        ((activity as any).fundingSource === 'student_contributions' && feeRate > 0) ||
+        Boolean((activity as any).studentPayablesEnabled && feeRate > 0)
+      ) {
+        try {
+          await generatePayablesForEvent(
+            {
+              ...activity,
+              ...payload,
+              studentPayablesEnabled: true,
+              feeAmount: feeRate,
+            },
+            activity.id,
+            (activity as any).createdBy || 'system'
+          );
+        } catch (payableErr) {
+          console.warn('[PublishStudentFeedModal] Student payables sync notice:', payableErr);
+        }
       }
 
       toast.success('Activity published & feed settings updated successfully!');

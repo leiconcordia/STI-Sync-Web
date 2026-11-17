@@ -12,6 +12,17 @@ export interface FormatCurrencyOptions {
   decimals?: number;
 }
 
+function parseNumericAmount(amount: number | string | null | undefined): number {
+  if (typeof amount === 'number') return isNaN(amount) ? 0 : amount;
+  if (typeof amount === 'string') {
+    const cleaned = amount.replace(/[₱,\s]/g, '');
+    const num = Number(cleaned);
+    return isNaN(num) ? 0 : num;
+  }
+  const num = Number(amount);
+  return isNaN(num) ? 0 : num;
+}
+
 /**
  * Format a number or numeric string as Philippine Peso currency (₱1,000.00).
  * Handles null, undefined, and NaN gracefully by defaulting to 0.00.
@@ -22,8 +33,7 @@ export function formatCurrency(
 ): string {
   const { showSign = false, noSymbol = false, decimals = 2 } = options;
 
-  const num = typeof amount === 'number' ? amount : Number(amount);
-  const validNum = isNaN(num) ? 0 : num;
+  const validNum = parseNumericAmount(amount);
 
   const formattedAbs = Math.abs(validNum).toLocaleString('en-US', {
     minimumFractionDigits: decimals,
@@ -47,8 +57,7 @@ export function formatCurrency(
  * Alias helper for variance display (e.g. +₱1,000.00 / -₱500.00 / ₱0.00)
  */
 export function formatVariance(amount: number | string | null | undefined): string {
-  const num = typeof amount === 'number' ? amount : Number(amount);
-  const validNum = isNaN(num) ? 0 : num;
+  const validNum = parseNumericAmount(amount);
   if (validNum > 0) return `+${formatCurrency(validNum)}`;
   if (validNum < 0) return formatCurrency(validNum);
   return formatCurrency(0);

@@ -24,6 +24,13 @@ import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
 import { formatAppDate, format12HourTime } from '../../utils/date';
+import {
+  isActivityConcluded,
+  liquidationSubmissionDeadline,
+  parSubmissionDeadline,
+  calendarDaysRemaining,
+} from '../../modules/events/utils/activity-compliance.utils';
+import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import ActivityCalendar from '../../modules/events/components/ActivityCalendar';
 
 const getTimestampMs = (val: any): number => {
@@ -266,21 +273,50 @@ export default function OfficerDashboardPage() {
       }
     });
 
-    // 4. Completed activities requiring Form PAR-01 Post-Activity Report
+    // 4. Completed activities requiring Form PAR-01 Post-Activity Report (15 days after conclusion)
     const parEventIds = new Set(pars.map((p) => p.eventId));
+    const liqByEventId = new Map<string, any>();
+    liquidations.forEach((l) => {
+      if (l.eventId && !(l as any).isDeleted && l.status !== 'voided') {
+        liqByEventId.set(l.eventId, l);
+      }
+    });
+    const eventById = new Map<string, any>();
+    events.forEach((e) => eventById.set(e.id, e));
+
+    const format15DayDueLabel = (deadlineKey: string, fallback: string) => {
+      if (!deadlineKey) return fallback;
+      const rem = calendarDaysRemaining(deadlineKey);
+      const formatted = formatAppDate(deadlineKey, deadlineKey);
+      if (rem === null) return `Due ${formatted}`;
+      if (rem < 0) return `OVERDUE by ${Math.abs(rem)}d (Due ${formatted})`;
+      if (rem === 0) return `Due TODAY (${formatted})`;
+      return `Due ${formatted} (${rem}d left)`;
+    };
+
     events.forEach((e) => {
-      const isCompleted =
-        e.proposalStatus === 'completed' ||
-        (e as any).status === 'completed' ||
-        (e as any).status === 'Completed';
-      if (isCompleted && !parEventIds.has(e.id)) {
+      if (isActivityConcluded(e) && !parEventIds.has(e.id)) {
+        const parDead = parSubmissionDeadline(e);
         tasks.push({
           id: `par-create-${e.id}`,
           task: `Submit post-activity report: ${e.title}`,
-          dueDate: 'Concluded activity requires Post-Activity Report',
+          dueDate: format15DayDueLabel(parDead, 'Concluded activity requires Post-Activity Report (15-day deadline)'),
           isDueDays: true,
           link: '/officer/post-activity-reports',
-          createdAtTime: getTimestampMs(e.updatedAt || e.createdAt),
+          createdAtTime: getTimestampMs(e.concludedAt || e.completedAt || e.updatedAt || e.createdAt),
+        });
+      }
+
+      // 4b. Completed non-exempt activities requiring Financial Liquidation (LF-01) (15 days after conclusion)
+      if (isActivityConcluded(e) && !isEventLiquidationExempt(e) && !liqByEventId.has(e.id)) {
+        const flDead = liquidationSubmissionDeadline(e);
+        tasks.push({
+          id: `fl-create-${e.id}`,
+          task: `Submit financial liquidation: ${e.title}`,
+          dueDate: format15DayDueLabel(flDead, 'Concluded activity requires Financial Liquidation (15-day deadline)'),
+          isDueDays: true,
+          link: '/officer/liquidation',
+          createdAtTime: getTimestampMs(e.concludedAt || e.completedAt || e.updatedAt || e.createdAt),
         });
       }
     });
@@ -301,28 +337,30 @@ export default function OfficerDashboardPage() {
       }
     });
 
-    // 6. Draft post-activity reports (In progress)
+    // 6. Draft post-activity reports (In progress, with 15-day post-conclusion due date)
     pars.forEach((p) => {
       if (p.status === 'draft') {
+        const parDead = parSubmissionDeadline(eventById.get(p.eventId), p);
         tasks.push({
           id: `par-draft-${p.id}`,
           task: `Complete draft post-activity report: ${p.eventTitle || p.referenceNo}`,
-          dueDate: 'Draft in progress',
-          isDueDays: false,
+          dueDate: parDead ? format15DayDueLabel(parDead, 'Draft in progress') : 'Draft in progress',
+          isDueDays: Boolean(parDead),
           link: `/officer/post-activity-reports?id=${p.id}`,
           createdAtTime: getTimestampMs((p as any).createdAt),
         });
       }
     });
 
-    // 7. Draft liquidations (In progress)
+    // 7. Draft liquidations (In progress, with 15-day post-conclusion due date)
     liquidations.forEach((l) => {
       if (l.status === 'draft') {
+        const flDead = liquidationSubmissionDeadline(eventById.get(l.eventId), l);
         tasks.push({
           id: `liq-${l.id}`,
           task: `Complete draft liquidation: ${l.eventTitle}`,
-          dueDate: 'Draft in progress',
-          isDueDays: false,
+          dueDate: flDead ? format15DayDueLabel(flDead, 'Draft in progress') : 'Draft in progress',
+          isDueDays: Boolean(flDead),
           link: '/officer/liquidation',
           createdAtTime: getTimestampMs(l.createdAt),
         });

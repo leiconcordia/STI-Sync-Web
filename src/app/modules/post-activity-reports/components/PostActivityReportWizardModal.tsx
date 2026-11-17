@@ -47,6 +47,10 @@ import {
   enforceSinglePARApprover,
 } from '../services/par.service';
 import {
+  extractProposalAnticipatedItems,
+  type PARAnticipatedItem,
+} from '../hooks/usePARActivityFinancials';
+import {
   resolveUserSignature,
   getFastCachedSignature,
   syncUserSignatureAcrossProfiles,
@@ -63,6 +67,11 @@ import type {
 } from '../types/par.types';
 import type { EventDocument } from '../../events/types/event.types';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import {
+  parSubmissionDeadline,
+  calendarDaysRemaining,
+  isActivityConcluded,
+} from '../../events/utils/activity-compliance.utils';
 import { formatCurrency, formatVariance } from '../../../utils/currency';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import PARFlowBuilder from './PARFlowBuilder';
@@ -319,10 +328,16 @@ export default function PostActivityReportWizardModal({
   const [whoAttended, setWhoAttended] = useState('');
   const [howManyAttended, setHowManyAttended] = useState('');
   const [linkedProposal, setLinkedProposal] = useState<any>(null);
+  const resolvedParFundingSource =
+    (selectedEvent as any)?.fundingSource ||
+    (initialReport as any)?.fundingSource ||
+    linkedProposal?.fundingSource ||
+    (isSasAdmin ? 'school_budget' : 'organization_funds');
   const isOrgFunds =
-    (selectedEvent as any)?.fundingSource === 'organization_funds' ||
-    (initialReport as any)?.fundingSource === 'organization_funds' ||
-    linkedProposal?.fundingSource === 'organization_funds';
+    !isSasAdmin &&
+    (resolvedParFundingSource === 'organization_funds' ||
+      resolvedParFundingSource === 'student_contributions' ||
+      resolvedParFundingSource === 'zero_budget');
   const [isGuidanceDrawerOpen, setIsGuidanceDrawerOpen] = useState(false);
   const [objectiveAssessments, setObjectiveAssessments] = useState<
     Array<{
@@ -351,6 +366,9 @@ export default function PostActivityReportWizardModal({
   // Section 2: Financial
   const [totalRevenue, setTotalRevenue] = useState(0);
   const [totalDisbursed, setTotalDisbursed] = useState(0);
+  const [anticipatedExpenses, setAnticipatedExpenses] = useState(0);
+  const [anticipatedLineItems, setAnticipatedLineItems] = useState<PARAnticipatedItem[]>([]);
+  const [wizardLiquidationDoc, setWizardLiquidationDoc] = useState<any>(null);
   const [liquidationRef, setLiquidationRef] = useState('');
   const [linkedLiquidationId, setLinkedLiquidationId] = useState('');
   const [copiedFromLiquidation, setCopiedFromLiquidation] = useState(false);
@@ -679,6 +697,15 @@ Output ONLY the paragraph text.
 
       setTotalRevenue(initialReport.financialSummary?.totalRevenue || 0);
       setTotalDisbursed(initialReport.financialSummary?.totalDisbursed || 0);
+      setAnticipatedExpenses(initialReport.financialSummary?.anticipatedExpenses || 0);
+      setAnticipatedLineItems(
+        (initialReport.financialSummary?.anticipatedLineItems || []).map((it) => ({
+          description: it.description,
+          quantity: Number(it.quantity ?? 1) || 1,
+          unitAmount: Number(it.unitAmount || 0),
+          totalAmount: Number(it.totalAmount || 0),
+        }))
+      );
       setLiquidationRef(initialReport.liquidationRefNumber || '');
       setLinkedLiquidationId(initialReport.liquidationId || '');
       setCopiedFromLiquidation(Boolean(initialReport.financialSummary?.copiedFromLiquidation || initialReport.liquidationId));
@@ -879,6 +906,11 @@ Output ONLY the paragraph text.
           }
         }
 
+        const anticipatedData = extractProposalAnticipatedItems(proposalDoc as any, evData);
+        setAnticipatedExpenses(anticipatedData.anticipatedExpenses);
+        setAnticipatedLineItems(anticipatedData.anticipatedLineItems);
+        setWizardLiquidationDoc(liquidationDoc || null);
+
         if (liquidationDoc) {
           const liqItems = Array.isArray(liquidationDoc.lineItems) ? liquidationDoc.lineItems : [];
           const liqRev = Number(
@@ -987,35 +1019,23 @@ Output ONLY the paragraph text.
     setKeyLearnings(keyLearnings.filter((_, i) => i !== idx));
   };
 
-  // Compute 15-school-day submission deadline from event completion date (skipping weekends)
+  // Compute 15-calendar-day submission deadline strictly after event conclusion
   const parDeadlineInfo = useMemo(() => {
-    const rawDate =
-      (selectedEvent as any)?.concludedAt ||
-      (selectedEvent as any)?.endDate ||
-      (selectedEvent as any)?.date ||
-      null;
-    if (!rawDate) return null;
-    const base = rawDate?.toDate ? rawDate.toDate() : new Date(rawDate);
-    if (isNaN(base.getTime())) return null;
-    const due = new Date(base);
-    let schoolDaysAdded = 0;
-    while (schoolDaysAdded < 15) {
-      due.setDate(due.getDate() + 1);
-      const day = due.getDay();
-      if (day !== 0 && day !== 6) {
-        schoolDaysAdded++;
-      }
-    }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const dueCompare = new Date(due);
-    dueCompare.setHours(0, 0, 0, 0);
-    const isOverdue = today > dueCompare;
+    if (!selectedEvent || !isActivityConcluded(selectedEvent)) return null;
+    const dueDateKey = parSubmissionDeadline(selectedEvent, initialReport);
+    if (!dueDateKey) return null;
+    const daysRemaining = calendarDaysRemaining(dueDateKey);
+    const due = new Date(`${dueDateKey}T00:00:00`);
+    const dueDateFormatted = !isNaN(due.getTime())
+      ? due.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : dueDateKey;
     return {
-      dueDateFormatted: due.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-      isOverdue,
+      dueDateKey,
+      dueDateFormatted,
+      daysRemaining,
+      isOverdue: daysRemaining !== null && daysRemaining < 0,
     };
-  }, [selectedEvent]);
+  }, [selectedEvent, initialReport]);
 
   const handleMechanicsFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1293,7 +1313,6 @@ Output ONLY the paragraph text.
       toast.error('Photo Documentation: Please attach at least 1 event documentation photo.');
       return false;
     }
-    const isOrgFunds = (selectedEvent as any)?.fundingSource === 'organization_funds';
     if (!isOrgFunds && (!approvalChain || approvalChain.length === 0)) {
       setValidationErrors(errors);
       setActiveTab('photos_signatories');
@@ -1421,6 +1440,13 @@ Output ONLY the paragraph text.
           totalDisbursed,
           surplusOrDeficit: netBalance,
           copiedFromLiquidation,
+          anticipatedExpenses,
+          allocatedBudget: totalRevenue,
+          anticipatedLineItems,
+          ...(wizardLiquidationDoc?.status ? { liquidationStatus: wizardLiquidationDoc.status } : {}),
+          ...(wizardLiquidationDoc?.cashierSettlementStatus
+            ? { cashierSettlementStatus: wizardLiquidationDoc.cashierSettlementStatus }
+            : {}),
           lineItems: financialLineItems,
           attachments: initialReport?.financialSummary?.attachments || [],
         },
@@ -1469,6 +1495,7 @@ Output ONLY the paragraph text.
         photos,
         supportingDocuments,
         attachmentsChecklist,
+        ...({ fundingSource: resolvedParFundingSource } as any),
         approvalChain: isOrgFunds
           ? [
               {
@@ -1695,7 +1722,7 @@ Output ONLY the paragraph text.
                 </div>
               ) : selectedEvent ? (
                 <div className="space-y-5">
-                  {/* 15-School-Day Deadline Notice */}
+                  {/* 15-Calendar-Day Post-Conclusion Deadline Notice */}
                   <div className={`rounded-xl px-4 py-2.5 border flex flex-wrap items-center justify-between gap-2 text-xs ${
                     parDeadlineInfo?.isOverdue
                       ? 'bg-red-50 border-red-200 text-red-900'
@@ -1704,14 +1731,19 @@ Output ONLY the paragraph text.
                     <div className="flex items-center gap-2">
                       <Clock className={`w-4 h-4 shrink-0 ${parDeadlineInfo?.isOverdue ? 'text-red-600' : 'text-amber-600'}`} />
                       <span>
-                        <strong>Submission Guideline:</strong> This report must be submitted to the Administrator within <strong>15 school days</strong> from the date of activity completion.
+                        <strong>Submission Guideline:</strong> This report must be submitted to the Administrator within <strong>15 calendar days</strong> after event conclusion.
                       </span>
                     </div>
                     {parDeadlineInfo && (
                       <span className={`font-bold px-2.5 py-0.5 rounded-full text-[11px] ${
                         parDeadlineInfo.isOverdue ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'
                       }`}>
-                        Due: {parDeadlineInfo.dueDateFormatted} {parDeadlineInfo.isOverdue ? '(Overdue)' : ''}
+                        Due: {parDeadlineInfo.dueDateFormatted}{' '}
+                        {parDeadlineInfo.daysRemaining !== null
+                          ? parDeadlineInfo.isOverdue
+                            ? `(Overdue ${Math.abs(parDeadlineInfo.daysRemaining)}d)`
+                            : `(${parDeadlineInfo.daysRemaining}d left)`
+                          : ''}
                       </span>
                     )}
                   </div>
@@ -2001,15 +2033,21 @@ Output ONLY the paragraph text.
                           (Attach supporting receipts and list of participants who have/haven&apos;t paid.)
                         </p>
 
-                        <div className="grid grid-cols-3 gap-2 text-center mb-3">
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mb-3">
                           <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                            <span className="text-[10px] text-slate-500 block">Revenue</span>
+                            <span className="text-[10px] text-slate-500 block">AP Anticipated</span>
+                            <span className="text-sm font-bold text-slate-700 font-mono">
+                              {formatCurrency(anticipatedExpenses)}
+                            </span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 block">Disbursed / Ceiling</span>
                             <span className="text-sm font-bold text-[#001A4D] font-mono">
                               {formatCurrency(totalRevenue)}
                             </span>
                           </div>
                           <div className="bg-white p-2.5 rounded-lg border border-slate-200">
-                            <span className="text-[10px] text-slate-500 block">Total Expenses</span>
+                            <span className="text-[10px] text-slate-500 block">Actual Spent</span>
                             <span className="text-sm font-bold text-slate-800 font-mono">
                               {formatCurrency(totalDisbursed)}
                             </span>
@@ -2019,12 +2057,36 @@ Output ONLY the paragraph text.
                               isSurplus ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
                             }`}
                           >
-                            <span className="text-[10px] block font-medium">Balance (Revenue less Expenses)</span>
+                            <span className="text-[10px] block font-medium">
+                              {Math.abs(netBalance) < 0.01 ? 'Exact Balance' : isSurplus ? 'Unspent Surplus' : 'Overspent Deficit'}
+                            </span>
                             <span className="text-sm font-bold font-mono">
                               {formatVariance(netBalance)}
                             </span>
                           </div>
                         </div>
+
+                        {wizardLiquidationDoc && (
+                          <div className="mb-3 p-2.5 rounded-lg bg-white border border-slate-200 text-[11px] flex flex-wrap items-center gap-3 text-slate-700">
+                            <span>
+                              <strong>Voucher:</strong>{' '}
+                              {wizardLiquidationDoc.disbursementVoucher?.fileUrl ? 'Attached' : 'None'}
+                            </span>
+                            <span>
+                              <strong>Settlement Status:</strong>{' '}
+                              <span className="capitalize">
+                                {String(wizardLiquidationDoc.cashierSettlementStatus || 'not_required').replace(/_/g, ' ')}
+                              </span>
+                            </span>
+                            <span>
+                              <strong>Settlement Proofs:</strong>{' '}
+                              {Array.isArray(wizardLiquidationDoc.cashierSettlementProofs)
+                                ? wizardLiquidationDoc.cashierSettlementProofs.length
+                                : 0}{' '}
+                              file(s)
+                            </span>
+                          </div>
+                        )}
 
                         {/* Itemized Table Preview */}
                         {financialLineItems.length > 0 && (
@@ -2043,6 +2105,25 @@ Output ONLY the paragraph text.
                                     <td className="px-2.5 py-1 text-slate-700 truncate max-w-[160px]">{li.description}</td>
                                     <td className="px-2 py-1 text-right font-mono text-slate-600">{formatCurrency(li.unitAmount)}</td>
                                     <td className="px-2.5 py-1 text-right font-mono font-semibold text-slate-800">{formatCurrency(li.totalAmount)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+
+                        {anticipatedLineItems.length > 0 && (
+                          <div className="bg-white border border-slate-200 rounded-lg overflow-hidden max-h-36 overflow-y-auto">
+                            <div className="px-2.5 py-1 bg-blue-50 text-[10px] font-bold uppercase text-[#001A4D] border-b border-blue-100">
+                              AP Anticipated Expenses ({anticipatedLineItems.length} items)
+                            </div>
+                            <table className="w-full text-[11px]">
+                              <tbody className="divide-y divide-slate-100">
+                                {anticipatedLineItems.map((ali, idx) => (
+                                  <tr key={idx}>
+                                    <td className="px-2.5 py-1 text-slate-600 truncate max-w-[180px]">{ali.description}</td>
+                                    <td className="px-2 py-1 text-right font-mono text-slate-500">x{ali.quantity}</td>
+                                    <td className="px-2.5 py-1 text-right font-mono font-semibold text-slate-700">{formatCurrency(ali.totalAmount)}</td>
                                   </tr>
                                 ))}
                               </tbody>
@@ -2697,10 +2778,19 @@ Output ONLY the paragraph text.
                   </div>
                   <div className="space-y-1">
                     <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
-                      Organization Internal Funds — Direct SAS Approval
+                      {resolvedParFundingSource === 'student_contributions'
+                        ? 'Organization Student Contributions — Direct SAS Approval'
+                        : resolvedParFundingSource === 'zero_budget'
+                          ? 'Organization Non-Monetary Activity — Direct SAS Approval'
+                          : 'Organization Internal Funds — Direct SAS Approval'}
                     </h4>
                     <p className="text-xs text-emerald-900/90 leading-relaxed">
-                      This activity is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This report routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                      {resolvedParFundingSource === 'student_contributions'
+                        ? 'This organization activity used Student Contributions in the Club Ledger (no School Miscellaneous Fees). '
+                        : resolvedParFundingSource === 'zero_budget'
+                          ? 'This organization activity used Non-Monetary funding (no School Miscellaneous Fees). '
+                          : 'This activity is funded entirely from organization treasury funds. '}
+                      Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This report routes directly to <strong>Student Affairs &amp; Services (SAS)</strong> for official institutional review, digital approval, and signature.
                     </p>
                   </div>
                 </div>

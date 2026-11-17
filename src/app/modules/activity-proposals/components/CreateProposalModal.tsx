@@ -33,7 +33,9 @@ import DigitalSignatureModal from '../../../signatory/components/DigitalSignatur
 import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
 import {
   formatDateLong,
+  formatPHP,
   checkProjectedBalance,
+  validateBucketAllocations,
   PROJECTED_REVENUE_DEFICIT_WARNING,
 } from '../utils/proposal-calculations';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
@@ -480,7 +482,7 @@ export default function CreateProposalModal({
           isOfficerProposal: isOfficerInitial,
           fundingSource: isOfficerInitial
             ? (initialData.fundingSource || 'organization_funds')
-            : (initialData.fundingSource === 'zero_budget' ? 'zero_budget' : 'school_budget'),
+            : (initialData.fundingSource || 'school_budget'),
           organizationId: isSasProposal ? 'sas' : (initialData.organizationId || (isOfficerInitial ? (initialData as any).hostingOrgId : currentUser.organizationId)),
           hostingOrgId: isSasProposal ? 'sas' : ((initialData as any).hostingOrgId || initialData.organizationId || currentUser.organizationId),
           organizationName: isSasProposal ? '' : (initialData.organizationName || (isOfficerInitial ? resolvedOrgName : '')),
@@ -914,6 +916,31 @@ export default function CreateProposalModal({
       if (checkProjectedBalance(data.financialProjections, data.fundingSource).isDeficit) {
         errs.projectedBalance = PROJECTED_REVENUE_DEFICIT_WARNING;
       }
+      if (data.fundingSource !== 'zero_budget') {
+        const expSum = Number(data.financialProjections?.totalExpenses || 0);
+        const allocs =
+          Array.isArray(data.allocations) && data.allocations.length > 0
+            ? data.allocations
+            : Array.isArray(data.miscFeeBucketAllocations) && data.miscFeeBucketAllocations.length > 0
+              ? data.miscFeeBucketAllocations.map((a) => ({
+                  bucketId: a.bucketId,
+                  bucketName: a.bucketName,
+                  fundType: 'misc_fee' as const,
+                  allocatedAmount:
+                    data.miscFeeBucketAllocations!.length === 1 ? expSum : 0,
+                  availableAmount: a.availableAmount,
+                  poolAmount: a.poolAmount,
+                }))
+              : [];
+        const allocCheck = validateBucketAllocations({
+          fundingSource: data.fundingSource,
+          totalExpenses: expSum,
+          allocations: allocs,
+        });
+        if (!allocCheck.isValid && allocCheck.summaryError) {
+          errs.bucketAllocations = allocCheck.summaryError;
+        }
+      }
     }
 
     if (stepNumber === 7) {
@@ -1056,8 +1083,12 @@ export default function CreateProposalModal({
         ? sanitizedDraftProponents
         : (isOfficerForm ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
-      const isOrgFunds = formData.fundingSource === 'organization_funds';
-      const effectiveDraftChain = isOrgFunds
+      const isOrgDirectSasApproval =
+        Boolean(isOfficerProp || formData.isOfficerProposal) &&
+        (formData.fundingSource === 'organization_funds' ||
+          formData.fundingSource === 'student_contributions' ||
+          formData.fundingSource === 'zero_budget');
+      const effectiveDraftChain = isOrgDirectSasApproval
         ? [
             {
               id: 'step_sas_approval',
@@ -1196,8 +1227,12 @@ export default function CreateProposalModal({
         ? sanitizedSubmitProponents
         : (isOfficerForm ? [resolvedAdviserName || (isAdviserMaker ? currentUser.name : '') || 'Organization Adviser'] : [currentUser.name || 'Student Affairs & Services']);
 
-      const isOrgFunds = formData.fundingSource === 'organization_funds';
-      const effectiveApprovalChain = isOrgFunds
+      const isOrgDirectSasApproval =
+        isOfficerForm &&
+        (formData.fundingSource === 'organization_funds' ||
+          formData.fundingSource === 'student_contributions' ||
+          formData.fundingSource === 'zero_budget');
+      const effectiveApprovalChain = isOrgDirectSasApproval
         ? [
             {
               id: 'step_sas_approval',
@@ -1259,7 +1294,12 @@ export default function CreateProposalModal({
     if (!formData.title?.trim() || !formData.description?.trim()) {
       return false;
     }
-    if (formData.fundingSource !== 'organization_funds') {
+    const isOrgDirectSasApproval =
+      Boolean(isOfficerProp || formData.isOfficerProposal) &&
+      (formData.fundingSource === 'organization_funds' ||
+        formData.fundingSource === 'student_contributions' ||
+        formData.fundingSource === 'zero_budget');
+    if (!isOrgDirectSasApproval) {
       const chain = formData.approvalChain || [];
       if (chain.length === 0) {
         return false;
@@ -1774,10 +1814,22 @@ export default function CreateProposalModal({
                   <Shield className="w-3.5 h-3.5 text-[#0E4EBD]" />
                   What happens upon submission:
                 </div>
-                {formData.fundingSource === 'organization_funds' ? (
+                {Boolean(isOfficerProp || formData.isOfficerProposal) &&
+                (formData.fundingSource === 'organization_funds' ||
+                  formData.fundingSource === 'student_contributions' ||
+                  formData.fundingSource === 'zero_budget') ? (
                   <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
-                    <li>This activity is funded from <strong>Organization Internal Funds</strong>.</li>
-                    <li>The proposal routes directly to <strong>Student Affairs & Services (SAS)</strong> for official review, approval, and digital signature.</li>
+                    <li>
+                      This activity is funded via{' '}
+                      <strong>
+                        {formData.fundingSource === 'student_contributions'
+                          ? 'Organization Student Contributions (Club Ledger)'
+                          : formData.fundingSource === 'zero_budget'
+                            ? 'Organization Non-Monetary Activity'
+                            : 'Organization Internal Funds'}
+                      </strong>.
+                    </li>
+                    <li>The proposal routes directly to <strong>Student Affairs &amp; Services (SAS)</strong> for official review, approval, and digital signature.</li>
                     <li>Your registered electronic signature is affixed to the Activity Proposal.</li>
                   </ul>
                 ) : (

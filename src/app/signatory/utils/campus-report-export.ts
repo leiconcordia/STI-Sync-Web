@@ -25,6 +25,13 @@ export function activityDeadlineLabel(row: CampusActivityRow): string {
     ? row.daysRemaining < 0 ? ` (${Math.abs(row.daysRemaining)} days overdue)` : ` (${row.daysRemaining} days remaining)` : '';
   return `${formatLongDate(row.deadline)}${remaining}`;
 }
+
+export function activityParDeadlineLabel(row: CampusActivityRow): string {
+  if (!row.parDeadline) return 'Not available';
+  const remaining = row.missingPAR && row.parDaysRemaining !== null
+    ? row.parDaysRemaining < 0 ? ` (${Math.abs(row.parDaysRemaining)} days overdue)` : ` (${row.parDaysRemaining} days remaining)` : '';
+  return `${formatLongDate(row.parDeadline)}${remaining}`;
+}
 export function campusReportSnapshot(rows: CampusActivityRow[], filters: CampusReportFilters, periods: SemesterDocument[], organizations: any[], generatedBy: string, now = new Date()): CampusReportSnapshot {
   const quickLabels: Record<string, string> = { ALL: 'All', missing_par: 'Missing PAR', missing_fl: 'Missing FL', returned: 'Returned', my_signature: 'Awaiting my signature', cleared: 'Fully cleared', needs_action: 'Needs action', overdue: 'Overdue FL' };
   const status = (value: string) => value === 'ALL' ? 'All' : STATUS_LABELS[value] || value;

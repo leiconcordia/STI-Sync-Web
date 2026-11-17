@@ -5,7 +5,7 @@ import type { PostActivityReportDocument } from '../../modules/post-activity-rep
 import type { SemesterDocument } from '../../modules/academic/types/academic.types';
 import {
   activityScheduleDates, calendarDaysRemaining, campusDateKey, isActivityConcluded,
-  liquidationSubmissionDeadline, resolveActivityName,
+  liquidationSubmissionDeadline, parSubmissionDeadline, resolveActivityName,
 } from '../../modules/events/utils/activity-compliance.utils';
 import { isEventLiquidationExempt, isSasCreatedEvent, resolveCleanOrgName } from '../../modules/events/utils/organization-display.utils';
 
@@ -43,6 +43,9 @@ export interface CampusActivityRow {
   outstanding: string;
   deadline: string;
   daysRemaining: number | null;
+  parDeadline: string;
+  parDaysRemaining: number | null;
+  parOverdue: boolean;
   overdue: boolean;
   attendees: number | null;
   activity: EventDocument;
@@ -283,6 +286,9 @@ export function buildCampusActivityRows({
     const deadline = concluded && !exempt ? liquidationSubmissionDeadline(source, liquidation) : '';
     const daysRemaining = deadline ? calendarDaysRemaining(deadline, now) : null;
     const overdue = missingFL && daysRemaining !== null && daysRemaining < 0;
+    const parDeadline = concluded ? parSubmissionDeadline(source, par) : '';
+    const parDaysRemaining = parDeadline ? calendarDaysRemaining(parDeadline, now) : null;
+    const parOverdue = missingPAR && parDaysRemaining !== null && parDaysRemaining < 0;
     const outstandingParts: string[] = [];
     if (!excluded && apStatus === 'returned') outstandingParts.push('Proposal needs revision');
     if (concluded) {
@@ -308,7 +314,7 @@ export function buildCampusActivityRows({
       missingFL, missingPAR, returned: Boolean(returned), fullyCleared,
       awaitingMySignature: [proposal, liquidation, par].some((record) => record && pendingIds.has(record.id)),
       outstanding: excluded ? 'No post-activity requirements' : fullyCleared ? 'All required reports approved' : outstandingParts.join('; ') || (concluded ? 'Awaiting required approvals' : 'Post-activity reports not due yet'),
-      deadline, daysRemaining, overdue, attendees: typeof attendance === 'number' && Number.isFinite(attendance) ? attendance : null,
+      deadline, daysRemaining, parDeadline, parDaysRemaining, parOverdue, overdue, attendees: typeof attendance === 'number' && Number.isFinite(attendance) ? attendance : null,
       activity: source, proposal, liquidation, par,
     }];
   }).sort((a, b) => (b.dates.at(-1) || '').localeCompare(a.dates.at(-1) || '') || a.title.localeCompare(b.title));
@@ -370,6 +376,7 @@ export function filterCampusActivityRows(rows: CampusActivityRow[], filters: Cam
       missing_par: row.missingPAR, missing_fl: row.missingFL, returned: row.returned,
       my_signature: row.awaitingMySignature, cleared: row.fullyCleared,
       needs_action: row.missingFL || row.missingPAR || row.returned, overdue: row.overdue,
+      overdue_par: row.parOverdue,
     };
     if (filters.quick !== 'ALL' && !quickMatches[filters.quick]) return false;
     const query = filters.search.toLowerCase().trim();

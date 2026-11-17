@@ -36,8 +36,12 @@ import {
 import {
   PAYABLES_COLLECTION,
   buildCanonicalPayableRecord,
+  buildStudentsLookupMap,
+  lookupStudentAuthUidByIdentifiers,
+  resolveActivePeriodForLevel,
   resolvePayableStudentUid,
 } from '../../finance/services/payable.service';
+import { filterMatchingStudents } from '../../activity-proposals/utils/student-reach.utils';
 import { LIQUIDATIONS_COLLECTION, createLiquidationReport, submitLiquidationReport } from '../../finance/services/liquidation.service';
 import { archiveDocumentRevision } from '../../workflow/services/revision-history.service';
 import type { DisbursementVoucherAttachment } from '../../finance/types/liquidation.types';
@@ -70,9 +74,10 @@ export async function generatePayablesForEvent(
   eventData: any,
   eventId: string,
   createdByUid: string
-): Promise<void> {
+): Promise<{ createdCount: number; skippedReason?: string }> {
   const feeAmount =
     Number(eventData.adminFeeOverride) ||
+    Number(eventData.studentContributionRate) ||
     Number(eventData.suggestedFeePerStudent) ||
     Number(eventData.feeAmount) ||
     Number(eventData.fee) ||
@@ -82,17 +87,23 @@ export async function generatePayablesForEvent(
     eventData.enableQRTickets === true || (eventData as any).enableQR === true
   );
 
+  const isStudentContributionEvent = eventData.fundingSource === 'student_contributions';
   const requiresPayment = Boolean(
-    eventData.studentPayablesEnabled && feeAmount > 0
+    (eventData.studentPayablesEnabled || isStudentContributionEvent) && feeAmount > 0
   );
 
   if (!requiresPayment && !isQREnabled) {
-    console.log('[generatePayablesForEvent] Skipping: neither payables nor QR tickets enabled', {
+    const skippedReason =
+      feeAmount <= 0
+        ? 'No per-student contribution fee rate (> ₱0.00) is configured on this event.'
+        : 'Student payables are not enabled on this event.';
+    console.log('[generatePayablesForEvent] Skipping:', skippedReason, {
       studentPayablesEnabled: eventData.studentPayablesEnabled,
+      fundingSource: eventData.fundingSource,
       feeAmount,
       isQREnabled,
     });
-    return;
+    return { createdCount: 0, skippedReason };
   }
 
   const assignedFee = requiresPayment ? feeAmount : 0;
@@ -105,21 +116,35 @@ export async function generatePayablesForEvent(
     const existingStudentIds = new Set<string>();
     existingSnap.docs.forEach((d) => {
       const data = d.data();
-      if (data.studentId) existingStudentIds.add(data.studentId);
-      if (data.studentSchoolId) existingStudentIds.add(data.studentSchoolId);
+      if (data.studentId) existingStudentIds.add(String(data.studentId).trim().toLowerCase());
+      if (data.studentSchoolId) existingStudentIds.add(String(data.studentSchoolId).trim().toLowerCase());
     });
 
     const q = query(collection(db, STUDENTS_COLLECTION));
     const snapshot = await getDocs(q);
+    const studentDocs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const studentsLookup = buildStudentsLookupMap(studentDocs);
 
-    // Fetch courses for ID / Code / Name lookup
+    // Fetch semesters & courses so payables match AddPayableModal's exact mobile-ready schema
+    let semestersList: any[] = [];
+    try {
+      const semSnap = await getDocs(collection(db, 'semesters'));
+      semestersList = semSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+      console.warn('[generatePayablesForEvent] Error fetching semesters:', e);
+    }
+
     let coursesList: any[] = [];
     try {
       const coursesSnap = await getDocs(collection(db, 'courses'));
-      coursesList = coursesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      coursesList = coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     } catch (e) {
       console.warn('[generatePayablesForEvent] Error fetching courses:', e);
     }
+
+    const shsCourseCodes = coursesList
+      .filter((c) => String(c.academicLevel || '').toUpperCase() === 'SHS' && c.code)
+      .map((c) => String(c.code));
 
     // Build normalized exclusion list for members removed or scheduled for removal when this activity was created
     const excludedMemberSet = new Set<string>(
@@ -162,95 +187,129 @@ export async function generatePayablesForEvent(
     const targetSections = eventData.targetSections || [];
     const targetDeptIds = eventData.targetDepartmentIds || [];
 
-    const studentsToCharge = snapshot.docs
-      .map((d) => ({ id: d.id, ...d.data() }))
-      .filter((student: any) => {
-        const studentIdentifier = resolvePayableStudentUid(student);
-        const officialSchoolId = student.studentId || student.schoolId || '';
+    // Respect exact Step 6 Student Contribution filter when present on the AP/event
+    const contribFilter = eventData.studentContributionFilter;
+    const contribFilteredKeys = contribFilter
+      ? new Set(
+          filterMatchingStudents(studentDocs, {
+            mode: contribFilter.mode || 'all',
+            years: Array.isArray(contribFilter.selectedYears) ? contribFilter.selectedYears : [],
+            courseCodes: Array.isArray(contribFilter.selectedCourses) ? contribFilter.selectedCourses : [],
+            sections: Array.isArray(contribFilter.selectedSections) ? contribFilter.selectedSections : [],
+            shsCourseCodes,
+            activeCourses: coursesList,
+          }).map((s: any) => String(s.id || s.studentId || '').trim().toLowerCase())
+        )
+      : null;
 
-        // Skip if excluded when activity was created (e.g., removed or pending_removal members)
-        const studentKeys = [
-          student.id,
-          student.authUid,
-          student.studentId,
-          student.schoolId,
-        ]
-          .filter(Boolean)
-          .map((v: any) => String(v).trim().toLowerCase());
-        if (studentKeys.some((k) => excludedMemberSet.has(k))) {
+    const rawCandidates = studentDocs.filter((rawStudent: any) => {
+      // Prefer active auth-linked record if duplicate student documents exist
+      const schoolKey = String(rawStudent.studentId || rawStudent.schoolId || '').trim().toLowerCase();
+      const student =
+        (schoolKey && studentsLookup.get(schoolKey)) ||
+        rawStudent;
+      if (student.id !== rawStudent.id) return false;
+
+      const studentIdentifier = resolvePayableStudentUid(student);
+      const officialSchoolId = student.studentId || student.schoolId || '';
+
+      // Skip if excluded when activity was created (e.g., removed or pending_removal members)
+      const studentKeys = [
+        student.id,
+        student.authUid,
+        student.studentId,
+        student.schoolId,
+      ]
+        .filter(Boolean)
+        .map((v: any) => String(v).trim().toLowerCase());
+      if (studentKeys.some((k) => excludedMemberSet.has(k))) {
+        return false;
+      }
+
+      // Skip if already charged under any known identifier
+      if (studentKeys.some((k) => existingStudentIds.has(k)) ||
+          (studentIdentifier && existingStudentIds.has(studentIdentifier.toLowerCase())) ||
+          (officialSchoolId && existingStudentIds.has(String(officialSchoolId).trim().toLowerCase()))) {
+        return false;
+      }
+
+      // 1. Only ACTIVE students
+      const isActive =
+        !student.archived &&
+        (student.status === 'ACTIVE' || (!student.status && !student.archived) || String(student.status).toUpperCase() === 'ACTIVE') &&
+        student.status !== 'INACTIVE' &&
+        student.status !== 'ARCHIVED' &&
+        student.status !== 'RETURNED' &&
+        student.status !== 'DROPPED' &&
+        student.status !== 'SUSPENDED';
+
+      if (!isActive) return false;
+
+      // 1b. If Student Contribution filter was explicitly saved on AP, match it strictly
+      if (contribFilteredKeys) {
+        const rawKey = String(rawStudent.id || rawStudent.studentId || '').trim().toLowerCase();
+        const prefKey = String(student.id || student.studentId || '').trim().toLowerCase();
+        if (!contribFilteredKeys.has(rawKey) && !contribFilteredKeys.has(prefKey)) {
           return false;
         }
-
-        // Skip if already charged under any known identifier
-        if (
-          existingStudentIds.has(studentIdentifier) ||
-          (student.id && existingStudentIds.has(student.id)) ||
-          (officialSchoolId && existingStudentIds.has(officialSchoolId))
-        ) {
-          return false;
-        }
-
-        // 1. Only ACTIVE students
-        const isActive =
-          !student.archived &&
-          (student.status === 'ACTIVE' || (!student.status && !student.archived) || String(student.status).toUpperCase() === 'ACTIVE') &&
-          student.status !== 'INACTIVE' &&
-          student.status !== 'ARCHIVED' &&
-          student.status !== 'RETURNED' &&
-          student.status !== 'DROPPED' &&
-          student.status !== 'SUSPENDED';
-
-        if (!isActive) return false;
-
-        // 2. Org Members constraint (strict — do not leak to campus students when an org has 0 eligible members)
         if (eventData.targetAudienceScope === 'members') {
           const isMember = studentKeys.some((k) => memberStudentIds.has(k));
           if (!isMember) return false;
         }
-
-        // 3. Course Filter
-        if (targetCourses.length > 0) {
-          const matchesCourse =
-            targetCourses.includes(student.courseId) ||
-            targetCourses.includes(student.courseCode) ||
-            targetCourses.some((cId: string) => {
-              const c = coursesList.find((item) => item.id === cId);
-              return c && (student.courseName === c.name || student.courseCode === c.code || student.courseId === c.id);
-            });
-          if (!matchesCourse) return false;
-        }
-
-        // 4. Year Level Filter
-        if (targetYearLevels.length > 0) {
-          const matchesYear = targetYearLevels.some((y: string) => {
-            if (student.yearLevel === y) return true;
-            if ((y === 'G11' || y === 'Grade 11') && (student.yearLevel === 'G11' || student.yearLevel === 'Grade 11' || student.yearLevel === 11 || student.yearLevel === '11')) return true;
-            if ((y === 'G12' || y === 'Grade 12') && (student.yearLevel === 'G12' || student.yearLevel === 'Grade 12' || student.yearLevel === 12 || student.yearLevel === '12')) return true;
-            if (y === '1st Year' && (student.yearLevel === '1st Year' || student.yearLevel === 1 || student.yearLevel === '1')) return true;
-            if (y === '2nd Year' && (student.yearLevel === '2nd Year' || student.yearLevel === 2 || student.yearLevel === '2')) return true;
-            if (y === '3rd Year' && (student.yearLevel === '3rd Year' || student.yearLevel === 3 || student.yearLevel === '3')) return true;
-            if (y === '4th Year' && (student.yearLevel === '4th Year' || student.yearLevel === 4 || student.yearLevel === '4')) return true;
-            return false;
-          });
-          if (!matchesYear) return false;
-        }
-
-        // 5. Section Filter
-        if (targetSections.length > 0) {
-          const matchesSection =
-            targetSections.includes(student.section) ||
-            targetSections.includes(student.id);
-          if (!matchesSection) return false;
-        }
-
-        // 6. Department Filter
-        if (targetDeptIds.length > 0) {
-          const matchesDept = targetDeptIds.includes(student.departmentId);
-          if (!matchesDept) return false;
-        }
-
         return true;
-      });
+      }
+
+      // 2. Org Members constraint (strict — do not leak to campus students when an org has 0 eligible members)
+      if (eventData.targetAudienceScope === 'members') {
+        const isMember = studentKeys.some((k) => memberStudentIds.has(k));
+        if (!isMember) return false;
+      }
+
+      // 3. Course Filter
+      if (targetCourses.length > 0) {
+        const matchesCourse =
+          targetCourses.includes(student.courseId) ||
+          targetCourses.includes(student.courseCode) ||
+          targetCourses.some((cId: string) => {
+            const c = coursesList.find((item) => item.id === cId);
+            return c && (student.courseName === c.name || student.courseCode === c.code || student.courseId === c.id);
+          });
+        if (!matchesCourse) return false;
+      }
+
+      // 4. Year Level Filter
+      if (targetYearLevels.length > 0) {
+        const matchesYear = targetYearLevels.some((y: string) => {
+          if (student.yearLevel === y) return true;
+          if ((y === 'G11' || y === 'Grade 11') && (student.yearLevel === 'G11' || student.yearLevel === 'Grade 11' || student.yearLevel === 11 || student.yearLevel === '11')) return true;
+          if ((y === 'G12' || y === 'Grade 12') && (student.yearLevel === 'G12' || student.yearLevel === 'Grade 12' || student.yearLevel === 12 || student.yearLevel === '12')) return true;
+          if (y === '1st Year' && (student.yearLevel === '1st Year' || student.yearLevel === 1 || student.yearLevel === '1')) return true;
+          if (y === '2nd Year' && (student.yearLevel === '2nd Year' || student.yearLevel === 2 || student.yearLevel === '2')) return true;
+          if (y === '3rd Year' && (student.yearLevel === '3rd Year' || student.yearLevel === 3 || student.yearLevel === '3')) return true;
+          if (y === '4th Year' && (student.yearLevel === '4th Year' || student.yearLevel === 4 || student.yearLevel === '4')) return true;
+          return false;
+        });
+        if (!matchesYear) return false;
+      }
+
+      // 5. Section Filter
+      if (targetSections.length > 0) {
+        const matchesSection =
+          targetSections.includes(student.section) ||
+          targetSections.includes(student.id);
+        if (!matchesSection) return false;
+      }
+
+      // 6. Department Filter
+      if (targetDeptIds.length > 0) {
+        const matchesDept = targetDeptIds.includes(student.departmentId);
+        if (!matchesDept) return false;
+      }
+
+      return true;
+    });
+
+    const studentsToCharge = rawCandidates;
 
     console.log(
       '[generatePayablesForEvent] Charging students count:',
@@ -276,10 +335,33 @@ export async function generatePayablesForEvent(
             'Student';
           const officialSchoolId =
             student.studentId || student.schoolId || student.studentNumber || '';
-          const payableLabel = requiresPayment
-            ? `Event Fee — ${eventData.title}`
-            : `Event Pass (Free) — ${eventData.title}`;
+          const resolvedUid = student.authUid || (student as any).studentAuthUid
+            ? resolvePayableStudentUid(student)
+            : await lookupStudentAuthUidByIdentifiers({
+                authUid: student.authUid || (student as any).studentAuthUid,
+                schoolId: officialSchoolId,
+                studentId: student.studentId,
+                docId: student.id,
+                email: student.email,
+              });
           const resolvedYear = student.yearLevel || student.year || '';
+          const resolvedAcademicLevel =
+            student.academicLevel ||
+            (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE');
+          const resolvedPeriod =
+            semestersList.length > 0
+              ? resolveActivePeriodForLevel(semestersList, resolvedAcademicLevel)
+              : {
+                  id: eventData.semesterId || 'active',
+                  semester: student.semester || eventData.semester || '',
+                  schoolYear: student.schoolYear || eventData.schoolYear || '',
+                };
+
+          const payableLabel = requiresPayment
+            ? isStudentContributionEvent
+              ? `Student Contribution — ${eventData.title}`
+              : `Event Fee — ${eventData.title}`
+            : `Event Pass (Free) — ${eventData.title}`;
           const hostingOrgId =
             eventData.hostingOrgId &&
             eventData.hostingOrgId !== 'sas_admin' &&
@@ -296,7 +378,7 @@ export async function generatePayablesForEvent(
           batch.set(
             payableRef,
             buildCanonicalPayableRecord(payableRef.id, {
-              studentId: resolvePayableStudentUid(student),
+              studentId: resolvedUid,
               studentName: studentFullName,
               studentSchoolId: officialSchoolId,
               type: requiresPayment ? 'event_fee' : 'event_pass',
@@ -304,17 +386,22 @@ export async function generatePayablesForEvent(
               title: payableLabel,
               feeTitle: payableLabel,
               eventTitle: eventData.title || '',
-              category: requiresPayment ? 'Event Fee' : 'Event Pass',
+              category: isStudentContributionEvent
+                ? 'Student Contribution'
+                : requiresPayment
+                ? 'Event Fee'
+                : 'Event Pass',
               description: requiresPayment
-                ? `Fee for event: ${eventData.title}`
+                ? `Contribution for activity: ${eventData.title}`
                 : `Free entry pass with QR ticket access for: ${eventData.title}`,
               organizationId: hostingOrgId,
               organizationName: hostingOrgName,
-              semesterId: eventData.semesterId || '',
-              semester: student.semester || eventData.semester || '',
-              schoolYear: student.schoolYear || eventData.schoolYear || '',
+              semesterId: resolvedPeriod.id || eventData.semesterId || '',
+              semester: resolvedPeriod.semester || student.semester || eventData.semester || '',
+              schoolYear: resolvedPeriod.schoolYear || student.schoolYear || eventData.schoolYear || '',
               eventId,
               assignedAmount: assignedFee,
+              amount: assignedFee,
               paidAmount: 0,
               status: requiresPayment ? 'pending' : 'paid',
               paymentStatus: requiresPayment ? 'UNPAID' : 'PAID',
@@ -322,6 +409,8 @@ export async function generatePayablesForEvent(
               dueDate:
                 eventData.sessions && eventData.sessions[0]?.date
                   ? new Date(eventData.sessions[0].date)
+                  : eventData.date
+                  ? new Date(eventData.date)
                   : null,
               paymentMethod: requiresPayment ? null : 'free_entry',
               courseCode: student.courseCode || student.course || '',
@@ -330,18 +419,25 @@ export async function generatePayablesForEvent(
               departmentName: student.departmentName || student.department || '',
               yearLevel: resolvedYear,
               section: student.section || '',
-              academicLevel:
-                student.academicLevel ||
-                (String(resolvedYear).toLowerCase().includes('grade') ? 'SHS' : 'COLLEGE'),
+              academicLevel: resolvedAcademicLevel,
               createdBy: createdByUid,
             })
           );
         }
         await batch.commit();
       }
+      return { createdCount: studentsToCharge.length };
     }
+    return {
+      createdCount: 0,
+      skippedReason:
+        existingStudentIds.size > 0
+          ? 'All eligible students already have payable records for this event.'
+          : 'No active students matched this event\'s target audience filter.',
+    };
   } catch (err) {
     console.error('[generatePayablesForEvent] Error generating payables:', err);
+    throw err;
   }
 }
 
@@ -702,6 +798,101 @@ export const approveEvent = async (
     try {
       await updateDoc(doc(db, 'activity_proposals', eventId), payload);
     } catch {}
+  }
+
+  // AP Approval Ledger Deduction: Deduct each bucket's exact allocatedAmount upon approval
+  if (approvedEventData) {
+    try {
+      const effectiveFunding =
+        approvedEventData.fundingSource ||
+        (approvedEventData.isOfficerProposal ? 'organization_funds' : 'school_budget');
+      const savedAllocs: Array<{
+        bucketId: string;
+        bucketName: string;
+        fundType: string;
+        allocatedAmount: number;
+        availableAmount?: number;
+      }> = Array.isArray(approvedEventData.allocations) ? approvedEventData.allocations : [];
+      const totalExp = Number(
+        approvedEventData.financialProjections?.totalExpenses ||
+          approvedEventData.totalApprovedBudget ||
+          approvedEventData.allocatedBudget ||
+          0
+      );
+
+      const miscAllocs = savedAllocs.filter(
+        (a) => a.fundType === 'misc_fee' && Number(a.allocatedAmount) > 0
+      );
+      if (miscAllocs.length > 0) {
+        const { deductMiscFeeBucketOnDisbursement } = await import(
+          '../../finance/services/misc-fee.service'
+        );
+        await deductMiscFeeBucketOnDisbursement({
+          eventId,
+          eventTitle: approvedEventData.title || approvedEventData.eventName || 'Approved Activity',
+          bucketId: miscAllocs[0].bucketId,
+          bucketIds: miscAllocs.map((a) => a.bucketId),
+          bucketAllocations: miscAllocs.map((a) => ({
+            bucketId: a.bucketId,
+            bucketName: a.bucketName,
+            availableAmount: a.availableAmount,
+            allocatedAmount: a.allocatedAmount,
+          })),
+          bucketName: miscAllocs.map((a) => a.bucketName).join(' + '),
+          amount: miscAllocs.reduce((s, a) => s + (Number(a.allocatedAmount) || 0), 0),
+          schoolYear: approvedEventData.schoolYear,
+          semester: approvedEventData.semester,
+          performedBy: adminUserId || 'AP Approval',
+        });
+      } else if (
+        effectiveFunding === 'school_budget' &&
+        totalExp > 0 &&
+        (approvedEventData.miscFeeBucketId || approvedEventData.miscFeeBucketIds?.length)
+      ) {
+        const { deductMiscFeeBucketOnDisbursement } = await import(
+          '../../finance/services/misc-fee.service'
+        );
+        const bIds: string[] = Array.isArray(approvedEventData.miscFeeBucketIds)
+          ? approvedEventData.miscFeeBucketIds
+          : [];
+        const bId = approvedEventData.miscFeeBucketId || bIds[0];
+        await deductMiscFeeBucketOnDisbursement({
+          eventId,
+          eventTitle: approvedEventData.title || approvedEventData.eventName || 'Approved Activity',
+          bucketId: bId,
+          bucketIds: bIds.length > 0 ? bIds : [bId],
+          bucketAllocations: approvedEventData.miscFeeBucketAllocations,
+          bucketName: approvedEventData.miscFeeBucketName || bId,
+          amount: totalExp,
+          schoolYear: approvedEventData.schoolYear,
+          semester: approvedEventData.semester,
+          performedBy: adminUserId || 'AP Approval',
+        });
+      }
+
+      const retainedAllocs = savedAllocs.filter(
+        (a) => a.fundType === 'student_contribution_retained' && Number(a.allocatedAmount) > 0
+      );
+      for (const rAlloc of retainedAllocs) {
+        const { deductRetainedFundOnProposalApproval } = await import(
+          '../../finance/services/retained-fund.service'
+        );
+        await deductRetainedFundOnProposalApproval({
+          eventId,
+          eventTitle: approvedEventData.title || approvedEventData.eventName || 'Approved Activity',
+          amount: rAlloc.allocatedAmount,
+          organizationId: rAlloc.bucketId.startsWith('ORG_')
+            ? rAlloc.bucketId.replace(/^ORG_/, '')
+            : 'sas',
+          organizationName: rAlloc.bucketName,
+          schoolYear: approvedEventData.schoolYear,
+          semester: approvedEventData.semester,
+          performedBy: adminUserId || 'AP Approval',
+        });
+      }
+    } catch (deductErr) {
+      console.warn('[approveEvent] Bucket allocation deduction notice:', deductErr);
+    }
   }
 
   // Generate student payables / QR entry passes once approved (deduplicated inside helper)
@@ -1637,15 +1828,121 @@ export async function purgeEventPermanently(eventId: string, adminUid: string, a
  */
 export async function saveEventDisbursementVoucher(
   eventId: string,
-  voucher: DisbursementVoucherAttachment
+  voucher: DisbursementVoucherAttachment,
+  miscFeeBucket?: {
+    id?: string;
+    name?: string;
+    bucketIds?: string[];
+    bucketAllocations?: Array<{
+      bucketId: string;
+      bucketName?: string;
+      allocatedAmount?: number;
+      availableAmount?: number;
+    }>;
+  }
 ): Promise<void> {
-  const updatePayload = {
+  const passedBucketIds = Array.isArray(miscFeeBucket?.bucketIds)
+    ? miscFeeBucket!.bucketIds.filter(Boolean)
+    : miscFeeBucket?.id
+      ? [miscFeeBucket.id]
+      : [];
+
+  const updatePayload: Record<string, any> = {
     disbursementVoucher: voucher,
+    ...(passedBucketIds.length > 0
+      ? {
+          miscFeeBucketId: passedBucketIds[0],
+          miscFeeBucketIds: passedBucketIds,
+          miscFeeBucketName: miscFeeBucket?.name || passedBucketIds.join(' + '),
+        }
+      : miscFeeBucket?.id
+        ? {
+            miscFeeBucketId: miscFeeBucket.id,
+            miscFeeBucketName: miscFeeBucket.name,
+          }
+        : {}),
     updatedAt: serverTimestamp(),
   };
 
   const eventRef = doc(db, ACTIVITIES_COLLECTION, eventId);
+  const eventSnap = await getDoc(eventRef);
+  const eventData = eventSnap.exists() ? (eventSnap.data() as any) : {};
   await updateDoc(eventRef, updatePayload);
+
+  // Deduct disbursed amount from the auto-detected Miscellaneous Fee bucket(s) (strictly only for school_budget)
+  try {
+    let resolvedFundingSource = String(eventData?.fundingSource || '');
+    let bucketId: string | undefined = eventData?.miscFeeBucketId;
+    let bucketIds: string[] = Array.isArray(eventData?.miscFeeBucketIds) ? eventData.miscFeeBucketIds : [];
+    let bucketAllocations: any[] =
+      Array.isArray(eventData?.allocations) && eventData.allocations.length > 0
+        ? eventData.allocations.filter((a: any) => a.fundType === 'misc_fee')
+        : Array.isArray(eventData?.miscFeeBucketAllocations)
+          ? eventData.miscFeeBucketAllocations
+          : [];
+    let bucketName: string | undefined = eventData?.miscFeeBucketName;
+
+    if (!bucketId && bucketIds.length === 0 && bucketAllocations.length === 0 && !bucketName) {
+      const propSnap = await getDoc(doc(db, 'activity_proposals', eventId));
+      if (propSnap.exists()) {
+        const pData = propSnap.data() as any;
+        resolvedFundingSource = resolvedFundingSource || String(pData?.fundingSource || '');
+        bucketId = pData?.miscFeeBucketId;
+        if (Array.isArray(pData?.miscFeeBucketIds)) bucketIds = pData.miscFeeBucketIds;
+        if (Array.isArray(pData?.allocations) && pData.allocations.length > 0) {
+          bucketAllocations = pData.allocations.filter((a: any) => a.fundType === 'misc_fee');
+        } else if (Array.isArray(pData?.miscFeeBucketAllocations)) {
+          bucketAllocations = pData.miscFeeBucketAllocations;
+        }
+        bucketName = pData?.miscFeeBucketName;
+      }
+    }
+
+    // Prefer explicit multi/single allocations from event/AP; fall back to modal resolution if legacy
+    if (Array.isArray(miscFeeBucket?.bucketAllocations) && miscFeeBucket!.bucketAllocations.length > 0) {
+      if (bucketAllocations.length === 0) {
+        bucketAllocations = miscFeeBucket!.bucketAllocations;
+      }
+    }
+    if (bucketIds.length === 0 && passedBucketIds.length > 0) {
+      bucketIds = passedBucketIds;
+    }
+    if (!bucketId && passedBucketIds.length > 0) {
+      bucketId = passedBucketIds[0];
+    }
+    if (!bucketName && miscFeeBucket?.name) {
+      bucketName = miscFeeBucket.name;
+    }
+    if (bucketIds.length === 0 && bucketAllocations.length > 0) {
+      bucketIds = bucketAllocations.map((a: any) => a.bucketId).filter(Boolean);
+    }
+
+    const isIsolatedNonMisc =
+      resolvedFundingSource === 'student_contributions' ||
+      resolvedFundingSource === 'retained_sao_fund' ||
+      resolvedFundingSource === 'organization_funds' ||
+      resolvedFundingSource === 'zero_budget';
+    if (!isIsolatedNonMisc && (bucketId || bucketIds.length > 0 || bucketAllocations.length > 0 || bucketName)) {
+      const { deductMiscFeeBucketOnDisbursement } = await import(
+        '../../finance/services/misc-fee.service'
+      );
+      await deductMiscFeeBucketOnDisbursement({
+        eventId,
+        eventTitle: eventData?.title || eventData?.eventName || '',
+        bucketId: bucketId || bucketIds[0] || bucketAllocations[0]?.bucketId || bucketName || '',
+        bucketIds: bucketIds.length > 0 ? bucketIds : bucketId ? [bucketId] : [],
+        bucketAllocations,
+        bucketName: bucketName || bucketId,
+        amount: Number(voucher.amountDisbursed) || Number(eventData?.totalApprovedBudget) || 0,
+        schoolYear: eventData?.schoolYear,
+        semester: eventData?.semester,
+        chequeNumber: voucher.chequeNumber,
+        performedBy: voucher.uploadedByName || 'User',
+      });
+    }
+  } catch (miscErr) {
+    console.warn('[saveEventDisbursementVoucher] Misc fee bucket deduction notice:', miscErr);
+  }
 
   // If a financial liquidation already exists for this event, sync the voucher & header
   try {
@@ -1701,6 +1998,15 @@ export async function removeEventDisbursementVoucher(
     disbursementVoucher: null,
     updatedAt: serverTimestamp(),
   });
+
+  try {
+    const { reverseMiscFeeBucketDisbursement } = await import(
+      '../../finance/services/misc-fee.service'
+    );
+    await reverseMiscFeeBucketDisbursement(eventId, removedByName || 'User');
+  } catch (revErr) {
+    console.warn('[removeEventDisbursementVoucher] Misc fee reversal notice:', revErr);
+  }
 
   try {
     const liqQuery = query(

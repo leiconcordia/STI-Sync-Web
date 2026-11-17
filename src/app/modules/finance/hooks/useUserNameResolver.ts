@@ -62,6 +62,8 @@ async function loadDirectoryNames(): Promise<Map<string, string>> {
       const officerName = data.studentName || data.name || data.fullName;
       if (officerName) {
         if (d.id) map.set(d.id.trim().toLowerCase(), officerName);
+        if (data.authUid) map.set(String(data.authUid).trim().toLowerCase(), officerName);
+        if (data.uid) map.set(String(data.uid).trim().toLowerCase(), officerName);
         if (data.studentId) map.set(String(data.studentId).trim().toLowerCase(), officerName);
         if (data.email) map.set(String(data.email).trim().toLowerCase(), officerName);
       }
@@ -73,6 +75,7 @@ async function loadDirectoryNames(): Promise<Map<string, string>> {
       if (adviserName) {
         if (d.id) map.set(d.id.trim().toLowerCase(), adviserName);
         if (data.authUid) map.set(String(data.authUid).trim().toLowerCase(), adviserName);
+        if (data.uid) map.set(String(data.uid).trim().toLowerCase(), adviserName);
         if (data.email) map.set(String(data.email).trim().toLowerCase(), adviserName);
       }
     });
@@ -83,6 +86,7 @@ async function loadDirectoryNames(): Promise<Map<string, string>> {
       if (adminName) {
         if (d.id) map.set(d.id.trim().toLowerCase(), adminName);
         if (data.uid) map.set(String(data.uid).trim().toLowerCase(), adminName);
+        if (data.authUid) map.set(String(data.authUid).trim().toLowerCase(), adminName);
         if (data.email) map.set(String(data.email).trim().toLowerCase(), adminName);
       }
     });
@@ -93,6 +97,7 @@ async function loadDirectoryNames(): Promise<Map<string, string>> {
       if (userName) {
         if (d.id) map.set(d.id.trim().toLowerCase(), userName);
         if (data.uid) map.set(String(data.uid).trim().toLowerCase(), userName);
+        if (data.authUid) map.set(String(data.authUid).trim().toLowerCase(), userName);
         if (data.email) map.set(String(data.email).trim().toLowerCase(), userName);
       }
     });

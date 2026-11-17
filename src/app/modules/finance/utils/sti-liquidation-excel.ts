@@ -1170,6 +1170,50 @@ export function buildOfficialStiLiquidationWorkbookWithMeta(
   };
   currentRow++;
 
+  // Optional Multi-Bucket / Surplus Return Allocation Breakdown rows
+  const xlsxReturnRows = Array.isArray(report.surplusReturnAllocations) && report.surplusReturnAllocations.length > 0
+    ? report.surplusReturnAllocations.map((r) => ({
+        name: r.bucketName,
+        pulled: Number(r.originalAllocatedAmount) || 0,
+        returned: Number(r.returnAmount) || 0,
+      }))
+    : Array.isArray(report.allocations) && report.allocations.length > 0
+      ? report.allocations.map((a) => ({
+          name: a.bucketName,
+          pulled: Number(a.allocatedAmount) || 0,
+          returned: 0,
+        }))
+      : [];
+
+  if (xlsxReturnRows.length > 0) {
+    setRowHeight(currentRow, 15.75);
+    ws[`A${currentRow}`] = {
+      v: 'Source Allocation & Surplus Return:',
+      t: 's',
+      s: { font: fontBold, alignment: { horizontal: 'left', vertical: 'center' } },
+    };
+    currentRow++;
+    xlsxReturnRows.forEach((row) => {
+      setRowHeight(currentRow, 15.75);
+      ws[`A${currentRow}`] = {
+        v: `  • ${row.name}`,
+        t: 's',
+        s: { font: fontRegular, alignment: { horizontal: 'left', vertical: 'center' } },
+      };
+      ws[`B${currentRow}`] = {
+        v: `Pulled: P ${row.pulled.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        t: 's',
+        s: { font: fontRegular, alignment: { horizontal: 'right', vertical: 'center' } },
+      };
+      ws[`C${currentRow}`] = {
+        v: `Returned: P ${row.returned.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        t: 's',
+        s: { font: fontBold, alignment: { horizontal: 'left', vertical: 'center' } },
+      };
+      currentRow++;
+    });
+  }
+
   // 2 blank rows before signatories (Rows 49-50 in template)
   setRowHeight(currentRow, 16.5);
   currentRow++;
@@ -1707,8 +1751,40 @@ export function exportOfficialStiLiquidationXml(
   const useTotalsFormulaForAdvance = Math.abs(totalBaselineSum - header.amountAdvanced) < 0.01;
   const balanceVal = header.amountAdvanced - totalActualSum;
 
+  const xmlAllocRows = Array.isArray(report.surplusReturnAllocations) && report.surplusReturnAllocations.length > 0
+    ? report.surplusReturnAllocations.map((r) => ({
+        name: r.bucketName,
+        pulled: Number(r.originalAllocatedAmount) || 0,
+        returned: Number(r.returnAmount) || 0,
+      }))
+    : Array.isArray(report.allocations) && report.allocations.length > 0
+      ? report.allocations.map((a) => ({
+          name: a.bucketName,
+          pulled: Number(a.allocatedAmount) || 0,
+          returned: 0,
+        }))
+      : [];
+
+  let allocationBreakdownXml = '';
+  if (xmlAllocRows.length > 0) {
+    const allocHeaderRow = currentRow++;
+    allocationBreakdownXml += `
+   <Row ss:Index="${allocHeaderRow}" ss:Height="15.75">
+    <Cell ss:StyleID="NoteTitle"><Data ss:Type="String">Source Allocation &amp; Surplus Return:</Data></Cell>
+   </Row>`;
+    xmlAllocRows.forEach((r) => {
+      const rIdx = currentRow++;
+      allocationBreakdownXml += `
+   <Row ss:Index="${rIdx}" ss:Height="15.75">
+    <Cell ss:StyleID="Default"><Data ss:Type="String">  • ${escapeXml(r.name)}</Data></Cell>
+    <Cell ss:StyleID="Default"><Data ss:Type="String">Pulled: P ${r.pulled.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Data></Cell>
+    <Cell ss:StyleID="NoteLabel"><Data ss:Type="String">Returned: P ${r.returned.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Data></Cell>
+   </Row>`;
+    });
+  }
+
   let signaturesXml = '';
-  let sigStartRow = balanceRow + 3;
+  let sigStartRow = currentRow + 2;
   officialSignatories.forEach((sig, sIdx) => {
     const titleRow = sigStartRow++;
     const roleRow = sigStartRow++;
@@ -2150,6 +2226,8 @@ export function exportOfficialStiLiquidationXml(
     <Cell ss:StyleID="BalanceSummaryValue" ss:Formula="=R${amountAdvancedRow}C2-R${actualExpenseSummaryRow}C2"><Data ss:Type="Number">${balanceVal}</Data></Cell>
     <Cell ss:StyleID="OrNoLabel"><Data ss:Type="String">OR NO: ${escapeXml(header.orNumber)}</Data></Cell>
    </Row>
+
+   ${allocationBreakdownXml}
 
    ${signaturesXml}
 

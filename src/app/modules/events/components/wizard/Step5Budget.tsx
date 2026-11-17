@@ -58,9 +58,23 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
   const { data: orgLedgerData, loading: orgLedgerLoading } = useOrgLedger(data.hostingOrgId || null);
   const { data: saoLedgerData, loading: saoLedgerLoading } = useSaoLedger();
 
-  const isClubEvent = (data.fundingSource === 'organization_funds') || (!data.fundingSource && (isOfficer || (Boolean(data.hostingOrgId) && data.hostingOrgId !== 'sas')));
-  const ledger = (data.fundingSource === 'school_budget') ? saoLedgerData : (isClubEvent ? orgLedgerData : saoLedgerData);
-  const ledgerLoading = (data.fundingSource === 'school_budget') ? saoLedgerLoading : (isClubEvent ? orgLedgerLoading : saoLedgerLoading);
+  const isClubEvent =
+    data.fundingSource === 'organization_funds' ||
+    (!data.fundingSource &&
+      (isOfficer || (Boolean(data.hostingOrgId) && data.hostingOrgId !== 'sas')));
+  const isRetainedSao = data.fundingSource === 'retained_sao_fund';
+  const ledger =
+    data.fundingSource === 'school_budget' || isRetainedSao
+      ? saoLedgerData
+      : isClubEvent
+      ? orgLedgerData
+      : saoLedgerData;
+  const ledgerLoading =
+    data.fundingSource === 'school_budget' || isRetainedSao
+      ? saoLedgerLoading
+      : isClubEvent
+      ? orgLedgerLoading
+      : saoLedgerLoading;
 
   const availableTreasuryBalance = useMemo(() => {
     if (data.fundingSource === 'zero_budget') return 0;
@@ -199,7 +213,13 @@ export default function Step5Budget({ data, onUpdate, isOfficer, errors = {}, is
               </div>
               <div>
                 <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                  {isClubEvent ? 'Organization Treasury' : 'School Budget Balance'}
+                  {isClubEvent
+                    ? 'Organization Treasury'
+                    : isRetainedSao
+                    ? 'SAO Retained Student Activity Fund'
+                    : data.fundingSource === 'student_contributions'
+                    ? 'Student Contribution Collection'
+                    : 'School Budget Balance'}
                 </div>
                 <div className="text-xl font-black text-gray-900">
                   {ledgerLoading ? 'Loading...' : formatCurrency(availableTreasuryBalance)}

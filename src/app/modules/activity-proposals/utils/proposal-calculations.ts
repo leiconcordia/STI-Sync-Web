@@ -8,8 +8,11 @@ import { differenceInCalendarDays, parseISO, isValid, format } from 'date-fns';
 import type {
   FinancialLineItem,
   FinancialProjections,
+  ProposalBucketAllocation,
   ProposalSession,
   ProposalTask,
+  SurplusReturnAllocation,
+  DeficitDeductionAllocation,
 } from '../types/proposal.types';
 
 /**
@@ -194,13 +197,20 @@ export function check15DayRule(
 /**
  * Format currency in Philippine Peso (PHP)
  */
-export function formatPHP(amount: number): string {
+export function formatPHP(amount: number | string | null | undefined): string {
+  const num =
+    typeof amount === 'number'
+      ? amount
+      : typeof amount === 'string'
+      ? Number(amount.replace(/[₱,\s]/g, ''))
+      : Number(amount);
+  const safeNum = isNaN(num) ? 0 : num;
   return new Intl.NumberFormat('en-PH', {
     style: 'currency',
     currency: 'PHP',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(amount || 0);
+  }).format(safeNum);
 }
 
 /**
@@ -234,4 +244,481 @@ export function formatDateLong(dateInput?: string | Date | null): string {
     // fallback
   }
   return String(dateInput);
+}
+
+export interface BucketAllocationValidationResult {
+  isValid: boolean;
+  totalAllocated: number;
+  remainingToAllocate: number;
+  perBucketErrors: Record<string, string>;
+  summaryError?: string;
+}
+
+/**
+ * Validates maker-specified bucket split rules for Activity Proposal (AP):
+ * - Single bucket: Total Anticipated Expenses <= Available Balance (no split needed).
+ * - Two+ buckets: each Amount to Pull >= 0 and <= Available Balance, and
+ *   sum(Amount to Pull) strictly equals Total Anticipated Expenses.
+ */
+export function validateBucketAllocations(params: {
+  fundingSource?: string;
+  totalExpenses: number;
+  allocations?: ProposalBucketAllocation[];
+}): BucketAllocationValidationResult {
+  const totalExpenses = Math.round((Number(params.totalExpenses) || 0) * 100) / 100;
+  const allocations = Array.isArray(params.allocations) ? params.allocations : [];
+  const perBucketErrors: Record<string, string> = {};
+
+  if (params.fundingSource === 'zero_budget') {
+    return {
+      isValid: true,
+      totalAllocated: 0,
+      remainingToAllocate: 0,
+      perBucketErrors: {},
+    };
+  }
+
+  if (params.fundingSource === 'school_budget' && allocations.length === 0) {
+    return {
+      isValid: totalExpenses === 0,
+      totalAllocated: 0,
+      remainingToAllocate: totalExpenses,
+      perBucketErrors: {},
+      summaryError:
+        totalExpenses > 0
+          ? 'Please select at least one Miscellaneous Fee Particular bucket.'
+          : undefined,
+    };
+  }
+
+  if (allocations.length === 1) {
+    const only = allocations[0];
+    const avail = only.availableAmount;
+    const allocated =
+      only.allocatedAmount > 0 ? only.allocatedAmount : totalExpenses;
+    if (avail !== undefined && totalExpenses > avail + 0.009) {
+      const msg = `Anticipated expenses (${formatPHP(totalExpenses)}) exceed "${only.bucketName}" Available Balance (${formatPHP(avail)}).`;
+      perBucketErrors[only.bucketId] = msg;
+      return {
+        isValid: false,
+        totalAllocated: allocated,
+        remainingToAllocate: 0,
+        perBucketErrors,
+        summaryError: msg,
+      };
+    }
+    return {
+      isValid: true,
+      totalAllocated: totalExpenses,
+      remainingToAllocate: 0,
+      perBucketErrors: {},
+    };
+  }
+
+  // 2 or more buckets (Maker-Specified Split)
+  let totalAllocated = 0;
+  for (const a of allocations) {
+    const val = Number(a.allocatedAmount);
+    if (Number.isNaN(val) || val < 0) {
+      perBucketErrors[a.bucketId] = 'Amount to Pull must be ₱0.00 or greater.';
+    } else if (a.availableAmount !== undefined && val > a.availableAmount + 0.009) {
+      perBucketErrors[a.bucketId] = `Exceeds available balance (${formatPHP(a.availableAmount)}).`;
+    }
+    totalAllocated += Math.max(0, Number.isNaN(val) ? 0 : val);
+  }
+  totalAllocated = Math.round(totalAllocated * 100) / 100;
+  const remainingToAllocate = Math.round((totalExpenses - totalAllocated) * 100) / 100;
+
+  let summaryError: string | undefined;
+  if (Math.abs(remainingToAllocate) >= 0.01) {
+    summaryError =
+      remainingToAllocate > 0
+        ? `Remaining ${formatPHP(remainingToAllocate)} unallocated. Total Allocated (${formatPHP(totalAllocated)}) must strictly equal Total Anticipated Expenses (${formatPHP(totalExpenses)}).`
+        : `Over-allocated by ${formatPHP(Math.abs(remainingToAllocate))}. Total Allocated (${formatPHP(totalAllocated)}) must strictly equal Total Anticipated Expenses (${formatPHP(totalExpenses)}).`;
+  }
+
+  return {
+    isValid: Object.keys(perBucketErrors).length === 0 && !summaryError,
+    totalAllocated,
+    remainingToAllocate,
+    perBucketErrors,
+    summaryError,
+  };
+}
+
+/**
+ * Automatically balances maker-specified split across 2+ buckets so their sum
+ * stays equal to `totalExpenses`. When `editedBucketId` is updated (e.g. 24k on
+ * bucket 1 out of 50k expenses), the remaining buckets automatically cover the difference.
+ */
+export function rebalanceBucketAllocations(params: {
+  allocations: ProposalBucketAllocation[];
+  totalExpenses: number;
+  editedBucketId?: string;
+  editedAmount?: number;
+}): ProposalBucketAllocation[] {
+  const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+  const totalExpenses = Math.max(0, round2(params.totalExpenses));
+  const list = Array.isArray(params.allocations) ? params.allocations : [];
+
+  if (list.length === 0) return [];
+  if (list.length === 1) {
+    return [{ ...list[0], allocatedAmount: totalExpenses }];
+  }
+
+  const next = list.map((a) => ({ ...a }));
+  const editedIdx = params.editedBucketId
+    ? next.findIndex((a) => a.bucketId === params.editedBucketId)
+    : -1;
+
+  if (editedIdx !== -1 && params.editedAmount !== undefined) {
+    const editedVal = Math.max(0, round2(params.editedAmount));
+    next[editedIdx].allocatedAmount = editedVal;
+
+    let remaining = Math.max(0, round2(totalExpenses - editedVal));
+    // Walk through other buckets starting right after editedIdx so the next bucket covers first
+    const otherIndices: number[] = [];
+    for (let offset = 1; offset < next.length; offset++) {
+      otherIndices.push((editedIdx + offset) % next.length);
+    }
+
+    otherIndices.forEach((idx, pos) => {
+      const avail = next[idx].availableAmount;
+      const isLastOther = pos === otherIndices.length - 1;
+      if (isLastOther) {
+        next[idx].allocatedAmount = Math.max(0, round2(remaining));
+        remaining = 0;
+      } else {
+        const cap = avail !== undefined ? Math.max(0, avail) : remaining;
+        const take = Math.min(remaining, cap);
+        next[idx].allocatedAmount = Math.max(0, round2(take));
+        remaining = Math.max(0, round2(remaining - take));
+      }
+    });
+    return next;
+  }
+
+  // Initial / expense-change distribution: allocate cleanly up to available balance, remainder on final bucket
+  let remaining = totalExpenses;
+  next.forEach((item, idx) => {
+    const isLast = idx === next.length - 1;
+    if (isLast) {
+      item.allocatedAmount = Math.max(0, round2(remaining));
+      remaining = 0;
+    } else {
+      const cap = item.availableAmount !== undefined ? Math.max(0, item.availableAmount) : remaining;
+      const take = Math.min(remaining, cap);
+      item.allocatedAmount = Math.max(0, round2(take));
+      remaining = Math.max(0, round2(remaining - take));
+    }
+  });
+  return next;
+}
+
+export interface SurplusReturnValidationResult {
+  isValid: boolean;
+  totalReturned: number;
+  remainingSurplusToAssign: number;
+  requiresCashierReceipt: boolean;
+  perBucketErrors: Record<string, string>;
+  summaryError?: string;
+}
+
+/**
+ * Validates SAS/Admin Surplus Return Allocation during Financial Liquidation (FL) approval:
+ * - Each bucket Return Amount >= 0 and <= original allocatedAmount pulled.
+ * - Sum of Return Amounts strictly equals Total Surplus.
+ * - Cashier Return Receipt required whenever any Miscellaneous Fee bucket receives > 0.
+ */
+export function validateSurplusReturnAllocations(params: {
+  totalSurplus: number;
+  rows: SurplusReturnAllocation[];
+  isSasEvent?: boolean;
+}): SurplusReturnValidationResult {
+  const totalSurplus = Math.max(0, Math.round((Number(params.totalSurplus) || 0) * 100) / 100);
+  const rows = Array.isArray(params.rows) ? params.rows : [];
+  const perBucketErrors: Record<string, string> = {};
+
+  if (totalSurplus <= 0 || rows.length === 0) {
+    return {
+      isValid: true,
+      totalReturned: 0,
+      remainingSurplusToAssign: 0,
+      requiresCashierReceipt: false,
+      perBucketErrors: {},
+    };
+  }
+
+  let totalReturned = 0;
+  let requiresCashierReceipt = false;
+
+  for (const r of rows) {
+    const ret = Number(r.returnAmount);
+    const maxCap = Math.max(0, Number(r.originalAllocatedAmount) || 0);
+    if (Number.isNaN(ret) || ret < 0) {
+      perBucketErrors[r.bucketId] = 'Return amount cannot be negative.';
+    } else if (rows.length >= 2 && maxCap > 0 && ret > maxCap + 0.009) {
+      perBucketErrors[r.bucketId] = `Cannot exceed originally pulled ${formatPHP(maxCap)}.`;
+    }
+    const safeRet = Math.max(0, Number.isNaN(ret) ? 0 : ret);
+    const isSasRetainedTarget =
+      Boolean(params.isSasEvent) &&
+      (r.fundType === 'student_contributions' ||
+        r.fundType === 'student_contribution_retained' ||
+        r.bucketId === 'SAO_CAMPUS' ||
+        r.bucketId === 'CONTRIB_NEW');
+    if ((r.fundType === 'misc_fee' || isSasRetainedTarget) && safeRet > 0.009) {
+      requiresCashierReceipt = true;
+    }
+    totalReturned += safeRet;
+  }
+
+  totalReturned = Math.round(totalReturned * 100) / 100;
+  const remainingSurplusToAssign = Math.round((totalSurplus - totalReturned) * 100) / 100;
+
+  let summaryError: string | undefined;
+  if (Math.abs(remainingSurplusToAssign) >= 0.01) {
+    summaryError =
+      remainingSurplusToAssign > 0
+        ? `Assign ${formatPHP(remainingSurplusToAssign)} more so Return Amounts strictly equal Total Surplus (${formatPHP(totalSurplus)}).`
+        : `Return Amounts exceed Total Surplus by ${formatPHP(Math.abs(remainingSurplusToAssign))}. Adjust so total strictly equals ${formatPHP(totalSurplus)}.`;
+  }
+
+  return {
+    isValid: Object.keys(perBucketErrors).length === 0 && !summaryError,
+    totalReturned,
+    remainingSurplusToAssign,
+    requiresCashierReceipt,
+    perBucketErrors,
+    summaryError,
+  };
+}
+
+/**
+ * Auto-populates or rebalances Surplus Return Allocations so all buckets sum to exact Total Surplus
+ * (e.g., entering ₱2,000 in Bucket 1 auto-fills the remaining surplus in Bucket 2, capped per bucket's original pull).
+ */
+export function rebalanceSurplusReturnAllocations(params: {
+  totalSurplus: number;
+  rows: SurplusReturnAllocation[];
+  editedBucketId?: string;
+  editedAmount?: number;
+}): SurplusReturnAllocation[] {
+  const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+  const totalSurplus = Math.max(0, round2(params.totalSurplus));
+  const list = Array.isArray(params.rows) ? params.rows : [];
+
+  if (list.length === 0) return [];
+  if (list.length === 1) {
+    return [{ ...list[0], returnAmount: totalSurplus }];
+  }
+
+  const next = list.map((r) => ({ ...r }));
+  const editedIdx = params.editedBucketId
+    ? next.findIndex((r) => r.bucketId === params.editedBucketId)
+    : -1;
+
+  if (editedIdx !== -1 && params.editedAmount !== undefined) {
+    const editedCap = Number(next[editedIdx].originalAllocatedAmount) > 0
+      ? Math.min(totalSurplus, round2(next[editedIdx].originalAllocatedAmount))
+      : totalSurplus;
+    const editedVal = Math.min(editedCap, Math.max(0, round2(params.editedAmount)));
+    next[editedIdx].returnAmount = editedVal;
+
+    let remaining = Math.max(0, round2(totalSurplus - editedVal));
+    const otherIndices: number[] = [];
+    for (let offset = 1; offset < next.length; offset++) {
+      otherIndices.push((editedIdx + offset) % next.length);
+    }
+
+    otherIndices.forEach((idx, pos) => {
+      const cap = Number(next[idx].originalAllocatedAmount) > 0
+        ? round2(next[idx].originalAllocatedAmount)
+        : remaining;
+      const isLastOther = pos === otherIndices.length - 1;
+      const take = isLastOther ? Math.min(remaining, cap) : Math.min(remaining, cap);
+      next[idx].returnAmount = Math.max(0, round2(take));
+      remaining = Math.max(0, round2(remaining - next[idx].returnAmount));
+    });
+    return next;
+  }
+
+  // Initial auto-populate: proportional by originalAllocatedAmount, capped at original pull
+  const totalOrig = next.reduce((s, r) => s + Math.max(0, Number(r.originalAllocatedAmount) || 0), 0);
+  let remaining = totalSurplus;
+  next.forEach((row, idx) => {
+    const cap = Math.max(0, round2(row.originalAllocatedAmount || 0));
+    const isLast = idx === next.length - 1;
+    let share = isLast
+      ? remaining
+      : totalOrig > 0
+        ? round2(totalSurplus * (cap / totalOrig))
+        : round2(totalSurplus / next.length);
+    if (cap > 0) share = Math.min(share, cap);
+    share = Math.min(remaining, Math.max(0, round2(share)));
+    row.returnAmount = share;
+    remaining = Math.max(0, round2(remaining - share));
+  });
+
+  // Top up any leftover cents into buckets that still have headroom
+  if (remaining > 0.009) {
+    for (const row of next) {
+      if (remaining <= 0.009) break;
+      const cap = Number(row.originalAllocatedAmount) > 0 ? round2(row.originalAllocatedAmount) : totalSurplus;
+      const headroom = Math.max(0, round2(cap - row.returnAmount));
+      const add = Math.min(remaining, headroom);
+      if (add > 0) {
+        row.returnAmount = round2(row.returnAmount + add);
+        remaining = Math.max(0, round2(remaining - add));
+      }
+    }
+  }
+
+  return next;
+}
+
+export interface DeficitDeductionValidationResult {
+  isValid: boolean;
+  totalDeducted: number;
+  remainingDeficitToAssign: number;
+  totalCapacityAvailable: number;
+  needsAdditionalBucket: boolean;
+  requiresReimbursementProof: boolean;
+  perBucketErrors: Record<string, string>;
+  summaryError?: string;
+}
+
+/**
+ * Waterfall-allocates an overspent deficit sequentially across selected buckets (Bucket 1 -> Bucket 2 -> ...),
+ * capping each bucket at its live availableBalance so insufficient Bucket 1 cascades automatically to Bucket 2.
+ */
+export function computeWaterfallDeficitAllocations(params: {
+  totalDeficit: number;
+  rows: DeficitDeductionAllocation[];
+}): DeficitDeductionAllocation[] {
+  let rem = Math.max(0, Math.round((Number(params.totalDeficit) || 0) * 100) / 100);
+  const rows = Array.isArray(params.rows) ? params.rows : [];
+  return rows.map((row) => {
+    const cap = Math.max(0, Math.round((Number(row.availableBalance) || 0) * 100) / 100);
+    const take = Math.min(rem, cap);
+    rem = Math.round((rem - take) * 100) / 100;
+    return {
+      ...row,
+      deductAmount: Math.round(take * 100) / 100,
+    };
+  });
+}
+
+/**
+ * Auto-rebalances Deficit Deduction Allocations when the user edits one bucket's deduction amount
+ * (e.g., entering ₱2,000 in Bucket 1 cascades remaining deficit automatically to Bucket 2..N,
+ * capped by each bucket's live availableBalance).
+ */
+export function rebalanceDeficitDeductionAllocations(params: {
+  totalDeficit: number;
+  rows: DeficitDeductionAllocation[];
+  editedBucketId?: string;
+  editedAmount?: number;
+}): DeficitDeductionAllocation[] {
+  const round2 = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
+  const totalDeficit = Math.max(0, round2(params.totalDeficit));
+  const list = Array.isArray(params.rows) ? params.rows : [];
+
+  if (list.length === 0) return [];
+  if (!params.editedBucketId || params.editedAmount === undefined) {
+    return computeWaterfallDeficitAllocations({ totalDeficit, rows: list });
+  }
+
+  const next = list.map((r) => ({ ...r }));
+  const editedIdx = next.findIndex((r) => r.bucketId === params.editedBucketId);
+  if (editedIdx === -1) {
+    return computeWaterfallDeficitAllocations({ totalDeficit, rows: next });
+  }
+
+  const editedCap = Math.max(0, round2(next[editedIdx].availableBalance));
+  const editedVal = Math.min(totalDeficit, editedCap, Math.max(0, round2(params.editedAmount)));
+  next[editedIdx].deductAmount = editedVal;
+
+  let remaining = Math.max(0, round2(totalDeficit - editedVal));
+  for (let offset = 1; offset < next.length; offset++) {
+    const idx = (editedIdx + offset) % next.length;
+    const cap = Math.max(0, round2(next[idx].availableBalance));
+    const take = Math.min(remaining, cap);
+    next[idx].deductAmount = Math.max(0, round2(take));
+    remaining = Math.max(0, round2(remaining - take));
+  }
+
+  return next;
+}
+
+/**
+ * Validates Maker/SAS Overspent Deficit Deduction Allocation during post-approval Liquidation Settlement:
+ * - No unrecorded absorption: sum of Deduct Amounts across buckets must strictly equal Total Deficit.
+ * - Each bucket's Deduct Amount >= 0 and <= live availableBalance.
+ * - Reimbursement / Supplemental Disbursement Proof is always required whenever Total Deficit > 0.
+ */
+export function validateDeficitDeductionAllocations(params: {
+  totalDeficit: number;
+  rows: DeficitDeductionAllocation[];
+}): DeficitDeductionValidationResult {
+  const totalDeficit = Math.max(0, Math.round((Number(params.totalDeficit) || 0) * 100) / 100);
+  const rows = Array.isArray(params.rows) ? params.rows : [];
+  const perBucketErrors: Record<string, string> = {};
+
+  if (totalDeficit <= 0) {
+    return {
+      isValid: true,
+      totalDeducted: 0,
+      remainingDeficitToAssign: 0,
+      totalCapacityAvailable: 0,
+      needsAdditionalBucket: false,
+      requiresReimbursementProof: false,
+      perBucketErrors: {},
+    };
+  }
+
+  let totalDeducted = 0;
+  let totalCapacityAvailable = 0;
+
+  for (const r of rows) {
+    const deduct = Number(r.deductAmount);
+    const avail = Math.max(0, Math.round((Number(r.availableBalance) || 0) * 100) / 100);
+    totalCapacityAvailable += avail;
+
+    if (Number.isNaN(deduct) || deduct < 0) {
+      perBucketErrors[r.bucketId] = 'Deduction amount cannot be negative.';
+    } else if (deduct > avail + 0.009) {
+      perBucketErrors[r.bucketId] = `Exceeds available bucket balance (${formatPHP(avail)}). Waterfall remainder to another bucket.`;
+    }
+
+    totalDeducted += Math.max(0, Number.isNaN(deduct) ? 0 : deduct);
+  }
+
+  totalDeducted = Math.round(totalDeducted * 100) / 100;
+  totalCapacityAvailable = Math.round(totalCapacityAvailable * 100) / 100;
+  const remainingDeficitToAssign = Math.round((totalDeficit - totalDeducted) * 100) / 100;
+  const needsAdditionalBucket = totalCapacityAvailable + 0.009 < totalDeficit;
+
+  let summaryError: string | undefined;
+  if (rows.length === 0) {
+    summaryError = `Select at least one fund bucket to cover the ${formatPHP(totalDeficit)} overspend.`;
+  } else if (needsAdditionalBucket) {
+    summaryError = `Selected bucket balances (${formatPHP(totalCapacityAvailable)}) cannot cover full overspend (${formatPHP(totalDeficit)}). Add another bucket with at least ${formatPHP(Math.max(0, totalDeficit - totalCapacityAvailable))}.`;
+  } else if (Math.abs(remainingDeficitToAssign) >= 0.01) {
+    summaryError =
+      remainingDeficitToAssign > 0
+        ? `Assign ${formatPHP(remainingDeficitToAssign)} more across buckets so total deductions strictly equal Total Overspend (${formatPHP(totalDeficit)}).`
+        : `Assigned deductions exceed Total Overspend by ${formatPHP(Math.abs(remainingDeficitToAssign))}. Adjust so total strictly equals ${formatPHP(totalDeficit)}.`;
+  }
+
+  return {
+    isValid: Object.keys(perBucketErrors).length === 0 && !summaryError,
+    totalDeducted,
+    remainingDeficitToAssign,
+    totalCapacityAvailable,
+    needsAdditionalBucket,
+    requiresReimbursementProof: totalDeficit > 0.009,
+    perBucketErrors,
+    summaryError,
+  };
 }

@@ -101,7 +101,19 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   schoolYear?: string;
   semester?: string;
   semesterId?: string;
-  fundingSource?: 'organization_funds' | 'school_budget' | 'zero_budget';
+  fundingSource?:
+    | 'organization_funds'
+    | 'school_budget'
+    | 'student_contributions'
+    | 'retained_sao_fund'
+    | 'zero_budget';
+  miscFeeBucketId?: string;
+  miscFeeBucketName?: string;
+  miscFeeBucketIds?: string[];
+  miscFeeBucketNames?: string[];
+  allocations?: import('../../activity-proposals/types/proposal.types').ProposalBucketAllocation[];
+  surplusReturnAllocations?: import('../../activity-proposals/types/proposal.types').SurplusReturnAllocation[];
+  deficitDeductionAllocations?: import('../../activity-proposals/types/proposal.types').DeficitDeductionAllocation[];
   organizationId: string;
   organizationName: string;
   createdById: string;
@@ -170,6 +182,17 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   amountToReturn?: number;
   isCancellationLiquidation?: boolean;
   cancellationReason?: string;
+  // Student Contribution Two-Axis Collection Recovery Fields
+  fundingSource?: string;
+  totalProjectedCollection?: number;
+  totalCollectedAtLiquidation?: number;
+  uncollectedReceivablesAtLiquidation?: number;
+  collectionDeficitAmount?: number;
+  collectionSettlementStatus?: 'not_applicable' | 'deficit_recovering' | 'fully_recovered' | 'deficit_absorbed';
+  deficitAbsorbedAt?: string;
+  deficitAbsorbedBy?: string;
+  deficitAbsorbedByName?: string;
+  deficitAbsorbedNote?: string;
   createdAt?: Timestamp | any;
   updatedAt?: Timestamp | any;
 }

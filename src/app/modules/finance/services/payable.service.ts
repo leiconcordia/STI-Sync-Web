@@ -13,6 +13,7 @@ import {
   runTransaction,
   serverTimestamp,
   Timestamp,
+  arrayUnion,
 } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import { addLedgerTransaction, addOrgLedgerTransaction } from './finance.service';
@@ -1397,6 +1398,7 @@ export async function syncStudentPayablesForActiveEvents(
       .filter((event: any) => {
         const feeAmount =
           Number(event.adminFeeOverride) ||
+          Number(event.studentContributionRate) ||
           Number(event.suggestedFeePerStudent) ||
           Number(event.feeAmount) ||
           Number(event.fee) ||
@@ -1405,7 +1407,8 @@ export async function syncStudentPayablesForActiveEvents(
           event.enableQRTickets === true || (event as any).enableQR === true
         );
         const requiresPayment = Boolean(
-          event.studentPayablesEnabled && feeAmount > 0
+          (event.studentPayablesEnabled || event.fundingSource === 'student_contributions') &&
+            feeAmount > 0
         );
         if (!requiresPayment && !isQREnabled) return false;
 
@@ -1484,6 +1487,7 @@ export async function syncStudentPayablesForActiveEvents(
 
       const fee =
         Number(evt.adminFeeOverride) ||
+        Number(evt.studentContributionRate) ||
         Number(evt.suggestedFeePerStudent) ||
         Number(evt.feeAmount) ||
         Number(evt.fee) ||
@@ -1493,7 +1497,7 @@ export async function syncStudentPayablesForActiveEvents(
         evt.enableQRTickets === true || (evt as any).enableQR === true
       );
       const requiresPayment = Boolean(
-        evt.studentPayablesEnabled && fee > 0
+        (evt.studentPayablesEnabled || evt.fundingSource === 'student_contributions') && fee > 0
       );
 
       if (!requiresPayment && !isQREnabled) continue;
@@ -1783,6 +1787,29 @@ export async function transferCollectionGroupToLedger(params: {
     });
   }
 
+  // Mirror revenue into persistent SAO Retained Student Activity Fund for SAS collections only
+  // (Organizations use organization_ledger as their single unified Club Treasury)
+  if (targetLedger !== 'org') {
+    try {
+      const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
+      await creditRetainedFundOnCollection({
+        collectionId: batchId,
+        amount: totalTransferDelta,
+        organizationId: 'sas',
+        eventId: eventId && eventId !== 'unassigned' ? eventId : undefined,
+        eventTitle: displayTitle,
+        description: `Student Contribution Collection – ${displayTitle}`,
+        performedBy: recordedByUid || 'SAO Admin',
+      });
+    } catch (retErr) {
+      console.warn('[transferCollectionGroupToLedger] Retained fund credit warning:', retErr);
+    }
+  }
+
+  if (eventId && eventId !== 'unassigned') {
+    await syncEventContributionCollectionSnapshot(eventId);
+  }
+
   return {
     transferredCount: eligibleDocs.length,
     transferredAmount: totalTransferDelta,
@@ -1956,4 +1983,333 @@ export async function processPayableRefund(params: ProcessPayableRefundParams): 
       ledgerAdjusted: wasTransferred && ledgerDebit > 0,
     };
   });
+}
+
+export interface CashierContributionUploadItem {
+  payableId: string;
+  paidAmount: number;
+  orNumber?: string;
+  paidDate?: string;
+}
+
+export interface CashierUploadReceiptProof {
+  url: string;
+  fileName: string;
+  fileType: string;
+}
+
+/**
+ * Recomputes live Student Contribution collection totals for an activity and propagates recovery
+ * progress onto the event document and any recovering Financial Liquidation report.
+ */
+export async function syncEventContributionCollectionSnapshot(
+  eventId: string,
+  batchEntry?: {
+    batchId: string;
+    uploadedAt: string;
+    uploadedByUid: string;
+    uploadedByName: string;
+    paidCount: number;
+    amountCollected: number;
+    batchReferenceNo?: string;
+    receiptProof?: CashierUploadReceiptProof | null;
+  }
+): Promise<{ totalCollected: number; totalProjected: number; uncollectedReceivables: number }> {
+  const payablesSnap = await getDocs(
+    query(collection(db, PAYABLES_COLLECTION), where('eventId', '==', eventId))
+  );
+
+  let totalCollected = 0;
+  let totalProjected = 0;
+  let paidCount = 0;
+  let unpaidCount = 0;
+
+  payablesSnap.docs.forEach((d) => {
+    const p = d.data() as any;
+    const st = String(p.status || '').toLowerCase();
+    if (st === 'cancelled' || st === 'waived' || st === 'refunded') return;
+    const assigned = Math.max(0, Number(p.assignedAmount) || 0);
+    totalProjected += assigned;
+    if (st === 'paid') {
+      paidCount++;
+      totalCollected += Math.max(0, Number(p.paidAmount) || assigned);
+    } else {
+      unpaidCount++;
+    }
+  });
+
+  totalCollected = Math.round(totalCollected * 100) / 100;
+  totalProjected = Math.round(totalProjected * 100) / 100;
+  const uncollectedReceivables = Math.max(0, Math.round((totalProjected - totalCollected) * 100) / 100);
+
+  const eventSnapshotUpdate: Record<string, any> = {
+    totalContributionCollected: totalCollected,
+    totalContributionProjected: totalProjected,
+    uncollectedReceivables,
+    contributionPaidCount: paidCount,
+    contributionUnpaidCount: unpaidCount,
+    lastCashierSyncAt: new Date().toISOString(),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (batchEntry) {
+    eventSnapshotUpdate.contributionUploadHistory = arrayUnion(batchEntry);
+  }
+
+  for (const colName of ['activities', 'events', 'activity_proposals']) {
+    try {
+      const targetRef = doc(db, colName, eventId);
+      const snap = await getDoc(targetRef);
+      if (snap.exists()) {
+        await updateDoc(targetRef, eventSnapshotUpdate);
+      }
+    } catch (syncErr) {
+      console.warn(`[syncEventContributionCollectionSnapshot] ${colName} update note:`, syncErr);
+    }
+  }
+
+  // Update collection recovery progress on linked Financial Liquidation reports
+  try {
+    const actSnap = await getDoc(doc(db, 'activities', eventId));
+    const actData = actSnap.exists() ? (actSnap.data() as any) : {};
+    const retainedTopUp = (Array.isArray(actData.allocations) ? actData.allocations : [])
+      .filter((a: any) => a.fundType === 'student_contribution_retained')
+      .reduce((s: number, a: any) => s + (Number(a.allocatedAmount) || 0), 0);
+
+    const liqSnap = await getDocs(
+      query(collection(db, 'liquidations'), where('eventId', '==', eventId))
+    );
+
+    for (const lDoc of liqSnap.docs) {
+      const lData = lDoc.data() as any;
+      if (lData.status === 'voided' || lData.isDeleted === true) continue;
+      if ((lData.fundingSource || actData.fundingSource) !== 'student_contributions') continue;
+
+      const actualSpent = Number(lData.totalActualSpending) || 0;
+      const availableCoverage = Math.round((totalCollected + retainedTopUp) * 100) / 100;
+      const collectionDeficitAmount = Math.max(0, Math.round((actualSpent - availableCoverage) * 100) / 100);
+      const prevStatus = lData.collectionSettlementStatus;
+      const nextCollectionStatus =
+        prevStatus === 'deficit_absorbed'
+          ? 'deficit_absorbed'
+          : collectionDeficitAmount > 0.009
+          ? 'deficit_recovering'
+          : 'fully_recovered';
+
+      await updateDoc(lDoc.ref, {
+        totalProjectedCollection: totalProjected,
+        totalCollectedAtLiquidation: totalCollected,
+        uncollectedReceivablesAtLiquidation: uncollectedReceivables,
+        collectionDeficitAmount,
+        collectionSettlementStatus: nextCollectionStatus,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (liqErr) {
+    console.warn('[syncEventContributionCollectionSnapshot] Liquidation recovery update note:', liqErr);
+  }
+
+  return { totalCollected, totalProjected, uncollectedReceivables };
+}
+
+/**
+ * Batch-marks matched Student Contribution / Event Payables as PAID from an uploaded Cashier report,
+ * unlocks mobile QR tickets immediately, and credits total collected funds into sao_ledger + SAO_CAMPUS.
+ */
+export async function applyCashierContributionPayments(params: {
+  eventId: string;
+  eventTitle: string;
+  semesterId?: string | null;
+  schoolYear?: string;
+  semester?: string;
+  items: CashierContributionUploadItem[];
+  recordedByUid: string;
+  recordedByName: string;
+  batchReferenceNo?: string;
+  receiptProof?: CashierUploadReceiptProof | null;
+}): Promise<{
+  updatedCount: number;
+  totalCollectedAmount: number;
+  batchId: string;
+  routedToRetainedFund: boolean;
+}> {
+  const {
+    eventId,
+    eventTitle,
+    semesterId,
+    schoolYear,
+    semester,
+    items,
+    recordedByUid,
+    recordedByName,
+    batchReferenceNo,
+    receiptProof,
+  } = params;
+
+  if (!eventId || items.length === 0) {
+    return { updatedCount: 0, totalCollectedAmount: 0, batchId: '', routedToRetainedFund: false };
+  }
+
+  const batchId = `CASHIER-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  const nowTs = Timestamp.now();
+
+  const updatedEntries: Array<{
+    ref: any;
+    paidAmount: number;
+    orNumber: string;
+    paidAt: Timestamp;
+    addedAmount: number;
+  }> = [];
+
+  for (const item of items) {
+    const pRef = doc(db, PAYABLES_COLLECTION, item.payableId);
+    const snap = await getDoc(pRef);
+    if (!snap.exists()) continue;
+    const pData = snap.data() as any;
+    const st = String(pData.status || '').toLowerCase();
+    if (st === 'paid' || st === 'waived' || st === 'refunded' || st === 'cancelled') {
+      continue;
+    }
+
+    const assignedAmt = Number(pData.assignedAmount) || 0;
+    const effectivePaid = Math.max(0, Number(item.paidAmount) || assignedAmt);
+    if (effectivePaid <= 0) continue;
+
+    const alreadyTransferred = Math.max(0, Number(pData.transferredAmount) || 0);
+    const deltaToCredit = Math.max(0, effectivePaid - alreadyTransferred);
+
+    let paidAtTs = nowTs;
+    if (item.paidDate) {
+      const parsed = new Date(item.paidDate);
+      if (!isNaN(parsed.getTime())) {
+        paidAtTs = Timestamp.fromDate(parsed);
+      }
+    }
+
+    updatedEntries.push({
+      ref: pRef,
+      paidAmount: effectivePaid,
+      orNumber: (item.orNumber || batchReferenceNo || '').trim(),
+      paidAt: paidAtTs,
+      addedAmount: deltaToCredit,
+    });
+  }
+
+  if (updatedEntries.length === 0) {
+    return { updatedCount: 0, totalCollectedAmount: 0, batchId: '', routedToRetainedFund: false };
+  }
+
+  for (let i = 0; i < updatedEntries.length; i += 450) {
+    const chunk = updatedEntries.slice(i, i + 450);
+    const batch = writeBatch(db);
+    for (const entry of chunk) {
+      batch.update(entry.ref, {
+        status: 'paid',
+        paymentStatus: 'PAID',
+        paidAmount: entry.paidAmount,
+        balance: 0,
+        paymentMethod: 'cashier_upload',
+        orNumber: entry.orNumber || null,
+        receiptNumber: entry.orNumber || null,
+        cashierBatchReceiptUrl: receiptProof?.url || null,
+        paidAt: entry.paidAt,
+        recordedBy: recordedByUid,
+        recordedByName: recordedByName || 'SAS Admin',
+        qrTicketUnlocked: true,
+        transferredToBudget: true,
+        transferredAmount: entry.paidAmount,
+        transferredAt: serverTimestamp(),
+        transferredBatchId: batchId,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    await batch.commit();
+  }
+
+  const totalCollectedAmount = Math.round(
+    updatedEntries.reduce((sum, e) => sum + e.addedAmount, 0) * 100
+  ) / 100;
+
+  // Check if this activity's Financial Liquidation has already been approved & settled:
+  // - Before liquidation settlement: funds stay as active activity cash-on-hand (avoids double-counting when surplus returns).
+  // - After liquidation settlement (extra Cashier collection while activity is still open): credit directly to SAS Student Contribution & Retained Funds!
+  let isLiquidationSettled = false;
+  try {
+    const liqSnap = await getDocs(
+      query(collection(db, 'liquidations'), where('eventId', '==', eventId))
+    );
+    isLiquidationSettled = liqSnap.docs.some((d) => {
+      const ld = d.data() as any;
+      if (ld.isDeleted || ld.status === 'voided' || ld.status !== 'approved') return false;
+      const variance = Number(
+        ld.surplusOrDeficit ?? ((ld.allocatedBudget ?? 0) - (ld.totalActualSpending ?? 0))
+      ) || 0;
+      return (
+        ld.cashierSettlementStatus === 'verified' ||
+        ld.cashierSettlementStatus === 'not_required' ||
+        Math.abs(variance) < 0.01
+      );
+    });
+  } catch (liqErr) {
+    console.warn('[applyCashierContributionPayments] Liquidation settlement lookup note:', liqErr);
+  }
+
+  let routedToRetainedFund = false;
+  if (totalCollectedAmount > 0) {
+    await addDoc(collection(db, 'sao_ledger'), {
+      semesterId: semesterId || null,
+      date: nowTs,
+      description: isLiquidationSettled
+        ? `Post-Liquidation Extra Cashier Collection (${updatedEntries.length} student${updatedEntries.length === 1 ? '' : 's'}) – ${eventTitle}`
+        : `Cashier Student Contribution Upload (${updatedEntries.length} student${updatedEntries.length === 1 ? '' : 's'}) – ${eventTitle}`,
+      eventId,
+      type: 'income' as const,
+      source: 'student_collection' as const,
+      fundCategory: 'retained_student_activity_fund',
+      amount: totalCollectedAmount,
+      addedBy: recordedByName || recordedByUid || 'SAS Admin',
+      collectionId: batchId,
+      batchReferenceNo: batchReferenceNo || null,
+      receiptProofUrl: receiptProof?.url || null,
+      createdAt: serverTimestamp(),
+    });
+
+    if (isLiquidationSettled) {
+      try {
+        const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
+        await creditRetainedFundOnCollection({
+          collectionId: batchId,
+          amount: totalCollectedAmount,
+          organizationId: 'sas',
+          eventId,
+          eventTitle,
+          schoolYear,
+          semester,
+          description: `Extra Cashier Collection (Post-Liquidation • ${updatedEntries.length} paid) – ${eventTitle}`,
+          performedBy: recordedByName || recordedByUid || 'SAS Admin',
+        });
+        routedToRetainedFund = true;
+      } catch (retErr) {
+        console.warn('[applyCashierContributionPayments] SAO retained credit warning:', retErr);
+      }
+    }
+  }
+
+  await syncEventContributionCollectionSnapshot(eventId, {
+    batchId,
+    uploadedAt: new Date().toISOString(),
+    uploadedByUid: recordedByUid,
+    uploadedByName: recordedByName || 'SAS Admin',
+    paidCount: updatedEntries.length,
+    amountCollected: totalCollectedAmount,
+    batchReferenceNo: batchReferenceNo?.trim() || undefined,
+    receiptProof: receiptProof || null,
+  });
+
+  return {
+    updatedCount: updatedEntries.length,
+    totalCollectedAmount,
+    batchId,
+    routedToRetainedFund,
+  };
 }

@@ -1116,15 +1116,33 @@ export async function exportActivityProposalPDF(
     // Revenue section header row (2-col merged) + items (shaded Total Amount)
     const revThisYearSum = rawRevs.reduce((acc, r) => acc + (Number(r.thisYearProposed) || 0), 0);
     const revAdjSum = rawRevs.reduce((acc, r) => acc + (Number(r.adjustment) || 0), 0);
+    const pdfAllocList = Array.isArray((proposal as any).allocations) ? (proposal as any).allocations : [];
+    const pdfRevSummaryRem =
+      pdfAllocList.length > 0
+        ? `Allocations: ${pdfAllocList
+            .map((a: any) => `${a.bucketName} (P ${formatPdfAmount(Number(a.allocatedAmount) || 0)})`)
+            .join('; ')}`
+        : '';
     drawFinSummaryRow(
       'Revenue:',
       rawRevs.length > 0 ? formatPdfAmount(revThisYearSum) : '',
       rawRevs.length > 0 ? formatPdfAmount(fin.totalRevenue) : '',
-      rawRevs.length > 0 && revAdjSum !== 0 ? formatPdfAmount(revAdjSum) : ''
+      rawRevs.length > 0 && revAdjSum !== 0 ? formatPdfAmount(revAdjSum) : '',
+      pdfRevSummaryRem
     );
 
     if (rawRevs.length > 0) {
-      rawRevs.forEach((rev) => drawFinItemRow(rev));
+      rawRevs.forEach((rev) => {
+        const matchedAlloc =
+          rev.id && String(rev.id).startsWith('rev-bucket-')
+            ? pdfAllocList.find((a: any) => `rev-bucket-${a.bucketId}` === rev.id)
+            : undefined;
+        const allocNote = matchedAlloc
+          ? `Pulled Allocation: P ${formatPdfAmount(Number(matchedAlloc.allocatedAmount) || 0)}`
+          : '';
+        const mergedRem = [rev.remarks, allocNote].filter(Boolean).join(' • ');
+        drawFinItemRow({ ...rev, remarks: mergedRem });
+      });
     } else {
       drawFinItemRow();
     }

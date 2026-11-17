@@ -304,6 +304,14 @@ export async function buildAPTemplatePayload(proposal: Partial<ActivityProposal>
       ? `${proposal.estAttendanceCount} ${proposal.estAttendanceQualifier || 'Participants'}`
       : '');
 
+  const allocList = Array.isArray((proposal as any).allocations) ? (proposal as any).allocations : [];
+  const revenueSummaryRemarks =
+    allocList.length > 0
+      ? `Pulled Allocations: ${allocList
+          .map((a: any) => `${a.bucketName} (P ${formatAmount(a.allocatedAmount)})`)
+          .join(' + ')}`
+      : '';
+
   const data: APTemplateData = {
     submissionDate: formatDateLong(proposal.submissionDate || new Date()),
     activityTitle: proposal.title || '',
@@ -330,14 +338,24 @@ export async function buildAPTemplatePayload(proposal: Partial<ActivityProposal>
     revenueThisYearTotal: rawRevs.length > 0 ? formatAmount(revThisYearSum) : '',
     revenueTotalAmount: rawRevs.length > 0 ? formatAmount(fin.totalRevenue) : '',
     revenueAdjustmentTotal: rawRevs.length > 0 ? formatAmount(revAdjSum) : '',
-    revenueSummaryRemarks: '',
-    revenues: rawRevs.map((rev) => ({
-      description: rev.description || 'Revenue source',
-      lastYearActual: rev.lastYearActual ? formatAmount(rev.lastYearActual) : '',
-      thisYearProposed: rev.thisYearProposed ? formatAmount(rev.thisYearProposed) : '',
-      adjustment: rev.adjustment ? formatAmount(rev.adjustment) : '',
-      remarks: rev.remarks || '',
-    })),
+    revenueSummaryRemarks,
+    revenues: rawRevs.map((rev) => {
+      const matchedAlloc =
+        rev.id && String(rev.id).startsWith('rev-bucket-')
+          ? allocList.find((a: any) => `rev-bucket-${a.bucketId}` === rev.id)
+          : undefined;
+      const allocNote = matchedAlloc
+        ? `Pulled Allocation: P ${formatAmount(matchedAlloc.allocatedAmount)}`
+        : '';
+      const combinedRem = [rev.remarks, allocNote].filter(Boolean).join(' • ');
+      return {
+        description: rev.description || 'Revenue source',
+        lastYearActual: rev.lastYearActual ? formatAmount(rev.lastYearActual) : '',
+        thisYearProposed: rev.thisYearProposed ? formatAmount(rev.thisYearProposed) : '',
+        adjustment: rev.adjustment ? formatAmount(rev.adjustment) : '',
+        remarks: combinedRem,
+      };
+    }),
     expensesThisYearTotal: rawExps.length > 0 ? formatAmount(expThisYearSum) : '',
     expensesTotalAmount: formatAmount(fin.totalExpenses ?? 0),
     expensesAdjustmentTotal: rawExps.length > 0 ? formatAmount(expAdjSum) : '',

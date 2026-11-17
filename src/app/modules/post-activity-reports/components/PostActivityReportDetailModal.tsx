@@ -34,6 +34,12 @@ import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewe
 import { diffPostActivityReport } from '../../workflow/utils/document-diff-engine';
 import StepReturnRevisionModal from '../../workflow/components/StepReturnRevisionModal';
 import { PAR_SECTIONS_FOR_REVISION } from '../types/par.types';
+import { usePARActivityFinancials } from '../hooks/usePARActivityFinancials';
+import { PARFinancialTransactionsSection } from './PARFinancialTransactionsSection';
+import PARFinancialReportModal from '../../../signatory/components/PARFinancialReportModal';
+import PARDocumentsAndVoucherModal, {
+  type PARConsolidatedAttachmentItem,
+} from '../../../signatory/components/PARDocumentsAndVoucherModal';
 
 interface PostActivityReportDetailModalProps {
   isOpen: boolean;
@@ -73,6 +79,59 @@ export default function PostActivityReportDetailModal({
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
+  const [showFinancialModal, setShowFinancialModal] = useState(false);
+  const [showDocumentsModal, setShowDocumentsModal] = useState(false);
+
+  const activityFinancials = usePARActivityFinancials({
+    isOpen,
+    report,
+  });
+
+  const detailConsolidatedAttachments = useMemo<PARConsolidatedAttachmentItem[]>(() => {
+    const items: PARConsolidatedAttachmentItem[] = [];
+    if (!report) return items;
+    if (report.mechanicsAttachmentUrl) {
+      items.push({
+        id: 'par-mechanics',
+        name: report.mechanicsAttachmentName || 'Actual Mechanics Sheet',
+        url: report.mechanicsAttachmentUrl,
+        category: 'Mechanics Sheet',
+      });
+    }
+    if (report.attendanceSummary?.attendanceListUrl) {
+      items.push({
+        id: 'par-attendance',
+        name: report.attendanceSummary.attendanceListName || 'Attendance List / Sheet',
+        url: report.attendanceSummary.attendanceListUrl,
+        category: 'Attendance Sheet',
+      });
+    }
+    if (report.evaluationSummaryUrl) {
+      items.push({
+        id: 'par-eval',
+        name: 'Feedback / Evaluation Summary',
+        url: report.evaluationSummaryUrl,
+        category: 'Evaluation Summary',
+      });
+    }
+    (report.financialSummary?.attachments || []).forEach((f, idx) => {
+      items.push({
+        id: f.id || `par-fin-${idx}`,
+        name: f.name || `Financial Attachment ${idx + 1}`,
+        url: f.url,
+        category: 'Financial Attachment',
+      });
+    });
+    (report.supportingDocuments || []).forEach((f, idx) => {
+      items.push({
+        id: f.id || `par-sup-${idx}`,
+        name: f.name || `Supporting Document ${idx + 1}`,
+        url: f.url,
+        category: 'Supporting Document',
+      });
+    });
+    return items;
+  }, [report]);
 
   // Compute latest snapshot and differences if report was revised
   const latestSnapshot = useMemo(() => {
@@ -153,8 +212,13 @@ export default function PostActivityReportDetailModal({
     if (!permissions.canApprove) return;
     setIsReviewing(true);
     try {
+      const repSource = (report as any).fundingSource;
+      const isDirectSasPar =
+        repSource === 'organization_funds' ||
+        (Boolean((report as any).isOfficerPar) &&
+          (repSource === 'student_contributions' || repSource === 'zero_budget'));
       const isSchoolBudgetGate =
-        (report as any).fundingSource !== 'organization_funds' &&
+        !isDirectSasPar &&
         (report as any).isPendingSasVetting === true &&
         (report.approvalChain || []).length > 0;
       await approvePAR(report.id, effectiveUser.uid, effectiveUser.name || 'Institutional Signatory', 'Approved by Student Affairs Services.');
@@ -405,40 +469,34 @@ export default function PostActivityReportDetailModal({
               </div>
             </div>
 
-            {/* Financial report */}
-            <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs">
-              <div className="flex items-center gap-2 mb-3">
-                <DollarSign className="w-4 h-4 text-emerald-600" />
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                  Financial report
-                </h4>
-              </div>
-              <div className="grid grid-cols-3 gap-2 text-center mb-3">
-                <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block">Revenue</span>
-                  <span className="text-xs font-bold text-slate-800">
-                    {formatCurrency(report.financialSummary?.totalRevenue || 0)}
-                  </span>
-                </div>
-                <div className="bg-slate-50 p-2 rounded-lg border border-slate-200">
-                  <span className="text-[10px] text-slate-500 block">Total Expenses</span>
-                  <span className="text-xs font-bold text-slate-800">
-                    {formatCurrency(report.financialSummary?.totalDisbursed || 0)}
-                  </span>
-                </div>
-                <div className="bg-emerald-50 p-2 rounded-lg border border-emerald-200">
-                  <span className="text-[10px] text-emerald-700 block font-semibold">Balance (Revenue less Expenses)</span>
-                  <span className="text-xs font-bold text-emerald-800">
-                    {formatVariance(netBalance)}
-                  </span>
-                </div>
-              </div>
-              <p className="text-[11px] text-slate-500">
-                {report.financialSummary?.copiedFromLiquidation
-                  ? 'Financial figures synced directly from the cleared Financial Liquidation.'
-                  : 'Financial figures sourced from the approved Activity Proposal.'}
-              </p>
-            </div>
+            {/* Financial Report, Anticipated vs. Actual & Activity Transactions */}
+            <PARFinancialTransactionsSection
+              anticipatedExpenses={activityFinancials.anticipatedExpenses}
+              anticipatedLineItems={activityFinancials.anticipatedLineItems}
+              disbursedBudget={
+                activityFinancials.disbursedBudget || report.financialSummary?.totalRevenue || 0
+              }
+              actualSpent={
+                activityFinancials.actualSpent || report.financialSummary?.totalDisbursed || 0
+              }
+              variance={
+                activityFinancials.linkedLiquidation
+                  ? activityFinancials.variance
+                  : netBalance
+              }
+              linkedLiquidation={activityFinancials.linkedLiquidation}
+              copiedFromLiquidation={report.financialSummary?.copiedFromLiquidation}
+              sourceAllocations={activityFinancials.sourceAllocations}
+              surplusReturnAllocations={activityFinancials.surplusReturnAllocations}
+              deficitDeductionAllocations={activityFinancials.deficitDeductionAllocations}
+              ledgerTransactions={activityFinancials.ledgerTransactions}
+              voucher={activityFinancials.voucher}
+              lineItemReceipts={activityFinancials.lineItemReceipts}
+              settlementProofs={activityFinancials.settlementProofs}
+              loading={activityFinancials.loading}
+              onOpenFinancialModal={() => setShowFinancialModal(true)}
+              onOpenDocumentsModal={() => setShowDocumentsModal(true)}
+            />
           </div>
 
           {/* Section 3: Objectives & Results */}
@@ -587,12 +645,26 @@ export default function PostActivityReportDetailModal({
             </div>
           </div>
 
-          {/* VIII. Attachments (if applicable) */}
-          {(report.attachmentsChecklist || (report.supportingDocuments && report.supportingDocuments.length > 0)) && (
+          {/* VIII. Attachments & Linked Financial Liquidation Proofs */}
+          {(report.attachmentsChecklist ||
+            (report.supportingDocuments && report.supportingDocuments.length > 0) ||
+            activityFinancials.voucher?.fileUrl ||
+            activityFinancials.settlementProofs.length > 0 ||
+            activityFinancials.lineItemReceipts.length > 0) && (
             <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-                VIII. Attachments (if applicable)
-              </h4>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                  VIII. Attachments &amp; Financial Liquidation Proofs
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setShowDocumentsModal(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-[11px] font-bold cursor-pointer"
+                >
+                  <Eye className="w-3.5 h-3.5 text-[#FFD41C]" />
+                  <span>Open Unified Document &amp; Proof Viewer</span>
+                </button>
+              </div>
               {report.attachmentsChecklist && (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                   {[
@@ -648,6 +720,62 @@ export default function PostActivityReportDetailModal({
                         <FileText className="w-3.5 h-3.5 text-[#0E4EBD] shrink-0" />
                         <span className="truncate max-w-[220px]">{docFile.name}</span>
                         <Download className="w-3 h-3 text-[#0E4EBD] shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(activityFinancials.voucher?.fileUrl ||
+                activityFinancials.settlementProofs.length > 0 ||
+                activityFinancials.lineItemReceipts.length > 0) && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block">
+                    Financial Liquidation Voucher, Receipts &amp; Settlement Proofs
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {activityFinancials.voucher?.fileUrl && (
+                      <a
+                        href={activityFinancials.voucher.fileUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-200 text-xs font-semibold transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span className="truncate max-w-[220px]">
+                          Voucher: {activityFinancials.voucher.fileName || 'Disbursement Voucher'}
+                        </span>
+                        <Download className="w-3 h-3 text-emerald-700 shrink-0" />
+                      </a>
+                    )}
+                    {activityFinancials.settlementProofs.map((sp, idx) => (
+                      <a
+                        key={sp.id || idx}
+                        href={sp.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-semibold transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                        <span className="truncate max-w-[220px]">
+                          {activityFinancials.variance < -0.009 ? 'Reimbursement' : 'Cashier'} Proof: {sp.name || `#${idx + 1}`}
+                        </span>
+                        <Download className="w-3 h-3 text-indigo-700 shrink-0" />
+                      </a>
+                    ))}
+                    {activityFinancials.lineItemReceipts.map((rec) => (
+                      <a
+                        key={rec.id}
+                        href={rec.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-800 border border-slate-200 text-xs font-semibold transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                        <span className="truncate max-w-[220px]">
+                          {rec.category}: {rec.itemDescription || rec.name}
+                        </span>
+                        <Download className="w-3 h-3 text-slate-600 shrink-0" />
                       </a>
                     ))}
                   </div>
@@ -793,7 +921,13 @@ export default function PostActivityReportDetailModal({
                 className="px-5 py-2 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
               >
                 {isReviewing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                {(report as any).fundingSource !== 'organization_funds' && (report as any).isPendingSasVetting === true
+                {(report as any).fundingSource !== 'organization_funds' &&
+                !(
+                  Boolean((report as any).isOfficerPar) &&
+                  ((report as any).fundingSource === 'student_contributions' ||
+                    (report as any).fundingSource === 'zero_budget')
+                ) &&
+                (report as any).isPendingSasVetting === true
                   ? 'Approve & Release to Signatories'
                   : 'Approve & Sign as SAS'}
               </button>
@@ -838,7 +972,12 @@ export default function PostActivityReportDetailModal({
 
       {/* SAS PAR Approval / Release Confirmation Modal */}
       {showApproveConfirmModal && report && (() => {
-        const isRelease = (report as any).fundingSource !== 'organization_funds' && (report as any).isPendingSasVetting === true;
+        const repSrc = (report as any).fundingSource;
+        const isDirectSasPar =
+          repSrc === 'organization_funds' ||
+          (Boolean((report as any).isOfficerPar) &&
+            (repSrc === 'student_contributions' || repSrc === 'zero_budget'));
+        const isRelease = !isDirectSasPar && (report as any).isPendingSasVetting === true;
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
             <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
@@ -925,6 +1064,34 @@ export default function PostActivityReportDetailModal({
           </div>
         );
       })()}
+
+      {/* Dedicated PAR Financial Report (Anticipated vs. Actual, Transactions & Receipts) */}
+      <PARFinancialReportModal
+        isOpen={showFinancialModal}
+        onClose={() => setShowFinancialModal(false)}
+        eventTitle={report.eventTitle}
+        totalRevenue={activityFinancials.disbursedBudget || report.financialSummary?.totalRevenue || 0}
+        totalDisbursed={activityFinancials.actualSpent || report.financialSummary?.totalDisbursed || 0}
+        parLineItems={report.financialSummary?.lineItems || []}
+        parFinancialAttachments={report.financialSummary?.attachments}
+        linkedLiquidation={activityFinancials.linkedLiquidation}
+        copiedFromLiquidation={report.financialSummary?.copiedFromLiquidation}
+        anticipatedExpenses={activityFinancials.anticipatedExpenses}
+        anticipatedLineItems={activityFinancials.anticipatedLineItems}
+        ledgerTransactions={activityFinancials.ledgerTransactions}
+        sourceAllocations={activityFinancials.sourceAllocations}
+        surplusReturnAllocations={activityFinancials.surplusReturnAllocations}
+        deficitDeductionAllocations={activityFinancials.deficitDeductionAllocations}
+      />
+
+      {/* Dedicated PAR Disbursement Voucher & Attached FL Proofs Viewer */}
+      <PARDocumentsAndVoucherModal
+        isOpen={showDocumentsModal}
+        onClose={() => setShowDocumentsModal(false)}
+        eventTitle={report.eventTitle}
+        linkedLiquidation={activityFinancials.linkedLiquidation}
+        attachments={detailConsolidatedAttachments}
+      />
     </div>
   );
 }

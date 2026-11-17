@@ -253,11 +253,27 @@ export function mapHistoricalLineItems(
       !currentProjections.revenues[0].description &&
       currentProjections.revenues[0].thisYearProposed === 0);
 
+  const extractParticularSignal = (row?: Partial<FinancialLineItem>): string => {
+    if (!row) return '';
+    const remMatch = String(row.remarks || '').match(/\(([^)]+)\)/);
+    if (remMatch && remMatch[1]) return remMatch[1].trim().toLowerCase();
+    const lines = String(row.description || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !/^\((?:tertiary|shs|all)\)$/i.test(l));
+    return (lines[0] || String(row.description || '')).toLowerCase().trim();
+  };
+
   if (isCurrentRevEmpty && pastRevenues.length > 0) {
     updatedRevenues = pastRevenues.map((past, idx) => {
       const pastAmt = Number(past.totalAmount || past.thisYearProposed || 0);
+      const preservedId =
+        String(past.id || '').startsWith('rev-bucket-') ||
+        String(past.id || '').startsWith('rev-contrib-')
+          ? past.id
+          : `rev-hist-${Date.now()}-${idx + 1}`;
       return {
-        id: `rev-${Date.now()}-${idx + 1}`,
+        id: preservedId,
         description: past.description || 'Revenue Source',
         lastYearActual: pastAmt,
         originalLastYearActual: pastAmt,
@@ -271,8 +287,16 @@ export function mapHistoricalLineItems(
   } else {
     updatedRevenues = currentProjections.revenues.map((curr) => {
       const descLower = (curr.description || '').toLowerCase().trim();
+      const currSig = extractParticularSignal(curr);
       const matchedPast = pastRevenues.find((p) => {
+        if (curr.id && p.id && curr.id === p.id && String(curr.id).startsWith('rev-bucket-')) {
+          return true;
+        }
         const pDesc = (p.description || '').toLowerCase().trim();
+        const pSig = extractParticularSignal(p);
+        if (currSig && pSig && (currSig === pSig || (currSig.length > 3 && pSig.includes(currSig)) || (pSig.length > 3 && currSig.includes(pSig)))) {
+          return true;
+        }
         return pDesc === descLower || (descLower.length > 2 && pDesc.includes(descLower)) || (pDesc.length > 2 && descLower.includes(pDesc));
       });
 
