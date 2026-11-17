@@ -850,28 +850,32 @@ Output ONLY the paragraph text.
           });
         }
 
-        // Bridge real-time attendance logs + Activity Proposal Estimated Attendance & Target Market
+        // Bridge real-time attendance logs + Activity Proposal Estimated Attendance & Target Market.
+        // When editing/resubmitting an existing PAR for this event, preserve the user's saved attendance inputs.
+        const savedAtt = initialReport?.eventId === selectedEventId ? initialReport?.attendanceSummary : undefined;
         try {
           const attResult = await computeEventAttendanceSummary(selectedEventId, evData, proposalDoc);
-          setEstimatedAttendance(attResult.estimatedAttendance);
-          setEstimatedAttendanceLabel(attResult.estimatedAttendanceLabel || '');
-          setAttendedCount(attResult.attendedCount);
-          setRegisteredCount(attResult.registeredCount);
-          setTurnoutRate(attResult.turnoutRate);
-          setHowManyAttended(attResult.howManyAttended);
-          setWhoAttended(attResult.whoAttended || '');
-          setTargetAudience(attResult.targetAudience || '');
+          setEstimatedAttendance(savedAtt?.estimatedAttendance ?? attResult.estimatedAttendance);
+          setEstimatedAttendanceLabel((savedAtt as any)?.estimatedAttendanceLabel ?? (attResult.estimatedAttendanceLabel || ''));
+          setAttendedCount(typeof savedAtt?.attendedCount === 'number' ? savedAtt.attendedCount : attResult.attendedCount);
+          setRegisteredCount(typeof savedAtt?.registeredCount === 'number' ? savedAtt.registeredCount : attResult.registeredCount);
+          setTurnoutRate(typeof savedAtt?.turnoutRate === 'number' ? savedAtt.turnoutRate : attResult.turnoutRate);
+          setHowManyAttended(savedAtt?.howManyAttended || attResult.howManyAttended);
+          setWhoAttended(savedAtt?.whoAttended !== undefined ? savedAtt.whoAttended : (attResult.whoAttended || ''));
+          setTargetAudience(savedAtt?.targetAudience !== undefined ? savedAtt.targetAudience : (attResult.targetAudience || ''));
           setHasScannedAttendance(attResult.hasAttendanceLogs);
         } catch (attErr) {
           console.warn('[PostActivityReportWizardModal] Attendance bridge fallback:', attErr);
-          setEstimatedAttendance(0);
-          setEstimatedAttendanceLabel('');
-          setAttendedCount(0);
-          setRegisteredCount(0);
-          setTurnoutRate(0);
-          setHowManyAttended('');
-          setWhoAttended('');
-          setTargetAudience('');
+          if (!savedAtt) {
+            setEstimatedAttendance(0);
+            setEstimatedAttendanceLabel('');
+            setAttendedCount(0);
+            setRegisteredCount(0);
+            setTurnoutRate(0);
+            setHowManyAttended('');
+            setWhoAttended('');
+            setTargetAudience('');
+          }
           setHasScannedAttendance(false);
         }
 

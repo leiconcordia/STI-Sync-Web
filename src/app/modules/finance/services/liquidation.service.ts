@@ -461,7 +461,10 @@ export const createLiquidationReport = async (
     );
   }
 
-  const isOrgFunds = (data as any).fundingSource === 'organization_funds';
+  const isOrgFunds =
+    !isSasCreator &&
+    ((data as any).fundingSource === 'organization_funds' ||
+      (data as any).fundingSource === 'student_contributions');
   const requiresSasPreApprovalGate = !isSasCreator && !isOrgFunds;
 
   // If submitting right away, hold in waiting if SAS Pre-Approval Gate is required; otherwise activate Stage 1 steps
@@ -1063,8 +1066,18 @@ export const approveLiquidationReport = async (
     ? ({ id: snap.id, ...(snap.data() as any) } as LiquidationDocument)
     : (liquidationData as LiquidationDocument);
 
+  const orgLower = String(docData?.organizationId || '').trim().toLowerCase();
+  const isSasLiquidation =
+    docData?.createdByRole === 'admin' ||
+    docData?.createdByRole === 'sas_admin' ||
+    !orgLower ||
+    ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgLower);
+  const isClubDirectLedgerSettlement =
+    !isSasLiquidation &&
+    ((docData as any)?.fundingSource === 'organization_funds' ||
+      (docData as any)?.fundingSource === 'student_contributions');
   const isOrgFunds =
-    (docData as any)?.fundingSource === 'organization_funds' ||
+    isClubDirectLedgerSettlement ||
     ((docData?.approvalChain || []).length === 1 && (docData?.approvalChain || [])[0].role === 'sas_head');
 
   // If School Budget with Signatory Pipeline awaiting SAS clearance, release to Stage 1 Signatories!
@@ -1123,6 +1136,9 @@ export const approveLiquidationReport = async (
       : [],
   };
   const settlementFields = resolvePostApprovalSettlement(mergedForSettlement);
+  if (isClubDirectLedgerSettlement) {
+    settlementFields.cashierSettlementStatus = 'verified';
+  }
 
   await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'approved',
@@ -1159,8 +1175,8 @@ export const approveLiquidationReport = async (
     }
   }
 
-  // Only post to ledger immediately on exact match (variance === 0); otherwise hold until Phase 2 Post-Approval Settlement
-  if (Math.abs(rawVariance) < 0.01) {
+  // Post to ledger immediately for Club internal ledger liquidations (no Campus Cashier needed) or exact match (variance === 0)
+  if (isClubDirectLedgerSettlement || Math.abs(rawVariance) < 0.01) {
     try {
       await postLiquidationToLedger(id, mergedApprovedData, adminUserId);
       await settlePreLiquidationExcessCollectionsIfAny(id, mergedApprovedData, adminUserId);
@@ -1474,6 +1490,19 @@ export async function endorseLiquidationStep(
       rawUpdates,
       resolvePostApprovalSettlement({ ...data, allocations: resolvedAllocs })
     );
+    const dOrgLower = String(data.organizationId || '').trim().toLowerCase();
+    const isSasLiqDoc =
+      data.createdByRole === 'admin' ||
+      data.createdByRole === 'sas_admin' ||
+      !dOrgLower ||
+      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(dOrgLower);
+    if (
+      !isSasLiqDoc &&
+      ((data as any).fundingSource === 'organization_funds' ||
+        (data as any).fundingSource === 'student_contributions')
+    ) {
+      rawUpdates.cashierSettlementStatus = 'verified';
+    }
   }
 
   await updateDoc(docRef, sanitizeFirestorePayload(rawUpdates));
@@ -1496,18 +1525,28 @@ export async function endorseLiquidationStep(
     }
   }
 
-  // If newly approved, hold ledger/bucket posting when variance !== 0 so Phase 2 Settlement
-  // verifies Cashier/Reimbursement proof & bucket routing before any balance moves.
+  // If newly approved, post immediately for Club internal ledger liquidations or exact match (variance === 0)
   if (isFullyApproved && !wasAlreadyApproved) {
     const variance =
       Number(
         data.surplusOrDeficit ??
           ((data.allocatedBudget ?? 0) - (data.totalActualSpending ?? 0))
       ) || 0;
+    const dOrgLower = String(data.organizationId || '').trim().toLowerCase();
+    const isSasLiqDoc =
+      data.createdByRole === 'admin' ||
+      data.createdByRole === 'sas_admin' ||
+      !dOrgLower ||
+      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(dOrgLower);
+    const isClubDirect =
+      !isSasLiqDoc &&
+      ((data as any).fundingSource === 'organization_funds' ||
+        (data as any).fundingSource === 'student_contributions');
 
-    if (Math.abs(variance) < 0.01) {
+    if (isClubDirect || Math.abs(variance) < 0.01) {
       try {
         await postLiquidationToLedger(liquidationId, { ...data, ...rawUpdates }, signerUid);
+        await settlePreLiquidationExcessCollectionsIfAny(liquidationId, { ...data, ...rawUpdates }, signerUid);
       } catch (ledgerErr) {
         console.warn('[endorseLiquidationStep] Ledger write note:', ledgerErr);
       }
@@ -1715,10 +1754,6 @@ async function postLiquidationToLedger(
   adminUserId?: string
 ) {
   const netAmount = data?.surplusOrDeficit ?? ((data?.allocatedBudget ?? 0) - (data?.totalActualSpending ?? 0));
-  if (netAmount === 0) return;
-
-  const isSurplus = netAmount > 0;
-  const absAmount = Math.abs(netAmount);
   const eventTitle = data?.eventTitle || 'Event Liquidation';
   const semesterId = data?.semesterId || null;
   const eventId = data?.eventId || null;
@@ -1735,6 +1770,40 @@ async function postLiquidationToLedger(
       meta.effectiveFundingSource !== 'school_budget' &&
       meta.effectiveFundingSource !== 'retained_sao_fund' &&
       data?.createdByRole !== 'admin');
+
+  // For Organization Student Contribution activities:
+  // Student payments are credited as +Income into organization_ledger as they pay, and no upfront event_budget was deducted on AP approval.
+  // So upon FL approval, record the actual liquidated event expense (-Expense) in organization_ledger so the net surplus stays accurately in the club's ledger.
+  if (isClubLiquidation && !isSasSentinel && meta.effectiveFundingSource === 'student_contributions') {
+    const actualSpent = Math.max(0, Math.round((Number(data?.totalActualSpending) || 0) * 100) / 100);
+    if (actualSpent > 0.009) {
+      const orgLedgerRef = collection(db, 'organization_ledger');
+      const expCollId = `${liquidationId}_org_contrib_expense`;
+      const qDupExp = query(orgLedgerRef, where('collectionId', '==', expCollId));
+      if ((await getDocs(qDupExp)).empty) {
+        await addDoc(orgLedgerRef, {
+          organizationId: meta.organizationId,
+          semesterId,
+          date: Timestamp.now(),
+          description: `Liquidated Activity Expenses (Student Contribution) – ${eventTitle}`,
+          eventId,
+          type: 'expense' as const,
+          source: 'event_budget' as const,
+          fundCategory: 'retained_student_activity_fund',
+          amount: actualSpent,
+          addedBy: adminUserId || 'SAS Admin',
+          collectionId: expCollId,
+          createdAt: serverTimestamp(),
+        });
+      }
+    }
+    return;
+  }
+
+  if (netAmount === 0) return;
+
+  const isSurplus = netAmount > 0;
+  const absAmount = Math.abs(netAmount);
 
   const isRetainedOrStudentContribution =
     meta.effectiveFundingSource === 'student_contributions' ||

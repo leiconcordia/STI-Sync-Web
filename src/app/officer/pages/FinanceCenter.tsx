@@ -61,6 +61,7 @@ function ApprovedOrgActivitiesPanel({
         const fs = (ev.fundingSource || '').toString().trim().toLowerCase();
         const isOrgFunded =
           fs === 'organization_funds' ||
+          fs === 'student_contributions' ||
           fs === 'organization' ||
           fs === 'org_funds' ||
           fs === 'club_funds';
@@ -93,8 +94,12 @@ function ApprovedOrgActivitiesPanel({
             0
         );
 
+        const isContribSource =
+          (ev.fundingSource || '').toString().trim().toLowerCase() === 'student_contributions';
         const allocTx = ledgerData.find(
-          (tx) => tx.eventId === ev.id && tx.source === 'event_budget'
+          (tx) =>
+            tx.eventId === ev.id &&
+            (tx.source === 'event_budget' || (isContribSource && tx.source === 'student_collection'))
         );
         const settlementTx = ledgerData.find(
           (tx) =>
@@ -1326,6 +1331,7 @@ function OrgCollectionDetailModal({
   isPast,
   onClose,
   onTransfer,
+  onRecordPayment,
   officerStudentId,
   officerName,
   organizationId,
@@ -1335,6 +1341,7 @@ function OrgCollectionDetailModal({
   isPast: boolean;
   onClose: () => void;
   onTransfer: () => void;
+  onRecordPayment?: (payable: PayableDocument, studentName: string, studentSchoolId: string) => void;
   officerStudentId: string;
   officerName?: string;
   organizationId: string;
@@ -1698,6 +1705,43 @@ function OrgCollectionDetailModal({
                                 <CheckCircle className="w-3 h-3 text-green-600" />
                                 <span>Paid</span>
                               </span>
+                            ) : !isPast && !isCancelled && onRecordPayment ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onRecordPayment(
+                                    {
+                                      id: p.payableDocId || p.id,
+                                      studentId: p.studentId,
+                                      studentName: p.name,
+                                      studentSchoolId: p.studentId,
+                                      type: collection.type || 'event_fee',
+                                      label: collection.eventName,
+                                      description: p.description || collection.eventName,
+                                      organizationId: collection.organizationId || organizationId,
+                                      organizationName: organizationName || null,
+                                      semesterId: '',
+                                      eventId: collection.eventId && collection.eventId !== 'unassigned' ? collection.eventId : null,
+                                      assignedAmount: collection.payablePerStudent,
+                                      paidAmount: p.amount || 0,
+                                      status: 'pending',
+                                      dueDate: null,
+                                      paidAt: null,
+                                      recordedBy: null,
+                                      paymentMethod: null,
+                                      createdBy: '',
+                                      createdAt: {} as any,
+                                      updatedAt: {} as any,
+                                    } as PayableDocument,
+                                    p.name,
+                                    p.studentId
+                                  );
+                                }}
+                                className="px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold text-[11px] inline-flex items-center gap-1 shadow-2xs cursor-pointer transition-colors"
+                              >
+                                <CheckCircle className="w-3 h-3" />
+                                <span>Record Payment</span>
+                              </button>
                             ) : (
                               <span className="text-gray-400 text-xs select-none">—</span>
                             )}
@@ -2690,6 +2734,15 @@ function StudentCollectionsAndPayablesTab({
             handleTransfer(viewCollection);
             setViewCollection(null);
           }}
+          onRecordPayment={(payableDoc, sName, sSchoolId) => {
+            setViewCollection(null);
+            setPaymentModalData({
+              payables: [payableDoc],
+              defaultPayableId: payableDoc.id,
+              studentName: sName,
+              studentSchoolId: sSchoolId,
+            });
+          }}
           officerStudentId={officerStudentId}
           officerName={officerProfile?.studentName || 'Student Officer'}
           organizationId={organizationId}
@@ -2764,10 +2817,10 @@ export default function FinanceCenter() {
 
   const { data: payablesData } = useOrgPayables(activeOrgId, selectedSemId);
 
-  // Strictly isolate non-event payables (membership dues, club fines, custom dues)
-  // Event ticket fees & payables are managed under Event Management (/officer/events)
+  // Include all organization payables (membership dues, club fines, custom dues, and club Student Contribution event fees)
+  // so Officers can record payments and track all club collections directly inside Finance Center.
   const orgNonEventPayables = useMemo(() => {
-    return payablesData.filter((p) => p.type !== 'event_fee' && !p.eventId);
+    return payablesData;
   }, [payablesData]);
 
   const [activeTab, setActiveTab] = useState<FinanceTab>("budget");

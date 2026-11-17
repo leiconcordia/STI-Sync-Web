@@ -441,7 +441,9 @@ export default function PostActivityReportDetailModal({
                   <span className="text-[11px] text-blue-700 block font-semibold">How many attended?</span>
                   <div className="flex items-center justify-center gap-1.5">
                     <span className="text-base font-black text-blue-800">
-                      {report.attendanceSummary?.attendedCount || 0}
+                      {report.attendanceSummary?.attendedCount !== undefined
+                        ? report.attendanceSummary.attendedCount
+                        : (report.attendanceSummary?.howManyAttended || 0)}
                     </span>
                     {report.attendanceSummary?.turnoutRate !== undefined && (
                       <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded border border-emerald-300">
@@ -460,7 +462,7 @@ export default function PostActivityReportDetailModal({
                 </p>
                 <div className="flex items-center gap-1.5 flex-wrap">
                   <p>
-                    <strong>Who attended?:</strong> {report.attendanceSummary?.whoAttended || 'College / SHS Students'}
+                    <strong>Who attended?:</strong> {report.attendanceSummary?.whoAttended || report.attendanceSummary?.targetAudience || 'College / SHS Students'}
                   </p>
                   {diffByPath.get('attendanceSummary.whoAttended') && (
                     <InlineRevisionBadge diff={diffByPath.get('attendanceSummary.whoAttended')} />

@@ -544,8 +544,19 @@ export async function recordPayment(
   }
 
   const newPaidAmount = currentPaid + actualPayment;
-  const transferredAmt = typeof data.transferredAmount === 'number' ? data.transferredAmount : 0;
-  const isFullyTransferred = transferredAmt >= newPaidAmount && newPaidAmount > 0;
+  const orgIdClean = String(data.organizationId || '').trim();
+  const isClubOwnedPayable =
+    Boolean(orgIdClean) &&
+    !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgIdClean.toLowerCase());
+
+  const transferredAmt = isClubOwnedPayable
+    ? newPaidAmount
+    : typeof data.transferredAmount === 'number'
+      ? data.transferredAmount
+      : 0;
+  const isFullyTransferred = isClubOwnedPayable
+    ? true
+    : transferredAmt >= newPaidAmount && newPaidAmount > 0;
 
   let newStatus: PayableStatus = 'partial';
   let paidAtTimestamp: Timestamp | null = data.paidAt || null;
@@ -567,6 +578,10 @@ export async function recordPayment(
       ? 'PARTIAL'
       : 'UNPAID';
 
+  const autoTransferBatchId = isClubOwnedPayable
+    ? `ORG-PAY-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
+    : undefined;
+
   const updates: Record<string, any> = {
     paidAmount: newPaidAmount,
     amountPaid: newPaidAmount,
@@ -577,6 +592,13 @@ export async function recordPayment(
     recordedBy,
     paymentMethod,
     transferredToBudget: isFullyTransferred,
+    ...(isClubOwnedPayable
+      ? {
+          transferredAmount: newPaidAmount,
+          transferredAt: serverTimestamp(),
+          transferredBatchId: autoTransferBatchId,
+        }
+      : {}),
     updatedAt: serverTimestamp(),
   };
 
@@ -591,6 +613,39 @@ export async function recordPayment(
   }
 
   await updateDoc(payableRef, updates);
+
+  // Automatically record payment into the Club's own organization_ledger so it immediately appears in Finance Center Budget Ledger Transactions
+  if (isClubOwnedPayable && actualPayment > 0) {
+    try {
+      const labelTitle =
+        data.label || (data as any).eventTitle || (data as any).title || 'Club Payable';
+      const studentLabel = data.studentName || data.studentSchoolId || data.studentId || 'Student';
+      await addDoc(collection(db, 'organization_ledger'), {
+        organizationId: orgIdClean,
+        semesterId: data.semesterId || null,
+        date: Timestamp.now(),
+        description: `Student Payment (${studentLabel}) – ${labelTitle}`,
+        eventId: data.eventId || null,
+        type: 'income' as const,
+        source: 'student_collection' as const,
+        amount: Math.round(actualPayment * 100) / 100,
+        addedBy: recordedBy || 'Officer',
+        collectionId: autoTransferBatchId || payableId,
+        receiptNumber: receiptNumber || null,
+        createdAt: serverTimestamp(),
+      });
+    } catch (ledgerErr) {
+      console.warn('[recordPayment] Auto org ledger write warning:', ledgerErr);
+    }
+  }
+
+  if (data.eventId) {
+    try {
+      await syncEventContributionCollectionSnapshot(data.eventId);
+    } catch (syncErr) {
+      console.warn('[recordPayment] Event collection snapshot sync warning:', syncErr);
+    }
+  }
 }
 
 /**
@@ -641,6 +696,10 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
       const assigned = existingData
         ? Number(existingData.assignedAmount ?? existingData.amount ?? 0)
         : 0;
+      const orgIdClean = String(existingData?.organizationId || '').trim();
+      const isClubOwned =
+        Boolean(orgIdClean) &&
+        !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgIdClean.toLowerCase());
       const updatePayload: Record<string, any> = {
         status: 'paid' as PayableStatus,
         paymentStatus: 'PAID',
@@ -648,6 +707,13 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
         paidAt: serverTimestamp(),
         recordedBy,
         paymentMethod: 'cash',
+        ...(isClubOwned
+          ? {
+              transferredToBudget: true,
+              transferredAmount: assigned,
+              transferredAt: serverTimestamp(),
+            }
+          : {}),
         updatedAt: serverTimestamp(),
       };
       if (assigned > 0) {

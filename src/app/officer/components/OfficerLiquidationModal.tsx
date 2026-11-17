@@ -68,10 +68,15 @@ import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream'
 import { useRetainedActivityFunds } from '../../modules/finance/hooks/useRetainedFundStream';
 import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
 import { useEventPayablesStream } from '../../modules/finance/hooks/usePayableStream';
-import { validateDeficitDeductionAllocations } from '../../modules/activity-proposals/utils/proposal-calculations';
+import {
+  validateDeficitDeductionAllocations,
+  validateSurplusReturnAllocations,
+  rebalanceSurplusReturnAllocations,
+} from '../../modules/activity-proposals/utils/proposal-calculations';
 import type {
   DeficitDeductionAllocation,
   ProposalBucketAllocation,
+  SurplusReturnAllocation,
 } from '../../modules/activity-proposals/types/proposal.types';
 import { subscribeToSignatories } from '../../modules/signatories/services/signatory.service';
 import type { InstitutionalSignatory } from '../../modules/signatories/types/signatory.types';
@@ -457,6 +462,7 @@ export default function OfficerLiquidationModal({
   const [cashierRefDraft, setCashierRefDraft] = useState('');
   const [savingCashierProof, setSavingCashierProof] = useState(false);
   const [settlementSourceAllocations, setSettlementSourceAllocations] = useState<ProposalBucketAllocation[]>([]);
+  const [surplusAllocationRows, setSurplusAllocationRows] = useState<SurplusReturnAllocation[]>([]);
   const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
   const [deficitSupplementalOptions, setDeficitSupplementalOptions] = useState<SupplementalBucketOption[]>([]);
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
@@ -677,12 +683,19 @@ export default function OfficerLiquidationModal({
   }, [selectedEvent]);
 
   const effectiveSource = (selectedEvent as any)?.fundingSource || effectiveReport?.fundingSource || '';
+  const isEventSasOwned = useMemo(() => {
+    if (isSasCreator) return true;
+    return selectedEvent ? isSasInstitutionalActivity(selectedEvent) : false;
+  }, [isSasCreator, selectedEvent]);
+
   const isOrgFunds = useMemo(() => {
+    if (isEventSasOwned) return false;
     const src = (selectedEvent as any)?.fundingSource || effectiveReport?.fundingSource || '';
-    return src === 'organization_funds' || src === 'retained_sao_fund' || src === 'student_contributions';
-  }, [selectedEvent, effectiveReport]);
+    return src === 'organization_funds' || src === 'student_contributions';
+  }, [isEventSasOwned, selectedEvent, effectiveReport]);
   const isRetainedClubFund =
-    effectiveSource === 'organization_funds' || effectiveSource === 'student_contributions';
+    !isEventSasOwned &&
+    (effectiveSource === 'organization_funds' || effectiveSource === 'student_contributions');
 
   const { computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
   const effectiveSettlementOrgId = effectiveReport?.organizationId || orgId || null;
@@ -712,12 +725,15 @@ export default function OfficerLiquidationModal({
 
   useEffect(() => {
     let active = true;
-    if (effectiveReport && effectiveReport.status === 'approved') {
-      resolveLiquidationSourceAllocations(effectiveReport)
+    const sourceTarget =
+      effectiveReport ||
+      (selectedEvent ? { ...(selectedEvent as any), eventId: selectedEvent.id } : null);
+    if (sourceTarget) {
+      resolveLiquidationSourceAllocations(sourceTarget)
         .then((allocs) => {
           if (!active) return;
           setSettlementSourceAllocations(allocs);
-          if (approvedReportDeficit > 0.009) {
+          if (approvedReportDeficit > 0.009 && effectiveReport) {
             const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
               totalDeficit: approvedReportDeficit,
               sourceAllocations: allocs,
@@ -755,6 +771,7 @@ export default function OfficerLiquidationModal({
   }, [
     effectiveReport?.id,
     effectiveReport?.status,
+    selectedEvent?.id,
     approvedReportDeficit,
     computedBuckets,
     saoEligibleBuckets,
@@ -762,6 +779,85 @@ export default function OfficerLiquidationModal({
     orgRetainedFunds,
     settlementOrgLedgerBalance,
   ]);
+
+  const activeSurplusTarget = useMemo(() => {
+    if (effectiveReport?.status === 'approved') {
+      return Math.max(0, approvedReportSurplus);
+    }
+    const liveSurp = Math.round(((Number(allocatedBudget) || 0) - (Number(totalActualSpending) || 0)) * 100) / 100;
+    return Math.max(0, liveSurp);
+  }, [effectiveReport?.status, approvedReportSurplus, allocatedBudget, totalActualSpending]);
+
+  useEffect(() => {
+    if (activeSurplusTarget <= 0.009 || settlementSourceAllocations.length === 0) {
+      setSurplusAllocationRows([]);
+      return;
+    }
+    const saved = Array.isArray(effectiveReport?.surplusReturnAllocations)
+      ? effectiveReport!.surplusReturnAllocations!
+      : [];
+    if (
+      saved.length > 0 &&
+      Math.abs(saved.reduce((s, r) => s + (Number(r.returnAmount) || 0), 0) - activeSurplusTarget) < 0.02
+    ) {
+      setSurplusAllocationRows(saved);
+      return;
+    }
+    if (settlementSourceAllocations.length === 1) {
+      const only = settlementSourceAllocations[0];
+      const isSasContribBucket =
+        isEventSasOwned &&
+        (only.fundType === 'student_contributions' ||
+          only.fundType === 'student_contribution_retained' ||
+          only.bucketId === 'CONTRIB_NEW' ||
+          only.bucketId === 'SAO_CAMPUS');
+      setSurplusAllocationRows([
+        {
+          bucketId: isSasContribBucket ? 'SAO_CAMPUS' : only.bucketId,
+          bucketName: isSasContribBucket
+            ? 'SAS Student Contribution & Retained Funds'
+            : only.bucketName,
+          fundType: only.fundType,
+          originalAllocatedAmount: Number(only.allocatedAmount ?? allocatedBudget ?? 0),
+          returnAmount: Math.round(activeSurplusTarget * 100) / 100,
+        },
+      ]);
+      return;
+    }
+    const baseRows: SurplusReturnAllocation[] = settlementSourceAllocations.map((a) => ({
+      bucketId:
+        isEventSasOwned && (a.fundType === 'student_contributions' || a.bucketId === 'CONTRIB_NEW')
+          ? 'SAO_CAMPUS'
+          : a.bucketId,
+      bucketName:
+        isEventSasOwned && (a.fundType === 'student_contributions' || a.bucketId === 'CONTRIB_NEW')
+          ? 'SAS Student Contribution & Retained Funds'
+          : a.bucketName,
+      fundType: a.fundType,
+      originalAllocatedAmount: Number(a.allocatedAmount) || 0,
+      returnAmount: 0,
+    }));
+    setSurplusAllocationRows(
+      rebalanceSurplusReturnAllocations({
+        totalSurplus: activeSurplusTarget,
+        rows: baseRows,
+      })
+    );
+  }, [
+    activeSurplusTarget,
+    settlementSourceAllocations,
+    effectiveReport?.surplusReturnAllocations,
+    allocatedBudget,
+    isEventSasOwned,
+  ]);
+
+  const surplusReturnValidation = useMemo(() => {
+    return validateSurplusReturnAllocations({
+      totalSurplus: activeSurplusTarget,
+      rows: surplusAllocationRows,
+      isSasEvent: isEventSasOwned,
+    });
+  }, [activeSurplusTarget, surplusAllocationRows, isEventSasOwned]);
 
   const deficitCoverageValidation = useMemo(() => {
     return validateDeficitDeductionAllocations({
@@ -774,6 +870,19 @@ export default function OfficerLiquidationModal({
     if (settlementSourceAllocations.some((a) => a.fundType === 'misc_fee')) return true;
     return !isOrgFunds && effectiveSource === 'school_budget';
   }, [settlementSourceAllocations, isOrgFunds, effectiveSource]);
+
+  const isSasStudentContribSettlement = useMemo(() => {
+    return (
+      isEventSasOwned &&
+      (effectiveSource === 'student_contributions' ||
+        effectiveSource === 'retained_sao_fund' ||
+        settlementSourceAllocations.some(
+          (a) =>
+            a.fundType === 'student_contributions' ||
+            a.fundType === 'student_contribution_retained'
+        ))
+    );
+  }, [isEventSasOwned, effectiveSource, settlementSourceAllocations]);
 
   // Form LF-01 Official Header Information
   const [employeeName, setEmployeeName] = useState<string>('');
@@ -1594,9 +1703,9 @@ export default function OfficerLiquidationModal({
         return;
       }
       const isNonSchoolSource =
-        resolvedFundingSource === 'organization_funds' ||
-        resolvedFundingSource === 'student_contributions' ||
-        resolvedFundingSource === 'retained_sao_fund';
+        !isEventSasOwned &&
+        (resolvedFundingSource === 'organization_funds' ||
+          resolvedFundingSource === 'student_contributions');
       if (!isNonSchoolSource && approvalChain.length === 0) {
         showValidationError('Please configure the signatory pipeline in the "Signatory & Audit Route" tab before submitting.');
         return;
@@ -1609,6 +1718,18 @@ export default function OfficerLiquidationModal({
           showValidationError('Your signatory pipeline must include at least one designated Approver (e.g. School Administrator or School President). Switch to the Signatory tab to add one.');
           return;
         }
+      }
+      if (
+        surplusOrDeficit > 0.009 &&
+        settlementSourceAllocations.length >= 2 &&
+        !surplusReturnValidation.isValid
+      ) {
+        const firstErr =
+          Object.values(surplusReturnValidation.perBucketErrors)[0] ||
+          surplusReturnValidation.summaryError ||
+          'Please configure how the unspent surplus returns across the source buckets.';
+        showValidationError(firstErr);
+        return;
       }
 
       // Mandatory Maker Signature Check for formal submission
@@ -1688,6 +1809,9 @@ export default function OfficerLiquidationModal({
         allocatedBudget: Number(allocatedBudget || 0),
         totalActualSpending: Number(totalActualSpending || 0),
         surplusOrDeficit: Number(surplusOrDeficit || 0),
+        ...(surplusOrDeficit > 0.009 && surplusAllocationRows.length > 0
+          ? { surplusReturnAllocations: surplusAllocationRows }
+          : {}),
         ...(isStudentContributionSource
           ? (() => {
               const projTotal = eventPayables
@@ -2318,6 +2442,116 @@ export default function OfficerLiquidationModal({
                 </div>
               </div>
             )}
+
+            {/* Maker Surplus Bucket Return Configuration (1 Bucket Auto vs 2+ Buckets Configurable) */}
+            {surplusOrDeficit > 0.009 &&
+              settlementSourceAllocations.length > 0 &&
+              (hasMiscFeeInSettlement || isSasStudentContribSettlement) && (
+                <div className="pt-1">
+                  {settlementSourceAllocations.length === 1 ? (
+                    <div className="p-3.5 rounded-xl bg-emerald-50/90 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-950">
+                      <div>
+                        <span className="font-bold uppercase tracking-wider text-[11px] text-emerald-900 block">
+                          Surplus Return Bucket (1 Bucket Used in AP — Auto-Selected)
+                        </span>
+                        <span className="text-emerald-800">
+                          100% of the unspent surplus (<strong>{formatCurrency(surplusOrDeficit)}</strong>) automatically returns to{' '}
+                          <strong>{surplusAllocationRows[0]?.bucketName || settlementSourceAllocations[0].bucketName}</strong> — no bucket split configuration needed.
+                        </span>
+                      </div>
+                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-600 text-white">
+                        Auto-Return
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="p-3.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2.5 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="font-bold uppercase tracking-wider text-[11px] text-[#001A4D] block">
+                            Configure Unspent Surplus Return Across AP Buckets ({settlementSourceAllocations.length} Buckets)
+                          </span>
+                          <span className="text-slate-600">
+                            Specify how much of the <strong>{formatCurrency(surplusOrDeficit)}</strong> unspent surplus returns to each source bucket used in the Activity Proposal.
+                          </span>
+                        </div>
+                        {!isEffectiveReadOnly && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSurplusAllocationRows((prev) =>
+                                rebalanceSurplusReturnAllocations({
+                                  totalSurplus: surplusOrDeficit,
+                                  rows: prev,
+                                })
+                              )
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-white border border-blue-300 text-[11px] font-bold text-[#001A4D] hover:bg-blue-50 cursor-pointer"
+                          >
+                            Auto-Proportional Split
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {surplusAllocationRows.map((row) => {
+                          const rowErr = surplusReturnValidation.perBucketErrors[row.bucketId];
+                          return (
+                            <div
+                              key={row.bucketId}
+                              className={`p-2.5 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
+                                rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-slate-200'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <span className="font-bold text-[#001A4D] block truncate">{row.bucketName}</span>
+                                <span className="text-[11px] text-slate-500 font-mono">
+                                  Originally Pulled: <strong>{formatCurrency(row.originalAllocatedAmount)}</strong>
+                                </span>
+                                {rowErr && <p className="text-[11px] font-semibold text-rose-600">{rowErr}</p>}
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <label className="text-[11px] font-bold text-slate-700">Return (₱):</label>
+                                {isEffectiveReadOnly ? (
+                                  <span className="font-mono font-bold text-emerald-900 px-2.5 py-1 bg-emerald-50 rounded-lg border border-emerald-200">
+                                    +{formatCurrency(row.returnAmount)}
+                                  </span>
+                                ) : (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max={row.originalAllocatedAmount > 0 ? row.originalAllocatedAmount : surplusOrDeficit}
+                                    step="0.01"
+                                    value={row.returnAmount}
+                                    onChange={(e) => {
+                                      const val =
+                                        e.target.value === ''
+                                          ? 0
+                                          : Math.max(0, parseFloat(e.target.value) || 0);
+                                      setSurplusAllocationRows((prev) =>
+                                        rebalanceSurplusReturnAllocations({
+                                          totalSurplus: surplusOrDeficit,
+                                          rows: prev,
+                                          editedBucketId: row.bucketId,
+                                          editedAmount: val,
+                                        })
+                                      );
+                                    }}
+                                    className="w-32 px-2.5 py-1 border border-blue-300 rounded-lg text-xs text-right font-mono font-bold text-[#001A4D] bg-white outline-none"
+                                  />
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {surplusReturnValidation.summaryError && (
+                        <p className="text-[11px] font-semibold text-rose-700">
+                          {surplusReturnValidation.summaryError}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
           </div>
 
           {/* Tab Navigation: Expenses vs Signatory Pipeline */}
@@ -3005,10 +3239,15 @@ export default function OfficerLiquidationModal({
                     </div>
                     <div className="space-y-1">
                       <h4 className="text-xs font-bold text-emerald-950 uppercase tracking-wider">
-                        Organization Internal Funds — Direct SAS Approval
+                        {effectiveSource === 'student_contributions'
+                          ? 'Organization Student Contributions — Direct SAS Approval'
+                          : 'Organization Internal Funds — Direct SAS Approval'}
                       </h4>
                       <p className="text-xs text-emerald-900/90 leading-relaxed">
-                        This liquidation is funded entirely from organization treasury funds. Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs & Services (SAS)</strong> for official institutional review, digital approval, and signature.
+                        {effectiveSource === 'student_contributions'
+                          ? 'This liquidation is funded from organization student contributions held in the Club Treasury Ledger. '
+                          : 'This liquidation is funded entirely from organization treasury funds. '}
+                        Institutional signatory pipelines (School Director, Academic Head, Assistant Principals) are not required. This document routes directly to <strong>Student Affairs &amp; Services (SAS)</strong> for official institutional review, digital approval, and signature.
                       </p>
                     </div>
                   </div>
@@ -3097,16 +3336,68 @@ export default function OfficerLiquidationModal({
                   </span>
                 </div>
 
-                {approvedReportSurplus > 0.009 && !hasMiscFeeInSettlement ? (
+                {approvedReportSurplus > 0.009 && !hasMiscFeeInSettlement && !isSasStudentContribSettlement ? (
                   <div className="p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 space-y-1">
-                    <p className="font-bold">No Cashier Return Receipt Required</p>
+                    <p className="font-bold">Club Ledger Auto-Settlement</p>
                     <p>
-                      This activity is funded by Organization / Student Contribution / Retained Funds (not Miscellaneous Fees), so the Campus Cashier is not liable for the{' '}
-                      <strong className="font-mono">{formatCurrency(approvedReportSurplus)}</strong> surplus. SAS will confirm returning the balance directly to the source bucket(s).
+                      This activity is funded by Organization Club Funds (not Miscellaneous Fees), so the{' '}
+                      <strong className="font-mono">{formatCurrency(approvedReportSurplus)}</strong> surplus returns directly to your Club Treasury Ledger in Finance Center.
                     </p>
                   </div>
                 ) : (
                   <>
+                    {approvedReportSurplus > 0.009 && settlementSourceAllocations.length >= 2 && (
+                      <div className="p-3 rounded-xl bg-white border border-blue-200 space-y-2 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-[#001A4D] uppercase text-[11px]">
+                            Surplus Return Bucket Split ({formatCurrency(approvedReportSurplus)})
+                          </span>
+                          {effectiveReport.cashierSettlementStatus !== 'verified' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSurplusAllocationRows((prev) =>
+                                  rebalanceSurplusReturnAllocations({
+                                    totalSurplus: approvedReportSurplus,
+                                    rows: prev,
+                                  })
+                                )
+                              }
+                              className="px-2 py-1 rounded bg-blue-50 border border-blue-200 text-[10px] font-bold text-[#001A4D] cursor-pointer"
+                            >
+                              Auto-Split
+                            </button>
+                          )}
+                        </div>
+                        {surplusAllocationRows.map((row) => (
+                          <div key={row.bucketId} className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-slate-700 truncate">
+                              {row.bucketName} (Pulled: {formatCurrency(row.originalAllocatedAmount)})
+                            </span>
+                            <input
+                              type="number"
+                              min="0"
+                              max={row.originalAllocatedAmount > 0 ? row.originalAllocatedAmount : approvedReportSurplus}
+                              step="0.01"
+                              disabled={effectiveReport.cashierSettlementStatus === 'verified'}
+                              value={row.returnAmount}
+                              onChange={(e) => {
+                                const val = e.target.value === '' ? 0 : Math.max(0, parseFloat(e.target.value) || 0);
+                                setSurplusAllocationRows((prev) =>
+                                  rebalanceSurplusReturnAllocations({
+                                    totalSurplus: approvedReportSurplus,
+                                    rows: prev,
+                                    editedBucketId: row.bucketId,
+                                    editedAmount: val,
+                                  })
+                                );
+                              }}
+                              className="w-28 px-2 py-1 border border-slate-300 rounded text-right font-mono font-bold text-xs"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {approvedReportDeficit > 0.009 && (
                       <DeficitCoverageAllocationPanel
                         totalDeficit={approvedReportDeficit}
@@ -3135,18 +3426,22 @@ export default function OfficerLiquidationModal({
                       title={
                         approvedReportDeficit > 0.009
                           ? `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
-                          : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
-                              Number(
-                                (effectiveReport as any).amountToReturn ??
-                                  effectiveReport.surplusOrDeficit ??
-                                  0
-                              )
-                            )})`
+                          : isSasStudentContribSettlement
+                            ? `Required Return Proof / Receipt (Return: ${formatCurrency(approvedReportSurplus)})`
+                            : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
+                                Number(
+                                  (effectiveReport as any).amountToReturn ??
+                                    effectiveReport.surplusOrDeficit ??
+                                    0
+                                )
+                              )})`
                       }
                       description={
                         approvedReportDeficit > 0.009
                           ? 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
-                          : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
+                          : isSasStudentContribSettlement
+                            ? 'Attach the Return Proof / Receipt to credit the unspent surplus into SAS Student Contribution & Retained Funds.'
+                            : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
                       }
                     />
 
@@ -3157,6 +3452,7 @@ export default function OfficerLiquidationModal({
                           disabled={
                             savingCashierProof ||
                             (approvedReportDeficit > 0.009 && !deficitCoverageValidation.isValid) ||
+                            (approvedReportSurplus > 0.009 && !surplusReturnValidation.isValid) ||
                             (cashierProofDrafts.length === 0 &&
                               (!effectiveReport.cashierSettlementProofs ||
                                 effectiveReport.cashierSettlementProofs.length === 0))
@@ -3179,7 +3475,7 @@ export default function OfficerLiquidationModal({
                                 },
                                 approvedReportDeficit > 0.009
                                   ? { deficitDeductionAllocations: deficitAllocationRows }
-                                  : undefined
+                                  : { surplusReturnAllocations: surplusAllocationRows }
                               );
                               toast.success(
                                 approvedReportDeficit > 0.009

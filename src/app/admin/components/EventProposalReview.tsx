@@ -1836,10 +1836,15 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       <button
                         type="button"
                         disabled={
+                          isZeroBudget ||
                           (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
                           isVoucherLockedByCollectionGap
                         }
                         onClick={() => {
+                          if (isZeroBudget) {
+                            toast.info('Non-Monetary Activity (₱0): No disbursement voucher is required.');
+                            return;
+                          }
                           if (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) {
                             toast.info('Organization Ledger Funded: No school disbursement voucher is required.');
                             return;
@@ -1854,6 +1859,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           setIsDisbursementVoucherModalOpen(true);
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                          isZeroBudget ||
                           (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
                           isVoucherLockedByCollectionGap
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
@@ -1862,7 +1868,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                            hasDisbursementVoucher
+                            isZeroBudget
+                              ? 'bg-slate-100 text-slate-500 border border-slate-200'
+                              : hasDisbursementVoucher
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                               : isVoucherLockedByCollectionGap
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
@@ -1872,7 +1880,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
                               : 'bg-gray-100 text-gray-600 border border-gray-200'
                           }`}>
-                            {hasDisbursementVoucher ? (
+                            {isZeroBudget ? (
+                              <FileText className="w-4 h-4" />
+                            ) : hasDisbursementVoucher ? (
                               <CheckCircle2 className="w-4 h-4" />
                             ) : isVoucherLockedByCollectionGap ? (
                               <Lock className="w-4 h-4" />
@@ -1891,7 +1901,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                                 : (isOrgLedger ? 'Organization Treasury Slip' : 'Disbursement Voucher')}
                             </div>
                             <div className="text-[11px] text-gray-500 truncate">
-                              {hasDisbursementVoucher
+                              {isZeroBudget
+                                ? 'Exempt • Non-Monetary (₱0)'
+                                : hasDisbursementVoucher
                                 ? 'Official voucher/slip attached'
                                 : isVoucherLockedByCollectionGap
                                 ? `Locked: Collected ${formatPHP(contribCashOverview.cashOnHand)} / ${formatPHP(contribProposedBudget)}`
@@ -1904,7 +1916,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           </div>
                         </div>
                         <div className="shrink-0">
-                          {hasDisbursementVoucher ? (
+                          {isZeroBudget ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                              Exempt
+                            </span>
+                          ) : hasDisbursementVoucher ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                               Attached
                             </span>
