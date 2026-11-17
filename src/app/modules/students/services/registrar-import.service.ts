@@ -20,6 +20,8 @@ import {
 import { db } from '../../../../services/firebase';
 import { STUDENTS_COLLECTION } from './student.service';
 import { COURSES_COLLECTION, SEMESTERS_COLLECTION, DEPARTMENTS_COLLECTION } from '../../academic/services/academic.service';
+import { MISC_FEE_CONFIGS_COLLECTION, normalizeMiscSchoolYear } from '../../finance/services/misc-fee.service';
+import type { MiscFeeConfigDocument } from '../../finance/types/misc-fee.types';
 import type {
   StudentDocument,
   AcademicLevel,
@@ -493,8 +495,23 @@ export async function analyzeRegistrarImport(
   );
   const allSemesters = allSemestersSnap.docs.map((d) => ({ id: d.id, ...d.data() } as SemesterDocument));
 
-  // Find currently active semester for this academicLevel
+  // Find currently active semester for this academicLevel AND check active MiscFeeConfig as primary SY source
   const currentActiveSemester = allSemesters.find((s) => s.status === 'ACTIVE' && !s.archived) || null;
+  let activeMiscRefSY = '';
+  let activeMiscRefTerm = '';
+  try {
+    const miscSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+    const miscDocs = miscSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
+    miscDocs.sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')));
+    const activeMisc =
+      miscDocs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
+      miscDocs.find((c) => c.status !== 'CLOSED') ||
+      miscDocs[0];
+    if (activeMisc) {
+      activeMiscRefSY = normalizeMiscSchoolYear(activeMisc.schoolYear);
+      activeMiscRefTerm = activeMisc.activeSemester || '1st Semester';
+    }
+  } catch {}
 
   // Find exact matching semester document for detectedSchoolYear and detectedSemester
   const existingSemesterDoc = allSemesters.find(
@@ -505,22 +522,31 @@ export async function analyzeRegistrarImport(
 
   const isSemesterProvisionNeeded = !existingSemesterDoc;
 
-  // Compare file academic period with current active semester
+  // Compare file academic period against the latest active reference (MiscFeeConfig SY/Term or Semesters)
   let isOutdatedDocument = false;
   let outdatedWarning: string | undefined;
   let isNewSemesterDetected = false;
 
-  if (currentActiveSemester) {
+  let refSY = currentActiveSemester?.academicYear || '';
+  let refTerm = currentActiveSemester?.semester || currentActiveSemester?.term || '';
+  if (activeMiscRefSY) {
+    if (!refSY || compareAcademicPeriods(activeMiscRefSY, activeMiscRefTerm, refSY, refTerm) > 0) {
+      refSY = activeMiscRefSY;
+      refTerm = activeMiscRefTerm;
+    }
+  }
+
+  if (refSY) {
     const periodComparison = compareAcademicPeriods(
       fileSummary.detectedSchoolYear,
       fileSummary.detectedSemester,
-      currentActiveSemester.academicYear,
-      currentActiveSemester.semester || currentActiveSemester.term || ''
+      refSY,
+      refTerm
     );
 
     if (periodComparison < 0) {
       isOutdatedDocument = true;
-      outdatedWarning = `Outdated Document Detected: The uploaded file is for A.Y. ${fileSummary.detectedSchoolYear} ${fileSummary.detectedSemester}, which is older than the current active period (A.Y. ${currentActiveSemester.academicYear} ${currentActiveSemester.semester}). Uploading this file will import historical student records without activating this past academic period.`;
+      outdatedWarning = `Outdated Document Detected: The uploaded file is for A.Y. ${fileSummary.detectedSchoolYear} ${fileSummary.detectedSemester}, which is older than the current active period (A.Y. ${refSY} ${refTerm}). Uploading this file will import historical student records without activating this past academic period.`;
     } else if (periodComparison > 0) {
       isNewSemesterDetected = true;
     } else {

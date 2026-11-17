@@ -52,8 +52,15 @@ const GENERIC_PROPOSER_NAMES = new Set([
   'student affairs services (sas)',
   'student affairs & services (sas)',
   'sas',
+  'sao',
   'sas admin',
+  'sao admin',
   'sas administrator',
+  'sao administrator',
+  'sas / sao administrator',
+  'system administrator',
+  'sas adviser',
+  'sao adviser',
   'club adviser',
   'organization adviser',
   'institutional officer',
@@ -311,16 +318,18 @@ async function enrichProposalSignatures(
     ]);
 
     const pAny = proposal as any;
-    const creatorUid = pAny.submittedByUid || proposal.createdByUid || '';
+    const creatorUid = pAny.submittedByUid || proposal.createdByUid || pAny.createdBy || '';
     const creatorEmail = (pAny.submittedByEmail || proposal.createdByEmail || '').trim();
     const orgIdLower = (proposal.organizationId || pAny.hostingOrgId || '').trim().toLowerCase();
     const isSasCreator =
       proposal.creatorRole === 'sas_admin' ||
       Boolean(pAny.isSasInternal) ||
+      pAny.isOfficerProposal === false ||
       orgIdLower === 'sas' ||
       orgIdLower === 'sao_admin' ||
       orgIdLower === 'sao' ||
       creatorUid === 'sas_admin_user' ||
+      creatorUid === 'sao_admin' ||
       (proposal.preparedBy?.roleTitle || '').toLowerCase().includes('sas') ||
       (proposal.preparedBy?.roleTitle || '').toLowerCase().includes('student affairs') ||
       creatorEmail.toLowerCase().includes('sas') ||

@@ -19,15 +19,21 @@ import {
 } from '../utils/misc-fee-excel-importer';
 import { STUDENTS_COLLECTION } from '../../students/services/student.service';
 import { logAuditEvent } from '../../audit/services/audit.service';
+import { initializeNewSchoolYearRetainedFunds } from './retained-fund.service';
 
 export const MISC_FEE_CONFIGS_COLLECTION = 'miscellaneous_fee_configs';
 export const MISC_FEE_LEDGER_COLLECTION = 'miscellaneous_fee_ledger';
 
-export function buildMiscFeeDocId(schoolYear: string): string {
-  const clean = String(schoolYear || '2026-2027')
+export function normalizeMiscSchoolYear(sy?: string | null): string {
+  return String(sy || '')
     .replace(/^sy\s*/i, '')
-    .trim()
-    .replace(/[^0-9-]/g, '');
+    .replace(/^a\.?y\.?\s*/i, '')
+    .replace(/–/g, '-')
+    .trim();
+}
+
+export function buildMiscFeeDocId(schoolYear: string): string {
+  const clean = normalizeMiscSchoolYear(schoolYear || '2026-2027').replace(/[^0-9-]/g, '');
   return `SY_${clean || '2026-2027'}`;
 }
 
@@ -35,16 +41,21 @@ export function createDefaultMiscFeeConfig(
   schoolYear = '2026-2027',
   activeSemester: MiscFeeSemesterTerm = '1st Semester'
 ): MiscFeeConfigDocument {
-  const cleanSy = String(schoolYear || '2026-2027').replace(/^sy\s*/i, '').trim() || '2026-2027';
+  const cleanSy = normalizeMiscSchoolYear(schoolYear || '2026-2027') || '2026-2027';
   return {
     id: buildMiscFeeDocId(cleanSy),
     schoolYear: cleanSy,
+    status: 'ACTIVE',
+    isActive: true,
     activeSemester,
     headcountSource: 'student_registry',
     shsEnrolledOverride: 0,
     college1stSemEnrolledOverride: 0,
     college2ndSemEnrolledOverride: 0,
     is1stSemCarriedOver: false,
+    shsUploadedForSY: false,
+    college1stSemUploaded: false,
+    college2ndSemUploaded: false,
     buckets: [],
   };
 }
@@ -53,13 +64,17 @@ export async function saveMiscFeeConfig(
   config: MiscFeeConfigDocument,
   performedBy = 'SAS Admin'
 ): Promise<void> {
-  const docId = config.id || buildMiscFeeDocId(config.schoolYear);
+  const cleanSy = normalizeMiscSchoolYear(config.schoolYear) || '2026-2027';
+  const docId = config.id || buildMiscFeeDocId(cleanSy);
   const docRef = doc(db, MISC_FEE_CONFIGS_COLLECTION, docId);
   await setDoc(
     docRef,
     {
       ...config,
       id: docId,
+      schoolYear: cleanSy,
+      status: config.status || 'ACTIVE',
+      isActive: config.isActive ?? (config.status !== 'CLOSED'),
       updatedBy: performedBy,
       updatedAt: serverTimestamp(),
     },
@@ -91,6 +106,8 @@ export async function carryOver1stSemBalancesTo2ndSem(
 
   const updatedConfig: MiscFeeConfigDocument = {
     ...config,
+    status: config.status || 'ACTIVE',
+    isActive: config.isActive ?? true,
     activeSemester: '2nd Semester',
     is1stSemCarriedOver: true,
     buckets: updatedBuckets,
@@ -111,49 +128,175 @@ export async function carryOver1stSemBalancesTo2ndSem(
   return updatedConfig;
 }
 
+export function getSuggestedNextSchoolYear(currentSchoolYear?: string | null): string {
+  const clean = normalizeMiscSchoolYear(currentSchoolYear);
+  const match = clean.match(/^(\d{4})-(\d{4})$/);
+  if (!match) {
+    const nowYear = new Date().getFullYear();
+    return `${nowYear}-${nowYear + 1}`;
+  }
+  const startYear = parseInt(match[1], 10);
+  return `${startYear + 1}-${startYear + 2}`;
+}
+
+export function validateNewSchoolYear(
+  rawInput: string,
+  existingSchoolYears: string[] = [],
+  currentActiveSY?: string | null
+): { valid: boolean; normalized: string; error?: string } {
+  const clean = normalizeMiscSchoolYear(rawInput);
+  if (!clean) {
+    return { valid: false, normalized: '', error: 'School Year is required (e.g. 2027-2028).' };
+  }
+  const match = clean.match(/^(\d{4})-(\d{4})$/);
+  if (!match) {
+    return {
+      valid: false,
+      normalized: clean,
+      error: 'Invalid format. Enter exact YYYY-YYYY years only (e.g. 2027-2028).',
+    };
+  }
+  const startYear = parseInt(match[1], 10);
+  const endYear = parseInt(match[2], 10);
+  if (startYear < 2020 || startYear > 2099) {
+    return {
+      valid: false,
+      normalized: clean,
+      error: 'Start year must be between 2020 and 2099.',
+    };
+  }
+  if (endYear !== startYear + 1) {
+    return {
+      valid: false,
+      normalized: clean,
+      error: `Invalid span: end year must be ${startYear + 1} (e.g. ${startYear}-${startYear + 1}).`,
+    };
+  }
+
+  const normalizedExisting = existingSchoolYears
+    .map((sy) => normalizeMiscSchoolYear(sy))
+    .filter(Boolean);
+  if (normalizedExisting.includes(clean)) {
+    return {
+      valid: false,
+      normalized: clean,
+      error: `SY ${clean} already exists.`,
+    };
+  }
+
+  const referenceYears = [
+    ...normalizedExisting,
+    ...(currentActiveSY ? [normalizeMiscSchoolYear(currentActiveSY)] : []),
+  ]
+    .map((sy) => {
+      const m = sy.match(/^(\d{4})-(\d{4})$/);
+      return m ? { sy, start: parseInt(m[1], 10) } : null;
+    })
+    .filter((x): x is { sy: string; start: number } => Boolean(x));
+
+  if (referenceYears.length > 0) {
+    referenceYears.sort((a, b) => b.start - a.start);
+    const latest = referenceYears[0];
+    if (startYear <= latest.start) {
+      return {
+        valid: false,
+        normalized: clean,
+        error: `New School Year must be after SY ${latest.sy} (e.g. ${latest.start + 1}-${latest.start + 2}).`,
+      };
+    }
+  }
+
+  return { valid: true, normalized: clean };
+}
+
 /**
- * Initializes a new School Year from an existing configuration.
- * Per institutional policy, unspent Miscellaneous Fee balances do NOT carry over
- * across different School Years (all carry-over, disbursed, and surplus counters reset to 0).
+ * Initializes a brand-new School Year with a clean ₱0.00 slate:
+ * - Closes/archives the previous School Year config so its budget, carry-overs, and ledgers stay recorded in history only.
+ * - Creates the new School Year config with empty buckets (₱0.00 pool/carry-over/disbursed/surplus) awaiting new SHS + Term 1 Tertiary Excel uploads.
+ * - Snapshots prior School Year Retained Funds / Student Contributions into closed history and initializes the new SY's Retained Fund & Student Contributions at ₱0.00.
  */
 export async function cloneMiscFeeConfigForNewSchoolYear(
   newSchoolYear: string,
   sourceConfig?: MiscFeeConfigDocument | null,
   performedBy = 'SAS Admin'
 ): Promise<MiscFeeConfigDocument> {
-  const cleanSy = String(newSchoolYear).replace(/^sy\s*/i, '').trim();
-  const baseBuckets = sourceConfig?.buckets?.length ? sourceConfig.buckets : [];
+  const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+  const existingYears = allSnap.docs.map((d) =>
+    normalizeMiscSchoolYear((d.data() as MiscFeeConfigDocument).schoolYear)
+  );
+  const prevSy = normalizeMiscSchoolYear(sourceConfig?.schoolYear);
 
-  const resetBuckets: MiscFeeBucket[] = baseBuckets.map((b) => ({
-    ...b,
-    shsRateLY: b.shsRateTY || b.shsRateLY || 0,
-    college1stSemRateLY: b.college1stSemRateTY || b.college1stSemRateLY || 0,
-    college2ndSemRateLY: b.college2ndSemRateTY || b.college2ndSemRateLY || 0,
-    carryOverFrom1stSem: 0,
-    disbursed1stSem: 0,
-    returnedSurplus1stSem: 0,
-    disbursed2ndSem: 0,
-    returnedSurplus2ndSem: 0,
-  }));
+  const check = validateNewSchoolYear(newSchoolYear, existingYears, prevSy || null);
+  if (!check.valid) {
+    throw new Error(check.error || 'Please enter a valid consecutive School Year (e.g. 2027-2028).');
+  }
+  const cleanSy = check.normalized;
 
+  // Close existing active configs so historical years are preserved read-only
+  for (const snapDoc of allSnap.docs) {
+    const existing = snapDoc.data() as MiscFeeConfigDocument;
+    if (snapDoc.id !== buildMiscFeeDocId(cleanSy) && (existing.isActive || existing.status !== 'CLOSED')) {
+      await setDoc(
+        doc(db, MISC_FEE_CONFIGS_COLLECTION, snapDoc.id),
+        {
+          status: 'CLOSED',
+          isActive: false,
+          closedAt: serverTimestamp(),
+          updatedBy: performedBy,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+  }
+
+  // Explicitly ensure the closing sourceConfig itself is persisted as CLOSED even if newly saved
+  if (sourceConfig && prevSy) {
+    const prevId = sourceConfig.id || buildMiscFeeDocId(prevSy);
+    await setDoc(
+      doc(db, MISC_FEE_CONFIGS_COLLECTION, prevId),
+      {
+        ...sourceConfig,
+        id: prevId,
+        schoolYear: prevSy,
+        status: 'CLOSED',
+        isActive: false,
+        closedAt: serverTimestamp(),
+        updatedBy: performedBy,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
+  // Initialize brand-new SY with ₱0.00 Misc Pools, Carry-Over, and Counters
   const newConfig: MiscFeeConfigDocument = {
     id: buildMiscFeeDocId(cleanSy),
     schoolYear: cleanSy,
+    status: 'ACTIVE',
+    isActive: true,
     activeSemester: '1st Semester',
-    headcountSource: sourceConfig?.headcountSource || 'student_registry',
-    shsEnrolledOverride: sourceConfig?.shsEnrolledOverride || 0,
-    college1stSemEnrolledOverride: sourceConfig?.college1stSemEnrolledOverride || 0,
-    college2ndSemEnrolledOverride: sourceConfig?.college2ndSemEnrolledOverride || 0,
+    headcountSource: 'student_registry',
+    shsEnrolledOverride: 0,
+    college1stSemEnrolledOverride: 0,
+    college2ndSemEnrolledOverride: 0,
     is1stSemCarriedOver: false,
-    buckets: resetBuckets,
+    shsUploadedForSY: false,
+    college1stSemUploaded: false,
+    college2ndSemUploaded: false,
+    buckets: [],
   };
 
   await saveMiscFeeConfig(newConfig, performedBy);
+
+  // Snapshot old SY Retained Funds & Student Contributions to closed archive and initialize new SY at ₱0.00
+  await initializeNewSchoolYearRetainedFunds(prevSy || null, cleanSy, performedBy);
+
   try {
     await logAuditEvent({
       action: 'MISC_FEE_NEW_SY_RESET',
       actionType: 'CREATE',
-      details: `Initialized SY ${cleanSy} Miscellaneous Fee pools with ₱0.00 carry-over (end-of-year reset).`,
+      details: `Closed SY ${prevSy || 'previous'} (archived to history) and initialized SY ${cleanSy} with ₱0.00 Miscellaneous Pools, Carry-Over, Student Contributions, and Retained Funds.`,
       performedBy,
       userRole: 'SAS Admin',
       targetId: newConfig.id,
@@ -161,6 +304,18 @@ export async function cloneMiscFeeConfigForNewSchoolYear(
     });
   } catch {}
   return newConfig;
+}
+
+function pickPreferredMiscConfig(docs: MiscFeeConfigDocument[]): MiscFeeConfigDocument | null {
+  if (!docs || docs.length === 0) return null;
+  const sorted = [...docs].sort((a, b) =>
+    String(b.schoolYear || '').localeCompare(String(a.schoolYear || ''))
+  );
+  return (
+    sorted.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
+    sorted.find((c) => c.status !== 'CLOSED') ||
+    sorted[0]
+  );
 }
 
 /**
@@ -212,9 +367,9 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
     const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
     if (!allSnap.empty) {
       const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      docs.sort((a, b) => b.schoolYear.localeCompare(a.schoolYear));
-      configDoc = docs[0];
-    } else {
+      configDoc = pickPreferredMiscConfig(docs);
+    }
+    if (!configDoc) {
       configDoc = createDefaultMiscFeeConfig(params.schoolYear || '2026-2027');
     }
   }
@@ -467,8 +622,10 @@ export async function creditMiscFeeBucketOnLiquidationSurplus(params: {
     const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
     if (!allSnap.empty) {
       const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      docs.sort((a, b) => b.schoolYear.localeCompare(a.schoolYear));
-      configDoc = docs[0];
+      configDoc =
+        docs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
+        docs.find((c) => c.status !== 'CLOSED') ||
+        [...docs].sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')))[0];
     }
   }
 
@@ -581,15 +738,23 @@ async function resolveMiscFeeHeadcountsForService(
   }
 
   const EXCLUDED = new Set(['INACTIVE', 'SUSPENDED', 'ARCHIVED']);
+  const targetSy = normalizeMiscSchoolYear(configDoc.schoolYear);
   const snap = await getDocs(collection(db, STUDENTS_COLLECTION));
   let shs = 0;
   let shsGrade12 = 0;
   let collegeTotal = 0;
+  let college1stSemExplicit = 0;
+  let college2ndSemExplicit = 0;
 
   snap.forEach((docSnap) => {
     const s = docSnap.data() as any;
     const status = String(s.status || 'ACTIVE').toUpperCase().trim();
     if (EXCLUDED.has(status)) return;
+
+    const studentSy = normalizeMiscSchoolYear(s.schoolYear);
+    if (targetSy && studentSy && studentSy !== targetSy) {
+      return;
+    }
 
     const ylLower = String(s.yearLevel || s.year || '').toLowerCase();
     const isCollege =
@@ -604,14 +769,17 @@ async function resolveMiscFeeHeadcountsForService(
       if (ylLower.includes('12')) shsGrade12++;
     } else {
       collegeTotal++;
+      const semLower = String(s.semester || '').toLowerCase();
+      if (semLower.includes('2nd')) college2ndSemExplicit++;
+      else college1stSemExplicit++;
     }
   });
 
   return {
     shsEnrolled: shs,
     shsGrade12Enrolled: shsGrade12,
-    college1stSemEnrolled: collegeTotal,
-    college2ndSemEnrolled: collegeTotal,
+    college1stSemEnrolled: college1stSemExplicit > 0 ? college1stSemExplicit : collegeTotal,
+    college2ndSemEnrolled: college2ndSemExplicit > 0 ? college2ndSemExplicit : collegeTotal,
   };
 }
 
@@ -655,8 +823,10 @@ export async function debitMiscFeeBucketOnLiquidationDeficit(params: {
     const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
     if (!allSnap.empty) {
       const docs = allSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as MiscFeeConfigDocument));
-      docs.sort((a, b) => b.schoolYear.localeCompare(a.schoolYear));
-      configDoc = docs[0];
+      configDoc =
+        docs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
+        docs.find((c) => c.status !== 'CLOSED') ||
+        [...docs].sort((a, b) => String(b.schoolYear || '').localeCompare(String(a.schoolYear || '')))[0];
     }
   }
 

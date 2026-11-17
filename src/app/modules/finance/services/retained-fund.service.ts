@@ -2,9 +2,11 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   serverTimestamp,
   runTransaction,
+  writeBatch,
 } from 'firebase/firestore';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import type {
@@ -20,17 +22,35 @@ export const SAO_RETAINED_BUCKET_ID = 'SAO_CAMPUS';
 
 const SAS_SENTINELS = new Set(['', 'sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional']);
 
+export function normalizeRetainedSchoolYear(sy?: string | null): string {
+  return String(sy || '')
+    .replace(/^sy\s*/i, '')
+    .replace(/^a\.?y\.?\s*/i, '')
+    .replace(/–/g, '-')
+    .trim();
+}
+
+export function buildScopedRetainedBucketId(baseBucketId: string, schoolYear?: string | null): string {
+  const cleanSy = normalizeRetainedSchoolYear(schoolYear);
+  if (!cleanSy) return baseBucketId;
+  return `${baseBucketId}__SY_${cleanSy.replace(/[^0-9A-Za-z-]/g, '')}`;
+}
+
 export function resolveRetainedBucketIdentity(params: {
   organizationId?: string | null;
   organizationName?: string | null;
   createdByRole?: string | null;
+  schoolYear?: string | null;
 }): {
+  baseBucketId: string;
   bucketId: string;
   ownerType: RetainedFundOwnerType;
+  schoolYear: string;
   organizationId?: string;
   organizationName: string;
 } {
   const rawOrgId = String(params.organizationId || '').trim();
+  const cleanSy = normalizeRetainedSchoolYear(params.schoolYear);
   const isSas =
     !rawOrgId ||
     SAS_SENTINELS.has(rawOrgId.toLowerCase()) ||
@@ -39,15 +59,20 @@ export function resolveRetainedBucketIdentity(params: {
 
   if (isSas) {
     return {
-      bucketId: SAO_RETAINED_BUCKET_ID,
+      baseBucketId: SAO_RETAINED_BUCKET_ID,
+      bucketId: buildScopedRetainedBucketId(SAO_RETAINED_BUCKET_ID, cleanSy),
       ownerType: 'sao',
+      schoolYear: cleanSy,
       organizationName: 'SAO / Campus Student Activity Fund',
     };
   }
 
+  const baseOrgId = `ORG_${rawOrgId}`;
   return {
-    bucketId: `ORG_${rawOrgId}`,
+    baseBucketId: baseOrgId,
+    bucketId: buildScopedRetainedBucketId(baseOrgId, cleanSy),
     ownerType: 'organization',
+    schoolYear: cleanSy,
     organizationId: rawOrgId,
     organizationName: params.organizationName || 'Student Organization',
   };
@@ -57,6 +82,7 @@ function emptyFundDoc(identity: ReturnType<typeof resolveRetainedBucketIdentity>
   return {
     id: identity.bucketId,
     ownerType: identity.ownerType,
+    schoolYear: identity.schoolYear || undefined,
     organizationId: identity.organizationId,
     organizationName: identity.organizationName,
     totalContributionsCollected: 0,
@@ -68,8 +94,9 @@ function emptyFundDoc(identity: ReturnType<typeof resolveRetainedBucketIdentity>
 
 /**
  * Idempotently posts a retained fund ledger transaction and atomically adjusts
- * the corresponding persistent Retained Activity Fund bucket (`SAO_CAMPUS` or `ORG_<id>`).
- * Never touches or resets with Miscellaneous Fee configs.
+ * the corresponding School-Year-scoped Retained Activity Fund bucket
+ * (`SAO_CAMPUS__SY_<sy>` or `ORG_<id>__SY_<sy>`).
+ * Resets to ₱0.00 for each new School Year and never mixes with Miscellaneous Fee configs.
  */
 async function postRetainedFundTransaction(params: {
   ledgerDocId: string;
@@ -89,8 +116,11 @@ async function postRetainedFundTransaction(params: {
   const amount = Math.max(0, Number(params.amount) || 0);
   if (!params.ledgerDocId || amount <= 0) return;
 
+  const cleanSy = normalizeRetainedSchoolYear(params.schoolYear || params.identity.schoolYear);
   const ledgerRef = doc(db, RETAINED_FUND_LEDGER_COLLECTION, params.ledgerDocId);
   const bucketRef = doc(db, RETAINED_FUNDS_COLLECTION, params.identity.bucketId);
+  const hasScopedId = params.identity.bucketId !== params.identity.baseBucketId;
+  const legacyRef = hasScopedId ? doc(db, RETAINED_FUNDS_COLLECTION, params.identity.baseBucketId) : null;
 
   await runTransaction(db, async (tx) => {
     const existingLedger = await tx.get(ledgerRef);
@@ -99,9 +129,27 @@ async function postRetainedFundTransaction(params: {
     }
 
     const bucketSnap = await tx.get(bucketRef);
-    const current: RetainedActivityFundDocument = bucketSnap.exists()
-      ? ({ id: bucketSnap.id, ...(bucketSnap.data() as any) } as RetainedActivityFundDocument)
-      : emptyFundDoc(params.identity);
+    let current: RetainedActivityFundDocument;
+    let shouldMarkLegacyMigrated = false;
+
+    if (bucketSnap.exists()) {
+      current = { id: bucketSnap.id, ...(bucketSnap.data() as any) } as RetainedActivityFundDocument;
+    } else if (legacyRef && cleanSy) {
+      const legacySnap = await tx.get(legacyRef);
+      const legacyData = legacySnap.exists() ? (legacySnap.data() as RetainedActivityFundDocument) : null;
+      if (legacyData && !legacyData.migratedToSchoolYear) {
+        current = {
+          ...legacyData,
+          id: params.identity.bucketId,
+          schoolYear: cleanSy,
+        };
+        shouldMarkLegacyMigrated = true;
+      } else {
+        current = emptyFundDoc(params.identity);
+      }
+    } else {
+      current = emptyFundDoc(params.identity);
+    }
 
     const nextCollected =
       params.type === 'collection_income'
@@ -130,12 +178,21 @@ async function postRetainedFundTransaction(params: {
       Math.round((currentAvailable + params.deltaBalance) * 100) / 100
     );
 
+    if (shouldMarkLegacyMigrated && legacyRef) {
+      tx.set(
+        legacyRef,
+        { migratedToSchoolYear: cleanSy, updatedAt: serverTimestamp() },
+        { merge: true }
+      );
+    }
+
     tx.set(
       bucketRef,
       sanitizeFirestorePayload({
         ...current,
         id: params.identity.bucketId,
         ownerType: params.identity.ownerType,
+        schoolYear: cleanSy || current.schoolYear || undefined,
         organizationId: params.identity.organizationId,
         organizationName: params.identity.organizationName,
         totalContributionsCollected: Math.round(nextCollected * 100) / 100,
@@ -157,7 +214,7 @@ async function postRetainedFundTransaction(params: {
       eventId: params.eventId || '',
       eventTitle: params.eventTitle || '',
       liquidationId: params.liquidationId || '',
-      schoolYear: params.schoolYear || '',
+      schoolYear: cleanSy || '',
       semester: params.semester || '',
       type: params.type,
       amount,
@@ -189,6 +246,7 @@ export async function creditRetainedFundOnCollection(params: {
   const identity = resolveRetainedBucketIdentity({
     organizationId: params.organizationId,
     organizationName: params.organizationName,
+    schoolYear: params.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -225,6 +283,7 @@ export async function deductRetainedFundOnProposalApproval(params: {
   const identity = resolveRetainedBucketIdentity({
     organizationId: params.organizationId,
     organizationName: params.organizationName,
+    schoolYear: params.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -244,10 +303,10 @@ export async function deductRetainedFundOnProposalApproval(params: {
 
 /**
  * Routes unspent surplus (or overspend deficit) after Financial Liquidation into the appropriate
- * persistent Retained Fund Bucket based strictly on creator:
- * - Organization / Club event -> Organization's Treasury / Retained Bucket (`ORG_<orgId>`)
- * - SAO / Admin event -> SAO / Campus Student Activity Fund (`SAO_CAMPUS`)
- * Never mixes with Miscellaneous Fee buckets and persists across School Years.
+ * School-Year-scoped Retained Fund Bucket based strictly on creator:
+ * - Organization / Club event -> Organization's Treasury / Retained Bucket (`ORG_<orgId>__SY_<sy>`)
+ * - SAO / Admin event -> SAO / Campus Student Activity Fund (`SAO_CAMPUS__SY_<sy>`)
+ * Never mixes with Miscellaneous Fee buckets and resets cleanly at New School Year.
  */
 export async function creditRetainedFundSurplusOnLiquidation(params: {
   liquidationId: string;
@@ -271,6 +330,7 @@ export async function creditRetainedFundSurplusOnLiquidation(params: {
     organizationId: params.organizationId,
     organizationName: params.organizationName,
     createdByRole: params.createdByRole,
+    schoolYear: params.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -305,25 +365,113 @@ export async function creditRetainedFundSurplusOnLiquidation(params: {
 }
 
 /**
- * Ensures the singleton SAO Campus Retained Activity Fund doc exists cleanly for read/subscription.
+ * Ensures the SAO Campus Retained Activity Fund doc exists cleanly for a School Year (or legacy singleton).
  */
-export async function ensureSaoRetainedBucketExists(): Promise<void> {
-  const ref = doc(db, RETAINED_FUNDS_COLLECTION, SAO_RETAINED_BUCKET_ID);
+export async function ensureSaoRetainedBucketExists(schoolYear?: string | null): Promise<void> {
+  const cleanSy = normalizeRetainedSchoolYear(schoolYear);
+  const bucketId = cleanSy
+    ? buildScopedRetainedBucketId(SAO_RETAINED_BUCKET_ID, cleanSy)
+    : SAO_RETAINED_BUCKET_ID;
+  const ref = doc(db, RETAINED_FUNDS_COLLECTION, bucketId);
   const snap = await getDoc(ref);
   if (!snap.exists()) {
     await setDoc(
       ref,
-      {
-        id: SAO_RETAINED_BUCKET_ID,
+      sanitizeFirestorePayload({
+        id: bucketId,
         ownerType: 'sao',
+        schoolYear: cleanSy || undefined,
         organizationName: 'SAO / Campus Student Activity Fund',
         totalContributionsCollected: 0,
         totalSurplusesRetained: 0,
         totalDisbursedOrSpent: 0,
         availableBalance: 0,
         updatedAt: serverTimestamp(),
-      },
+      }),
       { merge: true }
     );
+  }
+}
+
+/**
+ *Snapshots legacy/previous School Year Retained Funds & Student Contributions into the closed
+ * School Year archive (so old funds are recorded only and never carried forward), and initializes
+ * the new School Year's SAO Retained & Student Contribution bucket at ₱0.00.
+ */
+export async function initializeNewSchoolYearRetainedFunds(
+  previousSchoolYear: string | null | undefined,
+  newSchoolYear: string,
+  performedBy = 'SAS Admin'
+): Promise<void> {
+  const cleanPrev = normalizeRetainedSchoolYear(previousSchoolYear);
+  const cleanNew = normalizeRetainedSchoolYear(newSchoolYear);
+  if (!cleanNew) return;
+
+  const batch = writeBatch(db);
+  let writeCount = 0;
+
+  if (cleanPrev && cleanPrev !== cleanNew) {
+    // Snapshot any unscoped legacy docs (`SAO_CAMPUS` or `ORG_<id>`) into `__SY_${cleanPrev}`
+    const fundsSnap = await getDocs(collection(db, RETAINED_FUNDS_COLLECTION));
+    for (const d of fundsSnap.docs) {
+      const data = d.data() as RetainedActivityFundDocument;
+      if (!d.id.includes('__SY_') && !data.migratedToSchoolYear) {
+        const scopedPrevId = buildScopedRetainedBucketId(d.id, cleanPrev);
+        const scopedPrevRef = doc(db, RETAINED_FUNDS_COLLECTION, scopedPrevId);
+        batch.set(
+          scopedPrevRef,
+          sanitizeFirestorePayload({
+            ...data,
+            id: scopedPrevId,
+            schoolYear: cleanPrev,
+            updatedAt: serverTimestamp(),
+          }),
+          { merge: true }
+        );
+        batch.set(
+          doc(db, RETAINED_FUNDS_COLLECTION, d.id),
+          { migratedToSchoolYear: cleanPrev, updatedAt: serverTimestamp() },
+          { merge: true }
+        );
+        writeCount += 2;
+      }
+    }
+
+    // Tag any untagged ledger entries with the closing School Year
+    const ledgerSnap = await getDocs(collection(db, RETAINED_FUND_LEDGER_COLLECTION));
+    for (const d of ledgerSnap.docs) {
+      const entry = d.data() as RetainedFundLedgerEntry;
+      if (!entry.schoolYear) {
+        batch.set(
+          doc(db, RETAINED_FUND_LEDGER_COLLECTION, d.id),
+          { schoolYear: cleanPrev },
+          { merge: true }
+        );
+        writeCount++;
+      }
+    }
+  }
+
+  // Explicitly create the new School Year's SAO Retained bucket at ₱0.00
+  const newSaoBucketId = buildScopedRetainedBucketId(SAO_RETAINED_BUCKET_ID, cleanNew);
+  batch.set(
+    doc(db, RETAINED_FUNDS_COLLECTION, newSaoBucketId),
+    sanitizeFirestorePayload({
+      id: newSaoBucketId,
+      ownerType: 'sao',
+      schoolYear: cleanNew,
+      organizationName: 'SAO / Campus Student Activity Fund',
+      totalContributionsCollected: 0,
+      totalSurplusesRetained: 0,
+      totalDisbursedOrSpent: 0,
+      availableBalance: 0,
+      updatedBy: performedBy,
+      updatedAt: serverTimestamp(),
+    })
+  );
+  writeCount++;
+
+  if (writeCount > 0) {
+    await batch.commit();
   }
 }

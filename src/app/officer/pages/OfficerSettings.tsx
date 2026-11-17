@@ -123,9 +123,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [signatureUrl, setSignatureUrl] = useState<string>(profile?.signatureUrl || '');
   const [isRedrawing, setIsRedrawing] = useState(false);
   const [isSavingSignature, setIsSavingSignature] = useState(false);
-  const [isUploadingSigFile, setIsUploadingSigFile] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sigFileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDrawingSig, setIsDrawingSig] = useState(false);
   const [hasDrawnSig, setHasDrawnSig] = useState(false);
   const [sigHistory, setSigHistory] = useState<ImageData[]>([]);
@@ -315,28 +313,6 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
       toast.error('Failed to save signature: ' + (saveErr?.message || 'Please try again.'));
     } finally {
       setIsSavingSignature(false);
-    }
-  };
-
-  const handleSignatureFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 3 * 1024 * 1024) {
-      toast.error('Signature image must be under 3MB.');
-      return;
-    }
-    setIsUploadingSigFile(true);
-    try {
-      const res = await uploadToCloudinary(file, { folder: 'advisers/signatures' });
-      if (res.secureUrl) {
-        await handleSaveSignature(res.secureUrl);
-      }
-    } catch (uploadErr: any) {
-      console.error('[OfficerSettings] Signature file upload error:', uploadErr);
-      toast.error('Failed to upload signature image.');
-    } finally {
-      setIsUploadingSigFile(false);
-      if (sigFileInputRef.current) sigFileInputRef.current.value = '';
     }
   };
 
@@ -803,14 +779,6 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </button>
                       <button
                         type="button"
-                        onClick={() => sigFileInputRef.current?.click()}
-                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        Upload New Image
-                      </button>
-                      <button
-                        type="button"
                         onClick={handleRemoveSignature}
                         className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5"
                       >
@@ -868,22 +836,9 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
 
                     <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 border-t border-gray-100">
                       <div className="flex items-center gap-3">
-                        <input
-                          ref={sigFileInputRef}
-                          type="file"
-                          accept="image/png,image/jpeg,image/webp"
-                          onChange={handleSignatureFileUpload}
-                          className="hidden"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => sigFileInputRef.current?.click()}
-                          disabled={isUploadingSigFile}
-                          className="text-xs text-[#0E4EBD] hover:underline font-bold flex items-center gap-1 cursor-pointer"
-                        >
-                          <Upload className="w-3.5 h-3.5" />
-                          {isUploadingSigFile ? 'Uploading...' : 'Or upload signature image'}
-                        </button>
+                        <span className="text-[11px] text-gray-400 font-mono">
+                          Official black ink • 2.5px vector stroke
+                        </span>
                         {signatureUrl && (
                           <button
                             type="button"

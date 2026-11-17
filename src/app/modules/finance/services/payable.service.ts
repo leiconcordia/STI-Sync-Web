@@ -15,7 +15,7 @@ import {
   Timestamp,
   arrayUnion,
 } from 'firebase/firestore';
-import { db } from '../../../../services/firebase';
+import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { addLedgerTransaction, addOrgLedgerTransaction } from './finance.service';
 import type {
   PayableDocument,
@@ -300,10 +300,10 @@ export async function generateMembershipDues(payload: GenerateDuesPayload): Prom
 
   if (newMembers.length === 0) return 0;
 
-  // 3. Batch write new payables in chunks of 500
+  // 3. Batch write new payables in chunks of 450 (safely under Firestore's 500-op limit)
   const chunks = [];
-  for (let i = 0; i < newMembers.length; i += 500) {
-    chunks.push(newMembers.slice(i, i + 500));
+  for (let i = 0; i < newMembers.length; i += 450) {
+    chunks.push(newMembers.slice(i, i + 450));
   }
 
   let createdCount = 0;
@@ -457,7 +457,7 @@ export function buildCanonicalPayableRecord(
     record.fineViolations = payload.fineViolations;
   }
 
-  return record;
+  return sanitizeFirestorePayload(record);
 }
 
 /**
@@ -544,19 +544,10 @@ export async function recordPayment(
   }
 
   const newPaidAmount = currentPaid + actualPayment;
-  const orgIdClean = String(data.organizationId || '').trim();
-  const isClubOwnedPayable =
-    Boolean(orgIdClean) &&
-    !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgIdClean.toLowerCase());
-
-  const transferredAmt = isClubOwnedPayable
-    ? newPaidAmount
-    : typeof data.transferredAmount === 'number'
-      ? data.transferredAmount
-      : 0;
-  const isFullyTransferred = isClubOwnedPayable
-    ? true
-    : transferredAmt >= newPaidAmount && newPaidAmount > 0;
+  const transferredAmt =
+    typeof data.transferredAmount === 'number' ? data.transferredAmount : 0;
+  const isFullyTransferred =
+    transferredAmt >= newPaidAmount && newPaidAmount > 0;
 
   let newStatus: PayableStatus = 'partial';
   let paidAtTimestamp: Timestamp | null = data.paidAt || null;
@@ -578,10 +569,6 @@ export async function recordPayment(
       ? 'PARTIAL'
       : 'UNPAID';
 
-  const autoTransferBatchId = isClubOwnedPayable
-    ? `ORG-PAY-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`
-    : undefined;
-
   const updates: Record<string, any> = {
     paidAmount: newPaidAmount,
     amountPaid: newPaidAmount,
@@ -592,13 +579,6 @@ export async function recordPayment(
     recordedBy,
     paymentMethod,
     transferredToBudget: isFullyTransferred,
-    ...(isClubOwnedPayable
-      ? {
-          transferredAmount: newPaidAmount,
-          transferredAt: serverTimestamp(),
-          transferredBatchId: autoTransferBatchId,
-        }
-      : {}),
     updatedAt: serverTimestamp(),
   };
 
@@ -613,31 +593,6 @@ export async function recordPayment(
   }
 
   await updateDoc(payableRef, updates);
-
-  // Automatically record payment into the Club's own organization_ledger so it immediately appears in Finance Center Budget Ledger Transactions
-  if (isClubOwnedPayable && actualPayment > 0) {
-    try {
-      const labelTitle =
-        data.label || (data as any).eventTitle || (data as any).title || 'Club Payable';
-      const studentLabel = data.studentName || data.studentSchoolId || data.studentId || 'Student';
-      await addDoc(collection(db, 'organization_ledger'), {
-        organizationId: orgIdClean,
-        semesterId: data.semesterId || null,
-        date: Timestamp.now(),
-        description: `Student Payment (${studentLabel}) – ${labelTitle}`,
-        eventId: data.eventId || null,
-        type: 'income' as const,
-        source: 'student_collection' as const,
-        amount: Math.round(actualPayment * 100) / 100,
-        addedBy: recordedBy || 'Officer',
-        collectionId: autoTransferBatchId || payableId,
-        receiptNumber: receiptNumber || null,
-        createdAt: serverTimestamp(),
-      });
-    } catch (ledgerErr) {
-      console.warn('[recordPayment] Auto org ledger write warning:', ledgerErr);
-    }
-  }
 
   if (data.eventId) {
     try {
@@ -680,26 +635,24 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
   if (payableIds.length === 0) return;
 
   const chunks = [];
-  for (let i = 0; i < payableIds.length; i += 500) {
-    chunks.push(payableIds.slice(i, i + 500));
+  for (let i = 0; i < payableIds.length; i += 450) {
+    chunks.push(payableIds.slice(i, i + 450));
   }
 
   for (const chunk of chunks) {
     const snaps = await Promise.all(
       chunk.map((id) => getDoc(doc(db, PAYABLES_COLLECTION, id)).catch(() => null))
     );
+    const affectedEventIds = new Set<string>();
     const batch = writeBatch(db);
     chunk.forEach((id, idx) => {
       const ref = doc(db, PAYABLES_COLLECTION, id);
       const snap = snaps[idx];
       const existingData = snap && snap.exists() ? snap.data() : null;
+      if (existingData?.eventId) affectedEventIds.add(String(existingData.eventId));
       const assigned = existingData
         ? Number(existingData.assignedAmount ?? existingData.amount ?? 0)
         : 0;
-      const orgIdClean = String(existingData?.organizationId || '').trim();
-      const isClubOwned =
-        Boolean(orgIdClean) &&
-        !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgIdClean.toLowerCase());
       const updatePayload: Record<string, any> = {
         status: 'paid' as PayableStatus,
         paymentStatus: 'PAID',
@@ -707,13 +660,6 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
         paidAt: serverTimestamp(),
         recordedBy,
         paymentMethod: 'cash',
-        ...(isClubOwned
-          ? {
-              transferredToBudget: true,
-              transferredAmount: assigned,
-              transferredAt: serverTimestamp(),
-            }
-          : {}),
         updatedAt: serverTimestamp(),
       };
       if (assigned > 0) {
@@ -723,6 +669,11 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
       batch.update(ref, updatePayload);
     });
     await batch.commit();
+    for (const evId of affectedEventIds) {
+      try {
+        await syncEventContributionCollectionSnapshot(evId);
+      } catch {}
+    }
   }
 }
 
@@ -766,8 +717,8 @@ export async function markEventPayablesTransferred(eventId: string): Promise<voi
 
   const chunks = [];
   const docs = snapshot.docs;
-  for (let i = 0; i < docs.length; i += 500) {
-    chunks.push(docs.slice(i, i + 500));
+  for (let i = 0; i < docs.length; i += 450) {
+    chunks.push(docs.slice(i, i + 450));
   }
 
   for (const chunk of chunks) {
@@ -949,8 +900,8 @@ export async function recordEventFinePayables(
   }
 
   const chunks = [];
-  for (let i = 0; i < newPayablesToCreate.length; i += 500) {
-    chunks.push(newPayablesToCreate.slice(i, i + 500));
+  for (let i = 0; i < newPayablesToCreate.length; i += 450) {
+    chunks.push(newPayablesToCreate.slice(i, i + 450));
   }
 
   for (const chunk of chunks) {
@@ -1338,8 +1289,8 @@ export async function generateDynamicEventFines(
   // Commit batch
   if (writeOps.length > 0) {
     const chunks = [];
-    for (let i = 0; i < writeOps.length; i += 500) {
-      chunks.push(writeOps.slice(i, i + 500));
+    for (let i = 0; i < writeOps.length; i += 450) {
+      chunks.push(writeOps.slice(i, i + 450));
     }
 
     for (const chunk of chunks) {
@@ -1621,11 +1572,11 @@ export async function syncStudentPayablesForActiveEvents(
       existingEventIds.add(evt.id);
     }
 
-    // 3. Batch commit in chunks of 500
+    // 3. Batch commit in chunks of 450
     if (newPayablesToCreate.length > 0) {
       const chunks = [];
-      for (let i = 0; i < newPayablesToCreate.length; i += 500) {
-        chunks.push(newPayablesToCreate.slice(i, i + 500));
+      for (let i = 0; i < newPayablesToCreate.length; i += 450) {
+        chunks.push(newPayablesToCreate.slice(i, i + 450));
       }
 
       for (const chunk of chunks) {
@@ -1794,10 +1745,10 @@ export async function transferCollectionGroupToLedger(params: {
 
   const batchId = `TRANS-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 
-  // Batch commit in chunks of 500
+  // Batch commit in chunks of 450
   const chunks = [];
-  for (let i = 0; i < eligibleDocs.length; i += 500) {
-    chunks.push(eligibleDocs.slice(i, i + 500));
+  for (let i = 0; i < eligibleDocs.length; i += 450) {
+    chunks.push(eligibleDocs.slice(i, i + 450));
   }
 
   for (const chunk of chunks) {
@@ -1822,14 +1773,15 @@ export async function transferCollectionGroupToLedger(params: {
     await batch.commit();
   }
 
-  // Insert ledger income entry
+  // Insert consolidated batch ledger income entry (1 row per batch transfer)
   const displayTitle = collectionName || (eventId ? `Event Collection (${eventId})` : 'Student Collection');
+  const batchSummaryLabel = `Student Collections (${eligibleDocs.length} paid) – ${displayTitle}`;
   if (targetLedger === 'org' && organizationId) {
     await addDoc(collection(db, 'organization_ledger'), {
       organizationId,
       semesterId: semesterId || null,
       date: Timestamp.now(),
-      description: `Student Collections – ${displayTitle}`,
+      description: batchSummaryLabel,
       eventId: eventId && eventId !== 'unassigned' ? eventId : null,
       type: 'income' as const,
       source: 'student_collection' as const,
@@ -1842,7 +1794,7 @@ export async function transferCollectionGroupToLedger(params: {
     await addDoc(collection(db, 'sao_ledger'), {
       semesterId: semesterId || null,
       date: Timestamp.now(),
-      description: `Student Collections – ${displayTitle}`,
+      description: batchSummaryLabel,
       eventId: eventId && eventId !== 'unassigned' ? eventId : null,
       type: 'income' as const,
       source: 'student_collection' as const,

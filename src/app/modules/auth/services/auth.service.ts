@@ -97,8 +97,12 @@ export async function updateAdviserProfile(
   updates: SasAdminUpdatePayload
 ): Promise<void> {
   const ref = doc(db, SAS_ADMINS_COLLECTION, uid);
-  await updateDoc(ref, {
-    ...updates,
-    updatedAt: Timestamp.now(),
-  });
+  await setDoc(
+    ref,
+    {
+      ...updates,
+      updatedAt: Timestamp.now(),
+    },
+    { merge: true }
+  );
 }

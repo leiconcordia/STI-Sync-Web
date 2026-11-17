@@ -27,6 +27,9 @@ import {
   carryOver1stSemBalancesTo2ndSem,
   cloneMiscFeeConfigForNewSchoolYear,
   buildMiscFeeDocId,
+  normalizeMiscSchoolYear,
+  validateNewSchoolYear,
+  getSuggestedNextSchoolYear,
 } from '../../../modules/finance/services/misc-fee.service';
 import {
   parseMiscFeeExcelWorkbook,
@@ -59,23 +62,27 @@ interface PendingMiscImportPreview {
 }
 
 export default function MiscFeeMaintenance() {
+  const [selectedSchoolYear, setSelectedSchoolYear] = useState<string>('');
   const {
+    configs,
     activeConfig,
+    viewedConfig,
+    isViewingHistory,
     activeAcademicTerm,
     liveRegistryCounts,
-  } = useMiscFeeConfigs();
+  } = useMiscFeeConfigs(selectedSchoolYear || null);
   const { data: miscFeeLedger = [] } = useMiscFeeLedger();
   const {
     saoRetainedFund,
     orgRetainedFunds,
     ledgerEntries: retainedLedgerEntries,
     loading: retainedLoading,
-  } = useRetainedActivityFunds();
+  } = useRetainedActivityFunds(null, viewedConfig.schoolYear);
 
   const [activeTab, setActiveTab] = useState<'misc_pools' | 'retained_funds'>('misc_pools');
   const [particularSearch, setParticularSearch] = useState('');
   const [inspectedBucket, setInspectedBucket] = useState<ComputedBucketBalance | null>(null);
-  const [draftConfig, setDraftConfig] = useState<MiscFeeConfigDocument>(activeConfig);
+  const [draftConfig, setDraftConfig] = useState<MiscFeeConfigDocument>(viewedConfig);
   const [isSaving, setIsSaving] = useState(false);
   const [newSchoolYearInput, setNewSchoolYearInput] = useState('');
   const [showNewSyModal, setShowNewSyModal] = useState(false);
@@ -83,10 +90,20 @@ export default function MiscFeeMaintenance() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (activeConfig) {
-      setDraftConfig(activeConfig);
+    if (viewedConfig) {
+      setDraftConfig(viewedConfig);
     }
-  }, [activeConfig]);
+  }, [viewedConfig]);
+
+  const filteredMiscLedger = useMemo(() => {
+    const syNorm = normalizeMiscSchoolYear(draftConfig.schoolYear).toLowerCase();
+    if (!syNorm) return miscFeeLedger;
+    return miscFeeLedger.filter(
+      (entry) =>
+        !entry.schoolYear ||
+        normalizeMiscSchoolYear(entry.schoolYear).toLowerCase() === syNorm
+    );
+  }, [miscFeeLedger, draftConfig.schoolYear]);
 
   const effectiveCounts = useMemo(() => {
     if (draftConfig.headcountSource === 'student_registry') {
@@ -124,6 +141,9 @@ export default function MiscFeeMaintenance() {
     let totalDisbursed = 0;
     let totalReturned = 0;
     let totalAvailable = 0;
+    let total1stSemPool = 0;
+    let totalCarryOver = 0;
+    let total2ndSemPool = 0;
 
     for (const b of displayedBuckets) {
       const c = computeBucketBalance(b, effectiveCounts, draftConfig.activeSemester);
@@ -131,11 +151,26 @@ export default function MiscFeeMaintenance() {
       totalDisbursed += c.currentDisbursed;
       totalReturned += c.currentReturnedSurplus;
       totalAvailable += c.currentAvailable;
+      total1stSemPool += c.pool1stSem;
+      totalCarryOver += c.carryOverFrom1stSem;
+      total2ndSemPool += c.pool2ndSem;
     }
-    return { totalPool, totalDisbursed, totalReturned, totalAvailable };
+    return {
+      totalPool,
+      totalDisbursed,
+      totalReturned,
+      totalAvailable,
+      total1stSemPool,
+      totalCarryOver,
+      total2ndSemPool,
+    };
   }, [displayedBuckets, effectiveCounts, draftConfig.activeSemester]);
 
   const handleImportExcel = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isViewingHistory) {
+      toast.error(`SY ${draftConfig.schoolYear} is closed (read-only history). Switch to Active SY ${activeConfig.schoolYear} to upload.`);
+      return;
+    }
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -158,7 +193,9 @@ export default function MiscFeeMaintenance() {
           );
         }
         const buffer = await file.arrayBuffer();
-        const parsed = parseMiscFeeExcelWorkbook(buffer, currentBuckets);
+        const parsed = parseMiscFeeExcelWorkbook(buffer, currentBuckets, {
+          targetTerm: draftConfig.activeSemester,
+        });
         fileNames.push(file.name);
         excludedCount += parsed.excludedCount || 0;
         if (!detectedTypes.includes(parsed.templateType)) {
@@ -205,6 +242,25 @@ export default function MiscFeeMaintenance() {
 
   const handleConfirmImport = async () => {
     if (!pendingImport) return;
+    if (isViewingHistory) {
+      toast.error(`Cannot modify closed historical School Year ${draftConfig.schoolYear}.`);
+      return;
+    }
+    const cleanImportSy = normalizeMiscSchoolYear(pendingImport.schoolYear);
+    const syPattern = cleanImportSy.match(/^(\d{4})-(\d{4})$/);
+    if (!syPattern || parseInt(syPattern[2], 10) !== parseInt(syPattern[1], 10) + 1) {
+      toast.error(
+        `Invalid School Year "${pendingImport.schoolYear}" in uploaded Excel. Must follow YYYY-YYYY format (e.g. ${activeConfig.schoolYear}).`
+      );
+      return;
+    }
+    const cleanActiveSy = normalizeMiscSchoolYear(activeConfig.schoolYear);
+    if (configs.length > 0 && cleanActiveSy && cleanImportSy.toLowerCase() !== cleanActiveSy.toLowerCase()) {
+      toast.error(
+        `School Year Mismatch: Excel is for SY ${cleanImportSy}, but the active School Year is SY ${cleanActiveSy}. Update the Excel School Year or start the new School Year first.`
+      );
+      return;
+    }
     setIsSaving(true);
     try {
       const checkCounts =
@@ -244,10 +300,26 @@ export default function MiscFeeMaintenance() {
         }
       }
 
+      const uploadedShs =
+        pendingImport.detectedTypes.includes('SHS') ||
+        pendingImport.detectedTypes.includes('COMBINED');
+      const uploadedCollege =
+        pendingImport.detectedTypes.includes('COLLEGE') ||
+        pendingImport.detectedTypes.includes('COMBINED');
+
       const updated: MiscFeeConfigDocument = {
         ...draftConfig,
         id: buildMiscFeeDocId(pendingImport.schoolYear),
         schoolYear: pendingImport.schoolYear,
+        status: 'ACTIVE',
+        isActive: true,
+        shsUploadedForSY: draftConfig.shsUploadedForSY || uploadedShs,
+        college1stSemUploaded:
+          draftConfig.college1stSemUploaded ||
+          (uploadedCollege && draftConfig.activeSemester === '1st Semester'),
+        college2ndSemUploaded:
+          draftConfig.college2ndSemUploaded ||
+          (uploadedCollege && draftConfig.activeSemester === '2nd Semester'),
         headcountSource: pendingImport.headcountSource,
         shsEnrolledOverride: pendingImport.shsEnrolledOverride,
         college1stSemEnrolledOverride: pendingImport.college1stSemEnrolledOverride,
@@ -255,12 +327,13 @@ export default function MiscFeeMaintenance() {
         buckets: pendingImport.mergedBuckets,
       };
       setDraftConfig(updated);
+      setSelectedSchoolYear(updated.schoolYear);
       await saveMiscFeeConfig(updated);
       try {
         await logAuditEvent({
           action: 'MISC_FEE_EXCEL_IMPORT',
           actionType: 'UPDATE',
-          details: `Imported ${pendingImport.fileNames.join(', ')} (${pendingImport.parsedBuckets.length} SAO-eligible Assessment particulars, excluded ${pendingImport.excludedCount} non-Assessment/non-activity rows) for SY ${pendingImport.schoolYear}.`,
+          details: `Imported ${pendingImport.fileNames.join(', ')} (${pendingImport.parsedBuckets.length} SAO-eligible Assessment particulars, excluded ${pendingImport.excludedCount} non-Assessment/non-activity rows) for SY ${pendingImport.schoolYear} (${draftConfig.activeSemester}).`,
           performedBy: 'SAS Admin',
           userRole: 'SAS Admin',
           targetId: updated.id,
@@ -279,11 +352,17 @@ export default function MiscFeeMaintenance() {
   };
 
   const handleSave = async () => {
+    if (isViewingHistory) {
+      toast.error(`SY ${draftConfig.schoolYear} is a closed historical record (read-only).`);
+      return;
+    }
     setIsSaving(true);
     try {
       await saveMiscFeeConfig({
         ...draftConfig,
         id: buildMiscFeeDocId(draftConfig.schoolYear),
+        status: 'ACTIVE',
+        isActive: true,
       });
       toast.success('Miscellaneous Fee configuration & fund pools saved!');
     } catch (err: any) {
@@ -294,12 +373,16 @@ export default function MiscFeeMaintenance() {
   };
 
   const handleCarryOverTo2ndSem = async () => {
+    if (isViewingHistory) {
+      toast.error(`Cannot carry over inside closed SY ${draftConfig.schoolYear}.`);
+      return;
+    }
     setIsSaving(true);
     try {
       const updated = await carryOver1stSemBalancesTo2ndSem(draftConfig, effectiveCounts);
       setDraftConfig(updated);
       toast.success(
-        '1st Semester unspent Miscellaneous Fee balances carried over to 2nd Semester!'
+        '1st Semester unspent Miscellaneous Fee balances carried over! Now upload your 2nd Term Tertiary Miscellaneous Excel.'
       );
     } catch (err: any) {
       toast.error(err?.message || 'Failed to carry over balances.');
@@ -308,19 +391,35 @@ export default function MiscFeeMaintenance() {
     }
   };
 
+  const newSyValidation = useMemo(
+    () =>
+      validateNewSchoolYear(
+        newSchoolYearInput,
+        configs.map((c) => c.schoolYear),
+        activeConfig?.schoolYear
+      ),
+    [newSchoolYearInput, configs, activeConfig?.schoolYear]
+  );
+
+  const handleOpenNewSyModal = () => {
+    setNewSchoolYearInput(getSuggestedNextSchoolYear(activeConfig?.schoolYear));
+    setShowNewSyModal(true);
+  };
+
   const handleCreateNewSchoolYear = async () => {
-    if (!newSchoolYearInput.trim()) {
-      toast.error('Please enter the new School Year (e.g. 2027-2028).');
+    if (!newSyValidation.valid) {
+      toast.error(newSyValidation.error || 'Please enter a valid School Year (e.g. 2027-2028).');
       return;
     }
     setIsSaving(true);
     try {
-      const created = await cloneMiscFeeConfigForNewSchoolYear(newSchoolYearInput.trim(), draftConfig);
+      const created = await cloneMiscFeeConfigForNewSchoolYear(newSyValidation.normalized, activeConfig);
+      setSelectedSchoolYear(created.schoolYear);
       setDraftConfig(created);
       setShowNewSyModal(false);
       setNewSchoolYearInput('');
       toast.success(
-        `Initialized SY ${created.schoolYear} with fresh ₱0.00 carry-over and cloned rate structure.`
+        `Closed prior year & initialized SY ${created.schoolYear} at ₱0.00 across Misc Pools, Carry-Over, Student Contributions, and Retained Funds!`
       );
     } catch (err: any) {
       toast.error(err?.message || 'Failed to initialize new School Year.');
@@ -341,11 +440,31 @@ export default function MiscFeeMaintenance() {
             </h2>
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Configure SHS (Annual) and Tertiary/College (Per-Semester) Miscellaneous Fee Particulars, import official templates, and track real-time activity fund balances.
+            Unified School Year &amp; Term control: SHS Misc (once per School Year) &amp; Tertiary Misc (Term 1 + Term 2 upload), synced with Registrar headcounts.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* School Year History Selector */}
+          <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 rounded-xl px-2.5 py-1.5">
+            <History className="w-3.5 h-3.5 text-[#001A4D]" />
+            <span className="text-[11px] font-bold text-gray-600">SY:</span>
+            <select
+              value={draftConfig.schoolYear}
+              onChange={(e) => setSelectedSchoolYear(e.target.value)}
+              className="bg-transparent text-xs font-black text-[#001A4D] outline-none cursor-pointer"
+            >
+              {(configs.length > 0 ? configs : [activeConfig]).map((c) => {
+                const isClosed = c.status === 'CLOSED' || (c.schoolYear !== activeConfig.schoolYear && c.isActive === false);
+                return (
+                  <option key={c.id || c.schoolYear} value={c.schoolYear}>
+                    SY {c.schoolYear} {isClosed ? '(Closed • History)' : '(Active)'}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
           <input
             ref={fileInputRef}
             type="file"
@@ -356,24 +475,53 @@ export default function MiscFeeMaintenance() {
           />
           <button
             type="button"
+            disabled={isViewingHistory}
             onClick={() => fileInputRef.current?.click()}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
           >
             <FileSpreadsheet className="w-4 h-4" />
-            <span>Import SHS / College .xlsx</span>
+            <span>
+              {draftConfig.activeSemester === '2nd Semester'
+                ? 'Upload Term 2 Tertiary .xlsx'
+                : 'Import SHS / College .xlsx'}
+            </span>
           </button>
 
           <button
             type="button"
             onClick={handleSave}
-            disabled={isSaving}
-            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors disabled:opacity-50"
+            disabled={isSaving || isViewingHistory}
+            className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
           >
             <Save className="w-3.5 h-3.5 text-[#FFD41C]" />
             <span>{isSaving ? 'Saving...' : 'Save Configuration'}</span>
           </button>
         </div>
       </div>
+
+      {/* Historical Read-Only Archive Banner when inspecting an old School Year */}
+      {isViewingHistory && (
+        <div className="p-4 rounded-2xl bg-indigo-50 border border-indigo-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-indigo-950">
+          <div className="flex items-start gap-2.5">
+            <Lock className="w-4 h-4 text-indigo-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-indigo-900">
+                Viewing Closed Historical Record — SY {draftConfig.schoolYear} (Read-Only)
+              </p>
+              <p className="text-indigo-800 mt-0.5 leading-relaxed">
+                1st Sem Pool: <strong className="font-mono">{formatCurrency(totals.total1stSemPool)}</strong> • Carry-Over to 2nd Sem: <strong className="font-mono">{formatCurrency(totals.totalCarryOver)}</strong> • 2nd Sem Pool: <strong className="font-mono">{formatCurrency(totals.total2ndSemPool)}</strong> • Retained Funds: <strong className="font-mono">{formatCurrency(saoRetainedFund.availableBalance)}</strong>. Old funds are recorded for audit history only and were <strong>never added</strong> to Active SY {activeConfig.schoolYear}.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSelectedSchoolYear(activeConfig.schoolYear)}
+            className="px-3.5 py-2 bg-indigo-700 hover:bg-indigo-800 text-white rounded-xl text-xs font-bold shrink-0 cursor-pointer transition-colors"
+          >
+            Return to Active SY {activeConfig.schoolYear}
+          </button>
+        </div>
+      )}
 
       {/* Sub-navigation Tabs: School Misc Fee Pools vs. Isolated Retained Student Contribution Fund */}
       <div className="flex flex-wrap items-center gap-2 bg-slate-100 p-1.5 rounded-2xl w-fit border border-slate-200">
@@ -481,20 +629,24 @@ export default function MiscFeeMaintenance() {
             <button
               type="button"
               onClick={handleCarryOverTo2ndSem}
-              disabled={isSaving}
-              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+              disabled={isSaving || isViewingHistory || draftConfig.activeSemester === '2nd Semester'}
+              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed text-indigo-800 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               <ArrowRightLeft className="w-3.5 h-3.5" />
-              <span>Carry Over 1st Sem Remaining Balance to 2nd Sem</span>
+              <span>
+                {draftConfig.is1stSemCarriedOver
+                  ? '1st Sem Carried Over to 2nd Sem'
+                  : 'Carry Over 1st Sem Remaining Balance to 2nd Sem'}
+              </span>
             </button>
 
             <button
               type="button"
-              onClick={() => setShowNewSyModal(true)}
+              onClick={handleOpenNewSyModal}
               className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>New School Year (Reset Carry-Over)</span>
+              <span>Start New School Year (Zero Reset)</span>
             </button>
           </div>
         </div>
@@ -502,17 +654,22 @@ export default function MiscFeeMaintenance() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <div>
             <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
-              School Year
+              School Year (History &amp; Active)
             </label>
-            <input
-              type="text"
+            <select
               value={draftConfig.schoolYear}
-              onChange={(e) =>
-                setDraftConfig((prev) => ({ ...prev, schoolYear: e.target.value }))
-              }
-              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D]"
-              placeholder="2026-2027"
-            />
+              onChange={(e) => setSelectedSchoolYear(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D] bg-white"
+            >
+              {(configs.length > 0 ? configs : [activeConfig]).map((c) => {
+                const isClosed = c.status === 'CLOSED' || (c.schoolYear !== activeConfig.schoolYear && c.isActive === false);
+                return (
+                  <option key={c.id || c.schoolYear} value={c.schoolYear}>
+                    {c.schoolYear} {isClosed ? '• Closed (History)' : '• Active'}
+                  </option>
+                );
+              })}
+            </select>
           </div>
 
           <div>
@@ -520,6 +677,7 @@ export default function MiscFeeMaintenance() {
               Active Term
             </label>
             <select
+              disabled={isViewingHistory}
               value={draftConfig.activeSemester}
               onChange={(e) =>
                 setDraftConfig((prev) => ({
@@ -527,10 +685,10 @@ export default function MiscFeeMaintenance() {
                   activeSemester: e.target.value as MiscFeeSemesterTerm,
                 }))
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D] bg-white"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D] bg-white disabled:bg-gray-100"
             >
-              <option value="1st Semester">1st Semester</option>
-              <option value="2nd Semester">2nd Semester (with Carry-Over)</option>
+              <option value="1st Semester">1st Semester (Term 1: SHS + Tertiary)</option>
+              <option value="2nd Semester">2nd Semester (Term 2: Carry-Over + Tertiary)</option>
             </select>
           </div>
 
@@ -539,6 +697,7 @@ export default function MiscFeeMaintenance() {
               Headcount Source
             </label>
             <select
+              disabled={isViewingHistory}
               value={draftConfig.headcountSource}
               onChange={(e) =>
                 setDraftConfig((prev) => ({
@@ -546,7 +705,7 @@ export default function MiscFeeMaintenance() {
                   headcountSource: e.target.value as any,
                 }))
               }
-              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-800 bg-white"
+              className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-800 bg-white disabled:bg-gray-100"
             >
               <option value="student_registry">
                 Student Registry Bulk Import ({liveRegistryCounts.shs} SHS [G12: {liveRegistryCounts.shsGrade12}] / {liveRegistryCounts.college1stSem} Col 1S / {liveRegistryCounts.college2ndSem} Col 2S)
@@ -564,7 +723,7 @@ export default function MiscFeeMaintenance() {
             <input
               type="number"
               min="0"
-              disabled={draftConfig.headcountSource === 'student_registry'}
+              disabled={isViewingHistory || draftConfig.headcountSource === 'student_registry'}
               value={effectiveCounts.shsEnrolled}
               onChange={(e) =>
                 setDraftConfig((prev) => ({
@@ -584,7 +743,7 @@ export default function MiscFeeMaintenance() {
             <input
               type="number"
               min="0"
-              disabled={draftConfig.headcountSource === 'student_registry'}
+              disabled={isViewingHistory || draftConfig.headcountSource === 'student_registry'}
               value={
                 draftConfig.activeSemester === '2nd Semester'
                   ? effectiveCounts.college2ndSemEnrolled
@@ -605,21 +764,46 @@ export default function MiscFeeMaintenance() {
           </div>
         </div>
 
+        {/* Academic Cycle Sync Checklist */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100 text-[11px] text-gray-600">
-          <span>
-            Synced Academic Term:{' '}
-            <strong className="text-[#001A4D]">
-              SY {activeAcademicTerm.schoolYear} ({activeAcademicTerm.semester})
-            </strong>
-            {activeAcademicTerm.collegeTermLabel ? ` • ${activeAcademicTerm.collegeTermLabel}` : ''}
-          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span>
+              Synced Cycle:{' '}
+              <strong className="text-[#001A4D]">
+                SY {draftConfig.schoolYear} ({draftConfig.activeSemester})
+              </strong>
+            </span>
+            <span className={`px-2 py-0.5 rounded-full font-bold ${
+              draftConfig.shsUploadedForSY || displayedBuckets.some((b) => (Number(b.shsRateTY) || 0) > 0)
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : 'bg-slate-100 text-slate-600 border border-slate-200'
+            }`}>
+              SHS Misc (Once/SY): {draftConfig.shsUploadedForSY || displayedBuckets.some((b) => (Number(b.shsRateTY) || 0) > 0) ? 'Uploaded' : 'Pending'}
+            </span>
+            <span className={`px-2 py-0.5 rounded-full font-bold ${
+              draftConfig.college1stSemUploaded || displayedBuckets.some((b) => (Number(b.college1stSemRateTY) || 0) > 0)
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : 'bg-slate-100 text-slate-600 border border-slate-200'
+            }`}>
+              Tertiary Term 1: {draftConfig.college1stSemUploaded || displayedBuckets.some((b) => (Number(b.college1stSemRateTY) || 0) > 0) ? 'Uploaded' : 'Pending'}
+            </span>
+            <span className={`px-2 py-0.5 rounded-full font-bold ${
+              draftConfig.college2ndSemUploaded || displayedBuckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0)
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : draftConfig.activeSemester === '2nd Semester'
+                ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                : 'bg-slate-100 text-slate-500 border border-slate-200'
+            }`}>
+              Tertiary Term 2: {draftConfig.college2ndSemUploaded || displayedBuckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0) ? 'Uploaded' : draftConfig.activeSemester === '2nd Semester' ? 'Upload Term 2 Excel' : 'Upcoming'}
+            </span>
+          </div>
           {draftConfig.headcountSource === 'student_registry' &&
             liveRegistryCounts.shs === 0 &&
             liveRegistryCounts.college1stSem === 0 &&
             liveRegistryCounts.college2ndSem === 0 && (
               <span className="inline-flex items-center gap-1.5 text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-lg font-semibold">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
-                No bulk-imported active students matched SY {draftConfig.schoolYear}. Import students in Student Registry to compute live pools.
+                No active students matched SY {draftConfig.schoolYear} in Student Registry. Import Registrar lists to sync live pools.
               </span>
             )}
         </div>
@@ -759,18 +943,18 @@ export default function MiscFeeMaintenance() {
 
       {activeTab === 'retained_funds' && (
         <div className="space-y-5">
-          {/* Isolation Policy Banner */}
+          {/* Isolation & SY-Reset Policy Banner */}
           <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-start gap-3 text-xs text-emerald-950">
             <ShieldCheck className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-bold text-emerald-900">
-                Strict Isolation Policy: Student Contribution Surplus vs. School Miscellaneous Fees
+                School-Year Scoped Student Contribution &amp; Retained Funds — SY {draftConfig.schoolYear}
               </p>
               <p className="text-emerald-800 leading-relaxed">
-                Unspent Student Contribution surpluses after Financial Liquidation{' '}
+                Student Contribution collections and Retained Fund surpluses{' '}
                 <strong>never mix with School Miscellaneous Fees</strong> and{' '}
-                <strong>never reset at School Year-end</strong>. Club/Organization surpluses stay in their Organization Treasury Balance; SAO/Admin campus activity surpluses go into the{' '}
-                <strong>SAO / Campus Student Activity Fund</strong> and can be reused directly on future Activity Proposals.
+                <strong>reset to ₱0.00 whenever a New School Year starts</strong>. Past years&apos; balances remain{' '}
+                <strong>recorded in closed School Year history only</strong> and are never carried over into the new academic year.
               </p>
             </div>
           </div>
@@ -785,7 +969,7 @@ export default function MiscFeeMaintenance() {
                 {retainedLoading ? '...' : formatCurrency(saoRetainedFund.availableBalance)}
               </p>
               <p className="text-[11px] text-emerald-700 mt-0.5">
-                Persistent across SY • Held under Cashier/SAO custodianship
+                Scoped to SY {draftConfig.schoolYear} • Resets to ₱0.00 on New SY
               </p>
             </div>
 
@@ -967,7 +1151,7 @@ export default function MiscFeeMaintenance() {
         bucket={inspectedBucket}
         schoolYear={draftConfig.schoolYear}
         activeSemester={draftConfig.activeSemester}
-        ledgerEntries={miscFeeLedger}
+        ledgerEntries={filteredMiscLedger}
       />
 
       {/* Excel Import Confirmation Modal */}
@@ -992,6 +1176,10 @@ export default function MiscFeeMaintenance() {
           pendingImport.schoolYear &&
           activeAcademicTerm.schoolYear &&
           pendingImport.schoolYear.toLowerCase() !== activeAcademicTerm.schoolYear.toLowerCase();
+        const isShsRepeatInTerm2 =
+          draftConfig.activeSemester === '2nd Semester' &&
+          Boolean(draftConfig.shsUploadedForSY) &&
+          pendingImport.detectedTypes.includes('SHS');
         const isZeroHeadcount =
           previewCounts.shsEnrolled === 0 &&
           previewCounts.college1stSemEnrolled === 0 &&
@@ -1030,8 +1218,16 @@ export default function MiscFeeMaintenance() {
               </div>
 
               <div className="p-5 overflow-y-auto space-y-4">
-                {(isSyMismatch || isZeroHeadcount) && (
+                {(isSyMismatch || isShsRepeatInTerm2 || isZeroHeadcount) && (
                   <div className="space-y-2">
+                    {isShsRepeatInTerm2 && (
+                      <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 flex items-start gap-2 text-xs text-blue-900">
+                        <AlertTriangle className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>SHS Annual Notice:</strong> SHS Miscellaneous Fees are uploaded only once per School Year and are already recorded for <strong>SY {draftConfig.schoolYear}</strong>. In Term 2, only the <strong>Tertiary / College</strong> document normally needs re-upload.
+                        </span>
+                      </div>
+                    )}
                     {isSyMismatch && (
                       <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-2 text-xs text-amber-900">
                         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -1145,9 +1341,9 @@ export default function MiscFeeMaintenance() {
                 </button>
                 <button
                   type="button"
-                  disabled={isSaving}
+                  disabled={isSaving || (configs.length > 0 && Boolean(isSyMismatch))}
                   onClick={handleConfirmImport}
-                  className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50 shadow-xs"
+                  className="px-5 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
                 >
                   {isSaving ? 'Saving...' : 'Confirm & Save Fund Pools'}
                 </button>
@@ -1162,22 +1358,38 @@ export default function MiscFeeMaintenance() {
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl border border-gray-200">
             <h3 className="text-base font-bold text-[#001A4D]">
-              Start New School Year (Reset Carry-Over)
+              Start New School Year (Zero Reset)
             </h3>
             <p className="text-xs text-gray-600 leading-relaxed">
-              Per institutional policy, unspent Miscellaneous Fee balances do <strong>not</strong> carry over to a new School Year. This will clone the Particular rate structure into the new School Year with all carry-over and disbursement balances reset to <strong>₱0.00</strong>.
+              This closes <strong>SY {activeConfig.schoolYear}</strong> into read-only history (recording its 1st Sem, Carry-Over, 2nd Sem, Student Contribution, and Retained Funds) and initializes the new School Year at <strong>₱0.00</strong> across <strong>Miscellaneous Pools, Budget Carry-Over, Student Contributions, and Retained Funds</strong>. Old funds are never added to the new academic year.
+            </p>
+            <p className="text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-xl p-2.5">
+              After initializing, upload the new School Year&apos;s <strong>SHS (Annual)</strong> + <strong>Tertiary Term 1</strong> Miscellaneous Excel files and sync Student Registry.
             </p>
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">
-                New School Year (e.g. 2027-2028)
+                New School Year (YYYY-YYYY, e.g. {getSuggestedNextSchoolYear(activeConfig?.schoolYear)})
               </label>
               <input
                 type="text"
+                inputMode="numeric"
+                maxLength={9}
                 value={newSchoolYearInput}
-                onChange={(e) => setNewSchoolYearInput(e.target.value)}
-                placeholder="2027-2028"
-                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold"
+                onChange={(e) =>
+                  setNewSchoolYearInput(e.target.value.replace(/[^0-9-]/g, '').slice(0, 9))
+                }
+                placeholder={getSuggestedNextSchoolYear(activeConfig?.schoolYear)}
+                className={`w-full px-3 py-2 border rounded-xl text-xs font-bold font-mono outline-none ${
+                  newSchoolYearInput && !newSyValidation.valid
+                    ? 'border-red-400 bg-red-50/40 text-red-900'
+                    : 'border-gray-300 text-[#001A4D]'
+                }`}
               />
+              {newSchoolYearInput && !newSyValidation.valid && (
+                <p className="text-[11px] font-semibold text-red-600 mt-1">
+                  {newSyValidation.error}
+                </p>
+              )}
             </div>
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -1190,10 +1402,10 @@ export default function MiscFeeMaintenance() {
               <button
                 type="button"
                 onClick={handleCreateNewSchoolYear}
-                disabled={isSaving}
-                className="px-4 py-2 bg-[#001A4D] text-white rounded-xl text-xs font-bold cursor-pointer"
+                disabled={isSaving || !newSyValidation.valid}
+                className="px-4 py-2 bg-[#001A4D] text-white rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Initialize New School Year
+                {isSaving ? 'Initializing...' : 'Close Current SY & Start at ₱0.00'}
               </button>
             </div>
           </div>

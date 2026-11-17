@@ -28,6 +28,79 @@ import type { OrgLedgerDocument } from '../types/finance.types';
 import type { PayableDocument } from '../types/payable.types';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDate } from '../../../utils/date';
+import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { resolveUserSignature } from '../../signatories';
+
+interface PdfSigImg {
+  dataUrl: string;
+  w: number;
+  h: number;
+  format: 'PNG' | 'JPEG';
+}
+
+async function loadPdfSigImage(url?: string | null): Promise<PdfSigImg | null> {
+  const trimmed = (url || '').trim();
+  if (!trimmed || trimmed.includes('[base64-')) return null;
+
+  let dataUrl = trimmed.startsWith('data:image/') ? trimmed : '';
+  if (!dataUrl) {
+    try {
+      const res = await fetch(trimmed, { mode: 'cors' });
+      if (res.ok) {
+        const blob = await res.blob();
+        dataUrl =
+          (await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+          })) || '';
+      }
+    } catch {}
+  }
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
+
+  const format: 'PNG' | 'JPEG' = /^data:image\/jpe?g/i.test(dataUrl) ? 'JPEG' : 'PNG';
+  const dims = await new Promise<{ w: number; h: number }>((resolve) => {
+    if (typeof Image === 'undefined') {
+      resolve({ w: 28, h: 9 });
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const natW = img.naturalWidth || 300;
+      const natH = img.naturalHeight || 100;
+      const ratio = Math.min(28 / natW, 9 / natH);
+      resolve({ w: Math.max(4, natW * ratio), h: Math.max(3, natH * ratio) });
+    };
+    img.onerror = () => resolve({ w: 28, h: 9 });
+    img.src = dataUrl;
+  });
+
+  return { dataUrl, w: dims.w, h: dims.h, format };
+}
+
+async function resolveSasSignatoryForPdf(): Promise<{
+  name: string;
+  roleTitle: string;
+  sigImg: PdfSigImg | null;
+}> {
+  const sasCfg = await getSasSignatoryConfig().catch(() => null);
+  let sigRaw = sasCfg?.signatureUrl || sasCfg?.signatureDataUrl || '';
+  if (!sigRaw) {
+    sigRaw = await resolveUserSignature({
+      email: sasCfg?.email || 'sao@ormoc.sti.edu.ph',
+      name: sasCfg?.name,
+      role: 'sas_admin',
+    }).catch(() => '');
+  }
+  const sigImg = await loadPdfSigImage(sigRaw);
+  return {
+    name: sasCfg?.name || 'SAS Coordinator',
+    roleTitle: sasCfg?.roleTitle || 'Student Affairs & Services Head',
+    sigImg,
+  };
+}
 
 export function formatTransactionSource(source?: string | null): string {
   if (!source) return 'General';
@@ -361,7 +434,7 @@ function LedgerReportModalInner({
   };
 
   // ─── PDF Export Functionality ────────────────────────────────────────────────
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (chronologicalRows.length === 0) {
       toast.error('No transactions available to export for the selected filters.');
       return;
@@ -369,6 +442,7 @@ function LedgerReportModalInner({
 
     setIsExporting(true);
     try {
+      const sasInfo = await resolveSasSignatoryForPdf();
       const doc = new jsPDF({
         orientation: 'landscape',
         unit: 'mm',
@@ -551,7 +625,7 @@ function LedgerReportModalInner({
       });
 
       // ── 5. Formal Signatory Footer ──
-      if (y + 22 > pageHeight - margin) {
+      if (y + 26 > pageHeight - margin) {
         doc.addPage('a4', 'landscape');
         y = margin + 10;
       } else {
@@ -559,11 +633,16 @@ function LedgerReportModalInner({
       }
 
       const sigW = (pageWidth - margin * 2 - 30) / 4;
-      const sigs = [
+      const sigs: Array<{ role: string; title: string; name: string; sigImg?: PdfSigImg | null }> = [
         { role: 'Prepared By:', title: 'Club Treasurer', name: officerName },
         { role: 'Audited By:', title: 'Club Auditor', name: 'Student Auditor' },
         { role: 'Approved By:', title: 'Club President', name: 'Club President' },
-        { role: 'Noted By:', title: 'SAS Adviser', name: 'SAS Coordinator' },
+        {
+          role: 'Noted By:',
+          title: sasInfo.roleTitle || 'Student Affairs & Services Head',
+          name: sasInfo.name || 'SAS Coordinator',
+          sigImg: sasInfo.sigImg,
+        },
       ];
 
       sigs.forEach((sig, sIdx) => {
@@ -572,18 +651,26 @@ function LedgerReportModalInner({
         doc.setTextColor(100, 116, 139);
         doc.text(sig.role, sx, y);
 
+        if (sig.sigImg) {
+          try {
+            const imgX = sx + Math.max(0, (sigW - sig.sigImg.w) / 2);
+            const imgY = y + Math.max(1.5, 11.5 - sig.sigImg.h);
+            doc.addImage(sig.sigImg.dataUrl, sig.sigImg.format, imgX, imgY, sig.sigImg.w, sig.sigImg.h);
+          } catch {}
+        }
+
         doc.setDrawColor(180, 180, 180);
-        doc.line(sx, y + 10, sx + sigW, y + 10);
+        doc.line(sx, y + 12, sx + sigW, y + 12);
 
         doc.setFontSize(8);
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(0, 26, 77);
-        doc.text(sig.name, sx, y + 14);
+        doc.text(sig.name, sx, y + 16);
 
         doc.setFontSize(6.5);
         doc.setFont('helvetica', 'normal');
         doc.setTextColor(120, 120, 120);
-        doc.text(sig.title, sx, y + 17.5);
+        doc.text(sig.title, sx, y + 19.5);
       });
 
       const safeOrg = organizationName.replace(/[^a-zA-Z0-9]/g, '_');
@@ -1193,13 +1280,14 @@ function PayablesRosterExportModal({
     }
   };
 
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     if (enrichedFilteredPayables.length === 0) {
       toast.error('No payable records match the selected filters.');
       return;
     }
     setIsExporting(true);
     try {
+      const sasInfo = await resolveSasSignatoryForPdf();
       const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
       const pageWidth = 297;
       const pageHeight = 210;
@@ -1347,6 +1435,54 @@ function PayablesRosterExportModal({
         doc.text(row.paidDateStr.substring(0, 15), cx + 2, y + 4.2);
 
         y += 6;
+      });
+
+      if (y + 26 > pageHeight - margin) {
+        doc.addPage('a4', 'landscape');
+        y = margin + 10;
+      } else {
+        y += 10;
+      }
+
+      const sigW = (pageWidth - margin * 2 - 30) / 4;
+      const sigs: Array<{ role: string; title: string; name: string; sigImg?: PdfSigImg | null }> = [
+        { role: 'Prepared By:', title: 'Club Treasurer', name: officerName },
+        { role: 'Audited By:', title: 'Club Auditor', name: 'Student Auditor' },
+        { role: 'Approved By:', title: 'Club President', name: 'Club President' },
+        {
+          role: 'Noted By:',
+          title: sasInfo.roleTitle || 'Student Affairs & Services Head',
+          name: sasInfo.name || 'SAS Coordinator',
+          sigImg: sasInfo.sigImg,
+        },
+      ];
+
+      sigs.forEach((sig, sIdx) => {
+        const sx = margin + sIdx * (sigW + 10);
+        doc.setFontSize(6.5);
+        doc.setTextColor(100, 116, 139);
+        doc.text(sig.role, sx, y);
+
+        if (sig.sigImg) {
+          try {
+            const imgX = sx + Math.max(0, (sigW - sig.sigImg.w) / 2);
+            const imgY = y + Math.max(1.5, 11.5 - sig.sigImg.h);
+            doc.addImage(sig.sigImg.dataUrl, sig.sigImg.format, imgX, imgY, sig.sigImg.w, sig.sigImg.h);
+          } catch {}
+        }
+
+        doc.setDrawColor(180, 180, 180);
+        doc.line(sx, y + 12, sx + sigW, y + 12);
+
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(0, 26, 77);
+        doc.text(sig.name, sx, y + 16);
+
+        doc.setFontSize(6.5);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(120, 120, 120);
+        doc.text(sig.title, sx, y + 19.5);
       });
 
       const safeOrg = organizationName.replace(/[^a-zA-Z0-9]/g, '_');

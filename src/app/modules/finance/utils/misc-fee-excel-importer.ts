@@ -92,7 +92,8 @@ export function inferSaoActivityEligibility(
  */
 export function parseMiscFeeExcelWorkbook(
   buffer: ArrayBuffer,
-  existingBuckets: MiscFeeBucket[] = []
+  existingBuckets: MiscFeeBucket[] = [],
+  options?: { targetTerm?: MiscFeeSemesterTerm }
 ): ParsedMiscFeeImport {
   let wb: XLSX.WorkBook;
   try {
@@ -272,6 +273,13 @@ export function parseMiscFeeExcelWorkbook(
         const col2LY = parseStrictRate(row[9], particular, '2nd Sem LY');
         const col2TY = parseStrictRate(row[10], particular, '2nd Sem TY');
 
+        // When re-uploading Tertiary Misc in 2nd Semester, preserve existing 1st Sem rates
+        // if the 2nd Term sheet leaves 1st Sem columns at 0 so Term 1 history never zeros out.
+        const preserve1stSemRates =
+          options?.targetTerm === '2nd Semester' &&
+          col1TY === 0 &&
+          (existing?.college1stSemRateTY ?? 0) > 0;
+
         const mergedBucket: MiscFeeBucket = {
           id: existing?.id || slugifyParticular(particular, program, level),
           particular,
@@ -284,10 +292,40 @@ export function parseMiscFeeExcelWorkbook(
           saoEligible: true,
           shsRateLY: existing?.shsRateLY ?? 0,
           shsRateTY: existing?.shsRateTY ?? 0,
-          college1stSemRateLY: col1LY,
-          college1stSemRateTY: col1TY,
+          college1stSemRateLY: preserve1stSemRates ? (existing?.college1stSemRateLY ?? 0) : col1LY,
+          college1stSemRateTY: preserve1stSemRates ? (existing?.college1stSemRateTY ?? 0) : col1TY,
           college2ndSemRateLY: col2LY,
           college2ndSemRateTY: col2TY,
+          carryOverFrom1stSem: existing?.carryOverFrom1stSem ?? 0,
+          disbursed1stSem: existing?.disbursed1stSem ?? 0,
+          returnedSurplus1stSem: existing?.returnedSurplus1stSem ?? 0,
+          disbursed2ndSem: existing?.disbursed2ndSem ?? 0,
+          returnedSurplus2ndSem: existing?.returnedSurplus2ndSem ?? 0,
+        };
+        bucketMap.set(key, mergedBucket);
+        parsedFromFileMap.set(key, mergedBucket);
+      } else if (isCollegeSheet) {
+        // 2-column Tertiary/College sheet (assigns to 1st or 2nd Sem based on targetTerm, defaulting to 1st Sem)
+        const rateLY = parseStrictRate(row[7], particular, 'College LY');
+        const rateTY = parseStrictRate(row[8], particular, 'College TY');
+        const isSecond = options?.targetTerm === '2nd Semester';
+
+        const mergedBucket: MiscFeeBucket = {
+          id: existing?.id || slugifyParticular(particular, program, level),
+          particular,
+          assessmentType: assessmentType || existing?.assessmentType || 'Assessment',
+          mfType: mfType || existing?.mfType || 'Common MF',
+          mfTitle: mfTitle || existing?.mfTitle || '',
+          program: program || existing?.program || 'All',
+          level: level || existing?.level || 'All',
+          remarks: remarks || existing?.remarks || '',
+          saoEligible: true,
+          shsRateLY: existing?.shsRateLY ?? 0,
+          shsRateTY: existing?.shsRateTY ?? 0,
+          college1stSemRateLY: isSecond ? (existing?.college1stSemRateLY ?? 0) : rateLY,
+          college1stSemRateTY: isSecond ? (existing?.college1stSemRateTY ?? 0) : rateTY,
+          college2ndSemRateLY: isSecond ? rateLY : (existing?.college2ndSemRateLY ?? 0),
+          college2ndSemRateTY: isSecond ? rateTY : (existing?.college2ndSemRateTY ?? 0),
           carryOverFrom1stSem: existing?.carryOverFrom1stSem ?? 0,
           disbursed1stSem: existing?.disbursed1stSem ?? 0,
           returnedSurplus1stSem: existing?.returnedSurplus1stSem ?? 0,

@@ -125,7 +125,7 @@ export default function FundingSourceSelector({
   const {
     saoRetainedFund,
     loading: retainedLoading,
-  } = useRetainedActivityFunds(null);
+  } = useRetainedActivityFunds(null, activeConfig?.schoolYear);
 
   // Live Enrolled Students & Academic Structure for Student Contribution Calculator
   const { data: allStudentsData = [] } = useStudents();

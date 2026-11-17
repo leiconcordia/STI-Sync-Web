@@ -8,6 +8,8 @@
  */
 
 import type { PostActivityReportDocument, PARApprovalStep } from '../types/par.types';
+import { resolveUserSignature } from '../../signatories';
+import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import {
   populateDocxTemplate,
   resolveSignatureDataUrl,
@@ -160,18 +162,66 @@ export async function buildPARTemplatePayload(
     return resolved.dataUrl;
   };
 
-  const preparedSigUrl =
-    rawReport.preparedBy?.signatureUrl || rawReport.submittedBySignatureUrl || '';
+  const rAny = rawReport as any;
+  const orgIdLower = (rawReport.organizationId || '').trim().toLowerCase();
+  const isSasCreator =
+    rawReport.creatorRole === 'sas_admin' ||
+    Boolean(rawReport.isSasInternal) ||
+    orgIdLower === 'sas' ||
+    orgIdLower === 'sao_admin' ||
+    orgIdLower === 'sao' ||
+    rAny.createdByUid === 'sas_admin_user' ||
+    rAny.createdByUid === 'sao_admin' ||
+    (rawReport.preparedBy?.roleTitle || '').toLowerCase().includes('sas') ||
+    (rawReport.preparedBy?.roleTitle || '').toLowerCase().includes('student affairs');
+
+  let preparedName = rawReport.preparedBy?.name || rAny.submittedByName || rawReport.createdByName || '';
+  let preparedRoleTitle =
+    rawReport.preparedBy?.roleTitle ||
+    rAny.submittedByRole ||
+    (isSasCreator ? 'SAS Administrator' : '');
+  let preparedSigUrl =
+    rawReport.preparedBy?.signatureUrl || rawReport.submittedBySignatureUrl || rAny.signatureUrl || '';
+
+  if (!preparedSigUrl) {
+    preparedSigUrl = await resolveUserSignature({
+      uid: rAny.submittedByUid || rawReport.createdByUid,
+      email: rAny.submittedByEmail || rawReport.createdByEmail,
+      name: preparedName,
+      role: isSasCreator ? 'sas_admin' : preparedRoleTitle || rawReport.creatorRole || 'adviser',
+    }).catch(() => '');
+  }
+
+  if (isSasCreator) {
+    try {
+      const sasCfg = await getSasSignatoryConfig();
+      if (!preparedSigUrl) {
+        preparedSigUrl = sasCfg.signatureUrl || sasCfg.signatureDataUrl || '';
+      }
+      const lowerName = preparedName.trim().toLowerCase();
+      if (
+        (!lowerName ||
+          lowerName.includes('sas / sao administrator') ||
+          lowerName === 'sas administrator' ||
+          lowerName === 'sao administrator' ||
+          lowerName.includes('student affairs')) &&
+        sasCfg.name
+      ) {
+        preparedName = sasCfg.name;
+      }
+      if ((!preparedRoleTitle || preparedRoleTitle === 'SAS Administrator' || preparedRoleTitle === 'System Administrator') && sasCfg.roleTitle) {
+        preparedRoleTitle = sasCfg.roleTitle;
+      }
+    } catch {}
+  }
+
   const preparedSigImg = preparedSigUrl ? await registerSignature(preparedSigUrl) : null;
 
   const preparedBy: PARSignatoryTagItem[] = [
     {
       signatureImage: preparedSigImg,
-      name: rawReport.preparedBy?.name || (rawReport as any).submittedByName || rawReport.createdByName || '',
-      roleTitle:
-        rawReport.preparedBy?.roleTitle ||
-        (rawReport as any).submittedByRole ||
-        (rawReport.creatorRole === 'sas_admin' ? 'SAS Administrator' : ''),
+      name: preparedName,
+      roleTitle: preparedRoleTitle,
     },
   ];
 
@@ -185,8 +235,16 @@ export async function buildPARTemplatePayload(
       step.status === 'endorsed' ||
       step.status === 'approved' ||
       Boolean(step.signedAt);
-    const sigImg =
-      isSigned && step.signatureUrl ? await registerSignature(step.signatureUrl) : null;
+    let stepSigUrl = isSigned ? step.signatureUrl || '' : '';
+    if (isSigned && !stepSigUrl) {
+      stepSigUrl = await resolveUserSignature({
+        uid: step.signatoryUid,
+        email: step.signatoryEmail,
+        name: step.signatoryName,
+        role: step.role,
+      }).catch(() => '');
+    }
+    const sigImg = isSigned && stepSigUrl ? await registerSignature(stepSigUrl) : null;
     notedBy.push({
       signatureImage: sigImg,
       name: step.signatoryName || '',

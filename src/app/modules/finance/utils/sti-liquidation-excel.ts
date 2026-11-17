@@ -411,14 +411,15 @@ export async function enrichLiquidationSignatures(
   if (!report || typeof window === 'undefined') return report;
 
   try {
-    const [{ resolveUserSignature }, { db }, firestoreMod] = await Promise.all([
+    const [{ resolveUserSignature }, { getSasSignatoryConfig }, { db }, firestoreMod] = await Promise.all([
       import('../../signatories/services/signatory-resolver.service'),
+      import('../../signatories/services/sas-signatory.service'),
       import('../../../../services/firebase'),
       import('firebase/firestore'),
     ]);
     const { collection, getDocs, limit, query } = firestoreMod;
 
-    // 1. Maker signature: use attached signature first; resolve registered signature if report is already submitted
+    // 1. Maker signature: use attached signature first; resolve registered signature for submitted OR SAS reports
     let resolvedMakerSig =
       cleanSig(options.makerSignatureUrl) ||
       cleanSig(report.preparedBy?.signatureUrl) ||
@@ -426,7 +427,7 @@ export async function enrichLiquidationSignatures(
       cleanSig((report as any).makerSignatureUrl) ||
       cleanSig((report as any).signatureUrl);
 
-    const makerName = (
+    let makerName = (
       options.officerName ||
       report.submittedByName ||
       report.employeeName ||
@@ -435,31 +436,76 @@ export async function enrichLiquidationSignatures(
       ''
     ).trim();
 
-    if (!resolvedMakerSig && isSubmittedReport(report, options)) {
-      const makerRole = String(report.submittedByRole || report.createdByRole || '').toLowerCase();
-      const makerEmail = (report.preparedBy?.email || (report as any).createdByEmail || '').trim();
-      const makerUid = ((report as any).createdById || (report as any).createdByUid || (report as any).submittedByUid || '').trim();
-      const isSasMaker =
-        makerRole === 'sas_admin' ||
-        makerRole === 'admin' ||
-        makerRole === 'sao_admin' ||
-        report.organizationId === 'sas' ||
-        report.organizationId === 'sao_admin' ||
-        makerEmail.toLowerCase() === 'sao@ormoc.sti.edu.ph';
+    const makerRole = String(
+      report.submittedByRole || report.createdByRole || report.preparedBy?.roleTitle || ''
+    ).toLowerCase();
+    const makerEmail = (report.preparedBy?.email || (report as any).createdByEmail || '').trim();
+    const makerUid = (
+      (report as any).createdById ||
+      (report as any).createdByUid ||
+      (report as any).submittedByUid ||
+      ''
+    ).trim();
+    const orgIdLower = String(report.organizationId || '').trim().toLowerCase();
+    const isSasMaker =
+      makerRole === 'sas_admin' ||
+      makerRole === 'admin' ||
+      makerRole === 'sao_admin' ||
+      makerRole.includes('sas') ||
+      makerRole.includes('sao') ||
+      Boolean((report as any).isSasInternal) ||
+      orgIdLower === 'sas' ||
+      orgIdLower === 'sao_admin' ||
+      orgIdLower === 'sao' ||
+      makerUid === 'sao_admin' ||
+      makerUid === 'sas_admin_user' ||
+      makerEmail.toLowerCase() === 'sao@ormoc.sti.edu.ph' ||
+      makerEmail.toLowerCase().includes('sas') ||
+      makerEmail.toLowerCase().includes('sao');
 
-      try {
-        const directSig = await resolveUserSignature({
-          uid: makerUid || undefined,
-          email: makerEmail || (isSasMaker ? 'sao@ormoc.sti.edu.ph' : undefined),
-          name: makerName || undefined,
-          organizationId: report.organizationId || undefined,
-          role: isSasMaker ? 'sas_admin' : makerRole || 'officer',
-        });
-        if (cleanSig(directSig)) {
-          resolvedMakerSig = cleanSig(directSig);
+    const sasCfg = await getSasSignatoryConfig().catch(() => null);
+    let resolvedMakerRoleTitle = report.preparedBy?.roleTitle || '';
+
+    if (isSasMaker && sasCfg) {
+      const lowerMaker = makerName.toLowerCase();
+      const isGenericMaker =
+        !lowerMaker ||
+        lowerMaker === 'sas' ||
+        lowerMaker === 'sao' ||
+        lowerMaker === 'sas admin' ||
+        lowerMaker === 'sao admin' ||
+        lowerMaker === 'sas administrator' ||
+        lowerMaker === 'sao administrator' ||
+        lowerMaker.includes('sas / sao administrator') ||
+        lowerMaker.includes('student affairs');
+      if (isGenericMaker && sasCfg.name) {
+        makerName = sasCfg.name;
+      }
+      if ((!resolvedMakerRoleTitle || resolvedMakerRoleTitle === 'SAS Administrator') && sasCfg.roleTitle) {
+        resolvedMakerRoleTitle = sasCfg.roleTitle;
+      }
+    }
+
+    if (!resolvedMakerSig && (isSasMaker || isSubmittedReport(report, options))) {
+      if (isSasMaker && sasCfg) {
+        const cfgSig = cleanSig(sasCfg.signatureUrl) || cleanSig(sasCfg.signatureDataUrl);
+        if (cfgSig) resolvedMakerSig = cfgSig;
+      }
+
+      if (!resolvedMakerSig) {
+        try {
+          const directSig = await resolveUserSignature({
+            uid: makerUid && makerUid !== 'sao_admin' && makerUid !== 'sas_admin_user' ? makerUid : undefined,
+            email: makerEmail || (isSasMaker ? sasCfg?.email || 'sao@ormoc.sti.edu.ph' : undefined),
+            name: makerName || undefined,
+            role: isSasMaker ? 'sas_admin' : makerRole || 'officer',
+          });
+          if (cleanSig(directSig)) {
+            resolvedMakerSig = cleanSig(directSig);
+          }
+        } catch {
+          // continue to fallbacks
         }
-      } catch {
-        // continue to fallbacks
       }
 
       if (!resolvedMakerSig && isSasMaker) {
@@ -467,7 +513,7 @@ export async function enrichLiquidationSignatures(
           const cachedRaw = localStorage.getItem('sti_sync_sas_signatory');
           if (cachedRaw) {
             const parsed = JSON.parse(cachedRaw);
-            const lsSig = cleanSig(parsed?.signatureUrl);
+            const lsSig = cleanSig(parsed?.signatureUrl) || cleanSig(parsed?.signatureDataUrl);
             if (lsSig) resolvedMakerSig = lsSig;
           }
         } catch {
@@ -551,12 +597,22 @@ export async function enrichLiquidationSignatures(
       ...report,
       ...(resolvedMakerSig
         ? {
+            submittedByName: makerName || report.submittedByName,
             submittedBySignatureUrl: resolvedMakerSig,
             preparedBy: {
               ...(report.preparedBy || {}),
               name: makerName || report.preparedBy?.name || '',
-              roleTitle: report.preparedBy?.roleTitle || '',
+              roleTitle: resolvedMakerRoleTitle || report.preparedBy?.roleTitle || '',
               signatureUrl: resolvedMakerSig,
+            },
+          }
+        : makerName && isSasMaker
+        ? {
+            submittedByName: makerName,
+            preparedBy: {
+              ...(report.preparedBy || {}),
+              name: makerName,
+              roleTitle: resolvedMakerRoleTitle || report.preparedBy?.roleTitle || '',
             },
           }
         : {}),

@@ -21,6 +21,7 @@ import { normalizeApprovalStages } from '../../workflow/utils/stage-normalizatio
 import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
 import { useAllLiquidations } from '../../finance/hooks/useLiquidationStream';
+import { useEventPayablesStream } from '../../finance/hooks/usePayableStream';
 import OfficerLiquidationModal from '../../../officer/components/OfficerLiquidationModal';
 import DisbursementVoucherModal from '../../finance/components/DisbursementVoucherModal';
 import { EventPayablesQRControl } from '../../finance/components/EventPayablesQRControl';
@@ -394,6 +395,55 @@ export default function OfficerEventDetailView({
   const isOrgLedger = effectiveFundingSource === 'organization_funds';
   const isZeroBudget = effectiveFundingSource === 'zero_budget';
   const isSchoolBudget = effectiveFundingSource === 'school_budget';
+  const isStudentContributionEvent = effectiveFundingSource === 'student_contributions';
+  const isRetainedFund = effectiveFundingSource === 'retained_sao_fund';
+  const hasPayablesCollection =
+    isStudentContributionEvent ||
+    Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled);
+
+  const { data: eventPayables = [] } = useEventPayablesStream(
+    hasPayablesCollection ? event.id : null
+  );
+
+  const contribCashOverview = useMemo(() => {
+    const excludedStatuses = new Set(['cancelled', 'waived', 'refunded']);
+    const validPayables = (eventPayables || []).filter(
+      (p) => !excludedStatuses.has(String(p.status || '').toLowerCase())
+    );
+    const paidPayables = validPayables.filter(
+      (p) => String(p.status || '').toLowerCase() === 'paid' || (Number(p.paidAmount) || 0) > 0
+    );
+    const collected =
+      Math.round(
+        paidPayables.reduce(
+          (sum, p) => sum + (Number(p.paidAmount) || Number(p.assignedAmount) || 0),
+          0
+        ) * 100
+      ) / 100;
+    const transferred =
+      Math.round(
+        paidPayables
+          .filter((p) => p.transferredToBudget)
+          .reduce(
+            (sum, p) =>
+              sum + (Number((p as any).transferredAmount ?? p.paidAmount ?? p.assignedAmount) || 0),
+            0
+          ) * 100
+      ) / 100;
+    const retainedApplied = Number(
+      (activeEvent as any)?.appliedRetainedFundAmount ||
+        (fullProposal as any)?.appliedRetainedFundAmount ||
+        0
+    );
+    const cashOnHand = Math.round((collected + retainedApplied) * 100) / 100;
+    return {
+      collected,
+      transferred,
+      paidCount: paidPayables.length,
+      totalCount: validPayables.length,
+      cashOnHand,
+    };
+  }, [eventPayables, activeEvent, fullProposal]);
 
   const isLiquidationExempt = useMemo(() => {
     return isEventLiquidationExempt({
@@ -405,7 +455,14 @@ export default function OfficerEventDetailView({
     });
   }, [event, activeEvent, fullProposal, financialProjections, totalApprovedBudget]);
 
-  const isVoucherRequired = !isLiquidationExempt && isSchoolBudget && (Number(totalApprovedBudget) > 0);
+  const isVoucherRequired = !isLiquidationExempt && isSchoolBudget && Number(totalApprovedBudget) > 0;
+  const isOrgDirectFundExempt = !isSas && (isOrgLedger || isStudentContributionEvent || isZeroBudget);
+  const askingFundTarget = Number(totalApprovedBudget || 0);
+  const isLiquidationLockedByCollectionGap =
+    !isLiquidationExempt &&
+    isStudentContributionEvent &&
+    askingFundTarget > 0 &&
+    contribCashOverview.cashOnHand + 0.009 < askingFundTarget;
 
   // Official Form AP-01 PDF Export
   const handleExportPDF = async () => {
@@ -415,6 +472,28 @@ export default function OfficerEventDetailView({
         ...fullProposal,
         title: fullProposal.title || event.title,
         referenceNo: fullProposal.referenceNo || event.referenceId || 'AP-2026-PENDING',
+        organizationId:
+          fullProposal.organizationId ||
+          (activeEvent as any).hostingOrgId ||
+          (activeEvent as any).organizationId ||
+          (event as any).hostingOrgId ||
+          (event as any).organizationId ||
+          (isSasCreated ? 'sas' : ''),
+        createdByUid: fullProposal.createdByUid || (activeEvent as any).createdBy || (event as any).createdBy || '',
+        createdByName: fullProposal.createdByName || (activeEvent as any).createdByName || event.createdByName || '',
+        createdByEmail: fullProposal.createdByEmail || (activeEvent as any).createdByEmail || (event as any).createdByEmail || '',
+        creatorRole:
+          fullProposal.creatorRole ||
+          (activeEvent as any).creatorRole ||
+          (event as any).creatorRole ||
+          (isSasCreated ? 'sas_admin' : undefined),
+        isOfficerProposal: fullProposal.isOfficerProposal ?? (activeEvent as any).isOfficerProposal ?? (event as any).isOfficerProposal,
+        isSasInternal: (fullProposal as any).isSasInternal ?? (isSasCreated ? true : undefined),
+        preparedBy: fullProposal.preparedBy || (activeEvent as any).preparedBy || (event as any).preparedBy,
+        submittedBySignatureUrl:
+          fullProposal.submittedBySignatureUrl ||
+          (activeEvent as any).submittedBySignatureUrl ||
+          (event as any).submittedBySignatureUrl,
         submissionDate:
           fullProposal.submissionDate ||
           (event.createdAt ? formatAppDate(event.createdAt, 'N/A') : new Date().toLocaleDateString()),
@@ -773,7 +852,11 @@ export default function OfficerEventDetailView({
           {!isSasCreated && (
             <div
               className={`px-3 py-1 rounded-full text-xs font-bold border flex items-center gap-1.5 shadow-2xs ${
-                isOrgLedger
+                isStudentContributionEvent
+                  ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30'
+                  : isRetainedFund
+                  ? 'bg-purple-500/20 text-purple-200 border-purple-400/30'
+                  : isOrgLedger
                   ? 'bg-amber-500/20 text-[#FFD41C] border-amber-400/30'
                   : isZeroBudget
                   ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
@@ -781,7 +864,9 @@ export default function OfficerEventDetailView({
               }`}
               title="Official Funding Source for this Organization Activity"
             >
-              {isOrgLedger ? (
+              {isStudentContributionEvent ? (
+                <Coins className="w-3.5 h-3.5 text-emerald-200" />
+              ) : isOrgLedger ? (
                 <Building2 className="w-3.5 h-3.5 text-[#FFD41C]" />
               ) : isZeroBudget ? (
                 <Receipt className="w-3.5 h-3.5 text-emerald-300" />
@@ -789,7 +874,11 @@ export default function OfficerEventDetailView({
                 <Building2 className="w-3.5 h-3.5 text-sky-300" />
               )}
               <span>
-                {isOrgLedger
+                {isStudentContributionEvent
+                  ? 'Student Contributions'
+                  : isRetainedFund
+                  ? 'Retained Activity Fund'
+                  : isOrgLedger
                   ? 'Organization Treasury'
                   : isZeroBudget
                   ? '₱0 Budget (Non-monetary)'
@@ -1008,17 +1097,27 @@ export default function OfficerEventDetailView({
                     {isApproved && (
                       <button
                         type="button"
-                        disabled={isSasCreated && !hasDisbursementVoucher}
+                        disabled={(isSasCreated || isOrgDirectFundExempt) && !hasDisbursementVoucher}
                         onClick={() => {
                           if (isSasCreated && !hasDisbursementVoucher) {
                             toast.info('Institutional Activity: Official disbursement voucher is managed directly by Student Affairs & Services (SAS).');
+                            return;
+                          }
+                          if (isOrgDirectFundExempt && !hasDisbursementVoucher) {
+                            toast.info(
+                              isStudentContributionEvent
+                                ? 'Student Contribution Activity: No school disbursement voucher is required. Record collections in Finance Center.'
+                                : isZeroBudget
+                                ? 'Non-Monetary Activity (₱0): No disbursement voucher is required.'
+                                : 'Organization Treasury Activity: No school disbursement voucher is required.'
+                            );
                             return;
                           }
                           setIsUtilsOpen(false);
                           setIsDisbursementVoucherModalOpen(true);
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                          isSasCreated && !hasDisbursementVoucher
+                          (isSasCreated || isOrgDirectFundExempt) && !hasDisbursementVoucher
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                             : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                         }`}
@@ -1027,7 +1126,7 @@ export default function OfficerEventDetailView({
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
                             hasDisbursementVoucher
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
-                              : isSasCreated
+                              : isSasCreated || isOrgDirectFundExempt
                               ? 'bg-gray-100 text-gray-600 border border-gray-200'
                               : isVoucherRequired
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
@@ -1037,6 +1136,8 @@ export default function OfficerEventDetailView({
                               <CheckCircle2 className="w-4 h-4" />
                             ) : isSasCreated ? (
                               <Lock className="w-4 h-4" />
+                            ) : isOrgDirectFundExempt ? (
+                              <FileText className="w-4 h-4" />
                             ) : isVoucherRequired ? (
                               <FileCheck className="w-4 h-4" />
                             ) : (
@@ -1054,6 +1155,12 @@ export default function OfficerEventDetailView({
                                 ? 'Official voucher/slip attached'
                                 : isSasCreated
                                 ? 'Managed by SAS Administration'
+                                : isZeroBudget
+                                ? 'Exempt • Non-Monetary (₱0)'
+                                : isStudentContributionEvent && !isSas
+                                ? 'Exempt • Club Student Contribution'
+                                : isOrgLedger
+                                ? 'Exempt • Club treasury funds'
                                 : isVoucherRequired
                                 ? 'Required from school accounting'
                                 : 'Optional acknowledgment copy'}
@@ -1069,6 +1176,10 @@ export default function OfficerEventDetailView({
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
                               SAS
                             </span>
+                          ) : isOrgDirectFundExempt ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
+                              Exempt
+                            </span>
                           ) : isVoucherRequired ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
                               Required
@@ -1082,10 +1193,42 @@ export default function OfficerEventDetailView({
                       </button>
                     )}
 
+                    {/* 3b. View Paid Students & Contribution Progress */}
+                    {isApproved && hasPayablesCollection && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUtilsOpen(false);
+                          setIsPayablesModalOpen(true);
+                        }}
+                        className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-emerald-50/70 transition-colors cursor-pointer active:scale-[0.99]"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 bg-emerald-50 text-emerald-600 border border-emerald-200">
+                            <Users className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-900 truncate">Student Contribution Payables</div>
+                            <div className="text-[11px] text-gray-500 truncate">
+                              {contribCashOverview.paidCount}/{contribCashOverview.totalCount} paid • Collected {formatPHP(contribCashOverview.cashOnHand)} / {formatPHP(askingFundTarget)}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          View
+                        </span>
+                      </button>
+                    )}
+
                     {/* 4. Financial Liquidation */}
                     <button
                       type="button"
-                      disabled={!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)}
+                      disabled={
+                        !isApproved ||
+                        (!isLiquidationExempt &&
+                          ((isVoucherRequired && !hasDisbursementVoucher) ||
+                            isLiquidationLockedByCollectionGap))
+                      }
                       onClick={() => {
                         if (isLiquidationExempt) {
                           toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
@@ -1099,22 +1242,37 @@ export default function OfficerEventDetailView({
                           toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
                           return;
                         }
+                        if (isLiquidationLockedByCollectionGap) {
+                          toast.error(
+                            `Locked: Collected contributions (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the asking fund (${formatPHP(askingFundTarget)}) before unlocking Financial Liquidation.`
+                          );
+                          return;
+                        }
                         setIsUtilsOpen(false);
                         setIsLiquidationModalOpen(true);
                       }}
                       className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                        !isApproved ||
+                        (!isLiquidationExempt &&
+                          ((isVoucherRequired && !hasDisbursementVoucher) ||
+                            isLiquidationLockedByCollectionGap))
                           ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                           : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                          !isApproved ||
+                          (!isLiquidationExempt &&
+                            ((isVoucherRequired && !hasDisbursementVoucher) ||
+                              isLiquidationLockedByCollectionGap))
                             ? 'bg-amber-50 text-amber-600 border border-amber-200'
                             : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                         }`}>
-                          {!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher) ? (
+                          {!isApproved ||
+                          (!isLiquidationExempt &&
+                            ((isVoucherRequired && !hasDisbursementVoucher) ||
+                              isLiquidationLockedByCollectionGap)) ? (
                             <Lock className="w-4 h-4" />
                           ) : isLiquidationExempt ? (
                             <CheckCircle2 className="w-4 h-4" />
@@ -1133,6 +1291,8 @@ export default function OfficerEventDetailView({
                               ? 'Locked: Approval required'
                               : (isVoucherRequired && !hasDisbursementVoucher)
                               ? 'Locked: Voucher needed first'
+                              : isLiquidationLockedByCollectionGap
+                              ? `Locked: Collected ${formatPHP(contribCashOverview.cashOnHand)} / ${formatPHP(askingFundTarget)}`
                               : 'Expense receipts, audit & liquidation'}
                           </div>
                         </div>
@@ -1149,6 +1309,10 @@ export default function OfficerEventDetailView({
                         ) : (isVoucherRequired && !hasDisbursementVoucher) ? (
                           <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
                             Voucher Needed
+                          </span>
+                        ) : isLiquidationLockedByCollectionGap ? (
+                          <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Locked
                           </span>
                         ) : (
                           <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -1820,7 +1984,11 @@ export default function OfficerEventDetailView({
                     </button>
                     <button
                       type="button"
-                      disabled={!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher}
+                      disabled={
+                        !isLiquidationExempt &&
+                        ((isVoucherRequired && !hasDisbursementVoucher) ||
+                          isLiquidationLockedByCollectionGap)
+                      }
                       onClick={() => {
                         if (isLiquidationExempt) {
                           toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
@@ -1830,12 +1998,18 @@ export default function OfficerEventDetailView({
                           toast.error('Locked: Official Disbursement Voucher must be uploaded first by SAS or Club Adviser.');
                           return;
                         }
+                        if (isLiquidationLockedByCollectionGap) {
+                          toast.error(
+                            `Locked: Collected contributions (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the asking fund (${formatPHP(askingFundTarget)}) before unlocking Financial Liquidation.`
+                          );
+                          return;
+                        }
                         setIsLiquidationModalOpen(true);
                       }}
                       className={`px-3 py-2 text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all ${
                         isLiquidationExempt
                           ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer'
-                          : isVoucherRequired && !hasDisbursementVoucher
+                          : (isVoucherRequired && !hasDisbursementVoucher) || isLiquidationLockedByCollectionGap
                           ? 'bg-slate-200 text-slate-500 cursor-not-allowed select-none'
                           : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                       }`}
@@ -1850,6 +2024,11 @@ export default function OfficerEventDetailView({
                           <Lock className="w-3.5 h-3.5 text-slate-400" />
                           <span>Liquidation (Voucher Required)</span>
                         </>
+                      ) : isLiquidationLockedByCollectionGap ? (
+                        <>
+                          <Lock className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Liquidation (Collected {formatPHP(contribCashOverview.cashOnHand)} / {formatPHP(askingFundTarget)})</span>
+                        </>
                       ) : (
                         <>
                           <Receipt className="w-3.5 h-3.5 text-[#FFD41C]" />
@@ -1857,15 +2036,14 @@ export default function OfficerEventDetailView({
                         </>
                       )}
                     </button>
-                    {((activeEvent as any)?.fundingSource === 'student_contributions' ||
-                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
+                    {hasPayablesCollection && (
                       <button
                         type="button"
                         onClick={() => setIsPayablesModalOpen(true)}
                         className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-xs inline-flex items-center gap-1.5 transition-all cursor-pointer"
                       >
                         <Users className="w-3.5 h-3.5 text-emerald-100" />
-                        <span>Student Contribution Payables</span>
+                        <span>View Paid Students ({contribCashOverview.paidCount}/{contribCashOverview.totalCount})</span>
                       </button>
                     )}
                   </div>
@@ -1922,18 +2100,34 @@ export default function OfficerEventDetailView({
 
                       <button
                         type="button"
-                        onClick={() => setIsLiquidationModalOpen(true)}
-                        className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0 ${
-                          isLiquidationApproved
-                            ? 'bg-emerald-700 hover:bg-emerald-800 text-white'
+                        disabled={isLiquidationLockedByCollectionGap || (isVoucherRequired && !hasDisbursementVoucher)}
+                        onClick={() => {
+                          if (isLiquidationLockedByCollectionGap) {
+                            toast.error(
+                              `Locked: Collected contributions (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the asking fund (${formatPHP(askingFundTarget)}).`
+                            );
+                            return;
+                          }
+                          setIsLiquidationModalOpen(true);
+                        }}
+                        className={`px-4 py-2.5 text-xs font-bold rounded-xl shadow-xs inline-flex items-center justify-center gap-2 transition-all shrink-0 ${
+                          isLiquidationLockedByCollectionGap || (isVoucherRequired && !hasDisbursementVoucher)
+                            ? 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                            : isLiquidationApproved
+                            ? 'bg-emerald-700 hover:bg-emerald-800 text-white cursor-pointer'
                             : isLiquidationSubmitted
-                            ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                            ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer'
                             : isLiquidationReturned
-                            ? 'bg-amber-600 hover:bg-amber-700 text-white'
-                            : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
+                            ? 'bg-amber-600 hover:bg-amber-700 text-white cursor-pointer'
+                            : 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                         }`}
                       >
-                        {isLiquidationApproved ? (
+                        {isLiquidationLockedByCollectionGap ? (
+                          <>
+                            <Lock className="w-4 h-4 text-slate-500" />
+                            <span>Locked ({formatPHP(contribCashOverview.cashOnHand)} / {formatPHP(askingFundTarget)})</span>
+                          </>
+                        ) : isLiquidationApproved ? (
                           <>
                             <CheckCircle2 className="w-4 h-4 text-emerald-200" />
                             <span>View Liquidation (Approved)</span>

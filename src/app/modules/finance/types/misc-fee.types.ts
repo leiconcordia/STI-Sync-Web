@@ -27,12 +27,18 @@ export interface MiscFeeBucket {
 export interface MiscFeeConfigDocument {
   id: string; // e.g. "SY_2026-2027"
   schoolYear: string; // e.g. "2026-2027"
+  status?: 'ACTIVE' | 'CLOSED';
+  isActive?: boolean;
   activeSemester: MiscFeeSemesterTerm;
   headcountSource: MiscFeeHeadcountSource;
   shsEnrolledOverride: number;
   college1stSemEnrolledOverride: number;
   college2ndSemEnrolledOverride: number;
   is1stSemCarriedOver: boolean;
+  shsUploadedForSY?: boolean;
+  college1stSemUploaded?: boolean;
+  college2ndSemUploaded?: boolean;
+  closedAt?: any;
   buckets: MiscFeeBucket[];
   updatedAt?: any;
   updatedBy?: string;

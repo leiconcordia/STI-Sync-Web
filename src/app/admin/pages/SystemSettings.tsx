@@ -10,6 +10,7 @@ import EventConfiguration from '../components/settings/EventConfiguration';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
 import InstitutionalSignatoryManagement from '../components/settings/InstitutionalSignatoryManagement';
 import ApprovalWorkflowSettings from '../components/settings/ApprovalWorkflowSettings';
+import SasSignatoryMaintenance from '../components/settings/SasSignatoryMaintenance';
 import { useSearchParams } from 'react-router';
 
 export function SystemSettings() {
@@ -56,6 +57,8 @@ export function SystemSettings() {
         return <ApprovalWorkflowSettings />;
       case 'institutional-signatories':
         return <InstitutionalSignatoryManagement />;
+      case 'sas-signatory':
+        return <SasSignatoryMaintenance />;
       default:
         return <AdviserProfile onUnsavedChange={handleUnsavedChange} />;
     }

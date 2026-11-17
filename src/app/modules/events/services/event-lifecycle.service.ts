@@ -214,6 +214,11 @@ export async function concludeEvent(
     ? addCalendarDays(concludedDateKey, LIQUIDATION_SUBMISSION_DAYS)
     : undefined;
 
+  const existingLiqStatus = String((eventData as any).liquidationStatus || '').toLowerCase();
+  const hasExistingActiveLiquidation =
+    Boolean((eventData as any).liquidationReportId) &&
+    ['draft', 'returned', 'under_review', 'approved'].includes(existingLiqStatus);
+
   const updatePayload = cleanUndefined({
     status: 'completed',
     proposalStatus: 'completed',
@@ -231,7 +236,11 @@ export async function concludeEvent(
     scannerAssignmentStatus: usesAttendance ? 'concluded' : undefined,
     cashAllocationsLocked: true,
     liquidationRequired: isLiquidationRequired,
-    liquidationStatus: isLiquidationRequired ? 'pending' : 'none_required',
+    liquidationStatus: !isLiquidationRequired
+      ? 'none_required'
+      : hasExistingActiveLiquidation
+      ? existingLiqStatus
+      : 'pending',
     absenteesMarkedCount: absenteesCount,
     updatedAt: serverTimestamp(),
     proposalHistory: arrayUnion(historyEntry),

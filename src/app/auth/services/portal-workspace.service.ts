@@ -10,15 +10,19 @@ const SIGNATORY_KEY = 'sti_sync_signatory_session';
 export interface PortalWorkspace { id: string; label: string; organizationName?: string; subtitle?: string; path: string; session: any; kind: 'signatory' | 'adviser' | 'officer' }
 const normalize = (value: any) => String(value || '').trim().toLowerCase();
 const active = (value: any) => value.isActive !== false && !value.isDeleted && !value.archived && !['inactive', 'revoked', 'archived', 'suspended'].includes(normalize(value.status));
+const SAS_ONLY_SIGNATORY_ROLES = new Set(['sas_coordinator', 'sas_head', 'sao_head', 'sas_admin', 'sao_admin']);
+const isSasSignatoryRecord = (record: any) =>
+  record?.id === 'sas_coordinator' || SAS_ONLY_SIGNATORY_ROLES.has(normalize(record?.role));
 
 export function buildPortalWorkspaces(data: { signatories: any[]; advisers: any[]; officers: any[]; students: any[]; organizations: any[] }, identity: { uid: string; email?: string | null }): PortalWorkspace[] {
   const owned = (record: any) => record.authUid
     ? record.authUid === identity.uid
     : (record.uid === identity.uid || normalize(record.email) === normalize(identity.email));
   const student = data.students.find((record) => active(record) && owned(record));
-  const needsPasswordChange = [...data.signatories, ...data.advisers, ...data.officers, ...data.students].filter((record) => active(record) && owned(record)).some((record) => record.tempPass || record.requiresPasswordChange || record.requiresChangePassword || record.resetInProgress);
+  const nonSasSignatories = data.signatories.filter((record) => !isSasSignatoryRecord(record));
+  const needsPasswordChange = [...nonSasSignatories, ...data.advisers, ...data.officers, ...data.students].filter((record) => active(record) && owned(record)).some((record) => record.tempPass || record.requiresPasswordChange || record.requiresChangePassword || record.resetInProgress);
   const workspaces: PortalWorkspace[] = [];
-  data.signatories.filter((record) => active(record) && owned(record)).forEach((record) => workspaces.push({
+  nonSasSignatories.filter((record) => active(record) && owned(record)).forEach((record) => workspaces.push({
     id: `signatory:${record.id}`, kind: 'signatory', label: 'Institutional Signatory',
     subtitle: [record.roleTitle || record.role, record.department].filter(Boolean).join(' · ') || undefined,
     path: '/signatory/dashboard', session: {
@@ -52,6 +56,15 @@ export function buildPortalWorkspaces(data: { signatories: any[]; advisers: any[
 export async function loadPortalWorkspaces(): Promise<PortalWorkspace[]> {
   const user = auth.currentUser;
   if (!user?.email) throw new Error('Sign in before selecting a workspace.');
+
+  // SAS Admins sign in exclusively through /admin/login, never /portal/login or /signatory
+  try {
+    const sasSnap = await getDoc(doc(db, 'sas_admins', user.uid));
+    if (sasSnap.exists() && sasSnap.data()?.isActive !== false) {
+      localStorage.removeItem(PORTAL_WORKSPACES_KEY);
+      return [];
+    }
+  } catch {}
   const load = async (name: string) => {
     const trimmedEmail = user.email!.trim();
     const lowerEmail = trimmedEmail.toLowerCase();

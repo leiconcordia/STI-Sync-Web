@@ -10,6 +10,7 @@
 import type { ActivityProposal, ProposalApprovalStep } from '../types/proposal.types';
 import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import { resolveUserSignature } from '../../signatories';
+import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import {
   populateDocxTemplate,
   resolveSignatureDataUrl,
@@ -191,35 +192,80 @@ export async function buildAPTemplatePayload(proposal: Partial<ActivityProposal>
   };
 
   const pAny = proposal as any;
+  const creatorUid = pAny.submittedByUid || proposal.createdByUid || pAny.createdBy || '';
+  const creatorEmail = (pAny.submittedByEmail || proposal.createdByEmail || '').trim();
+  const orgIdLower = (proposal.organizationId || pAny.hostingOrgId || '').trim().toLowerCase();
+  const isSasCreator =
+    proposal.creatorRole === 'sas_admin' ||
+    Boolean(pAny.isSasInternal) ||
+    pAny.isOfficerProposal === false ||
+    orgIdLower === 'sas' ||
+    orgIdLower === 'sao_admin' ||
+    orgIdLower === 'sao' ||
+    creatorUid === 'sas_admin_user' ||
+    creatorUid === 'sao_admin' ||
+    (proposal.preparedBy?.roleTitle || '').toLowerCase().includes('sas') ||
+    (proposal.preparedBy?.roleTitle || '').toLowerCase().includes('student affairs') ||
+    creatorEmail.toLowerCase().includes('sas') ||
+    creatorEmail.toLowerCase().includes('sao');
+
   const makerSigRaw =
     cleanSig(pAny.preparedBy?.signatureUrl) ||
     cleanSig(pAny.submittedBySignatureUrl) ||
     cleanSig(pAny.signatureUrl) ||
     undefined;
 
-  const resolvedMakerSigUrl =
+  let resolvedMakerSigUrl =
     makerSigRaw ||
     cleanSig(
       await resolveUserSignature({
-        uid: proposal.createdByUid,
-        email: proposal.createdByEmail,
+        uid: creatorUid !== 'sas_admin_user' && creatorUid !== 'sao_admin' ? creatorUid : undefined,
+        email: creatorEmail || undefined,
         name: pAny.preparedBy?.name || proposal.createdByName,
-        role: pAny.preparedBy?.roleTitle || (proposal.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+        role: isSasCreator
+          ? 'sas_admin'
+          : pAny.preparedBy?.roleTitle || (proposal.creatorRole === 'sas_admin' ? 'sas_admin' : 'Organization Adviser'),
       }).catch(() => '')
     );
+
+  let resolvedMakerName =
+    pAny.preparedBy?.name ||
+    proposal.createdByName ||
+    proposal.proponents?.[0]?.split('–')?.[0]?.trim() ||
+    (isSasCreator ? 'SAS Administrator' : 'Club Adviser');
+  let resolvedMakerRole =
+    pAny.preparedBy?.roleTitle ||
+    (isSasCreator ? 'SAS Administrator' : 'Organization Adviser');
+
+  if (isSasCreator) {
+    try {
+      const sasCfg = await getSasSignatoryConfig();
+      if (!resolvedMakerSigUrl) {
+        resolvedMakerSigUrl = cleanSig(sasCfg.signatureUrl) || cleanSig(sasCfg.signatureDataUrl);
+      }
+      const lowerName = resolvedMakerName.trim().toLowerCase();
+      if (
+        (!lowerName ||
+          lowerName.includes('sas / sao administrator') ||
+          lowerName === 'sas administrator' ||
+          lowerName === 'sao administrator' ||
+          lowerName.includes('student affairs')) &&
+        sasCfg.name
+      ) {
+        resolvedMakerName = sasCfg.name;
+      }
+      if ((!resolvedMakerRole || resolvedMakerRole === 'SAS Administrator' || resolvedMakerRole === 'System Administrator') && sasCfg.roleTitle) {
+        resolvedMakerRole = sasCfg.roleTitle;
+      }
+    } catch {}
+  }
 
   const makerSigImage = await registerSignature(resolvedMakerSigUrl);
   const proposedBy: APSignatoryTagItem[] = [
     {
       signatureImage: makerSigImage,
-      name:
-        pAny.preparedBy?.name ||
-        proposal.createdByName ||
-        proposal.proponents?.[0]?.split('–')?.[0]?.trim() ||
-        'Club Adviser',
-      roleTitle:
-        pAny.preparedBy?.roleTitle ||
-        (proposal.creatorRole === 'sas_admin' ? 'SAS Administrator' : 'Organization Adviser'),
+      name: resolvedMakerName,
+      roleTitle: resolvedMakerRole,
     },
   ];
 

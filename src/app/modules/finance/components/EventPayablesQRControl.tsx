@@ -306,8 +306,10 @@ export function EventPayablesQRControl({
   const handleSyncPayablesData = async (isManual = true) => {
     setIsSyncing(true);
     try {
-      // If no payables exist, merge activities + events + activity_proposals + proposals so legacy/existing proposals generate cleanly
-      if (payables.length === 0) {
+      // Generate missing student payables whenever empty OR manually synced (deduplicated per student),
+      // so partial runs (e.g. >500 students) and newly enrolled students are always backfilled cleanly.
+      let backfilledCount = 0;
+      if (payables.length === 0 || isManual) {
         const [actSnap, evtSnap, propSnap, rootPropSnap] = await Promise.all([
           getDoc(doc(db, 'activities', eventId)),
           getDoc(doc(db, 'events', eventId)),
@@ -347,30 +349,33 @@ export function EventPayablesQRControl({
             eventId,
             recordedByUid
           );
+          backfilledCount = genResult.createdCount || 0;
 
-          if (isManual) {
-            if (genResult.createdCount > 0) {
-              toast.success(
-                `Generated ${genResult.createdCount} student payable record(s) and synced to Mobile App.`
-              );
-            } else {
-              toast.info(
-                genResult.skippedReason || 'No student payables were generated for this event.'
-              );
+          if (payables.length === 0) {
+            if (isManual) {
+              if (backfilledCount > 0) {
+                toast.success(
+                  `Generated ${backfilledCount} student payable record(s) and synced to Mobile App.`
+                );
+              } else {
+                toast.info(
+                  genResult.skippedReason || 'No student payables were generated for this event.'
+                );
+              }
             }
+            return;
+          }
+        } else if (payables.length === 0) {
+          if (isManual) {
+            toast.info('Event source record not found to generate student payables.');
           }
           return;
         }
-        if (isManual) {
-          toast.info('Event source record not found to generate student payables.');
-        }
-        return;
       }
 
-      // Update missing fields in existing Firestore payables documents
+      // Update missing fields in existing Firestore payables documents (chunked at 450 to respect Firestore's 500-op batch limit)
       if (payables.length > 0) {
-        const batch = writeBatch(db);
-        let count = 0;
+        const pendingUpdates: Array<{ ref: any; updates: Record<string, any> }> = [];
         for (const p of payables) {
           const name = getStudentDisplayName(p);
           const schoolId = getStudentDisplayId(p);
@@ -382,7 +387,6 @@ export function EventPayablesQRControl({
 
           const requiresPayment = (p.assignedAmount || 0) > 0;
           if (!requiresPayment && isQREnabled && !isCancelled) {
-            // Free event with QR tickets enabled: unlock by default!
             if (!p.qrTicketUnlocked) updates.qrTicketUnlocked = true;
             if (p.status !== 'paid' && p.status !== 'waived') updates.status = 'paid';
           } else if (isQREnabled && p.qrTicketUnlocked === undefined) {
@@ -390,16 +394,25 @@ export function EventPayablesQRControl({
           }
 
           if (Object.keys(updates).length > 0) {
-            batch.update(ref, updates);
-            count++;
+            pendingUpdates.push({ ref, updates });
           }
         }
-        if (count > 0) {
+
+        const CHUNK_SIZE = 450;
+        for (let i = 0; i < pendingUpdates.length; i += CHUNK_SIZE) {
+          const batch = writeBatch(db);
+          for (const item of pendingUpdates.slice(i, i + CHUNK_SIZE)) {
+            batch.update(item.ref, item.updates);
+          }
           await batch.commit();
         }
       }
       if (isManual) {
-        toast.success('Student payables roster synced successfully!');
+        if (backfilledCount > 0) {
+          toast.success(`Synced & added ${backfilledCount} missing student payable(s) to the roster.`);
+        } else {
+          toast.success('Student payables roster synced successfully!');
+        }
       }
     } catch (err) {
       console.error('Error syncing payables:', err);

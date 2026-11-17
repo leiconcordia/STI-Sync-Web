@@ -1046,6 +1046,27 @@ export default function CreateProposalModal({
     setCurrentStep((prev) => Math.max(prev - 1, 1));
   };
 
+  /** Builds the 1-step SAS-only approval chain for Club/Contribution/Non-Monetary Org APs. */
+  const buildOrgDirectSasApprovalChain = (): ProposalApprovalStep[] => {
+    const sasCfg = getCachedSasSignatoryConfig();
+    return [
+      {
+        id: 'step_sas_approval',
+        step: 1,
+        stageIndex: 1,
+        stageName: 'SAS Approval',
+        role: 'sas_head',
+        roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+        actionType: 'approve',
+        signatoryUid: sasCfg.employeeId || 'sas_admin',
+        signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+        signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+        department: sasCfg.department || 'Student Affairs & Services',
+        status: 'current',
+      },
+    ];
+  };
+
   // Save as Draft
   const handleSaveDraft = async () => {
     if (!editPermission.canEdit) {
@@ -1089,22 +1110,7 @@ export default function CreateProposalModal({
           formData.fundingSource === 'student_contributions' ||
           formData.fundingSource === 'zero_budget');
       const effectiveDraftChain = isOrgDirectSasApproval
-        ? [
-            {
-              id: 'step_sas_approval',
-              step: 1,
-              stageIndex: 1,
-              stageName: 'SAS Approval',
-              role: 'sas_head' as const,
-              roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
-              actionType: 'approve' as const,
-              signatoryUid: sasCfg.employeeId || 'sas_admin',
-              signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
-              signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
-              department: sasCfg.department || 'Student Affairs & Services',
-              status: 'current' as const,
-            },
-          ]
+        ? buildOrgDirectSasApprovalChain()
         : formData.approvalChain;
 
       const shouldNotifyAdviser = isOfficerForm && !isAdviserMaker && !hasNotifiedAdviserDraftRef.current;
@@ -1233,22 +1239,7 @@ export default function CreateProposalModal({
           formData.fundingSource === 'student_contributions' ||
           formData.fundingSource === 'zero_budget');
       const effectiveApprovalChain = isOrgDirectSasApproval
-        ? [
-            {
-              id: 'step_sas_approval',
-              step: 1,
-              stageIndex: 1,
-              stageName: 'SAS Approval',
-              role: 'sas_head' as const,
-              roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
-              actionType: 'approve' as const,
-              signatoryUid: sasCfg.employeeId || 'sas_admin',
-              signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
-              signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
-              department: sasCfg.department || 'Student Affairs & Services',
-              status: 'current' as const,
-            },
-          ]
+        ? buildOrgDirectSasApprovalChain()
         : formData.approvalChain;
 
       const effectiveSignature = makerSignatureUrl || currentUser?.signatureUrl || formData.submittedBySignatureUrl || '';

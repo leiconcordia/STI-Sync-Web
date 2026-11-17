@@ -16,7 +16,7 @@ import {
   deleteField,
 } from 'firebase/firestore';
 
-import { db } from '../../../../services/firebase';
+import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import type {
   EventDocument,
   EventFormData,
@@ -319,9 +319,10 @@ export async function generatePayablesForEvent(
     );
 
     if (studentsToCharge.length > 0) {
+      const BATCH_LIMIT = 450;
       const chunks = [];
-      for (let i = 0; i < studentsToCharge.length; i += 500) {
-        chunks.push(studentsToCharge.slice(i, i + 500));
+      for (let i = 0; i < studentsToCharge.length; i += BATCH_LIMIT) {
+        chunks.push(studentsToCharge.slice(i, i + BATCH_LIMIT));
       }
 
       for (const chunk of chunks) {
@@ -335,15 +336,13 @@ export async function generatePayablesForEvent(
             'Student';
           const officialSchoolId =
             student.studentId || student.schoolId || student.studentNumber || '';
-          const resolvedUid = student.authUid || (student as any).studentAuthUid
-            ? resolvePayableStudentUid(student)
-            : await lookupStudentAuthUidByIdentifiers({
-                authUid: student.authUid || (student as any).studentAuthUid,
-                schoolId: officialSchoolId,
-                studentId: student.studentId,
-                docId: student.id,
-                email: student.email,
-              });
+          const preferredStudent =
+            (officialSchoolId && studentsLookup.get(String(officialSchoolId).trim().toLowerCase())) ||
+            student;
+          const resolvedUid = resolvePayableStudentUid(
+            preferredStudent,
+            student.id || officialSchoolId
+          );
           const resolvedYear = student.yearLevel || student.year || '';
           const resolvedAcademicLevel =
             student.academicLevel ||
@@ -377,51 +376,53 @@ export async function generatePayablesForEvent(
 
           batch.set(
             payableRef,
-            buildCanonicalPayableRecord(payableRef.id, {
-              studentId: resolvedUid,
-              studentName: studentFullName,
-              studentSchoolId: officialSchoolId,
-              type: requiresPayment ? 'event_fee' : 'event_pass',
-              label: payableLabel,
-              title: payableLabel,
-              feeTitle: payableLabel,
-              eventTitle: eventData.title || '',
-              category: isStudentContributionEvent
-                ? 'Student Contribution'
-                : requiresPayment
-                ? 'Event Fee'
-                : 'Event Pass',
-              description: requiresPayment
-                ? `Contribution for activity: ${eventData.title}`
-                : `Free entry pass with QR ticket access for: ${eventData.title}`,
-              organizationId: hostingOrgId,
-              organizationName: hostingOrgName,
-              semesterId: resolvedPeriod.id || eventData.semesterId || '',
-              semester: resolvedPeriod.semester || student.semester || eventData.semester || '',
-              schoolYear: resolvedPeriod.schoolYear || student.schoolYear || eventData.schoolYear || '',
-              eventId,
-              assignedAmount: assignedFee,
-              amount: assignedFee,
-              paidAmount: 0,
-              status: requiresPayment ? 'pending' : 'paid',
-              paymentStatus: requiresPayment ? 'UNPAID' : 'PAID',
-              qrTicketUnlocked: isDefaultUnlocked,
-              dueDate:
-                eventData.sessions && eventData.sessions[0]?.date
-                  ? new Date(eventData.sessions[0].date)
-                  : eventData.date
-                  ? new Date(eventData.date)
-                  : null,
-              paymentMethod: requiresPayment ? null : 'free_entry',
-              courseCode: student.courseCode || student.course || '',
-              courseName: student.courseName || '',
-              departmentId: student.departmentId || '',
-              departmentName: student.departmentName || student.department || '',
-              yearLevel: resolvedYear,
-              section: student.section || '',
-              academicLevel: resolvedAcademicLevel,
-              createdBy: createdByUid,
-            })
+            sanitizeFirestorePayload(
+              buildCanonicalPayableRecord(payableRef.id, {
+                studentId: resolvedUid,
+                studentName: studentFullName,
+                studentSchoolId: officialSchoolId,
+                type: requiresPayment ? 'event_fee' : 'event_pass',
+                label: payableLabel,
+                title: payableLabel,
+                feeTitle: payableLabel,
+                eventTitle: eventData.title || '',
+                category: isStudentContributionEvent
+                  ? 'Student Contribution'
+                  : requiresPayment
+                  ? 'Event Fee'
+                  : 'Event Pass',
+                description: requiresPayment
+                  ? `Contribution for activity: ${eventData.title}`
+                  : `Free entry pass with QR ticket access for: ${eventData.title}`,
+                organizationId: hostingOrgId,
+                organizationName: hostingOrgName,
+                semesterId: resolvedPeriod.id || eventData.semesterId || '',
+                semester: resolvedPeriod.semester || student.semester || eventData.semester || '',
+                schoolYear: resolvedPeriod.schoolYear || student.schoolYear || eventData.schoolYear || '',
+                eventId,
+                assignedAmount: assignedFee,
+                amount: assignedFee,
+                paidAmount: 0,
+                status: requiresPayment ? 'pending' : 'paid',
+                paymentStatus: requiresPayment ? 'UNPAID' : 'PAID',
+                qrTicketUnlocked: isDefaultUnlocked,
+                dueDate:
+                  eventData.sessions && eventData.sessions[0]?.date
+                    ? new Date(eventData.sessions[0].date)
+                    : eventData.date
+                    ? new Date(eventData.date)
+                    : null,
+                paymentMethod: requiresPayment ? null : 'free_entry',
+                courseCode: student.courseCode || student.course || '',
+                courseName: student.courseName || '',
+                departmentId: student.departmentId || '',
+                departmentName: student.departmentName || student.department || '',
+                yearLevel: resolvedYear,
+                section: student.section || '',
+                academicLevel: resolvedAcademicLevel,
+                createdBy: createdByUid || 'system',
+              })
+            )
           );
         }
         await batch.commit();
@@ -741,7 +742,8 @@ export const saveEventDraft = async (
 export const approveEvent = async (
   eventId: string,
   adminUserId: string,
-  remarks: string
+  remarks: string,
+  options?: { approvalChain?: any[]; approvedByName?: string }
 ): Promise<void> => {
   const ref = doc(db, EVENTS_COLLECTION, eventId);
   const snap = await getDoc(ref);
@@ -760,12 +762,21 @@ export const approveEvent = async (
     status: 'approved',
     lifecycleStatus: 'approved',
     isApproved: true,
+    isPendingSasVetting: false,
     isReturned: false,
     returnFlags: [],
     stepRevisionRemarks: null,
     approvedBy: adminUserId,
+    ...(options?.approvedByName ? { approvedByName: options.approvedByName } : {}),
     approvedAt: serverTimestamp(),
     adviserRemarks: remarks?.trim() || null,
+    ...(Array.isArray(options?.approvalChain) && options!.approvalChain.length > 0
+      ? {
+          approvalChain: options!.approvalChain,
+          currentStageIndex: 1,
+          currentStepIndex: 1,
+        }
+      : {}),
     proposalHistory: arrayUnion(historyEntry),
     updatedAt: serverTimestamp(),
   });
@@ -890,15 +901,51 @@ export const approveEvent = async (
           performedBy: adminUserId || 'AP Approval',
         });
       }
+
+      // Club treasury ledger encumbrance if organization_funds
+      if (effectiveFunding === 'organization_funds' && totalExp > 0) {
+        const orgAlloc = savedAllocs.find((a) => a.fundType === 'org_treasury');
+        const orgDeductAmount = orgAlloc ? Number(orgAlloc.allocatedAmount) || totalExp : totalExp;
+        const resolvedOrgId =
+          approvedEventData.hostingOrgId ||
+          approvedEventData.organizationId ||
+          approvedEventData.submittedByOrgId ||
+          '';
+        await deductApprovedEventBudget(
+          {
+            ...approvedEventData,
+            id: eventId,
+            hostingOrgId: resolvedOrgId,
+            organizationId: resolvedOrgId,
+            fundingSource: effectiveFunding,
+            totalApprovedBudget: orgDeductAmount,
+            allocatedBudget: orgDeductAmount,
+            title: approvedEventData.title || approvedEventData.eventName || 'Approved Activity',
+            semesterId: approvedEventData.semesterId || null,
+          },
+          eventId,
+          adminUserId || 'AP Approval'
+        );
+      }
     } catch (deductErr) {
       console.warn('[approveEvent] Bucket allocation deduction notice:', deductErr);
     }
   }
 
   // Generate student payables / QR entry passes once approved (deduplicated inside helper)
+  const effectiveFundingForPayables =
+    approvedEventData?.fundingSource ||
+    (approvedEventData?.isOfficerProposal ? 'organization_funds' : 'school_budget');
+  const contribRateForPayables =
+    Number(approvedEventData?.adminFeeOverride) ||
+    Number(approvedEventData?.studentContributionRate) ||
+    Number(approvedEventData?.suggestedFeePerStudent) ||
+    Number(approvedEventData?.feeAmount) ||
+    0;
   if (
     approvedEventData &&
-    (approvedEventData.studentPayablesEnabled ||
+    ((effectiveFundingForPayables === 'student_contributions' && contribRateForPayables > 0) ||
+      approvedEventData.studentPayablesEnabled ||
       approvedEventData.enableQRTickets ||
       approvedEventData.enableQR)
   ) {

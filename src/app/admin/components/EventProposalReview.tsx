@@ -565,6 +565,27 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     return !isSasCreated;
   }, [isSasCreated]);
 
+  // Funding source resolution & direct SAS vs Signatory routing
+  const effectiveFundingSource = useMemo(() => {
+    const explicit =
+      fullProposal?.fundingSource ||
+      (activeEvent as any)?.fundingSource ||
+      (event as any)?.fundingSource;
+    if (explicit) return explicit;
+    return isSasCreated ? 'school_budget' : 'organization_funds';
+  }, [fullProposal?.fundingSource, activeEvent, event, isSasCreated]);
+
+  // Org APs funded by organization_funds, student_contributions, or zero_budget require ONLY SAS approval & signature
+  // (never Release to Signatories / external signatory pipeline). Release to Signatories applies only to Miscellaneous Fees.
+  const isOrgDirectSasOnly = useMemo(
+    () =>
+      isOrgManagedEvent &&
+      (effectiveFundingSource === 'organization_funds' ||
+        effectiveFundingSource === 'student_contributions' ||
+        effectiveFundingSource === 'zero_budget'),
+    [isOrgManagedEvent, effectiveFundingSource]
+  );
+
   // Effective Approval Chain across all sources (live Firestore document, full proposal, and event prop)
   const displayApprovalChain: ProposalApprovalStep[] = useMemo(() => {
     let raw: ProposalApprovalStep[] = [];
@@ -602,8 +623,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   );
 
   const hasSubsequentStages = useMemo(() => {
+    if (isOrgDirectSasOnly) return false;
     return displayApprovalChain.some((s: any) => (s.stageIndex || 1) > 1);
-  }, [displayApprovalChain]);
+  }, [displayApprovalChain, isOrgDirectSasOnly]);
 
   const isCompleted =
     activeEvent.status === 'Completed' ||
@@ -888,16 +910,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     null;
   const hasDisbursementVoucher = Boolean(currentDisbursementVoucher?.fileUrl);
 
-  // Funding source resolution & disbursement requirements
-  const effectiveFundingSource = useMemo(() => {
-    const explicit =
-      fullProposal?.fundingSource ||
-      (activeEvent as any)?.fundingSource ||
-      (event as any)?.fundingSource;
-    if (explicit) return explicit;
-    return isSasCreated ? 'school_budget' : 'organization_funds';
-  }, [fullProposal?.fundingSource, activeEvent, event, isSasCreated]);
-
   const isOrgLedger = effectiveFundingSource === 'organization_funds';
   const isZeroBudget = effectiveFundingSource === 'zero_budget';
   const isSchoolBudget = effectiveFundingSource === 'school_budget';
@@ -1002,6 +1014,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     !isOrgManagedEvent &&
     !hasDisbursementVoucher &&
     !isContributionFundSufficient;
+  const isLiquidationLockedByCollectionGap =
+    !isLiquidationExempt &&
+    isStudentContributionEvent &&
+    contribProposedBudget > 0 &&
+    contribCashOverview.cashOnHand + 0.009 < contribProposedBudget;
 
   const [isUtilsOpen, setIsUtilsOpen] = useState(false);
   const utilsDropdownRef = useRef<HTMLDivElement>(null);
@@ -1109,38 +1126,76 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       }
 
       let chainHandled = false;
+      let signedChainOverride: ProposalApprovalStep[] | undefined;
 
-      // If proposal has an approval chain and Stage 1 SAS step is pending
-      if (displayApprovalChain.length > 0 && isSasStepPending) {
-        await endorseProposal(
-          activeEvent.id,
-          {
-            uid: profile.uid,
-            id: profile.uid,
-            name: currentSasConfig.name || sasConfig.name || profile.displayName || 'Riselle Mae B. Lucanas',
-            email: currentSasConfig.email || sasConfig.email || profile.email || 'sao@ormoc.sti.edu.ph',
-            roleTitle: currentSasConfig.roleTitle || sasConfig.roleTitle || 'Student Affairs & Services Head',
-            role: 'sas_head',
-            actionType: hasSubsequentStages ? 'endorse' : 'approve',
-            signatureUrl: effectiveSig,
-          },
-          remarks || ''
-        );
-        chainHandled = true;
-      }
+      if (isOrgDirectSasOnly) {
+        // Direct SAS Approval + Signature ONLY (for Club Funds, Student Contribution, or Non-Monetary Org APs).
+        // Stamp SAS signature onto the single-step approval chain and approve/activate the event immediately.
+        const sasSignerName =
+          currentSasConfig.name || sasConfig.name || profile.displayName || 'Riselle Mae B. Lucanas';
+        const sasSignerEmail =
+          currentSasConfig.email || sasConfig.email || profile.email || 'sao@ormoc.sti.edu.ph';
+        const sasRoleTitle =
+          currentSasConfig.roleTitle || sasConfig.roleTitle || 'Student Affairs & Services Head';
+        const signedSasStep: ProposalApprovalStep = {
+          id: sasStep?.id || 'step_sas_approval',
+          step: 1,
+          stageIndex: 1,
+          stageName: 'SAS Approval',
+          role: 'sas_head',
+          roleTitle: sasRoleTitle,
+          actionType: 'approve',
+          signatoryUid: profile.uid,
+          signedByUid: profile.uid,
+          signatoryName: sasSignerName,
+          signedByName: sasSignerName,
+          signatoryEmail: sasSignerEmail,
+          signedByEmail: sasSignerEmail,
+          department: currentSasConfig.department || 'Student Affairs & Services',
+          status: 'approved',
+          signedAt: new Date().toISOString(),
+          ...(effectiveSig ? { signatureUrl: effectiveSig } : {}),
+          ...(remarks?.trim() ? { remarks: remarks.trim() } : {}),
+        };
+        signedChainOverride = [signedSasStep];
+        await approveEvent(activeEvent.id, profile.uid, remarks || '', {
+          approvalChain: signedChainOverride,
+          approvedByName: sasSignerName,
+        });
+      } else {
+        // Miscellaneous Fees / Multi-stage Signatory Pipeline
+        if (displayApprovalChain.length > 0 && isSasStepPending) {
+          await endorseProposal(
+            activeEvent.id,
+            {
+              uid: profile.uid,
+              id: profile.uid,
+              name: currentSasConfig.name || sasConfig.name || profile.displayName || 'Riselle Mae B. Lucanas',
+              email: currentSasConfig.email || sasConfig.email || profile.email || 'sao@ormoc.sti.edu.ph',
+              roleTitle: currentSasConfig.roleTitle || sasConfig.roleTitle || 'Student Affairs & Services Head',
+              role: 'sas_head',
+              actionType: hasSubsequentStages ? 'endorse' : 'approve',
+              signatureUrl: effectiveSig,
+            },
+            remarks || ''
+          );
+          chainHandled = true;
+        }
 
-      // If there are no subsequent stages or no approval chain, or final approval, approve the event
-      if (!hasSubsequentStages || !chainHandled) {
-        await approveEvent(activeEvent.id, profile.uid, remarks || '');
+        if (!hasSubsequentStages || !chainHandled) {
+          await approveEvent(activeEvent.id, profile.uid, remarks || '');
+        }
       }
 
       setDecision('approved');
       setActiveModal('none');
 
-      const isAdvancingChain = hasSubsequentStages && chainHandled;
+      const isAdvancingChain = !isOrgDirectSasOnly && hasSubsequentStages && chainHandled;
 
       setLiveEvent((prev: any) => ({
         ...prev,
+        ...(signedChainOverride ? { approvalChain: signedChainOverride } : {}),
+        isPendingSasVetting: isAdvancingChain,
         proposalStatus: isAdvancingChain ? 'under_review' : 'approved',
         status: isAdvancingChain ? 'pending' : 'approved',
         lifecycleStatus: isAdvancingChain ? 'pending' : 'approved',
@@ -1155,6 +1210,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
       setFullProposal((prev: any) => ({
         ...prev,
+        ...(signedChainOverride ? { approvalChain: signedChainOverride } : {}),
+        isPendingSasVetting: isAdvancingChain,
         proposalStatus: isAdvancingChain ? 'under_review' : 'approved',
         status: isAdvancingChain ? 'under_review' : 'approved',
         lifecycleStatus: isAdvancingChain ? 'pending' : 'approved',
@@ -1172,7 +1229,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           `Stage 1 endorsed and digitally signed as ${currentSasConfig.name}! Proposal forwarded to Stage 2.`
         );
       } else {
-        toast.success('Activity proposal approved successfully! Operational studio unlocked.');
+        toast.success('Activity proposal approved & signed as SAS! Operational studio unlocked.');
       }
     } catch (e: any) {
       console.error(e);
@@ -1370,6 +1427,28 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         ...fullProposal,
         title: fullProposal.title || event.title,
         referenceNo: fullProposal.referenceNo || event.referenceId || 'AP-2026-PENDING',
+        organizationId:
+          fullProposal.organizationId ||
+          (activeEvent as any).hostingOrgId ||
+          (activeEvent as any).organizationId ||
+          (event as any).hostingOrgId ||
+          (event as any).organizationId ||
+          (isSasCreated ? 'sas' : ''),
+        createdByUid: fullProposal.createdByUid || (activeEvent as any).createdBy || (event as any).createdBy || '',
+        createdByName: fullProposal.createdByName || (activeEvent as any).createdByName || event.createdByName || '',
+        createdByEmail: fullProposal.createdByEmail || (activeEvent as any).createdByEmail || (event as any).createdByEmail || '',
+        creatorRole:
+          fullProposal.creatorRole ||
+          (activeEvent as any).creatorRole ||
+          (event as any).creatorRole ||
+          (isSasCreated ? 'sas_admin' : undefined),
+        isOfficerProposal: fullProposal.isOfficerProposal ?? (activeEvent as any).isOfficerProposal ?? (event as any).isOfficerProposal,
+        isSasInternal: (fullProposal as any).isSasInternal ?? (isSasCreated ? true : undefined),
+        preparedBy: fullProposal.preparedBy || (activeEvent as any).preparedBy || (event as any).preparedBy,
+        submittedBySignatureUrl:
+          fullProposal.submittedBySignatureUrl ||
+          (activeEvent as any).submittedBySignatureUrl ||
+          (event as any).submittedBySignatureUrl,
         submissionDate:
           fullProposal.submissionDate ||
           (event.createdAt ? formatAppDate(event.createdAt, 'N/A') : new Date().toLocaleDateString()),
@@ -1585,7 +1664,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           {isOrgManagedEvent && (
             <div
               className={`px-3 py-1 rounded-full text-xs font-semibold border flex items-center gap-1.5 shadow-2xs select-none ${
-                isOrgLedger
+                isStudentContributionEvent
+                  ? 'bg-emerald-500/20 text-emerald-200 border-emerald-400/30'
+                  : effectiveFundingSource === 'retained_sao_fund'
+                  ? 'bg-purple-500/20 text-purple-200 border-purple-400/30'
+                  : isOrgLedger
                   ? 'bg-white/10 text-white border-white/20'
                   : isZeroBudget
                   ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
@@ -1601,7 +1684,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <Building2 className="w-3.5 h-3.5 text-sky-300" />
               )}
               <span>
-                {isOrgLedger
+                {isStudentContributionEvent
+                  ? 'Student Contributions'
+                  : effectiveFundingSource === 'retained_sao_fund'
+                  ? 'Retained Activity Fund'
+                  : isOrgLedger
                   ? 'Organization Treasury'
                   : isZeroBudget
                   ? '₱0 Budget (Non-monetary)'
@@ -1837,7 +1924,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         type="button"
                         disabled={
                           isZeroBudget ||
-                          (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
+                          (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) ||
                           isVoucherLockedByCollectionGap
                         }
                         onClick={() => {
@@ -1845,8 +1932,12 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             toast.info('Non-Monetary Activity (₱0): No disbursement voucher is required.');
                             return;
                           }
-                          if (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) {
-                            toast.info('Organization Ledger Funded: No school disbursement voucher is required.');
+                          if (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) {
+                            toast.info(
+                              isStudentContributionEvent
+                                ? 'Club Student Contribution: Funds are collected via Finance Center without a school disbursement voucher.'
+                                : 'Organization Ledger Funded: No school disbursement voucher is required.'
+                            );
                             return;
                           }
                           if (isVoucherLockedByCollectionGap) {
@@ -1860,7 +1951,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
                           isZeroBudget ||
-                          (isOrgManagedEvent && isOrgLedger && !hasDisbursementVoucher) ||
+                          (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) ||
                           isVoucherLockedByCollectionGap
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                             : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
@@ -1874,7 +1965,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                               : isVoucherLockedByCollectionGap
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
-                              : isOrgLedger
+                              : isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent)
                               ? 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
                               : isVoucherRequired
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
@@ -1886,7 +1977,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                               <CheckCircle2 className="w-4 h-4" />
                             ) : isVoucherLockedByCollectionGap ? (
                               <Lock className="w-4 h-4" />
-                            ) : isOrgLedger ? (
+                            ) : isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) ? (
                               <FileText className="w-4 h-4" />
                             ) : isVoucherRequired ? (
                               <FileCheck className="w-4 h-4" />
@@ -1907,6 +1998,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                                 ? 'Official voucher/slip attached'
                                 : isVoucherLockedByCollectionGap
                                 ? `Locked: Collected ${formatPHP(contribCashOverview.cashOnHand)} / ${formatPHP(contribProposedBudget)}`
+                                : isOrgManagedEvent && isStudentContributionEvent
+                                ? 'Exempt • Club Student Contribution'
                                 : isOrgManagedEvent && isOrgLedger
                                 ? 'Exempt • Club treasury funds'
                                 : isVoucherRequired
@@ -1928,7 +2021,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
                               Locked
                             </span>
-                          ) : isOrgManagedEvent && isOrgLedger ? (
+                          ) : isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#0E4EBD] border border-blue-200">
                               Exempt
                             </span>
@@ -1948,7 +2041,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     {/* 4. Financial Liquidation */}
                     <button
                       type="button"
-                      disabled={!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)}
+                      disabled={
+                        !isApproved ||
+                        (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
+                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                      }
                       onClick={() => {
                         if (isLiquidationExempt) {
                           toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
@@ -1956,6 +2053,12 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         }
                         if (!isApproved) {
                           toast.error('Locked: Proposal must be approved before submitting financial liquidation.');
+                          return;
+                        }
+                        if (isLiquidationLockedByCollectionGap) {
+                          toast.error(
+                            `Financial Liquidation Locked: Collected funds (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the asking fund (${formatPHP(contribProposedBudget)}).`
+                          );
                           return;
                         }
                         if (isVoucherRequired && !hasDisbursementVoucher) {
@@ -1966,18 +2069,24 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         setIsCashModalOpen(true);
                       }}
                       className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                        !isApproved ||
+                        (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
+                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
                           ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                           : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          !isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                          !isApproved ||
+                          (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
+                          (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
                             ? 'bg-amber-50 text-amber-600 border border-amber-200'
                             : 'bg-blue-50 text-[#001A4D] border border-blue-200'
                         }`}>
-                          {!isApproved || (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher) ? (
+                          {!isApproved ||
+                          (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
+                          (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher) ? (
                             <Lock className="w-4 h-4" />
                           ) : (
                             <Receipt className="w-4 h-4" />
@@ -1992,14 +2101,28 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                               ? 'Non-monetary (₱0) • Exempt'
                               : !isApproved
                               ? 'Locked: Approval required'
+                              : isLiquidationLockedByCollectionGap
+                              ? `Locked: Collected ${formatPHP(contribCashOverview.cashOnHand)} / ${formatPHP(contribProposedBudget)}`
                               : isVoucherRequired && !hasDisbursementVoucher
                               ? 'Locked: Voucher needed first'
                               : 'Liquidate expenses with official receipts'}
                           </div>
                         </div>
                       </div>
-                      <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-blue-50 text-[#001A4D] border border-blue-200">
-                        {isLiquidationExempt ? 'Exempt' : !isApproved || (isVoucherRequired && !hasDisbursementVoucher) ? 'Locked' : 'Report'}
+                      <span className={`shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full border ${
+                        !isApproved ||
+                        (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
+                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-blue-50 text-[#001A4D] border-blue-200'
+                      }`}>
+                        {isLiquidationExempt
+                          ? 'Exempt'
+                          : !isApproved ||
+                            isLiquidationLockedByCollectionGap ||
+                            (isVoucherRequired && !hasDisbursementVoucher)
+                          ? 'Locked'
+                          : 'Report'}
                       </span>
                     </button>
 
@@ -3869,7 +3992,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   {decision !== 'none' ? 'Change Decision' : 'Select Decision'}
                 </p>
                 <div>
-                  {effectiveFundingSource === 'organization_funds' ? (
+                  {isOrgDirectSasOnly ? (
                     <button
                       onClick={() => handleDecision('approve')}
                       className="w-full h-11 flex items-center justify-center gap-2 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer bg-gradient-to-r from-[#22C55E] to-[#16A34A] hover:from-[#16A34A] hover:to-[#22C55E]"

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   X,
   Plus,
@@ -101,6 +101,7 @@ import {
   getFastCachedSignature,
   syncUserSignatureAcrossProfiles,
 } from '../../modules/signatories';
+import { getCachedSasSignatoryConfig } from '../../modules/signatories/services/sas-signatory.service';
 import { toast } from 'sonner';
 
 interface OfficerLiquidationModalProps {
@@ -253,7 +254,10 @@ export default function OfficerLiquidationModal({
     );
 
   const [makerSignatureUrl, setMakerSignatureUrl] = useState<string | null>(() => {
-    return userSignatureUrl || getFastCachedSignature(officerProfile) || null;
+    const sasFallback = isSasCreator
+      ? getCachedSasSignatoryConfig()?.signatureUrl || getCachedSasSignatoryConfig()?.signatureDataUrl || null
+      : null;
+    return userSignatureUrl || getFastCachedSignature(officerProfile) || sasFallback || null;
   });
   const [isSignatureModalOpen, setIsSignatureModalOpen] = useState(false);
 
@@ -455,8 +459,11 @@ export default function OfficerLiquidationModal({
   const [activeModalTab, setActiveModalTab] = useState<'expenses' | 'signatories'>('expenses');
   const [activeCategoryId, setActiveCategoryId] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [uploadingIndex, setUploadingIndex] = useState<number | null>(null);
+  const [uploadingItemId, setUploadingItemId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hydratedSessionKeyRef = useRef<string | null>(null);
+  const hydratedReportIdRef = useRef<string | null>(null);
+  const hasUserEditedItemsRef = useRef<boolean>(false);
   const [resubmissionNote, setResubmissionNote] = useState('');
   const [cashierProofDrafts, setCashierProofDrafts] = useState<ReceiptAttachment[]>([]);
   const [cashierRefDraft, setCashierRefDraft] = useState('');
@@ -697,9 +704,12 @@ export default function OfficerLiquidationModal({
     !isEventSasOwned &&
     (effectiveSource === 'organization_funds' || effectiveSource === 'student_contributions');
 
-  const { computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
+  const { activeConfig, computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
   const effectiveSettlementOrgId = effectiveReport?.organizationId || orgId || null;
-  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(effectiveSettlementOrgId);
+  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(
+    effectiveSettlementOrgId,
+    (effectiveReport as any)?.schoolYear || activeConfig?.schoolYear
+  );
   const { data: settlementOrgLedger = [] } = useOrgLedger(effectiveSettlementOrgId);
 
   const settlementOrgLedgerBalance = useMemo(() => {
@@ -779,6 +789,11 @@ export default function OfficerLiquidationModal({
     orgRetainedFunds,
     settlementOrgLedgerBalance,
   ]);
+
+  // Live Calculations (declared before activeSurplusTarget memo dependency)
+  const totalActualSpending = lineItems.reduce((sum, item) => sum + (item.totalCost || 0), 0);
+  const surplusOrDeficit = allocatedBudget - totalActualSpending;
+  const isDeficit = surplusOrDeficit < 0;
 
   const activeSurplusTarget = useMemo(() => {
     if (effectiveReport?.status === 'approved') {
@@ -1309,6 +1324,7 @@ export default function OfficerLiquidationModal({
   // Add Item to the active category (Item #1, Item #2, etc.)
   const handleAddItemToCurrentCategory = () => {
     if (!currentCategory || isEffectiveReadOnly) return;
+    hasUserEditedItemsRef.current = true;
     setLineItems((prev) => [
       ...prev,
       {
@@ -1333,6 +1349,7 @@ export default function OfficerLiquidationModal({
   // Remove or reset item in the active category
   const handleRemoveCategoryItem = (itemToRemoveId: string) => {
     if (isEffectiveReadOnly) return;
+    hasUserEditedItemsRef.current = true;
     if (currentCategoryItems.length <= 1) {
       setLineItems((prev) =>
         prev.map((i) =>
@@ -1396,13 +1413,24 @@ export default function OfficerLiquidationModal({
     return () => unsub();
   }, []);
 
-  // Pre-fill if editing an existing / returned report, or opening from an event
+  // Pre-fill if editing an existing / returned report, or opening from an event.
+  // Guarded with session/report refs so async listener updates (activeSignatories,
+  // initialEvent, liquidationsList) never overwrite in-progress receipt attachments.
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      hydratedSessionKeyRef.current = null;
+      hydratedReportIdRef.current = null;
+      hasUserEditedItemsRef.current = false;
+      return;
+    }
     setError(null);
 
+    const liveEditingReport = editingReport
+      ? liquidationsList.find((l) => l.id === editingReport.id) || editingReport
+      : null;
+
     const targetReport =
-      editingReport ||
+      liveEditingReport ||
       (initialEventId
         ? liquidationsList.find(
             (l) =>
@@ -1413,42 +1441,65 @@ export default function OfficerLiquidationModal({
           ) || (initialEvent?.liquidationReportId ? liquidationsList.find((l) => l.id === initialEvent.liquidationReportId) : null)
         : null);
 
+    const sessionKey = `${editingReport?.id || ''}|${initialEventId || ''}`;
+    const alreadyHydratedSession = hydratedSessionKeyRef.current === sessionKey;
+
     if (targetReport) {
-      setActiveReportId(targetReport.id);
-      setSelectedEventId(targetReport.eventId);
-      setAllocatedBudget(targetReport.allocatedBudget || 0);
-      setLineItems(normalizeLineItems(targetReport.lineItems || []));
+      // Only hydrate lineItems once per report ID unless user hasn't modified anything yet
+      if (hydratedReportIdRef.current !== targetReport.id && !hasUserEditedItemsRef.current) {
+        hydratedSessionKeyRef.current = sessionKey;
+        hydratedReportIdRef.current = targetReport.id;
+        setActiveReportId(targetReport.id);
+        setSelectedEventId(targetReport.eventId);
+        setAllocatedBudget(targetReport.allocatedBudget || 0);
+        setLineItems(normalizeLineItems(targetReport.lineItems || []));
 
-      // Hydrate LF-01 Header from existing report
-      if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
-      if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
-      if (targetReport.purpose) setPurpose(targetReport.purpose);
-      if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
-      if (targetReport.dateReleased) setDateReleased(targetReport.dateReleased);
-      if (targetReport.activityEndDate) setActivityEndDate(targetReport.activityEndDate);
-      if (targetReport.submissionDeadline) setSubmissionDeadline(targetReport.submissionDeadline);
-      if (targetReport.dateSubmitted) setDateSubmitted(targetReport.dateSubmitted);
-      if (targetReport.daysLapsed) setDaysLapsed(targetReport.daysLapsed);
-      if (targetReport.orNumber) setOrNumber(targetReport.orNumber);
+        // Hydrate LF-01 Header from existing report
+        if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
+        if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
+        if (targetReport.purpose) setPurpose(targetReport.purpose);
+        if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
+        if (targetReport.dateReleased) setDateReleased(targetReport.dateReleased);
+        if (targetReport.activityEndDate) setActivityEndDate(targetReport.activityEndDate);
+        if (targetReport.submissionDeadline) setSubmissionDeadline(targetReport.submissionDeadline);
+        if (targetReport.dateSubmitted) setDateSubmitted(targetReport.dateSubmitted);
+        if (targetReport.daysLapsed) setDaysLapsed(targetReport.daysLapsed);
+        if (targetReport.orNumber) setOrNumber(targetReport.orNumber);
 
-      if (targetReport.approvalChain && targetReport.approvalChain.length > 0) {
-        const validSteps = targetReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
-        setApprovalChain(reindexLiquidationSteps(validSteps));
-      } else {
+        if (targetReport.approvalChain && targetReport.approvalChain.length > 0) {
+          const validSteps = targetReport.approvalChain.filter((s) => Boolean(s.signatoryUid && s.signatoryUid.trim() !== ''));
+          setApprovalChain(reindexLiquidationSteps(validSteps));
+        } else {
+          generateDefaultLiquidationChain(orgId, orgName, targetReport.allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
+            setApprovalChain(chain);
+          });
+        }
+      } else if (
+        approvalChain.length === 0 &&
+        (!targetReport.approvalChain || targetReport.approvalChain.length === 0)
+      ) {
         generateDefaultLiquidationChain(orgId, orgName, targetReport.allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
+          setApprovalChain((prev) => (prev.length === 0 ? chain : prev));
+        });
+      }
+    } else if (!alreadyHydratedSession) {
+      hydratedSessionKeyRef.current = sessionKey;
+      hydratedReportIdRef.current = null;
+      if (initialEventId) {
+        setActiveReportId('');
+        handleEventSelect(initialEventId);
+      } else {
+        setActiveReportId('');
+        setSelectedEventId('');
+        setAllocatedBudget(0);
+        setLineItems([]);
+        generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories, isSasCreator).then((chain) => {
           setApprovalChain(chain);
         });
       }
-    } else if (initialEventId) {
-      setActiveReportId('');
-      handleEventSelect(initialEventId);
-    } else {
-      setActiveReportId('');
-      setSelectedEventId('');
-      setAllocatedBudget(0);
-      setLineItems([]);
-      generateDefaultLiquidationChain(orgId, orgName, 0, activeSignatories, isSasCreator).then((chain) => {
-        setApprovalChain(chain);
+    } else if (approvalChain.length === 0) {
+      generateDefaultLiquidationChain(orgId, orgName, allocatedBudget || 0, activeSignatories, isSasCreator).then((chain) => {
+        setApprovalChain((prev) => (prev.length === 0 ? chain : prev));
       });
     }
   }, [editingReport, isOpen, initialEventId, initialEvent, liquidationsList, orgId, orgName, activeSignatories, isSasCreator]);
@@ -1469,6 +1520,8 @@ export default function OfficerLiquidationModal({
     ) || (event.liquidationReportId ? liquidationsList.find((l) => l.id === event.liquidationReportId) : null);
 
     if (existing) {
+      hydratedReportIdRef.current = existing.id;
+      hasUserEditedItemsRef.current = false;
       setActiveReportId(existing.id);
       setAllocatedBudget(existing.allocatedBudget || 0);
       setLineItems(normalizeLineItems(existing.lineItems || []));
@@ -1511,37 +1564,47 @@ export default function OfficerLiquidationModal({
   };
 
   const handleLineItemChange = (index: number, field: keyof ExpenseLineItem, value: any) => {
-    const updated = [...lineItems];
-    const item = { ...updated[index], [field]: value };
-
-    if (field === 'quantity' || field === 'unitCost') {
-      const qty = field === 'quantity' ? Number(value) : item.quantity;
-      const cost = field === 'unitCost' ? Number(value) : item.unitCost;
-      item.totalCost = qty * cost;
-    }
-
-    updated[index] = item;
-    setLineItems(updated);
+    hasUserEditedItemsRef.current = true;
+    const targetId = lineItems[index]?.id;
+    setLineItems((prev) =>
+      prev.map((curr, idx) => {
+        if (targetId ? curr.id !== targetId : idx !== index) return curr;
+        const item = { ...curr, [field]: value };
+        if (field === 'quantity' || field === 'unitCost') {
+          const qty = field === 'quantity' ? Number(value) : item.quantity;
+          const cost = field === 'unitCost' ? Number(value) : item.unitCost;
+          item.totalCost = qty * cost;
+        }
+        return item;
+      })
+    );
   };
 
   // Pure receipt entry: user inputs direct amount from the receipt; no quantity/unit price calculations
   const handleReceiptAmountChange = (index: number, amountVal: string) => {
+    hasUserEditedItemsRef.current = true;
     const numeric = Math.max(0, Number(amountVal) || 0);
-    const updated = [...lineItems];
-    updated[index] = {
-      ...updated[index],
-      quantity: 1,
-      unitCost: numeric,
-      totalCost: numeric,
-    };
-    setLineItems(updated);
+    const targetId = lineItems[index]?.id;
+    setLineItems((prev) =>
+      prev.map((curr, idx) =>
+        (targetId ? curr.id === targetId : idx === index)
+          ? {
+              ...curr,
+              quantity: 1,
+              unitCost: numeric,
+              totalCost: numeric,
+            }
+          : curr
+      )
+    );
   };
 
   const handleAddLineItem = () => {
-    setLineItems([
-      ...lineItems,
+    hasUserEditedItemsRef.current = true;
+    setLineItems((prev) => [
+      ...prev,
       {
-        id: Date.now().toString(),
+        id: `item-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         description: '',
         category: 'Miscellaneous',
         isPreFilled: false,
@@ -1557,18 +1620,22 @@ export default function OfficerLiquidationModal({
   };
 
   const handleRemoveLineItem = (index: number) => {
-    if (lineItems.length === 1) return;
-    setLineItems(lineItems.filter((_, i) => i !== index));
+    hasUserEditedItemsRef.current = true;
+    setLineItems((prev) => {
+      if (prev.length === 1) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
-  // Upload one or more receipt files
-  const handleReceiptUpload = async (index: number, files: FileList | File[]) => {
-    if (!files || files.length === 0) return;
-    setUploadingIndex(index);
+  // Upload one or more receipt files (functional state update keyed by item.id so async uploads never clobber concurrent edits)
+  const handleReceiptUpload = async (itemId: string, files: FileList | File[]) => {
+    const fileArray = Array.from(files || []);
+    if (!itemId || fileArray.length === 0) return;
+    hasUserEditedItemsRef.current = true;
+    setUploadingItemId(itemId);
     setError(null);
 
     try {
-      const fileArray = Array.from(files);
       const newAttachments: ReceiptAttachment[] = [];
 
       for (const file of fileArray) {
@@ -1587,46 +1654,53 @@ export default function OfficerLiquidationModal({
         });
       }
 
-      const updated = [...lineItems];
-      const existingFiles = updated[index].receiptFiles || [];
-      const mergedFiles = [...existingFiles, ...newAttachments];
-
-      updated[index] = {
-        ...updated[index],
-        receiptFiles: mergedFiles,
-        receiptUrls: mergedFiles.map((f) => f.url),
-        receiptUrl: mergedFiles.length > 0 ? mergedFiles[0].url : '',
-      };
-      setLineItems(updated);
+      setLineItems((prev) =>
+        prev.map((curr) => {
+          if (curr.id !== itemId) return curr;
+          const existingFiles = curr.receiptFiles || [];
+          const mergedFiles = [...existingFiles, ...newAttachments];
+          return {
+            ...curr,
+            receiptFiles: mergedFiles,
+            receiptUrls: mergedFiles.map((f) => f.url),
+            receiptUrl: mergedFiles.length > 0 ? mergedFiles[0].url : '',
+          };
+        })
+      );
     } catch (err: any) {
       console.error('[OfficerLiquidationModal] Upload error:', err);
       setError(err?.message || 'Failed to upload receipt file(s). Please try again.');
     } finally {
-      setUploadingIndex(null);
+      setUploadingItemId(null);
     }
   };
 
   // Remove a specific receipt file from an item
   const handleRemoveReceiptFile = (itemIndex: number, fileId: string) => {
-    const updated = [...lineItems];
-    const currentFiles = updated[itemIndex].receiptFiles || [];
-    const filteredFiles = currentFiles.filter((f) => f.id !== fileId);
-
-    updated[itemIndex] = {
-      ...updated[itemIndex],
-      receiptFiles: filteredFiles,
-      receiptUrls: filteredFiles.map((f) => f.url),
-      receiptUrl: filteredFiles.length > 0 ? filteredFiles[0].url : '',
-    };
-    setLineItems(updated);
+    hasUserEditedItemsRef.current = true;
+    const targetId = lineItems[itemIndex]?.id;
+    setLineItems((prev) =>
+      prev.map((curr, idx) => {
+        if (targetId ? curr.id !== targetId : idx !== itemIndex) return curr;
+        const currentFiles = curr.receiptFiles || [];
+        const filteredFiles = currentFiles.filter((f) => f.id !== fileId);
+        return {
+          ...curr,
+          receiptFiles: filteredFiles,
+          receiptUrls: filteredFiles.map((f) => f.url),
+          receiptUrl: filteredFiles.length > 0 ? filteredFiles[0].url : '',
+        };
+      })
+    );
   };
 
-  // Live Calculations
-  const totalActualSpending = lineItems.reduce((sum, item) => sum + (item.totalCost || 0), 0);
-  const surplusOrDeficit = allocatedBudget - totalActualSpending;
-  const isDeficit = surplusOrDeficit < 0;
-
   const handleSave = async (shouldSubmit: boolean) => {
+    if (uploadingItemId !== null) {
+      const msg = 'Please wait for receipt file upload to complete before saving.';
+      setError(msg);
+      toast.info(msg);
+      return;
+    }
     // Collect non-empty line items upfront
     const meaningfulItems = lineItems.filter(
       (item) => item.description.trim() !== '' || item.totalCost > 0 || (item.receiptFiles && item.receiptFiles.length > 0)
@@ -1898,6 +1972,7 @@ export default function OfficerLiquidationModal({
         );
       }
 
+      hasUserEditedItemsRef.current = false;
       onClose();
     } catch (err: any) {
       console.error('[OfficerLiquidationModal] Save failed:', err);
@@ -2924,18 +2999,23 @@ export default function OfficerLiquidationModal({
                                 disabled={isEffectiveReadOnly}
                                 onChange={(e) => {
                                   const checked = e.target.checked;
-                                  const updated = [...lineItems];
-                                  updated[realIndex] = {
-                                    ...updated[realIndex],
-                                    isLostReceipt: checked,
-                                    receiptNumber:
-                                      checked && !(updated[realIndex].receiptNumber || '').trim()
-                                        ? 'LOST-RECEIPT'
-                                        : !checked && updated[realIndex].receiptNumber === 'LOST-RECEIPT'
-                                          ? ''
-                                          : updated[realIndex].receiptNumber,
-                                  };
-                                  setLineItems(updated);
+                                  hasUserEditedItemsRef.current = true;
+                                  setLineItems((prev) =>
+                                    prev.map((curr) =>
+                                      curr.id === item.id
+                                        ? {
+                                            ...curr,
+                                            isLostReceipt: checked,
+                                            receiptNumber:
+                                              checked && !(curr.receiptNumber || '').trim()
+                                                ? 'LOST-RECEIPT'
+                                                : !checked && curr.receiptNumber === 'LOST-RECEIPT'
+                                                  ? ''
+                                                  : curr.receiptNumber,
+                                          }
+                                        : curr
+                                    )
+                                  );
                                 }}
                                 className="mt-0.5 w-4 h-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500 cursor-pointer"
                               />
@@ -3111,7 +3191,7 @@ export default function OfficerLiquidationModal({
                                 : 'border-gray-300 hover:border-[#1E70E8] hover:bg-blue-50/40 text-gray-700'
                             }`}
                           >
-                            {uploadingIndex === realIndex ? (
+                            {uploadingItemId === item.id ? (
                               <>
                                 <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
                                 <span className="text-[#0E4EBD]">Uploading files to secure storage...</span>
@@ -3134,12 +3214,13 @@ export default function OfficerLiquidationModal({
                               type="file"
                               multiple
                               accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.rtf"
-                              disabled={uploadingIndex === realIndex}
+                              disabled={uploadingItemId === item.id}
                               className="hidden"
                               onChange={(e) => {
                                 if (e.target.files && e.target.files.length > 0) {
-                                  handleReceiptUpload(realIndex, e.target.files);
+                                  const selectedFiles = Array.from(e.target.files);
                                   e.target.value = '';
+                                  handleReceiptUpload(item.id, selectedFiles);
                                 }
                               }}
                             />
@@ -3582,22 +3663,28 @@ export default function OfficerLiquidationModal({
                   Cancel
                 </button>
 
-                {/* Save Draft / Save Receipts is ALWAYS enabled */}
+                {/* Save Draft / Save Receipts is ALWAYS enabled (disabled only while saving or uploading) */}
                 <button
                   onClick={() => handleSave(false)}
-                  disabled={isSubmitting}
-                  className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer shadow-xs ${
-                    !isConcluded
-                      ? 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C]'
-                      : 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-300'
+                  disabled={isSubmitting || uploadingItemId !== null}
+                  className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 shadow-xs ${
+                    isSubmitting || uploadingItemId !== null
+                      ? 'opacity-60 cursor-not-allowed bg-gray-200 text-gray-500 border border-gray-300'
+                      : !isConcluded
+                        ? 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
+                        : 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 cursor-pointer'
                   }`}
                 >
-                  {isSubmitting ? (
+                  {isSubmitting || uploadingItemId !== null ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
                   ) : (
                     <Save className="w-4 h-4" />
                   )}
-                  {!isConcluded ? 'Save Receipts & Draft' : 'Save Draft'}
+                  {uploadingItemId !== null
+                    ? 'Uploading Receipt...'
+                    : !isConcluded
+                      ? 'Save Receipts & Draft'
+                      : 'Save Draft'}
                 </button>
 
                 {/* Submit Liquidation: Unlocked ONLY when event is concluded */}
@@ -3611,7 +3698,7 @@ export default function OfficerLiquidationModal({
                     )}
                     <button
                       onClick={() => handleSave(true)}
-                      disabled={isSubmitting || (!effectiveIsAdviser && userRole !== 'admin')}
+                      disabled={isSubmitting || uploadingItemId !== null || (!effectiveIsAdviser && userRole !== 'admin')}
                       title={
                         !effectiveIsAdviser && userRole !== 'admin'
                           ? 'Only appointed Club Advisers can submit. You can prepare and save drafts.'

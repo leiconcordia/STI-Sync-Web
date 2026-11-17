@@ -825,7 +825,10 @@ export default function FinancialLiquidation() {
       {showModal && (
         <OfficerLiquidationModal
           isOpen={showModal}
-          onClose={() => setShowModal(false)}
+          onClose={() => {
+            setShowModal(false);
+            setEditingReport(null);
+          }}
           orgId={orgId}
           orgName={orgName}
           userUid={userUid}

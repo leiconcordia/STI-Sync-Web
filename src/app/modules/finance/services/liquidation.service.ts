@@ -573,7 +573,8 @@ export const updateLiquidationReport = async (
         item.totalCost !== prev.totalCost ||
         item.vendorName !== prev.vendorName ||
         item.receiptUrl !== prev.receiptUrl ||
-        (item.receiptUrls?.length || 0) !== (prev.receiptUrls?.length || 0);
+        (item.receiptUrls?.length || 0) !== (prev.receiptUrls?.length || 0) ||
+        (item.receiptFiles?.length || 0) !== (prev.receiptFiles?.length || 0);
 
       if (hasChanged) {
         const prevVals: any = {};

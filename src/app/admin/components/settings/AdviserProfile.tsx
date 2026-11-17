@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Camera, Lock, CheckCircle2, AlertCircle, PenTool, RotateCcw, Upload,
+  Camera, Lock, CheckCircle2, AlertCircle, PenTool, RotateCcw,
   ShieldCheck, FileSignature, Trash2, Check, Sparkles, UserCheck, Shield,
   ExternalLink
 } from 'lucide-react';
@@ -37,7 +37,8 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
   const [hasDrawn, setHasDrawn] = useState(false);
   const [history, setHistory] = useState<string[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hydratedUidRef = useRef<string | null>(null);
+  const isEditingSigRef = useRef<boolean>(false);
 
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -45,12 +46,18 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
 
   useEffect(() => {
     if (profile) {
-      setFirstName(profile.firstName || '');
-      setMiddleName(profile.middleName || '');
-      setLastName(profile.lastName || '');
-      setPhoneNumber(profile.phoneNumber || '');
-      setDepartment(profile.department || '');
-      setPosition(profile.position || '');
+      if (hydratedUidRef.current !== profile.uid) {
+        hydratedUidRef.current = profile.uid;
+        isEditingSigRef.current = false;
+        setFirstName(profile.firstName || '');
+        setMiddleName(profile.middleName || '');
+        setLastName(profile.lastName || '');
+        setPhoneNumber(profile.phoneNumber || '');
+        setDepartment(profile.department || '');
+        setPosition(profile.position || '');
+      }
+
+      if (isEditingSigRef.current) return;
 
       // Multi-source signature resolution (profile -> sas_signatory -> institutional_signatories -> sessions)
       let isCancelled = false;
@@ -66,7 +73,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
         role: 'sas_admin',
         profile,
       }).then((resolvedSig) => {
-        if (!isCancelled) {
+        if (!isCancelled && !isEditingSigRef.current) {
           if (resolvedSig) {
             setSignatureUrl(resolvedSig);
             setIsRedrawing(false);
@@ -84,15 +91,14 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
   }, [profile]);
 
   useEffect(() => {
-    if ((isRedrawing || !signatureUrl) && canvasRef.current) {
+    if (isRedrawing && canvasRef.current && !hasDrawn) {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
     }
-  }, [isRedrawing, signatureUrl]);
+  }, [isRedrawing]);
 
   if (loading) {
     return <div className="p-6 text-gray-500">Loading profile...</div>;
@@ -137,6 +143,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
     ctx.strokeStyle = '#000000';
     setIsDrawing(true);
     setHasDrawn(true);
+    isEditingSigRef.current = true;
     onUnsavedChange();
     setSaveStatus('idle');
   };
@@ -166,11 +173,11 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     setHasDrawn(false);
     setHistory([]);
     setSignatureUrl('');
+    isEditingSigRef.current = true;
     onUnsavedChange();
     setSaveStatus('idle');
   };
@@ -190,35 +197,9 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0);
       setSignatureUrl(canvas.toDataURL('image/png'));
+      isEditingSigRef.current = true;
       onUnsavedChange();
     };
-  };
-
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please upload an image file (PNG, JPG, WebP).');
-      return;
-    }
-
-    if (file.size > 3 * 1024 * 1024) {
-      toast.error('Signature file must be under 3MB.');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      setSignatureUrl(dataUrl);
-      setIsRedrawing(false);
-      onUnsavedChange();
-      setSaveStatus('idle');
-      toast.success('Signature image loaded successfully!');
-    };
-    reader.readAsDataURL(file);
-    e.target.value = '';
   };
 
   const handleRemoveSignature = () => {
@@ -226,6 +207,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
     setIsRedrawing(true);
     setHasDrawn(false);
     setHistory([]);
+    isEditingSigRef.current = true;
     onUnsavedChange();
     setSaveStatus('idle');
   };
@@ -263,18 +245,21 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
         signatureUpdatedAt: new Date().toISOString(),
       });
 
-      // 2. Synchronize to global SAS Signatory Configuration (for locked organization proposals & approval)
-      await saveSasSignatoryConfig({
-        name: displayName,
-        firstName,
-        lastName,
-        middleName,
-        roleTitle: resolvedPosition,
-        email: profile.email,
-        department: resolvedDept,
-        signatureUrl: finalSig || undefined,
-        signatureDataUrl: finalSig || undefined,
-      });
+      // 2. Synchronize to global SAS Signatory Configuration (for locked organization proposals, approval & exports)
+      await saveSasSignatoryConfig(
+        {
+          name: displayName,
+          firstName,
+          lastName,
+          middleName,
+          roleTitle: resolvedPosition,
+          email: profile.email,
+          department: resolvedDept,
+          signatureUrl: finalSig ? finalSig : null,
+          signatureDataUrl: finalSig ? finalSig : null,
+        },
+        profile.uid
+      );
 
       // 3. Centralized multi-collection sync (institutional_signatories, localStorage sessions, audit)
       if (finalSig) {
@@ -288,6 +273,8 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
         });
       }
       
+      isEditingSigRef.current = false;
+      setHasDrawn(false);
       setIsRedrawing(false);
       setSaveStatus('success');
       toast.success('Adviser profile and official signatory updated successfully!');
@@ -505,7 +492,7 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
                 </span>
               </h3>
               <p className="text-xs text-gray-500">
-                Draw or upload your digital signature to authorize Stage 1 proposals and conclude institutional reviews.
+                Draw your digital signature below to authorize Stage 1 proposals, approvals, and official document exports.
               </p>
             </div>
           </div>
@@ -562,19 +549,16 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsRedrawing(true)}
+                  onClick={() => {
+                    isEditingSigRef.current = true;
+                    setHasDrawn(false);
+                    setHistory([]);
+                    setIsRedrawing(true);
+                  }}
                   className="px-3.5 py-1.5 bg-[#001A4D] text-[#FFD41C] hover:bg-[#0A2E6D] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                 >
                   <PenTool className="w-3.5 h-3.5 text-[#FFD41C]" />
                   Update Signature
-                </button>
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  Upload Image
                 </button>
                 <button
                   type="button"
@@ -666,27 +650,15 @@ export default function AdviserProfile({ onUnsavedChange }: AdviserProfileProps)
                   <span className="text-[11px] text-gray-400 font-mono">
                     Official black ink • 2.5px vector stroke
                   </span>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="text-xs text-[#0E4EBD] hover:underline font-bold flex items-center gap-1 cursor-pointer"
-                  >
-                    <Upload className="w-3.5 h-3.5" />
-                    Or upload signature image
-                  </button>
                 </div>
 
                 {signatureUrl && isRedrawing && (
                   <button
                     type="button"
-                    onClick={() => setIsRedrawing(false)}
+                    onClick={() => {
+                      isEditingSigRef.current = false;
+                      setIsRedrawing(false);
+                    }}
                     className="text-xs text-gray-500 hover:text-gray-800 underline cursor-pointer"
                   >
                     Cancel & Keep Current Signature

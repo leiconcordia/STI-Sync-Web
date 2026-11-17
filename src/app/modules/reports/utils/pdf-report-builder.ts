@@ -1,6 +1,73 @@
 import jsPDF from 'jspdf';
 import { toast } from 'sonner';
 import { GeneratedReportData, ReportTableColumn } from '../types/report.types';
+import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
+import { resolveUserSignature } from '../../signatories';
+
+interface ReportPdfSigImg {
+  dataUrl: string;
+  w: number;
+  h: number;
+  format: 'PNG' | 'JPEG';
+}
+
+async function loadReportPdfSigImage(url?: string | null): Promise<ReportPdfSigImg | null> {
+  const trimmed = (url || '').trim();
+  if (!trimmed || trimmed.includes('[base64-')) return null;
+
+  let dataUrl = trimmed.startsWith('data:image/') ? trimmed : '';
+  if (!dataUrl) {
+    try {
+      const res = await fetch(trimmed, { mode: 'cors' });
+      if (res.ok) {
+        const blob = await res.blob();
+        dataUrl =
+          (await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(blob);
+          })) || '';
+      }
+    } catch {}
+  }
+  if (!dataUrl || !dataUrl.startsWith('data:image/')) return null;
+
+  const format: 'PNG' | 'JPEG' = /^data:image\/jpe?g/i.test(dataUrl) ? 'JPEG' : 'PNG';
+  const dims = await new Promise<{ w: number; h: number }>((resolve) => {
+    if (typeof Image === 'undefined') {
+      resolve({ w: 28, h: 9 });
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      const natW = img.naturalWidth || 300;
+      const natH = img.naturalHeight || 100;
+      const ratio = Math.min(28 / natW, 9 / natH);
+      resolve({ w: Math.max(4, natW * ratio), h: Math.max(3, natH * ratio) });
+    };
+    img.onerror = () => resolve({ w: 28, h: 9 });
+    img.src = dataUrl;
+  });
+
+  return { dataUrl, w: dims.w, h: dims.h, format };
+}
+
+function isGenericSasName(name?: string | null): boolean {
+  const cleaned = (name || '').trim().toLowerCase();
+  return (
+    !cleaned ||
+    cleaned === 'sas' ||
+    cleaned === 'sao' ||
+    cleaned === 'sas admin' ||
+    cleaned === 'sao admin' ||
+    cleaned === 'sas administrator' ||
+    cleaned === 'sao administrator' ||
+    cleaned === 'sas coordinator' ||
+    cleaned.includes('sas / sao') ||
+    cleaned.includes('student affairs')
+  );
+}
 
 /**
  * Computes proportional column widths (in mm) based on column keys/headers
@@ -203,7 +270,18 @@ export async function exportReportToPDF(report: GeneratedReportData) {
     }
 
     // ─── 6. Official Signature Sign-off Block ────────────────────────────────
-    const sigBlockHeight = 24;
+    const sasCfg = await getSasSignatoryConfig().catch(() => null);
+    let sasSigRaw = sasCfg?.signatureUrl || sasCfg?.signatureDataUrl || '';
+    if (!sasSigRaw) {
+      sasSigRaw = await resolveUserSignature({
+        email: sasCfg?.email || 'sao@ormoc.sti.edu.ph',
+        name: sasCfg?.name,
+        role: 'sas_admin',
+      }).catch(() => '');
+    }
+    const sasSigImg = await loadReportPdfSigImage(sasSigRaw);
+
+    const sigBlockHeight = 28;
     if (y + sigBlockHeight > pageHeight - 12) {
       doc.addPage();
       y = margin + 6;
@@ -212,52 +290,82 @@ export async function exportReportToPDF(report: GeneratedReportData) {
     }
 
     const signY = y;
-    const signWidth = tableWidth / 3;
+    const rawPrepName = report.signatories?.preparedBy?.name || report.metadata.generatedBy;
+    const rawPrepTitle = report.signatories?.preparedBy?.title || 'SAS Administrator';
+    const isSasPrepared =
+      report.category !== 'ORGANIZATION' ||
+      rawPrepTitle.toLowerCase().includes('sas') ||
+      rawPrepTitle.toLowerCase().includes('sao') ||
+      isGenericSasName(rawPrepName);
+    const prepName = isSasPrepared && isGenericSasName(rawPrepName) && sasCfg?.name ? sasCfg.name : rawPrepName;
+    const prepTitle =
+      isSasPrepared && sasCfg?.roleTitle && ['sas administrator', 'sas auditor', 'sas coordinator'].includes(rawPrepTitle.toLowerCase())
+        ? sasCfg.roleTitle
+        : rawPrepTitle;
 
-    // Prepared By
-    const prepName = report.signatories?.preparedBy?.name || report.metadata.generatedBy;
-    const prepTitle = report.signatories?.preparedBy?.title || 'SAS Administrator';
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    doc.setTextColor(0, 26, 77);
-    doc.text('Prepared by:', margin, signY);
-    doc.setDrawColor(100, 115, 140);
-    doc.line(margin, signY + 10, margin + signWidth - 10, signY + 10);
-    doc.text(prepName, margin, signY + 14);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(105, 115, 130);
-    doc.text(prepTitle, margin, signY + 17.5);
-
-    // Attested By
     const attName = report.signatories?.attestedBy?.name || report.metadata.presidentName || 'SAS Coordinator';
     const attTitle = report.signatories?.attestedBy?.title || 'Student Affairs & Services';
-    const attX = margin + signWidth;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    doc.setTextColor(0, 26, 77);
-    doc.text('Verified / Attested by:', attX, signY);
-    doc.line(attX, signY + 10, attX + signWidth - 10, signY + 10);
-    doc.text(attName, attX, signY + 14);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(105, 115, 130);
-    doc.text(attTitle, attX, signY + 17.5);
-
-    // Approved By
     const appName = report.signatories?.approvedBy?.name || report.metadata.adviserName || 'School Administrator';
     const appTitle = report.signatories?.approvedBy?.title || 'Campus Administrator / Academic Head';
-    const appX = margin + signWidth * 2;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.5);
-    doc.setTextColor(0, 26, 77);
-    doc.text('Approved by:', appX, signY);
-    doc.line(appX, signY + 10, appX + signWidth - 10, signY + 10);
-    doc.text(appName, appX, signY + 14);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
-    doc.setTextColor(105, 115, 130);
-    doc.text(appTitle, appX, signY + 17.5);
+
+    const sigSlots: Array<{ label: string; name: string; title: string; img?: ReportPdfSigImg | null }> =
+      report.category === 'ORGANIZATION'
+        ? [
+            { label: 'Prepared by:', name: prepName, title: prepTitle },
+            { label: 'Verified / Attested by:', name: attName, title: attTitle },
+            { label: 'Approved by:', name: appName, title: appTitle },
+            {
+              label: 'Noted by (SAS):',
+              name: sasCfg?.name || 'SAS Coordinator',
+              title: sasCfg?.roleTitle || 'Student Affairs & Services Head',
+              img: sasSigImg,
+            },
+          ]
+        : [
+            {
+              label: 'Prepared by:',
+              name: prepName,
+              title: prepTitle,
+              img: isSasPrepared ? sasSigImg : null,
+            },
+            {
+              label: 'Verified / Attested by:',
+              name: isGenericSasName(attName) && sasCfg?.name ? sasCfg.name : attName,
+              title: attTitle,
+              img: attTitle.toLowerCase().includes('sas') || attTitle.toLowerCase().includes('student affairs') ? sasSigImg : null,
+            },
+            { label: 'Approved by:', name: appName, title: appTitle },
+          ];
+
+    const slotGap = 8;
+    const signWidth = (tableWidth - slotGap * (sigSlots.length - 1)) / sigSlots.length;
+    doc.setDrawColor(100, 115, 140);
+
+    sigSlots.forEach((slot, idx) => {
+      const sx = margin + idx * (signWidth + slotGap);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(0, 26, 77);
+      doc.text(slot.label, sx, signY);
+
+      if (slot.img) {
+        try {
+          const imgX = sx + Math.max(0, (signWidth - slot.img.w) / 2);
+          const imgY = signY + Math.max(1.5, 11.5 - slot.img.h);
+          doc.addImage(slot.img.dataUrl, slot.img.format, imgX, imgY, slot.img.w, slot.img.h);
+        } catch {}
+      }
+
+      doc.line(sx, signY + 12, sx + signWidth, signY + 12);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      doc.setTextColor(0, 26, 77);
+      doc.text(slot.name, sx, signY + 16);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(105, 115, 130);
+      doc.text(slot.title, sx, signY + 19.5);
+    });
 
     // ─── 7. Page Numbers & Footer on Every Page ──────────────────────────────
     const totalPages = doc.getNumberOfPages();

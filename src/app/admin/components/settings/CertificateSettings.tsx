@@ -125,15 +125,8 @@ export default function CertificateSettings({ onUnsavedChange }: CertificateSett
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">
-              Upload Signature Image
-            </label>
-            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-[#0E4EBD] hover:bg-blue-50/20 transition-colors cursor-pointer">
-              <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-              <p className="text-sm text-gray-600">Click to upload or drag and drop</p>
-              <p className="text-xs text-gray-500">PNG, JPG up to 2MB (Transparent PNG recommended)</p>
-            </div>
+          <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-lg text-xs text-blue-900">
+            Official certificate sign-off uses the drawn SAS e-signature configured in <strong>Settings &rarr; Adviser Profile</strong>.
           </div>
         </div>
       </div>

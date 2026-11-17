@@ -19,7 +19,6 @@ import {
   AlertCircle,
   PenTool,
   RotateCcw,
-  Upload,
   Save,
   Building,
   User,
@@ -39,6 +38,7 @@ import {
 } from '../../../modules/signatories/services/sas-signatory.service';
 import { formatStructuredFullName, parseFullNameToParts } from '../../../utils/name.utils';
 import { useAdviserProfile } from '../../../modules/auth';
+import { syncUserSignatureAcrossProfiles } from '../../../modules/signatories';
 
 const INK_COLOR = '#000000';
 const PEN_WIDTH = 2.5;
@@ -69,7 +69,6 @@ export default function SasSignatoryMaintenance() {
   // Canvas Refs
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastPointRef = useRef<{ x: number; y: number } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Load current configuration
   useEffect(() => {
@@ -100,15 +99,24 @@ export default function SasSignatoryMaintenance() {
   }, [profile]);
 
   // ── Canvas Handlers ──
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+  const getCanvasPoint = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  };
 
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const { x, y } = getCanvasPoint(e);
 
     lastPointRef.current = { x, y };
     setIsDrawing(true);
@@ -130,12 +138,7 @@ export default function SasSignatoryMaintenance() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-
-    const currentX = clientX - rect.left;
-    const currentY = clientY - rect.top;
+    const { x: currentX, y: currentY } = getCanvasPoint(e);
 
     ctx.strokeStyle = INK_COLOR;
     ctx.lineWidth = PEN_WIDTH;
@@ -170,46 +173,6 @@ export default function SasSignatoryMaintenance() {
     setSignatureDataUrl(null);
   };
 
-  // Image Upload handler
-  const handleUploadSignature = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please upload an image file (PNG, JPG, or SVG).');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Scale image to fit canvas proportionally
-        const hRatio = canvas.width / img.width;
-        const vRatio = canvas.height / img.height;
-        const ratio = Math.min(hRatio, vRatio, 1) * 0.8;
-        const centerShiftX = (canvas.width - img.width * ratio) / 2;
-        const centerShiftY = (canvas.height - img.height * ratio) / 2;
-
-        ctx.drawImage(img, 0, 0, img.width, img.height, centerShiftX, centerShiftY, img.width * ratio, img.height * ratio);
-
-        const dataUrl = canvas.toDataURL('image/png');
-        setSignatureDataUrl(dataUrl);
-        setHasDrawn(true);
-        toast.success('Signature image loaded successfully onto pad.');
-      };
-      img.src = reader.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
   // ── Save All Configurations ──
   const handleSaveAll = async () => {
     const combinedName = formatStructuredFullName(firstName, lastName, middleName) || name.trim();
@@ -232,7 +195,7 @@ export default function SasSignatoryMaintenance() {
     try {
       const effectiveSig = signatureDataUrl || savedSignatureUrl || undefined;
 
-      const result = await saveSasSignatoryConfig(
+      await saveSasSignatoryConfig(
         {
           name: combinedName,
           firstName: firstName.trim(),
@@ -242,13 +205,21 @@ export default function SasSignatoryMaintenance() {
           email: email.trim().toLowerCase(),
           department: department.trim(),
           employeeId: employeeId.trim(),
-          signatureUrl: effectiveSig,
-          signatureDataUrl: effectiveSig,
+          signatureUrl: effectiveSig ?? null,
+          signatureDataUrl: effectiveSig ?? null,
         },
         profile?.uid
       );
 
       if (effectiveSig) {
+        await syncUserSignatureAcrossProfiles({
+          uid: profile?.uid,
+          email: email.trim().toLowerCase(),
+          name: combinedName,
+          roleTitle: roleTitle.trim(),
+          signatureUrl: effectiveSig,
+          role: 'sas_admin',
+        });
         setSavedSignatureUrl(effectiveSig);
       }
 
@@ -497,8 +468,8 @@ export default function SasSignatoryMaintenance() {
         </div>
 
         <p className="text-xs text-slate-600">
-          Draw or upload your official digital signature below. Once saved, SAS can directly endorse and digitally sign
-          organization proposals, automatically stamping this authorized electronic seal onto Stage 1 and official PDF exports.
+          Draw your official digital signature below. Once saved, SAS can directly endorse and digitally sign
+          organization proposals, automatically stamping this authorized electronic seal onto Stage 1, Org Ledgers, and official PDF exports.
         </p>
 
         {/* Live Canvas Signature Pad */}
@@ -543,22 +514,6 @@ export default function SasSignatoryMaintenance() {
                 <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
                 <span>Clear Pad</span>
               </button>
-
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <Upload className="w-3.5 h-3.5 text-slate-500" />
-                <span>Upload Signature Image</span>
-              </button>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                onChange={handleUploadSignature}
-                className="hidden"
-              />
             </div>
 
             <div className="text-[11px] text-slate-400">

@@ -149,8 +149,11 @@ export function FinancialLiquidations() {
   const [absorbNoteDraft, setAbsorbNoteDraft] = useState('');
   const [isAbsorbingDeficit, setIsAbsorbingDeficit] = useState(false);
 
-  const { computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
-  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(selectedReport?.organizationId || null);
+  const { activeConfig, computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
+  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(
+    selectedReport?.organizationId || null,
+    (selectedReport as any)?.schoolYear || activeConfig?.schoolYear
+  );
   const { data: selectedOrgLedger = [] } = useOrgLedger(selectedReport?.organizationId || null);
 
   const selectedOrgLedgerBalance = useMemo(() => {

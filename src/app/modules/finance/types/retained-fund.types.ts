@@ -8,8 +8,10 @@ export type RetainedFundLedgerEntryType =
   | 'manual_adjustment';
 
 export interface RetainedActivityFundDocument {
-  id: string; // 'SAO_CAMPUS' or `ORG_${organizationId}`
+  id: string; // e.g. 'SAO_CAMPUS__SY_2026-2027' or 'SAO_CAMPUS' (legacy) or `ORG_${organizationId}__SY_${sy}`
   ownerType: RetainedFundOwnerType;
+  schoolYear?: string;
+  migratedToSchoolYear?: string;
   organizationId?: string;
   organizationName?: string;
   totalContributionsCollected: number;

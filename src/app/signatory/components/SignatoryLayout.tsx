@@ -60,6 +60,16 @@ export default function SignatoryLayout() {
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
+        const roleLower = String(parsed.role || '').trim().toLowerCase();
+        if (
+          parsed.id === 'sas_coordinator' ||
+          ['sas_coordinator', 'sas_head', 'sao_head', 'sas_admin', 'sao_admin'].includes(roleLower)
+        ) {
+          clearPortalSessions();
+          void signOut(auth);
+          navigate('/portal/login', { replace: true });
+          return;
+        }
         setSession({ ...parsed, name: formatPersonName(parsed) });
         // Automatically open password modal if user is on temporary credentials
         if (parsed.requiresPasswordChange) {

@@ -1,8 +1,21 @@
 import { useState } from 'react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { signInWithEmailAndPassword } from 'firebase/auth';
+import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore';
+import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { db, auth } from '../../../services/firebase';
 import { loadPortalWorkspaces, activatePortalWorkspace } from '../services/portal-workspace.service';
+
+const SAS_ONLY_SIGNATORY_ROLES = new Set([
+  'sas_coordinator',
+  'sas_head',
+  'sao_head',
+  'sas_admin',
+  'sao_admin',
+]);
+
+function isSasSignatoryRecord(id: string, data: any): boolean {
+  const role = String(data?.role || '').trim().toLowerCase();
+  return id === 'sas_coordinator' || SAS_ONLY_SIGNATORY_ROLES.has(role);
+}
 
 export const SESSION_KEY = 'sti_sync_officer_session';
 export const SIGNATORY_SESSION_KEY = 'sti_sync_signatory_session';
@@ -35,6 +48,22 @@ export function useOfficerAuth() {
       const signatoryRecords: any[] = [];
       const officerRecords: any[] = [];
       const adviserRecords: any[] = [];
+      let blockedSasAccount = false;
+
+      // Check if credentials match an SAS Admin account (must sign in via /admin/login, never /portal/login)
+      try {
+        let qSas = query(collection(db, 'sas_admins'), where('email', '==', cleanId));
+        let sasSnap = await getDocs(qSas);
+        if (sasSnap.empty && trimmedId !== cleanId) {
+          qSas = query(collection(db, 'sas_admins'), where('email', '==', trimmedId));
+          sasSnap = await getDocs(qSas);
+        }
+        if (!sasSnap.empty && sasSnap.docs.some((d) => d.data()?.isActive !== false)) {
+          blockedSasAccount = true;
+        }
+      } catch (sasErr) {
+        console.warn('[useOfficerAuth] SAS admin check notice:', sasErr);
+      }
 
       // A. Check Institutional Signatories
       try {
@@ -62,6 +91,10 @@ export function useOfficerAuth() {
 
         sigSnap.docs.forEach((d) => {
           const data = d.data();
+          if (isSasSignatoryRecord(d.id, data)) {
+            blockedSasAccount = true;
+            return;
+          }
           if (data.isActive !== false) {
             signatoryRecords.push({ id: d.id, ...data });
           }
@@ -212,6 +245,12 @@ export function useOfficerAuth() {
       const allRecords = [...signatoryRecords, ...officerRecords, ...adviserRecords];
 
       if (allRecords.length === 0) {
+        if (blockedSasAccount) {
+          setError(
+            'SAS accounts cannot sign in through the Organization / Signatory portal. Please sign in at /admin/login.'
+          );
+          return null;
+        }
         // Check if user is an enrolled student without an active officer role
         try {
           const qCheckStudent = query(
@@ -272,9 +311,28 @@ export function useOfficerAuth() {
         return null;
       }
 
+      // Double-check Firebase Auth UID against sas_admins after auth
+      if (auth.currentUser?.uid) {
+        try {
+          const sasAdminSnap = await getDoc(doc(db, 'sas_admins', auth.currentUser.uid));
+          if (sasAdminSnap.exists() && sasAdminSnap.data()?.isActive !== false) {
+            await signOut(auth).catch(() => {});
+            setError(
+              'SAS accounts cannot sign in through the Organization / Signatory portal. Please sign in at /admin/login.'
+            );
+            return null;
+          }
+        } catch {}
+      }
+
       const workspaces = await loadPortalWorkspaces();
       if (!workspaces.length) {
-        if (officerRecords.length > 0 && officerRecords.every((record) => record.hasWebPortalAccess === false)) {
+        await signOut(auth).catch(() => {});
+        if (blockedSasAccount) {
+          setError(
+            'SAS accounts cannot sign in through the Organization / Signatory portal. Please sign in at /admin/login.'
+          );
+        } else if (officerRecords.length > 0 && officerRecords.every((record) => record.hasWebPortalAccess === false)) {
           setError('Your officer appointment does not include Web Portal access. Please contact your Club Adviser or SAS Administrator, or use the STI Sync mobile app.');
         } else {
           setError('No active organization or signatory role is available for this account. Contact SAS.');

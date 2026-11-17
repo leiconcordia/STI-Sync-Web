@@ -31,8 +31,8 @@ export interface SasSignatoryConfig {
   email: string;
   department: string;
   employeeId?: string;
-  signatureUrl?: string;
-  signatureDataUrl?: string;
+  signatureUrl?: string | null;
+  signatureDataUrl?: string | null;
   signatureUpdatedAt?: any;
   updatedAt?: any;
   updatedByUid?: string;
@@ -177,7 +177,11 @@ export async function saveSasSignatoryConfig(
   const cleanEmail = payload.email?.trim().toLowerCase() || DEFAULT_SAS_SIGNATORY_CONFIG.email;
   const cleanDept = payload.department?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.department;
   const cleanEmployeeId = payload.employeeId?.trim() || DEFAULT_SAS_SIGNATORY_CONFIG.employeeId;
-  const sigUrl = payload.signatureUrl || payload.signatureDataUrl || undefined;
+  const hasExplicitClear =
+    payload.signatureUrl === null ||
+    payload.signatureDataUrl === null ||
+    (payload as any).clearSignature === true;
+  const sigUrl = hasExplicitClear ? '' : payload.signatureUrl || payload.signatureDataUrl || undefined;
 
   const docPayload: Record<string, any> = {
     ...nameFields,
@@ -190,7 +194,12 @@ export async function saveSasSignatoryConfig(
     updatedByUid: adminUid || 'admin',
   };
 
-  if (sigUrl) {
+  if (hasExplicitClear) {
+    docPayload.signatureUrl = null;
+    docPayload.signatureDataUrl = null;
+    docPayload.hasSignature = false;
+    docPayload.signatureUpdatedAt = serverTimestamp();
+  } else if (sigUrl) {
     docPayload.signatureUrl = sigUrl;
     docPayload.signatureDataUrl = sigUrl;
     docPayload.hasSignature = true;
@@ -217,7 +226,14 @@ export async function saveSasSignatoryConfig(
         employeeId: cleanEmployeeId,
         actionType: 'endorse',
         isActive: true,
-        ...(sigUrl
+        ...(hasExplicitClear
+          ? {
+              signatureUrl: null,
+              signatureDataUrl: null,
+              hasSignature: false,
+              signatureUpdatedAt: serverTimestamp(),
+            }
+          : sigUrl
           ? {
               signatureUrl: sigUrl,
               signatureDataUrl: sigUrl,
@@ -240,8 +256,8 @@ export async function saveSasSignatoryConfig(
     email: cleanEmail,
     department: cleanDept,
     employeeId: cleanEmployeeId,
-    signatureUrl: sigUrl,
-    signatureDataUrl: sigUrl,
+    signatureUrl: hasExplicitClear ? undefined : sigUrl,
+    signatureDataUrl: hasExplicitClear ? undefined : sigUrl,
     isActive: true,
   };
 
