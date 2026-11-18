@@ -6,6 +6,11 @@ import type { OrganizationMemberDocument } from '../../organizations/types/membe
 import type { OrganizationDocument } from '../../organizations/types/organization.types';
 import type { PayableDocument } from '../../finance/types/payable.types';
 import type { AttendanceRecord } from '../../attendance/types/attendance.types';
+import {
+  mergeAttendanceRecordsForRoster,
+  resolveMergedAttendanceStatus,
+  isAttendedStatus,
+} from '../../attendance/utils/attendance-sync.utils';
 import { formatAppTime } from '../../../utils/date';
 
 export interface EnrichedClubMembership {
@@ -245,16 +250,13 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
 
     const attBuckets = new Map<string, Map<string, AttendanceRecord & { rawOrgId?: string }>>();
     const emitMergedAttendance = () => {
-      const merged = new Map<string, AttendanceRecord & { rawOrgId?: string }>();
+      const dedupedByPath = new Map<string, AttendanceRecord & { rawOrgId?: string }>();
       attBuckets.forEach((bucket) => {
-        bucket.forEach((item, pathKey) => merged.set(pathKey, item));
+        bucket.forEach((item, pathKey) => dedupedByPath.set(pathKey, item));
       });
-      const list = Array.from(merged.values());
-      list.sort((a, b) => {
-        const aTime = a.createdAt?.seconds ?? 0;
-        const bTime = b.createdAt?.seconds ?? 0;
-        return bTime - aTime;
-      });
+      const list = mergeAttendanceRecordsForRoster(Array.from(dedupedByPath.values())) as Array<
+        AttendanceRecord & { rawOrgId?: string }
+      >;
       setAttendances(list);
       setLoading(false);
     };
@@ -263,34 +265,61 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
       const bucket = new Map<string, AttendanceRecord & { rawOrgId?: string }>();
       snap.docs.forEach((d: any) => {
         const data = d.data();
-        const dStudentId = String(data.studentId || data.studentSchoolId || data.studentNumber || '').trim();
+        const dStudentId = String(data.studentSchoolId || data.studentNumber || data.studentId || '').trim();
+        const dAuthUid = String(data.studentAuthUid || data.authUid || '').trim();
         const dEmail = String(data.email || '').trim().toLowerCase();
         const dName = String(data.studentName || data.name || '').trim().toLowerCase();
 
         const isMatch =
           candidateIds.includes(dStudentId) ||
+          (dAuthUid && candidateIds.includes(dAuthUid)) ||
+          (data.studentId && candidateIds.includes(String(data.studentId).trim())) ||
           (email && dEmail === email) ||
           (studentFullName && dName === studentFullName);
 
         if (isMatch) {
+          const rawGate = String(data.gateType || '').trim().toLowerCase();
           const scanTimeStr = formatTime(data.scannedAt || data.createdAt);
-          const checkInTime = data.gateType === 'time_in' ? scanTimeStr : (data.checkIn || '—');
-          const checkOutTime = data.gateType === 'time_out' ? scanTimeStr : (data.checkOut || '—');
-          const mappedStatus = data.status === 'Present' ? 'Checked In' : (data.status || 'Checked In');
+          const checkInTime =
+            rawGate === 'time_in' || rawGate === 'entry'
+              ? scanTimeStr
+              : data.checkIn ||
+                (data.scannedAt && rawGate !== 'time_out' && rawGate !== 'exit' && !data.isDefaultAbsentSeed && data.status !== 'Absent'
+                  ? scanTimeStr
+                  : '—');
+          const checkOutTime =
+            rawGate === 'time_out' || rawGate === 'exit'
+              ? scanTimeStr
+              : data.checkOut || '—';
+          const mappedStatus = resolveMergedAttendanceStatus({
+            rawStatus: data.status,
+            checkIn: checkInTime,
+            checkOut: checkOutTime,
+            scannedAt: data.scannedAt,
+            isFlagged: data.status === 'Flagged' || Boolean(data.flagNote || data.flaggedReason),
+            flaggedReason: data.flagNote || data.flaggedReason,
+          });
           const parentEventId = d.ref?.parent?.parent?.id || '';
 
           bucket.set(d.ref.path, {
             id: d.id,
+            docPath: d.ref.path,
+            collectionSource: d.ref?.parent?.parent ? 'subcollection' : 'top_level',
             studentId: dStudentId || schoolId || studentId || '',
+            studentSchoolId: dStudentId || schoolId || undefined,
+            studentAuthUid: dAuthUid || authUid || undefined,
             name: data.studentName || data.name || studentFullName || 'Student',
             org: data.organizationName || data.organizationId || data.hostingOrgId || data.org || 'SAO Event',
             rawOrgId: data.organizationId || data.hostingOrgId || '',
             eventId: data.eventId || parentEventId || '',
             event: data.eventName || data.event || 'Campus Event',
+            sessionId: data.sessionId || 'default',
             checkIn: checkInTime,
             checkOut: checkOutTime,
             status: mappedStatus,
+            scannedAt: data.scannedAt,
             createdAt: data.createdAt || data.serverTimestamp,
+            isDefaultAbsentSeed: Boolean(data.isDefaultAbsentSeed),
             flaggedReason: data.flagNote || data.flaggedReason,
           });
         }
@@ -441,7 +470,7 @@ export function useStudentDetail(studentDocOrId: StudentDocument | string | null
   });
 
   const eventsAttended = enrichedAttendances.filter(
-    (a) => a.completedChecks >= a.totalExpectedChecks || a.status === 'Complete' || a.status === 'Checked In' || a.status === 'Late'
+    (a) => a.completedChecks >= a.totalExpectedChecks || isAttendedStatus(a.status)
   ).length;
   const totalEvents = enrichedAttendances.length;
   const attendanceRate = totalEvents > 0 ? Math.round((eventsAttended / totalEvents) * 100) : 100;

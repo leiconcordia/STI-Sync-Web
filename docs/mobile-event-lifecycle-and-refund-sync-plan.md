@@ -396,5 +396,25 @@ Use this checklist to verify mobile implementation parity with the web platform:
 
 ---
 
+## 8. Mobile Attendance Sync Contract (Default `Absent` → `Present` + Time-In / Time-Out)
+
+When Attendance Sessions & Scanners are configured on Web, STI Sync Web pre-seeds default `Absent` rows in `/attendance` for every anticipated participant using the deterministic document ID:
+
+```text
+/attendance/att_{eventId}__{sessionId}__{studentSchoolId}
+```
+
+Each pre-seeded record begins with:
+- `status: 'Absent'`
+- `checkIn: '—'`
+- `checkOut: '—'`
+- `isDefaultAbsentSeed: true`
+
+When the Mobile App scanner records or offline-syncs a scan:
+- **Preferred direct update:** `setDoc(doc(db, 'attendance', buildDocId), { status: 'Present' | 'Late' | 'Complete', checkIn, checkOut, scannedAt, scannedBy, scannedByName, scanMethod, gateType, studentAuthUid, studentSchoolId, syncedFromMobile: true, isDefaultAbsentSeed: false }, { merge: true })`.
+- **Subcollection compatibility:** If the mobile client writes separate gate documents into `/events/{eventId}/attendance/{scanId}` or `/attendance/{scanId}` using `gateType: 'time_in' | 'time_out' | 'entry' | 'exit'` and either `studentAuthUid` or `studentNumber`, the Web Portal automatically matches all student identifiers, displays **`Present`** (or **`Late`** / **`Complete`** / **`Checked Out`**) with **Time-In** / **Time-Out**, and upgrades the canonical `/attendance` seed document without creating duplicate rows.
+
+---
+
 > **End of Specification**  
 > *Document maintained by STI Sync Core Architecture Team.*

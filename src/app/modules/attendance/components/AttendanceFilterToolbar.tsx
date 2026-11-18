@@ -18,7 +18,8 @@ interface AttendanceFilterToolbarProps {
 const YEAR_LEVEL_OPTIONS = ['All', '1st Year', '2nd Year', '3rd Year', '4th Year', 'G11', 'G12'];
 const STATUS_OPTIONS = [
   { id: 'all', label: 'All Statuses' },
-  { id: 'Complete', label: 'Complete / Present' },
+  { id: 'Present', label: 'Present' },
+  { id: 'Complete', label: 'Complete' },
   { id: 'Checked In', label: 'Checked In' },
   { id: 'Checked Out', label: 'Checked Out' },
   { id: 'Late', label: 'Late' },

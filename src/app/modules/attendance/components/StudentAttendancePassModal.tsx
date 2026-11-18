@@ -70,6 +70,7 @@ export function StudentAttendancePassModal({
 
   // Status badge styling
   const statusConfig: Record<string, { label: string; bg: string; icon: any }> = {
+    'Present': { label: 'Present', bg: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: CheckCircle2 },
     'Complete': { label: 'Present / Complete', bg: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: CheckCircle2 },
     'Checked In': { label: 'Checked In', bg: 'bg-blue-50 text-blue-700 border-blue-200', icon: Clock },
     'Checked Out': { label: 'Checked Out', bg: 'bg-indigo-50 text-indigo-700 border-indigo-200', icon: CheckCircle2 },

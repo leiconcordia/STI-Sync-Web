@@ -48,6 +48,14 @@ import OperationalAudienceSelector, {
   type OperationalAcademicLevel,
   type OperationalAudienceScope,
 } from './OperationalAudienceSelector';
+import { useStudents } from '../../students/hooks/useStudentStream';
+import { useAllOrgMembers } from '../../organizations/hooks/useOrgMembers';
+import { useCourses } from '../../academic/hooks/useAcademicStream';
+import {
+  resolveAnticipatedParticipantsForEvent,
+  seedDefaultAbsentAttendanceForEvent,
+  isEventEligibleForAttendance,
+} from '../../attendance/services/attendance.service';
 
 export interface SessionTimeErrors {
   timeInOpen?: string;
@@ -162,6 +170,9 @@ export default function AttendanceScannersModal({
 
   // Real-time campus-wide activities for cross-event scanner conflict detection
   const { events: allCampusEvents = [] } = useAllEvents();
+  const { data: courses = [] } = useCourses();
+  const { data: students = [] } = useStudents();
+  const { members: allOrgMembers = [] } = useAllOrgMembers();
 
   useEffect(() => {
     if (!activity) return;
@@ -793,6 +804,27 @@ export default function AttendanceScannersModal({
         await setDoc(mirrorRef, updates, { merge: true });
       } catch (evtErr) {
         console.warn('[AttendanceScannersModal] Failed to mirror to events collection:', evtErr);
+      }
+
+      const nextEventSnapshot = {
+        ...activity,
+        ...updates,
+        id: activity.id,
+      };
+      const targeted = resolveAnticipatedParticipantsForEvent(
+        nextEventSnapshot,
+        students,
+        allOrgMembers,
+        courses
+      );
+
+      // Update expectedParticipantCount on mirror if unset, and immediately pre-seed default Absent rows
+      if (targeted.length > 0 && isEventEligibleForAttendance(nextEventSnapshot, { role: 'admin' })) {
+        try {
+          await seedDefaultAbsentAttendanceForEvent(nextEventSnapshot, targeted);
+        } catch (seedErr) {
+          console.warn('[AttendanceScannersModal] Default Absent pre-seed warning:', seedErr);
+        }
       }
 
       setPersistedSessionIds(new Set(sanitizedSessions.map((s) => s.id)));

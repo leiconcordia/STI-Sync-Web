@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   UserCheck,
   ChevronDown,
@@ -19,13 +19,19 @@ import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import { useAttendanceStream } from '../../modules/attendance/hooks/useAttendanceStream';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useDepartments, useCourses, useSections, useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { useVenuesStream, useEventCategoriesStream } from '../../modules/events/hooks/useEventConfigStream';
 import {
-  isSessionCheckInPassed,
-  isStudentTargetedForEvent,
-  syncEventAbsenteeRecords,
+  resolveAnticipatedParticipantsForEvent,
+  seedDefaultAbsentAttendanceForEvent,
+  reconcileMobileScansWithAbsentSeeds,
+  buildCanonicalAttendanceLookup,
+  mergeAttendanceRecordsForRoster,
+  isAttendedStatus,
+  isRealAttendanceTime,
+  resolveMergedAttendanceStatus,
   isEventEligibleForAttendance,
 } from '../../modules/attendance/services/attendance.service';
 
@@ -71,6 +77,7 @@ const INITIAL_FILTERS: AttendanceFilterState = {
 // ─── Status Badge ─────────────────────────────────────────────────────────────
 function StatusBadge({ status }: { status: string }) {
   const config: Record<string, { label: string; bg: string }> = {
+    'Present': { label: 'Present', bg: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
     'Complete': { label: 'Complete', bg: 'bg-green-100 text-green-700 border-green-200' },
     'Checked In': { label: 'Checked In', bg: 'bg-green-100 text-green-700 border-green-200' },
     'Checked Out': { label: 'Checked Out', bg: 'bg-blue-100 text-blue-700 border-blue-200' },
@@ -261,13 +268,12 @@ function EventDetail({
 
       // 7. Status Filter
       if (filterState.status !== 'all') {
-        if (filterState.status === 'Checked In' && rec.status !== 'Checked In' && rec.status !== 'Complete') return false;
-        if (filterState.status === 'Checked Out' && rec.status !== 'Checked Out') return false;
-        if (filterState.status === 'Late' && rec.status !== 'Late') return false;
-        if (filterState.status === 'Absent' && rec.status !== 'Absent') return false;
-        if (filterState.status === 'Flagged' && rec.status !== 'Flagged') return false;
-        if (['Complete', 'Checked In', 'Checked Out', 'Absent', 'Flagged', 'Late'].includes(filterState.status)) {
-          if (rec.status !== filterState.status) return false;
+        if (filterState.status === 'Present') {
+          if (rec.status !== 'Present' && rec.status !== 'Checked In') return false;
+        } else if (filterState.status === 'Checked In') {
+          if (rec.status !== 'Checked In' && rec.status !== 'Complete' && rec.status !== 'Present') return false;
+        } else if (rec.status !== filterState.status) {
+          return false;
         }
       }
 
@@ -603,8 +609,10 @@ function EventDetail({
 export default function AttendanceLogs() {
   const { profile, loading: profileLoading } = useOfficerProfile();
   const { events: dbEvents, loading: eventsLoading } = useAllEvents();
-  const { attendance: dbAttendance, loading: attendanceLoading } = useAttendanceStream();
+  const { rawAttendance: dbRawAttendance, loading: attendanceLoading } = useAttendanceStream();
   const { data: orgs, loading: orgsLoading } = useOrganizationStream();
+  const activeOrgId = profile?.activeOrganizationId;
+  const { members: orgMembers, loading: orgMembersLoading } = useOrgMembers(activeOrgId);
   const { venues } = useVenuesStream();
   const { categories: dbCategories } = useEventCategoriesStream();
 
@@ -620,18 +628,20 @@ export default function AttendanceLogs() {
   const [semesterFilter, setSemesterFilter] = useState('all');
   const [venueFilter, setVenueFilter] = useState('all');
 
-  const activeOrgId = profile?.activeOrganizationId;
   const currentStudentId = profile?.studentId;
 
-  // Student lookup map
-  const studentMap = useMemo(() => {
+  // Student lookup map & canonical identifier resolver
+  const { studentMap, canonicalStudentLookup } = useMemo(() => {
     const map = new Map<string, any>();
     (students || []).forEach(s => {
       if (s.studentId) map.set(s.studentId.trim().toLowerCase(), s);
       if (s.authUid) map.set(s.authUid.trim().toLowerCase(), s);
       if (s.id) map.set(s.id.trim().toLowerCase(), s);
     });
-    return map;
+    return {
+      studentMap: map,
+      canonicalStudentLookup: buildCanonicalAttendanceLookup(students || []),
+    };
   }, [students]);
 
   // Unique sections list from students + registry
@@ -652,9 +662,10 @@ export default function AttendanceLogs() {
       )
       .map((evt) => {
         const evtTitle = evt.title || (evt as any).name || '';
-        const evtAttendance = (dbAttendance || []).filter(
+        const evtRawAttendance = (dbRawAttendance || []).filter(
           (a) => a.eventId === evt.id || (a.event && evtTitle && String(a.event).toLowerCase() === String(evtTitle).toLowerCase())
         );
+        const evtAttendance = mergeAttendanceRecordsForRoster(evtRawAttendance, canonicalStudentLookup);
 
         const orgObj = (orgs || []).find((o) => o.id === evt.hostingOrgId);
         const orgName = orgObj ? orgObj.name : evt.hostingOrgId || 'Organization';
@@ -668,7 +679,12 @@ export default function AttendanceLogs() {
 
         const realSessions = evt.sessions || [];
         const firstSessionDate = realSessions[0]?.date || 'Date TBA';
-        const targetedStudents = (students || []).filter(s => isStudentTargetedForEvent(s, evt, orgs));
+        const targetedStudents = resolveAnticipatedParticipantsForEvent(
+          evt,
+          students || [],
+          orgMembers,
+          courses || []
+        );
 
         const sessionsList = realSessions.map((s, idx) => ({
           id: s.id || `sess-${idx}`,
@@ -679,32 +695,29 @@ export default function AttendanceLogs() {
 
         realSessions.forEach((s, idx) => {
           const sId = s.id || `sess-${idx}`;
-          const sessionPassed = isSessionCheckInPassed(s, evt.gracePeriodMinutes, evt.lateThresholdMinutes) || evt.proposalStatus === 'completed' || (evt as any).status === 'Completed';
-
           const sessionScans = evtAttendance.filter(r => r.sessionId === sId || (!r.sessionId && idx === 0));
 
           const mappedScans: EnrichedAttendanceRecord[] = sessionScans.map((rec) => {
-            const matchedStudent = studentMap.get((rec.studentId || '').trim().toLowerCase()) ||
+            const matchedStudent =
+              studentMap.get((rec.studentSchoolId || rec.studentNumber || rec.studentId || '').trim().toLowerCase()) ||
+              studentMap.get((rec.studentAuthUid || '').trim().toLowerCase()) ||
               (rec.name ? (students || []).find(st => `${st.firstName} ${st.lastName}`.trim().toLowerCase() === rec.name.trim().toLowerCase()) : undefined);
 
             const deptObj = (departments || []).find(d => d.id === matchedStudent?.departmentId || d.code === matchedStudent?.departmentId);
             const courseObj = (courses || []).find(c => c.id === matchedStudent?.courseId || c.code === matchedStudent?.courseCode);
             const sessionObj = evt.sessions?.find(sess => sess.id === rec.sessionId) || s;
 
-            const isFlagged = rec.status === 'Flagged' || !!rec.flaggedReason;
-            const isCheckedOut = rec.checkOut && rec.checkOut !== '—';
-            const isAbsent = rec.status === 'Absent';
-            const isLate = rec.status === 'Late';
+            const normStatus = resolveMergedAttendanceStatus({
+              rawStatus: rec.status,
+              checkIn: rec.checkIn,
+              checkOut: rec.checkOut,
+              scannedAt: rec.scannedAt,
+              isFlagged: rec.status === 'Flagged' || Boolean(rec.flaggedReason),
+              flaggedReason: rec.flaggedReason,
+            });
 
-            let normStatus: any = 'Checked In';
-            if (isFlagged) normStatus = 'Flagged';
-            else if (isAbsent) normStatus = 'Absent';
-            else if (isLate) normStatus = 'Late';
-            else if (isCheckedOut) normStatus = 'Checked Out';
-            else if (rec.status) normStatus = rec.status;
-
-            const studentAuthUid = matchedStudent?.authUid || matchedStudent?.id || (rec as any).studentAuthUid || (rec as any).authUid || rec.studentId || 'N/A';
-            const studentSchoolId = matchedStudent?.studentId || (rec as any).studentSchoolId || rec.studentId || 'N/A';
+            const studentAuthUid = matchedStudent?.authUid || matchedStudent?.id || rec.studentAuthUid || rec.studentId || 'N/A';
+            const studentSchoolId = matchedStudent?.studentId || rec.studentSchoolId || rec.studentNumber || rec.studentId || 'N/A';
 
             return {
               ...rec,
@@ -712,20 +725,25 @@ export default function AttendanceLogs() {
               studentAuthUid,
               studentSchoolId,
               studentId: studentSchoolId,
-              name: rec.name || (matchedStudent ? `${matchedStudent.firstName} ${matchedStudent.lastName}` : 'Unknown Student'),
+              name:
+                rec.name && rec.name !== 'Unknown Student'
+                  ? rec.name
+                  : matchedStudent
+                  ? `${matchedStudent.firstName} ${matchedStudent.lastName}`.trim()
+                  : 'Unknown Student',
               departmentId: matchedStudent?.departmentId,
               departmentName: matchedStudent?.departmentName || deptObj?.name || 'N/A',
               departmentCode: deptObj?.code || matchedStudent?.departmentId || 'N/A',
               courseId: matchedStudent?.courseId,
-              courseCode: matchedStudent?.courseCode || courseObj?.code || 'N/A',
+              courseCode: matchedStudent?.courseCode || courseObj?.code || rec.courseCode || 'N/A',
               courseName: matchedStudent?.courseName || courseObj?.name || 'N/A',
-              section: matchedStudent?.section || 'N/A',
-              yearLevel: matchedStudent?.yearLevel || 'N/A',
+              section: matchedStudent?.section || rec.section || 'N/A',
+              yearLevel: matchedStudent?.yearLevel || rec.yearLevel || 'N/A',
               sessionTitle: sessionObj?.title || s.title || `Session ${idx + 1}`,
               sessionId: sId,
               checkIn: rec.checkIn === '—' ? '' : rec.checkIn,
               checkOut: rec.checkOut === '—' ? '' : rec.checkOut,
-              duration: rec.checkIn && rec.checkOut && rec.checkIn !== '—' && rec.checkOut !== '—' ? 'Active' : null,
+              duration: isRealAttendanceTime(rec.checkIn) && isRealAttendanceTime(rec.checkOut) ? 'Active' : null,
               status: normStatus,
               flaggedReason: rec.flaggedReason,
             };
@@ -733,51 +751,57 @@ export default function AttendanceLogs() {
 
           allSynthesizedRecords.push(...mappedScans);
 
-          if (sessionPassed) {
-            targetedStudents.forEach((student) => {
-              const studentSchoolId = (student.studentId || '').trim().toLowerCase();
-              const studentAuthUid = (student.authUid || student.id || '').trim().toLowerCase();
+          // Pre-fill default Absent rows immediately for anticipated participants not yet scanned
+          targetedStudents.forEach((student) => {
+            const studentSchoolId = (student.studentId || '').trim().toLowerCase();
+            const studentAuthUid = (student.authUid || student.id || '').trim().toLowerCase();
 
-              const alreadyLogged = mappedScans.some((scan) => {
-                const scanId = (scan.studentId || scan.studentSchoolId || '').trim().toLowerCase();
-                const scanUid = (scan.studentAuthUid || '').trim().toLowerCase();
-                return (studentSchoolId && scanId === studentSchoolId) || (studentAuthUid && (scanUid === studentAuthUid || scanId === studentAuthUid));
-              });
-
-              if (!alreadyLogged) {
-                const deptObj = (departments || []).find(d => d.id === student?.departmentId || d.code === student?.departmentId);
-                const courseObj = (courses || []).find(c => c.id === student?.courseId || c.code === student?.courseCode);
-
-                allSynthesizedRecords.push({
-                  id: `synthetic-absent-${evt.id}-${sId}-${student.id || studentSchoolId}`,
-                  studentAuthUid: student.authUid || student.id,
-                  studentSchoolId: student.studentId || 'N/A',
-                  studentId: student.studentId || 'N/A',
-                  name: `${student.firstName} ${student.lastName}`,
-                  departmentId: student.departmentId,
-                  departmentName: deptObj?.name || 'N/A',
-                  departmentCode: deptObj?.code || 'N/A',
-                  courseId: student.courseId,
-                  courseCode: courseObj?.code || student.courseCode || 'N/A',
-                  courseName: courseObj?.name || student.courseName || 'N/A',
-                  section: student.section || 'N/A',
-                  yearLevel: student.yearLevel || 'N/A',
-                  sessionTitle: s.title || `Session ${idx + 1}`,
-                  sessionId: sId,
-                  checkIn: '',
-                  checkOut: '',
-                  duration: null,
-                  status: 'Absent',
-                  flaggedReason: 'No check-in detected during session grace period',
-                });
-              }
+            const alreadyLogged = mappedScans.some((scan) => {
+              const scanId = (scan.studentId || scan.studentSchoolId || '').trim().toLowerCase();
+              const scanUid = (scan.studentAuthUid || '').trim().toLowerCase();
+              return (
+                (studentSchoolId && (scanId === studentSchoolId || scanUid === studentSchoolId)) ||
+                (studentAuthUid && (scanUid === studentAuthUid || scanId === studentAuthUid))
+              );
             });
-          }
+
+            if (!alreadyLogged) {
+              const deptObj = (departments || []).find(d => d.id === student?.departmentId || d.code === student?.departmentId);
+              const courseObj = (courses || []).find(c => c.id === student?.courseId || c.code === student?.courseCode);
+
+              allSynthesizedRecords.push({
+                id: `synthetic-absent-${evt.id}-${sId}-${student.id || studentSchoolId}`,
+                studentAuthUid: student.authUid || student.id,
+                studentSchoolId: student.studentId || 'N/A',
+                studentId: student.studentId || 'N/A',
+                name: `${student.firstName} ${student.lastName}`.trim(),
+                departmentId: student.departmentId,
+                departmentName: deptObj?.name || 'N/A',
+                departmentCode: deptObj?.code || 'N/A',
+                courseId: student.courseId,
+                courseCode: courseObj?.code || student.courseCode || 'N/A',
+                courseName: courseObj?.name || student.courseName || 'N/A',
+                section: student.section || 'N/A',
+                yearLevel: student.yearLevel || 'N/A',
+                sessionTitle: s.title || `Session ${idx + 1}`,
+                sessionId: sId,
+                checkIn: '',
+                checkOut: '',
+                duration: null,
+                status: 'Absent',
+                org: orgName,
+                event: evtTitle || 'Event',
+                eventId: evt.id,
+              });
+            }
+          });
         });
 
         const registered = Math.max(targetedStudents.length, evt.expectedParticipantCount || 0, allSynthesizedRecords.length);
-        const checkedIn = allSynthesizedRecords.filter((r) => r.status === 'Checked In' || r.status === 'Complete' || r.status === 'Checked Out' || r.status === 'Late').length;
-        const checkedOut = allSynthesizedRecords.filter((r) => r.status === 'Checked Out').length;
+        const checkedIn = allSynthesizedRecords.filter((r) => isAttendedStatus(r.status)).length;
+        const checkedOut = allSynthesizedRecords.filter(
+          (r) => r.status === 'Complete' || r.status === 'Checked Out' || isRealAttendanceTime(r.checkOut)
+        ).length;
         const absent = allSynthesizedRecords.filter((r) => r.status === 'Absent').length;
         const flagged = allSynthesizedRecords.filter((r) => r.status === 'Flagged').length;
 
@@ -811,22 +835,49 @@ export default function AttendanceLogs() {
           records: allSynthesizedRecords,
         };
       });
-  }, [dbEvents, dbAttendance, orgs, activeOrgId, currentStudentId, studentMap, departments, courses, students, venues, dbCategories, dbSemesters]);
+  }, [dbEvents, dbRawAttendance, orgs, orgMembers, activeOrgId, currentStudentId, studentMap, canonicalStudentLookup, departments, courses, students, venues, dbCategories, dbSemesters]);
 
-  // Automatically sync missing absent records to Firestore in background
-  useMemo(() => {
-    if (!officerEvents || officerEvents.length === 0 || !students || students.length === 0) return;
+  const syncedSeedSignatureRef = useRef<Map<string, string>>(new Map());
+
+  // Automatically pre-seed default Absent rows and reconcile incoming mobile scans cleanly
+  useEffect(() => {
+    if (!officerEvents || officerEvents.length === 0 || !students || students.length === 0 || orgMembersLoading) {
+      return;
+    }
+
     officerEvents.forEach((evt) => {
       const dbEvt = (dbEvents || []).find(e => e.id === evt.id);
       if (!dbEvt) return;
-      const targeted = students.filter(s => isStudentTargetedForEvent(s, dbEvt, orgs));
-      if (targeted.length > 0) {
-        syncEventAbsenteeRecords(dbEvt, targeted).catch(err => {
-          console.warn('[AttendanceLogs] Auto-sync absentee error for evt:', evt.id, err);
+
+      const targeted = resolveAnticipatedParticipantsForEvent(
+        dbEvt,
+        students,
+        orgMembers,
+        courses || []
+      );
+      const evtRaw = (dbRawAttendance || []).filter(
+        (a) => a.eventId === dbEvt.id || (a.event && dbEvt.title && String(a.event).toLowerCase() === String(dbEvt.title).toLowerCase())
+      );
+
+      const sessionSig = (dbEvt.sessions || []).map((s: any) => s.id || '').join(',');
+      const seedSig = `${sessionSig}::${targeted.length}::${dbEvt.proposalStatus || dbEvt.status || ''}`;
+      if (targeted.length > 0 && syncedSeedSignatureRef.current.get(dbEvt.id) !== seedSig) {
+        syncedSeedSignatureRef.current.set(dbEvt.id, seedSig);
+        seedDefaultAbsentAttendanceForEvent(dbEvt, targeted, {
+          preFetchedAttendanceDocs: evtRaw,
+        }).catch(err => {
+          syncedSeedSignatureRef.current.delete(dbEvt.id);
+          console.warn('[AttendanceLogs] Auto-seed default Absent error for evt:', evt.id, err);
+        });
+      }
+
+      if (evtRaw.length > 0) {
+        reconcileMobileScansWithAbsentSeeds(dbEvt, evtRaw, students).catch(err => {
+          console.warn('[AttendanceLogs] Reconcile mobile scan error for evt:', evt.id, err);
         });
       }
     });
-  }, [officerEvents, dbEvents, students, orgs]);
+  }, [officerEvents, dbEvents, dbRawAttendance, students, orgMembers, orgMembersLoading, courses]);
 
   // Unique options for event filter dropdowns
   const availableSemesters = useMemo(() => {
@@ -896,7 +947,7 @@ export default function AttendanceLogs() {
     return officerEvents.find(e => e.id === selectedEventId) || null;
   }, [officerEvents, selectedEventId]);
 
-  const loading = profileLoading || eventsLoading || attendanceLoading || orgsLoading || studentsLoading || semestersLoading;
+  const loading = profileLoading || eventsLoading || attendanceLoading || orgsLoading || orgMembersLoading || studentsLoading || semestersLoading;
 
   if (loading) {
     return (

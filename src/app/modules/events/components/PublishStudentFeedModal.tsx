@@ -22,6 +22,14 @@ import { ACTIVITIES_COLLECTION, generatePayablesForEvent } from '../services/eve
 import type { EventDocument } from '../types/event.types';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { toast } from 'sonner';
+import { useStudents } from '../../students/hooks/useStudentStream';
+import { useAllOrgMembers } from '../../organizations/hooks/useOrgMembers';
+import { useCourses } from '../../academic/hooks/useAcademicStream';
+import {
+  resolveAnticipatedParticipantsForEvent,
+  seedDefaultAbsentAttendanceForEvent,
+  isEventEligibleForAttendance,
+} from '../../attendance/services/attendance.service';
 import OperationalAudienceSelector, {
   buildOperationalAudiencePayload,
   isSpecificFilterValid,
@@ -46,6 +54,9 @@ export default function PublishStudentFeedModal({
 }: PublishStudentFeedModalProps) {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingBanner, setIsUploadingBanner] = useState(false);
+  const { data: students = [] } = useStudents();
+  const { members: allOrgMembers = [] } = useAllOrgMembers();
+  const { data: courses = [] } = useCourses();
 
   // Operational publishing target state (never inherits Form AP-01 targetMarket/targetAudience)
   const [bannerUrl, setBannerUrl] = useState<string>(activity.bannerImageUrl || '');
@@ -225,6 +236,22 @@ export default function PublishStudentFeedModal({
           );
         } catch (payableErr) {
           console.warn('[PublishStudentFeedModal] Student payables sync notice:', payableErr);
+        }
+      }
+
+      // If attendance sessions & scanners are already configured, sync default Absent rows for the updated audience
+      const updatedEventSnapshot = { ...activity, ...payload, id: activity.id };
+      if (isEventEligibleForAttendance(updatedEventSnapshot, { role: 'admin' }) && students.length > 0) {
+        const targeted = resolveAnticipatedParticipantsForEvent(
+          updatedEventSnapshot,
+          students,
+          allOrgMembers,
+          courses
+        );
+        if (targeted.length > 0) {
+          seedDefaultAbsentAttendanceForEvent(updatedEventSnapshot, targeted).catch((err) =>
+            console.warn('[PublishStudentFeedModal] Default Absent pre-seed warning:', err)
+          );
         }
       }
 

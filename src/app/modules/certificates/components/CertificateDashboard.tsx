@@ -35,7 +35,7 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
   const readyEvents = readyToGenerateEvents.map(e => {
     const eventAttendance = attendance.filter(a => a.eventId === e.id || a.event === e.title);
     const attendedCount = eventAttendance.filter(a => 
-      a.status === 'Checked In' || a.status === 'Complete' || a.status === 'Late' || a.status === 'Flagged'
+      a.status === 'Present' || a.status === 'Checked In' || a.status === 'Checked Out' || a.status === 'Complete' || a.status === 'Late' || a.status === 'Flagged'
     ).length;
     const firstDate = e.sessions && e.sessions.length > 0 ? e.sessions[0].date : (e.date || 'TBA');
     const issuedCount = issuedRecords.filter(r => r.eventId === e.id).length;
@@ -53,7 +53,9 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
   // Scoped issued certificates and attendance
   const scopedEventIds = new Set(allScopedEvents.map(e => e.id));
   const scopedIssuedRecords = isAdmin ? issuedRecords : issuedRecords.filter(r => scopedEventIds.has(r.eventId));
-  const scopedAttendance = isAdmin ? attendance : attendance.filter(a => scopedEventIds.has(a.eventId || ''));
+  const scopedAttendance = (isAdmin ? attendance : attendance.filter(a => scopedEventIds.has(a.eventId || ''))).filter(
+    a => a.status !== 'Absent'
+  );
 
   const totalIssuedCount = scopedIssuedRecords.length;
 

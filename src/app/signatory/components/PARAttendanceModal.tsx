@@ -14,7 +14,11 @@ import {
 } from 'lucide-react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
-import { ATTENDANCE_COLLECTION } from '../../modules/attendance/services/attendance.service';
+import {
+  ATTENDANCE_COLLECTION,
+  mergeAttendanceRecordsForRoster,
+  resolveMergedAttendanceStatus,
+} from '../../modules/attendance/services/attendance.service';
 import { formatAppTime } from '../../utils/date';
 
 interface PARAttendanceModalProps {
@@ -40,13 +44,15 @@ interface ParsedAttendanceRow {
   sessionTitle: string;
   checkIn: string;
   checkOut: string;
-  status: 'Complete' | 'Checked In' | 'Late' | 'Absent' | 'Flagged';
+  status: 'Present' | 'Complete' | 'Checked In' | 'Checked Out' | 'Late' | 'Absent' | 'Flagged';
   flaggedReason?: string;
 }
 
 function normalizeAttendanceStatus(raw?: string): ParsedAttendanceRow['status'] {
   const s = (raw || '').toLowerCase().trim();
+  if (s === 'present') return 'Present';
   if (s === 'complete') return 'Complete';
+  if (s === 'checked out') return 'Checked Out';
   if (s === 'late') return 'Late';
   if (s === 'absent') return 'Absent';
   if (s === 'flagged') return 'Flagged';
@@ -106,29 +112,67 @@ export default function PARAttendanceModal({
           } catch {}
         }
 
-        const parsed: ParsedAttendanceRow[] = [];
+        const rawParsed: any[] = [];
         docsMap.forEach((data, docId) => {
+          const rawGate = String(data.gateType || '').trim().toLowerCase();
           const scanTime = formatAppTime(data.scannedAt || data.createdAt, '—');
           const checkIn =
             data.checkIn ||
-            (data.gateType === 'time_in' ? scanTime : data.scannedAt ? scanTime : '—');
+            (rawGate === 'time_in' || rawGate === 'entry'
+              ? scanTime
+              : data.scannedAt && rawGate !== 'time_out' && rawGate !== 'exit' && !data.isDefaultAbsentSeed && data.status !== 'Absent'
+              ? scanTime
+              : '—');
           const checkOut =
-            data.checkOut || (data.gateType === 'time_out' ? scanTime : '—');
+            data.checkOut || (rawGate === 'time_out' || rawGate === 'exit' ? scanTime : '—');
+          const resolvedStatus = resolveMergedAttendanceStatus({
+            rawStatus: data.status,
+            checkIn,
+            checkOut,
+            scannedAt: data.scannedAt,
+            isFlagged: data.status === 'Flagged' || Boolean(data.flagReason || data.flaggedReason),
+            flaggedReason: data.flagReason || data.flagNote || data.flaggedReason,
+          });
 
-          parsed.push({
+          rawParsed.push({
             id: docId,
-            studentId: data.studentId || data.studentNumber || 'N/A',
-            studentName: data.studentName || data.name || 'Unknown Student',
+            studentId: data.studentSchoolId || data.studentNumber || data.studentId || 'N/A',
+            studentSchoolId: data.studentSchoolId || data.studentNumber || undefined,
+            studentNumber: data.studentNumber || undefined,
+            studentAuthUid: data.studentAuthUid || data.authUid || undefined,
+            name: data.studentName || data.name || 'Unknown Student',
+            org: data.organizationId || data.org || 'SAS',
+            eventId: data.eventId || eventId || '',
+            event: data.event || eventTitle || '',
+            sessionId: data.sessionId || 'default',
+            sessionTitle: data.sessionTitle || data.sessionName || '',
             courseCode: data.courseCode || data.program || '',
             section: data.section || '',
             yearLevel: data.yearLevel || '',
-            sessionTitle: data.sessionTitle || data.sessionName || '',
             checkIn,
             checkOut,
-            status: normalizeAttendanceStatus(data.status),
+            status: resolvedStatus,
+            scannedAt: data.scannedAt,
+            createdAt: data.createdAt,
+            isDefaultAbsentSeed: Boolean(data.isDefaultAbsentSeed),
             flaggedReason: data.flagReason || data.flagNote || data.flaggedReason,
           });
         });
+
+        const merged = mergeAttendanceRecordsForRoster(rawParsed);
+        const parsed: ParsedAttendanceRow[] = merged.map((m: any) => ({
+          id: m.id,
+          studentId: m.studentId || 'N/A',
+          studentName: m.name || 'Unknown Student',
+          courseCode: m.courseCode || '',
+          section: m.section || '',
+          yearLevel: m.yearLevel || '',
+          sessionTitle: m.sessionTitle || '',
+          checkIn: m.checkIn || '—',
+          checkOut: m.checkOut || '—',
+          status: normalizeAttendanceStatus(m.status),
+          flaggedReason: m.flaggedReason,
+        }));
 
         parsed.sort((a, b) => a.studentName.localeCompare(b.studentName));
         if (!cancelled) setRows(parsed);
@@ -145,9 +189,11 @@ export default function PARAttendanceModal({
 
   const stats = useMemo(() => {
     const uniqueAttended = new Set<string>();
-    const counts = {
+    const counts: Record<string, number> = {
+      Present: 0,
       Complete: 0,
       'Checked In': 0,
+      'Checked Out': 0,
       Late: 0,
       Absent: 0,
       Flagged: 0,
@@ -155,7 +201,7 @@ export default function PARAttendanceModal({
 
     rows.forEach((r) => {
       counts[r.status] = (counts[r.status] || 0) + 1;
-      if (r.status !== 'Absent') {
+      if (r.status !== 'Absent' && r.status !== 'Flagged') {
         const key = (r.studentId !== 'N/A' ? r.studentId : r.studentName || r.id).toLowerCase();
         uniqueAttended.add(key);
       }
@@ -248,12 +294,16 @@ export default function PARAttendanceModal({
             </strong>
           </div>
           <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
-            <span className="text-[10px] text-emerald-700 font-semibold block">Complete</span>
-            <strong className="text-sm font-black text-emerald-900">{stats.counts.Complete}</strong>
+            <span className="text-[10px] text-emerald-700 font-semibold block">Present / Complete</span>
+            <strong className="text-sm font-black text-emerald-900">
+              {(stats.counts.Present || 0) + (stats.counts.Complete || 0)}
+            </strong>
           </div>
           <div className="bg-sky-50 p-2.5 rounded-xl border border-sky-200">
-            <span className="text-[10px] text-sky-700 font-semibold block">Checked In</span>
-            <strong className="text-sm font-black text-sky-900">{stats.counts['Checked In']}</strong>
+            <span className="text-[10px] text-sky-700 font-semibold block">Checked In / Out</span>
+            <strong className="text-sm font-black text-sky-900">
+              {(stats.counts['Checked In'] || 0) + (stats.counts['Checked Out'] || 0)}
+            </strong>
           </div>
           <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-200">
             <span className="text-[10px] text-amber-700 font-semibold block">Late / Flagged</span>
@@ -280,7 +330,7 @@ export default function PARAttendanceModal({
             />
           </div>
           <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
-            {(['ALL', 'Complete', 'Checked In', 'Late', 'Flagged', 'Absent'] as const).map((status) => (
+            {(['ALL', 'Present', 'Complete', 'Checked In', 'Checked Out', 'Late', 'Flagged', 'Absent'] as const).map((status) => (
               <button
                 key={status}
                 type="button"
@@ -342,9 +392,9 @@ export default function PARAttendanceModal({
                         <span
                           title={row.flaggedReason || row.status}
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                            row.status === 'Complete'
+                            row.status === 'Complete' || row.status === 'Present'
                               ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                              : row.status === 'Checked In'
+                              : row.status === 'Checked In' || row.status === 'Checked Out'
                               ? 'bg-blue-50 text-blue-700 border-blue-200'
                               : row.status === 'Late'
                               ? 'bg-amber-50 text-amber-700 border-amber-200'

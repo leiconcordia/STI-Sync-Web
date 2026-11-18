@@ -1,22 +1,48 @@
 import { Timestamp } from 'firebase/firestore';
 
-export type AttendanceStatus = 'Complete' | 'Checked In' | 'Absent' | 'Flagged' | 'Late';
+export type AttendanceStatus =
+  | 'Present'
+  | 'Complete'
+  | 'Checked In'
+  | 'Checked Out'
+  | 'Absent'
+  | 'Flagged'
+  | 'Late';
 
 export interface AttendanceRecord {
   id: string;
   studentId: string;
+  studentAuthUid?: string;
+  studentSchoolId?: string;
+  studentNumber?: string;
   name: string;
   org: string;
+  organizationId?: string;
   eventId?: string;
   event: string;
   sessionId?: string;
+  sessionTitle?: string;
   checkIn: string;
   checkOut: string;
   status: AttendanceStatus;
   createdAt?: Timestamp | any;
+  updatedAt?: Timestamp | any;
+  scannedAt?: Timestamp | any;
+  timeInAt?: Timestamp | any;
+  timeOutAt?: Timestamp | any;
   flaggedReason?: string;
   scannedBy?: string;
   scannedByName?: string;
+  scanMethod?: 'qr' | 'manual';
+  gateType?: string;
+  lateMinutes?: number;
+  courseCode?: string;
+  section?: string;
+  yearLevel?: string;
+  isDefaultAbsentSeed?: boolean;
+  syncedFromMobile?: boolean;
+  docPath?: string;
+  collectionSource?: 'top_level' | 'subcollection' | 'flagged';
 }
 
 export interface EnrichedAttendanceRecord extends AttendanceRecord {
