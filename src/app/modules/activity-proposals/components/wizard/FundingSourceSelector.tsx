@@ -899,6 +899,7 @@ export default function FundingSourceSelector({
                         {cb.bucket.college1stSemRateTY > 0 && `Col 1st: ₱${cb.bucket.college1stSemRateTY}`}
                         {cb.bucket.college2ndSemRateTY > 0 && ` • 2nd: ₱${cb.bucket.college2ndSemRateTY}`}
                         {cb.bucket.shsRateTY > 0 && ` • SHS: ₱${cb.bucket.shsRateTY}`}
+                        {(cb.bucket.shs2ndSemRateTY ?? 0) > 0 && ` • SHS 2nd: ₱${cb.bucket.shs2ndSemRateTY}`}
                       </p>
                     </div>
                   </button>

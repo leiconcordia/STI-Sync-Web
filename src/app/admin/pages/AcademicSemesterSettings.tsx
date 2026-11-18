@@ -273,7 +273,11 @@ function sanitizeAcademicYearInput(rawInput: string): string {
   return digits;
 }
 
-function validateAcademicYearStrict(ay: string): { valid: boolean; error?: string } {
+function validateAcademicYearStrict(
+  ay: string,
+  existingSemesters?: SemesterDocument[],
+  academicLevel?: AcademicLevel
+): { valid: boolean; error?: string } {
   if (!ay || !ay.trim()) {
     return { valid: false, error: "Academic year is required." };
   }
@@ -288,6 +292,29 @@ function validateAcademicYearStrict(ay: string): { valid: boolean; error?: strin
   }
   if (startYear < currentYear - 1) {
     return { valid: false, error: `Cannot create a past academic year (minimum ${currentYear - 1}-${currentYear}).` };
+  }
+  if (existingSemesters && academicLevel) {
+    const levelStartYears = existingSemesters
+      .filter((s) => {
+        if (s.archived) return false;
+        const sLevel = s.academicLevel || (String(s.semester).includes("Trimester") ? "SHS" : "COLLEGE");
+        return sLevel === academicLevel;
+      })
+      .map((s) => {
+        const m = String(s.academicYear || "").replace(/[–—\s]/g, "-").match(/^(\d{4})-(\d{4})$/);
+        return m ? parseInt(m[1], 10) : null;
+      })
+      .filter((n): n is number => n !== null);
+
+    if (levelStartYears.length > 0) {
+      const maxStart = Math.max(...levelStartYears);
+      if (!levelStartYears.includes(startYear) && startYear > maxStart + 1) {
+        return {
+          valid: false,
+          error: `Cannot skip academic years. Next consecutive academic year after ${maxStart}-${maxStart + 1} is ${maxStart + 1}-${maxStart + 2}.`,
+        };
+      }
+    }
   }
   return { valid: true };
 }
@@ -322,8 +349,8 @@ function AddSemesterModal({ existingSemesters, defaultAcademicLevel = "COLLEGE",
 
   // Live AY strict validation
   const ayValidation = useMemo(
-    () => validateAcademicYearStrict(form.academicYear),
-    [form.academicYear]
+    () => validateAcademicYearStrict(form.academicYear, existingSemesters, academicLevel),
+    [form.academicYear, existingSemesters, academicLevel]
   );
 
   // Term availability for the selected Academic Year and level
@@ -475,7 +502,7 @@ function AddSemesterModal({ existingSemesters, defaultAcademicLevel = "COLLEGE",
     const errs: Record<string, string> = {};
 
     // Strict AY check
-    const ayCheck = validateAcademicYearStrict(form.academicYear);
+    const ayCheck = validateAcademicYearStrict(form.academicYear, existingSemesters, academicLevel);
     if (!ayCheck.valid) {
       errs.academicYear = ayCheck.error || "Invalid academic year.";
     }
@@ -1690,10 +1717,13 @@ function EditSemesterModal({ semester, existingSemesters, onClose }: EditSemeste
 
   const todayStr = useMemo(() => new Date().toISOString().split("T")[0], []);
 
+  const editAcademicLevel: AcademicLevel =
+    semester.academicLevel || (String(semester.semester).includes("Trimester") ? "SHS" : "COLLEGE");
+
   // Live AY strict validation
   const ayValidation = useMemo(
-    () => validateAcademicYearStrict(form.academicYear),
-    [form.academicYear]
+    () => validateAcademicYearStrict(form.academicYear, existingSemesters, editAcademicLevel),
+    [form.academicYear, existingSemesters, editAcademicLevel]
   );
 
   const handleAYInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1710,7 +1740,7 @@ function EditSemesterModal({ semester, existingSemesters, onClose }: EditSemeste
   function validate(): Record<string, string> {
     const errs: Record<string, string> = {};
 
-    const ayCheck = validateAcademicYearStrict(form.academicYear);
+    const ayCheck = validateAcademicYearStrict(form.academicYear, existingSemesters, editAcademicLevel);
     if (!ayCheck.valid) {
       errs.academicYear = ayCheck.error || "Invalid academic year.";
     }

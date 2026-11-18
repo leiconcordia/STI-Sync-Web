@@ -14,8 +14,6 @@ import {
   X,
   Calendar,
   UserCheck,
-  Sparkles,
-  Wand2,
   PenTool,
   History,
   Check,
@@ -34,16 +32,6 @@ import {
 import { getProposalById } from '../../services/proposal.service';
 import type { ProposalFormData } from '../../types/proposal.types';
 import { formatDateLong } from '../../utils/proposal-calculations';
-import {
-  AIAssistButton,
-  AISuggestionModal,
-  rewriteTitle,
-  expandDescription,
-  polishGrammar,
-  generateTitleFromConcept,
-  createDescriptionFromPrompt,
-  validateMeaningfulInput,
-} from '../../../ai';
 
 interface Step1Props {
   formData: ProposalFormData;
@@ -64,21 +52,6 @@ interface Step1Props {
 export default function Step1GeneralInfo({ formData, onChange, errors = {}, currentUser = {} }: Step1Props) {
   const { data: organizations = [] } = useOrganizationStream();
   const [organizerInput, setOrganizerInput] = useState('');
-
-  // AI Assistant Modal State
-  const [aiModalOpen, setAiModalOpen] = useState(false);
-  const [aiModalTitle, setAiModalTitle] = useState('');
-  const [aiModalDesc, setAiModalDesc] = useState('');
-  const [aiOriginalText, setAiOriginalText] = useState('');
-  const [aiSuggestionText, setAiSuggestionText] = useState('');
-  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
-  const [aiModalMode, setAiModalMode] = useState<'text' | 'choice' | 'list'>('text');
-  const [activeGeneratingField, setActiveGeneratingField] = useState<'title' | 'description' | null>(null);
-  const [aiTargetField, setAiTargetField] = useState<'title' | 'description'>('title');
-  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
-
-  const hasTitleInput = Boolean(formData.title && formData.title.trim().length > 0);
-  const hasDescInput = Boolean(formData.description && formData.description.trim().length > 0);
 
   const { events: allEvents = [] } = useAllEvents();
   const [dismissedSuggestions, setDismissedSuggestions] = useState(false);
@@ -363,248 +336,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
     }
   };
 
-  // ── AI Writing Handlers ──
-  const handleRewriteTitleAction = async () => {
-    if (activeGeneratingField) return;
-    const raw = formData.title?.trim();
-    if (!raw) {
-      handleCreateTitleWithAI();
-      return;
-    }
-
-    const validation = validateMeaningfulInput(raw);
-    if (!validation.isValid) {
-      toast.warning(validation.error || 'Please enter meaningful words in the title.');
-      return;
-    }
-
-    const action = async () => {
-      setActiveGeneratingField('title');
-      try {
-        const suggestions = await rewriteTitle(raw);
-        if (suggestions && suggestions.length > 0) {
-          setAiTargetField('title');
-          setAiModalTitle('Enhance Activity Title');
-          setAiModalDesc('Choose a formal, institutional title for STI College official records:');
-          setAiOriginalText(raw);
-          setAiSuggestionList(suggestions);
-          setAiModalMode('choice');
-          setAiModalOpen(true);
-        } else {
-          toast.info('No title suggestions generated. Please try refining your draft title.');
-        }
-      } catch (err) {
-        console.error('Error enhancing title:', err);
-        toast.error('Failed to enhance title. Please try again.');
-      } finally {
-        setActiveGeneratingField(null);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleCreateTitleWithAI = () => {
-    if (activeGeneratingField) return;
-    setAiTargetField('title');
-    setAiModalTitle('Generate Activity Title from Prompt');
-    setAiModalDesc('Type what this event is about or desired theme, and AI will generate 3 formal titles:');
-    setAiOriginalText('');
-    setAiSuggestionList([]);
-    setAiModalMode('choice');
-    setAiModalOpen(true);
-  };
-
-  const handlePolishDescriptionAction = async () => {
-    if (activeGeneratingField) return;
-    const raw = formData.description?.trim();
-    if (!raw) {
-      handleCreateDescriptionWithAI();
-      return;
-    }
-
-    const validation = validateMeaningfulInput(raw);
-    if (!validation.isValid) {
-      toast.warning(validation.error || 'Please enter meaningful words in the description.');
-      return;
-    }
-
-    const action = async () => {
-      setActiveGeneratingField('description');
-      try {
-        const polished = await polishGrammar(raw, 'Activity Proposal Description');
-        if (polished) {
-          setAiTargetField('description');
-          setAiModalTitle('Enhance & Polish Description');
-          setAiModalDesc('Elevated to formal STI institutional standards while preserving your exact meaning:');
-          setAiOriginalText(raw);
-          setAiSuggestionText(polished);
-          setAiModalMode('text');
-          setAiModalOpen(true);
-        } else {
-          toast.info('No changes suggested.');
-        }
-      } catch (err) {
-        console.error('Error polishing description:', err);
-        toast.error('Failed to polish description. Please try again.');
-      } finally {
-        setActiveGeneratingField(null);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleExpandDescriptionAction = async () => {
-    if (activeGeneratingField) return;
-    const raw = formData.description?.trim() || '';
-    const title = formData.title?.trim() || '';
-    if (!raw && !title) {
-      handleCreateDescriptionWithAI();
-      return;
-    }
-
-    if (raw) {
-      const validation = validateMeaningfulInput(raw);
-      if (!validation.isValid) {
-        toast.warning(validation.error || 'Please enter meaningful notes.');
-        return;
-      }
-    }
-
-    const action = async () => {
-      setActiveGeneratingField('description');
-      try {
-        const expanded = await expandDescription(title, raw, formData.organizers);
-        if (expanded) {
-          setAiTargetField('description');
-          setAiModalTitle('Expand Notes into Concise Rationale');
-          setAiModalDesc('Structured into 1 compact paragraph (60–90 words) aligned with STI student development:');
-          setAiOriginalText(raw);
-          setAiSuggestionText(expanded);
-          setAiModalMode('text');
-          setAiModalOpen(true);
-        } else {
-          toast.info('Could not expand description. Please add more details.');
-        }
-      } catch (err) {
-        console.error('Error expanding description:', err);
-        toast.error('Failed to expand description. Please try again.');
-      } finally {
-        setActiveGeneratingField(null);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleEnhanceDescriptionWithAI = async () => {
-    if (activeGeneratingField) return;
-    const raw = formData.description?.trim() || '';
-    if (!raw) {
-      handleCreateDescriptionWithAI();
-      return;
-    }
-    setAiTargetField('description');
-    setAiModalTitle('Enhance Description with AI');
-    setAiModalDesc('Review your current description and type refinement instructions below (or click Generate to polish):');
-    setAiOriginalText(raw);
-    setAiSuggestionText('');
-    setAiModalMode('text');
-    setAiModalOpen(true);
-
-    try {
-      setActiveGeneratingField('description');
-      const polished = await polishGrammar(raw);
-      if (polished) {
-        setAiSuggestionText(polished);
-      }
-    } catch (err) {
-      console.warn('Initial polish error:', err);
-    } finally {
-      setActiveGeneratingField(null);
-    }
-  };
-
-  const handleDescriptionAIClick = () => {
-    if (activeGeneratingField) return;
-    if (formData.description?.trim()) {
-      handleEnhanceDescriptionWithAI();
-    } else {
-      handleCreateDescriptionWithAI();
-    }
-  };
-
-  const handleCreateDescriptionWithAI = () => {
-    if (activeGeneratingField) return;
-    setAiTargetField('description');
-    setAiModalTitle('Generate Description with AI');
-    setAiModalDesc('Prompt what this activity is about, and AI will generate 1 concise rationale (60–90 words):');
-    setAiOriginalText(formData.description || '');
-    setAiSuggestionText('');
-    setAiModalMode('text');
-    setAiModalOpen(true);
-  };
-
-  const handleGenerateFromPrompt = async (prompt: string) => {
-    if (activeGeneratingField) return;
-    const validation = validateMeaningfulInput(prompt);
-    if (!validation.isValid) {
-      toast.warning(validation.error || 'Please enter meaningful words.');
-      return;
-    }
-
-    setActiveGeneratingField(aiTargetField);
-    try {
-      if (aiTargetField === 'title') {
-        const titles = await generateTitleFromConcept(prompt, formData.category);
-        if (titles && titles.length > 0) {
-          setAiSuggestionList(titles);
-          setAiModalMode('choice');
-        } else {
-          toast.info('No titles could be generated from that prompt. Please try different keywords.');
-        }
-      } else if (aiTargetField === 'description') {
-        const currentDesc = formData.description?.trim();
-        const effectivePrompt = currentDesc
-          ? `Original Description:\n"${currentDesc}"\n\nEnhancement / Custom Instructions:\n${prompt}`
-          : prompt;
-        const desc = await createDescriptionFromPrompt(
-          formData.title || '',
-          effectivePrompt,
-          formData.organizers,
-          formData.targetAudience?.academicLevels?.join(', ')
-        );
-        if (desc) {
-          setAiSuggestionText(desc);
-          setAiModalMode('text');
-        } else {
-          toast.info('Could not generate description from that prompt.');
-        }
-      }
-    } catch (err) {
-      console.error('Error generating from prompt:', err);
-      toast.error('Generation failed. Please try again.');
-    } finally {
-      setActiveGeneratingField(null);
-    }
-  };
-
-  const handleApplyAIText = (appliedText: string, applyMode: 'replace' | 'append') => {
-    if (aiTargetField === 'title') {
-      onChange({ title: appliedText });
-      toast.success('Title updated!');
-    } else if (aiTargetField === 'description') {
-      if (applyMode === 'append' && formData.description?.trim()) {
-        onChange({ description: `${formData.description.trim()}\n\n${appliedText}` });
-        toast.success('Appended to description!');
-      } else {
-        onChange({ description: appliedText });
-        toast.success('Description updated!');
-      }
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Meta Grid: Reference & Submission Date */}
@@ -686,32 +417,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
           <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
             1. Activity title <span className="text-red-500">*</span>
           </label>
-          <AIAssistButton
-            label={hasTitleInput ? 'Enhance Title' : 'Generate with AI'}
-            isLoading={activeGeneratingField === 'title'}
-            disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'title')}
-            options={
-              hasTitleInput
-                ? [
-                    {
-                      id: 'enhance-title',
-                      label: 'Enhance Title',
-                      description: 'Transforms informal draft into 3 official STI titles',
-                      icon: <Wand2 className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                      onClick: handleRewriteTitleAction,
-                    },
-                  ]
-                : [
-                    {
-                      id: 'generate-title',
-                      label: 'Generate Title from Prompt',
-                      description: 'Enter your event theme or concept first',
-                      icon: <Sparkles className="w-3.5 h-3.5 text-[#0E4EBD]" />,
-                      onClick: handleCreateTitleWithAI,
-                    },
-                  ]
-            }
-          />
         </div>
         <div className="relative">
           <input
@@ -894,12 +599,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
           <label className="text-xs font-bold text-gray-700 uppercase tracking-wider">
             2. Description <span className="text-red-500">*</span>
           </label>
-          <AIAssistButton
-            label={hasDescInput ? 'Enhance Description' : 'Generate with AI'}
-            onClick={handleDescriptionAIClick}
-            isLoading={activeGeneratingField === 'description'}
-            disabled={Boolean(activeGeneratingField && activeGeneratingField !== 'description')}
-          />
         </div>
         <textarea
           rows={5}
@@ -998,29 +697,6 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
           <p className="text-xs text-red-600 mt-1 font-medium">{errors.organizers}</p>
         )}
       </div>
-
-      {/* AI Suggestion Preview Modal */}
-      <AISuggestionModal
-        isOpen={aiModalOpen}
-        onClose={() => setAiModalOpen(false)}
-        title={aiModalTitle}
-        description={aiModalDesc}
-        originalText={aiOriginalText}
-        suggestionText={aiSuggestionText}
-        suggestionList={aiSuggestionList}
-        mode={aiModalMode}
-        isLoading={Boolean(activeGeneratingField)}
-        onApplyText={handleApplyAIText}
-        onGenerateFromPrompt={handleGenerateFromPrompt}
-        promptPlaceholder={
-          aiTargetField === 'title'
-            ? 'Describe your event theme or concept (e.g. "Cybersecurity hackathon for BSIT students")...'
-            : 'Prompt what you want (e.g. "Hands-on robotics workshop teaching Arduino basics")...'
-        }
-        onRegenerate={() => {
-          if (activeAIAction) activeAIAction();
-        }}
-      />
     </div>
   );
 }

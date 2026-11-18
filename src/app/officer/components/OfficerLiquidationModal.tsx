@@ -56,6 +56,7 @@ import {
   withdrawLiquidationReport,
   generateDefaultLiquidationChain,
   attachCashierSettlementProofs,
+  verifyCashierSettlementProofs,
   resolveLiquidationSourceAllocations,
 } from '../../modules/finance/services/liquidation.service';
 import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
@@ -470,10 +471,12 @@ export default function OfficerLiquidationModal({
   const [savingCashierProof, setSavingCashierProof] = useState(false);
   const [showCashierProofConfirmModal, setShowCashierProofConfirmModal] = useState(false);
   const [cashierProofSubmittedLocal, setCashierProofSubmittedLocal] = useState(false);
+  const [cashierProofVerifiedLocal, setCashierProofVerifiedLocal] = useState(false);
   const [settlementSourceAllocations, setSettlementSourceAllocations] = useState<ProposalBucketAllocation[]>([]);
   const [surplusAllocationRows, setSurplusAllocationRows] = useState<SurplusReturnAllocation[]>([]);
   const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
   const [deficitSupplementalOptions, setDeficitSupplementalOptions] = useState<SupplementalBucketOption[]>([]);
+  const seededDeficitKeyRef = useRef<string>('');
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
 
   const selectedEvent = useMemo(() => {
@@ -539,6 +542,8 @@ export default function OfficerLiquidationModal({
       setLocalStatusOverride(null);
       setShowCashierProofConfirmModal(false);
       setCashierProofSubmittedLocal(false);
+      setCashierProofVerifiedLocal(false);
+      seededDeficitKeyRef.current = '';
     }
   }, [isOpen, effectiveReport?.id]);
 
@@ -740,6 +745,7 @@ export default function OfficerLiquidationModal({
 
   const approvedReportDeficit = Math.max(0, -approvedReportSurplus);
 
+  // Fetch linked AP bucket allocations only when report / event changes (never wipe edited deficit splits on stream ticks)
   useEffect(() => {
     let active = true;
     const sourceTarget =
@@ -750,51 +756,79 @@ export default function OfficerLiquidationModal({
         .then((allocs) => {
           if (!active) return;
           setSettlementSourceAllocations(allocs);
-          if (approvedReportDeficit > 0.009 && effectiveReport) {
-            const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
-              totalDeficit: approvedReportDeficit,
-              sourceAllocations: allocs,
-              savedDeficitRows: effectiveReport.deficitDeductionAllocations || [],
-              computedBuckets,
-              saoEligibleBuckets,
-              saoRetainedFund,
-              orgRetainedFunds,
-              targetOrgId: effectiveReport.organizationId || orgId,
-              targetOrgName: effectiveReport.organizationName || orgName,
-              orgLedgerBalance: settlementOrgLedgerBalance,
-            });
-            setDeficitAllocationRows(initialRows);
-            setDeficitSupplementalOptions(supplementalOptions);
-          } else {
-            setDeficitAllocationRows([]);
-            setDeficitSupplementalOptions([]);
-          }
         })
         .catch(() => {
           if (active) {
             setSettlementSourceAllocations([]);
-            setDeficitAllocationRows([]);
-            setDeficitSupplementalOptions([]);
           }
         });
     } else {
       setSettlementSourceAllocations([]);
-      setDeficitAllocationRows([]);
-      setDeficitSupplementalOptions([]);
     }
     return () => {
       active = false;
     };
+  }, [effectiveReport?.id, effectiveReport?.status, selectedEvent?.id]);
+
+  // Seed Deficit / Reimbursement rows once per report+deficit (or when Firestore saves new rows),
+  // and only refresh live availableBalance on subsequent stream ticks so user edits are never overwritten.
+  useEffect(() => {
+    if (approvedReportDeficit <= 0.009 || !effectiveReport) {
+      setDeficitAllocationRows([]);
+      setDeficitSupplementalOptions([]);
+      seededDeficitKeyRef.current = '';
+      return;
+    }
+
+    const savedRows = Array.isArray(effectiveReport.deficitDeductionAllocations)
+      ? effectiveReport.deficitDeductionAllocations
+      : [];
+    const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
+      totalDeficit: approvedReportDeficit,
+      sourceAllocations: settlementSourceAllocations,
+      savedDeficitRows: savedRows,
+      computedBuckets,
+      saoEligibleBuckets,
+      saoRetainedFund,
+      orgRetainedFunds,
+      targetOrgId: effectiveReport.organizationId || orgId,
+      targetOrgName: effectiveReport.organizationName || orgName,
+      orgLedgerBalance: settlementOrgLedgerBalance,
+    });
+    setDeficitSupplementalOptions(supplementalOptions);
+
+    const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
+    const targetSeedKey = `${effectiveReport.id}::${approvedReportDeficit}::${savedSig}`;
+
+    setDeficitAllocationRows((prev) => {
+      if (seededDeficitKeyRef.current !== targetSeedKey) {
+        if (initialRows.length > 0 || savedRows.length > 0) {
+          seededDeficitKeyRef.current = targetSeedKey;
+          return initialRows;
+        }
+        return prev;
+      }
+      if (prev.length === 0) return initialRows;
+      const availMap = new Map<string, number>();
+      initialRows.forEach((r) => availMap.set(r.bucketId, r.availableBalance));
+      supplementalOptions.forEach((o) => availMap.set(o.bucketId, o.availableBalance));
+      return prev.map((r) => ({
+        ...r,
+        availableBalance: availMap.has(r.bucketId) ? availMap.get(r.bucketId)! : r.availableBalance,
+      }));
+    });
   }, [
     effectiveReport?.id,
-    effectiveReport?.status,
-    selectedEvent?.id,
+    effectiveReport?.deficitDeductionAllocations,
     approvedReportDeficit,
+    settlementSourceAllocations,
     computedBuckets,
     saoEligibleBuckets,
     saoRetainedFund,
     orgRetainedFunds,
     settlementOrgLedgerBalance,
+    orgId,
+    orgName,
   ]);
 
   // Live Calculations (declared before activeSurplusTarget memo dependency)
@@ -2550,86 +2584,37 @@ export default function OfficerLiquidationModal({
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                           <span className="font-bold uppercase tracking-wider text-[11px] text-[#001A4D] block">
-                            Configure Unspent Surplus Return Across AP Buckets ({settlementSourceAllocations.length} Buckets)
+                            Unspent Surplus Return Across AP Buckets ({settlementSourceAllocations.length} Buckets • Auto-Proportional)
                           </span>
                           <span className="text-slate-600">
-                            Specify how much of the <strong>{formatCurrency(surplusOrDeficit)}</strong> unspent surplus returns to each source bucket used in the Activity Proposal.
+                            Proportionally allocated from the <strong>{formatCurrency(surplusOrDeficit)}</strong> unspent surplus across each source bucket used in the Activity Proposal (read-only).
                           </span>
                         </div>
-                        {!isEffectiveReadOnly && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSurplusAllocationRows((prev) =>
-                                rebalanceSurplusReturnAllocations({
-                                  totalSurplus: surplusOrDeficit,
-                                  rows: prev,
-                                })
-                              )
-                            }
-                            className="px-2.5 py-1 rounded-lg bg-white border border-blue-300 text-[11px] font-bold text-[#001A4D] hover:bg-blue-50 cursor-pointer"
-                          >
-                            Auto-Proportional Split
-                          </button>
-                        )}
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-blue-100 text-[#001A4D] border border-blue-200">
+                          Read-Only Auto-Split
+                        </span>
                       </div>
                       <div className="space-y-2">
-                        {surplusAllocationRows.map((row) => {
-                          const rowErr = surplusReturnValidation.perBucketErrors[row.bucketId];
-                          return (
-                            <div
-                              key={row.bucketId}
-                              className={`p-2.5 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
-                                rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-slate-200'
-                              }`}
-                            >
-                              <div className="min-w-0">
-                                <span className="font-bold text-[#001A4D] block truncate">{row.bucketName}</span>
-                                <span className="text-[11px] text-slate-500 font-mono">
-                                  Originally Pulled: <strong>{formatCurrency(row.originalAllocatedAmount)}</strong>
-                                </span>
-                                {rowErr && <p className="text-[11px] font-semibold text-rose-600">{rowErr}</p>}
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <label className="text-[11px] font-bold text-slate-700">Return (₱):</label>
-                                {isEffectiveReadOnly ? (
-                                  <span className="font-mono font-bold text-emerald-900 px-2.5 py-1 bg-emerald-50 rounded-lg border border-emerald-200">
-                                    +{formatCurrency(row.returnAmount)}
-                                  </span>
-                                ) : (
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max={row.originalAllocatedAmount > 0 ? row.originalAllocatedAmount : surplusOrDeficit}
-                                    step="0.01"
-                                    value={row.returnAmount}
-                                    onChange={(e) => {
-                                      const val =
-                                        e.target.value === ''
-                                          ? 0
-                                          : Math.max(0, parseFloat(e.target.value) || 0);
-                                      setSurplusAllocationRows((prev) =>
-                                        rebalanceSurplusReturnAllocations({
-                                          totalSurplus: surplusOrDeficit,
-                                          rows: prev,
-                                          editedBucketId: row.bucketId,
-                                          editedAmount: val,
-                                        })
-                                      );
-                                    }}
-                                    className="w-32 px-2.5 py-1 border border-blue-300 rounded-lg text-xs text-right font-mono font-bold text-[#001A4D] bg-white outline-none"
-                                  />
-                                )}
-                              </div>
+                        {surplusAllocationRows.map((row) => (
+                          <div
+                            key={row.bucketId}
+                            className="p-2.5 rounded-xl border border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                          >
+                            <div className="min-w-0">
+                              <span className="font-bold text-[#001A4D] block truncate">{row.bucketName}</span>
+                              <span className="text-[11px] text-slate-500 font-mono">
+                                Originally Pulled: <strong>{formatCurrency(row.originalAllocatedAmount)}</strong>
+                              </span>
                             </div>
-                          );
-                        })}
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[11px] font-bold text-slate-700">Return (₱):</span>
+                              <span className="font-mono font-bold text-emerald-900 px-2.5 py-1 bg-emerald-50 rounded-lg border border-emerald-200">
+                                +{formatCurrency(row.returnAmount)}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      {surplusReturnValidation.summaryError && (
-                        <p className="text-[11px] font-semibold text-rose-700">
-                          {surplusReturnValidation.summaryError}
-                        </p>
-                      )}
                     </div>
                   )}
                 </div>
@@ -3493,10 +3478,14 @@ export default function OfficerLiquidationModal({
                       );
                     })()}
                     {(() => {
-                      const isCashierProofReadOnly =
-                        effectiveReport.cashierSettlementStatus === 'proof_uploaded' ||
+                      const isVerifiedStatus =
                         effectiveReport.cashierSettlementStatus === 'verified' ||
-                        cashierProofSubmittedLocal;
+                        cashierProofVerifiedLocal;
+                      const isCashierProofReadOnly =
+                        isVerifiedStatus ||
+                        ((effectiveReport.cashierSettlementStatus === 'proof_uploaded' ||
+                          cashierProofSubmittedLocal) &&
+                          userRole !== 'admin');
                       return (
                         <>
                           {approvedReportDeficit > 0.009 && (
@@ -3549,16 +3538,16 @@ export default function OfficerLiquidationModal({
                           {isCashierProofReadOnly ? (
                             <div
                               className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
-                                effectiveReport.cashierSettlementStatus === 'verified'
+                                isVerifiedStatus
                                   ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
                                   : 'bg-blue-50 border-blue-200 text-[#001A4D]'
                               }`}
                             >
                               <Lock className="w-4 h-4 shrink-0" />
                               <span>
-                                {effectiveReport.cashierSettlementStatus === 'verified'
-                                  ? 'Settlement verified by SAS Admin and posted. This section is locked as read-only.'
-                                  : 'Cashier settlement proof has been submitted and locked as read-only while awaiting SAS verification.'}
+                                {isVerifiedStatus
+                                  ? 'Settlement verified by SAS Admin and posted to the bucket ledger. This section is locked as read-only.'
+                                  : 'Cashier settlement proof has been submitted and locked as read-only while awaiting SAS verification & bucket posting.'}
                               </span>
                             </div>
                           ) : (
@@ -3574,13 +3563,21 @@ export default function OfficerLiquidationModal({
                                       effectiveReport.cashierSettlementProofs.length === 0))
                                 }
                                 onClick={() => setShowCashierProofConfirmModal(true)}
-                                className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                                className={`px-4 py-2 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 ${
+                                  userRole === 'admin'
+                                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                                    : 'bg-[#001A4D] hover:bg-[#0E4EBD]'
+                                }`}
                               >
                                 {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                                 <span>
-                                  {approvedReportDeficit > 0.009
-                                    ? 'Save Coverage & Submit Proof'
-                                    : 'Save & Submit Cashier Proof'}
+                                  {userRole === 'admin'
+                                    ? approvedReportDeficit > 0.009
+                                      ? 'Verify Proof & Deduct from Bucket(s)'
+                                      : 'Verify Proof & Return to Bucket(s)'
+                                    : approvedReportDeficit > 0.009
+                                      ? 'Save Coverage & Submit Proof'
+                                      : 'Save & Submit Cashier Proof'}
                                 </span>
                               </button>
                             </div>
@@ -3831,7 +3828,15 @@ export default function OfficerLiquidationModal({
             <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 flex items-start gap-2">
               <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <span>
-                Once submitted, this Cashier settlement proof will be locked as <strong>read-only</strong> and routed to SAS Admin for verification.
+                {userRole === 'admin' ? (
+                  <>
+                    Confirming will immediately <strong>post and disburse/credit</strong> the assigned bucket amounts above and lock this section as <strong>read-only</strong>.
+                  </>
+                ) : (
+                  <>
+                    Once submitted, this Cashier settlement proof will be locked as <strong>read-only</strong> and routed to SAS Admin for verification &amp; bucket posting.
+                  </>
+                )}
               </span>
             </div>
 
@@ -3852,38 +3857,77 @@ export default function OfficerLiquidationModal({
                     cashierProofDrafts.length > 0
                       ? cashierProofDrafts
                       : effectiveReport.cashierSettlementProofs || [];
+                  const actorUid =
+                    userUid || officerProfile?.uid || officerProfile?.studentId || (userRole === 'admin' ? 'sas_admin' : 'officer');
+                  const actorName =
+                    userName || officerProfile?.studentName || (userRole === 'admin' ? 'SAS Administrator' : 'Officer');
                   setSavingCashierProof(true);
                   try {
-                    await attachCashierSettlementProofs(
-                      effectiveReport.id,
-                      proofsToSave,
-                      cashierRefDraft || effectiveReport.cashierReferenceNo || '',
-                      {
-                        uid: userUid || officerProfile?.uid || officerProfile?.studentId || 'officer',
-                        name: userName || officerProfile?.studentName || 'Officer',
-                        role: userRole === 'admin' ? 'admin' : 'officer',
-                      },
-                      approvedReportDeficit > 0.009
-                        ? { deficitDeductionAllocations: deficitAllocationRows }
-                        : { surplusReturnAllocations: surplusAllocationRows }
-                    );
-                    setCashierProofSubmittedLocal(true);
-                    setShowCashierProofConfirmModal(false);
-                    toast.success(
-                      approvedReportDeficit > 0.009
-                        ? 'Overspend bucket coverage and proof submitted to SAS!'
-                        : 'Cashier return receipt submitted to SAS and locked!'
-                    );
+                    if (userRole === 'admin') {
+                      await verifyCashierSettlementProofs(
+                        effectiveReport.id,
+                        { uid: actorUid, name: actorName },
+                        {
+                          surplusReturnAllocations:
+                            approvedReportSurplus > 0.009 ? surplusAllocationRows : undefined,
+                          deficitDeductionAllocations:
+                            approvedReportDeficit > 0.009 ? deficitAllocationRows : undefined,
+                          cashierSettlementProofs: proofsToSave,
+                          cashierReferenceNo: cashierRefDraft || effectiveReport.cashierReferenceNo || '',
+                        }
+                      );
+                      setCashierProofVerifiedLocal(true);
+                      setCashierProofSubmittedLocal(true);
+                      setShowCashierProofConfirmModal(false);
+                      toast.success(
+                        approvedReportDeficit > 0.009
+                          ? 'Overspend proof verified & deducted from bucket(s)!'
+                          : 'Surplus return verified & posted to bucket(s)!'
+                      );
+                    } else {
+                      await attachCashierSettlementProofs(
+                        effectiveReport.id,
+                        proofsToSave,
+                        cashierRefDraft || effectiveReport.cashierReferenceNo || '',
+                        {
+                          uid: actorUid,
+                          name: actorName,
+                          role: 'officer',
+                        },
+                        approvedReportDeficit > 0.009
+                          ? { deficitDeductionAllocations: deficitAllocationRows }
+                          : { surplusReturnAllocations: surplusAllocationRows }
+                      );
+                      setCashierProofSubmittedLocal(true);
+                      setShowCashierProofConfirmModal(false);
+                      toast.success(
+                        approvedReportDeficit > 0.009
+                          ? 'Overspend bucket coverage and proof submitted to SAS!'
+                          : 'Cashier return receipt submitted to SAS and locked!'
+                      );
+                    }
                   } catch (err: any) {
                     toast.error(err?.message || 'Failed to save settlement proof.');
                   } finally {
                     setSavingCashierProof(false);
                   }
                 }}
-                className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className={`px-4 py-2 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50 ${
+                  userRole === 'admin'
+                    ? 'bg-emerald-600 hover:bg-emerald-700'
+                    : 'bg-[#001A4D] hover:bg-[#0E4EBD]'
+                }`}
               >
                 {savingCashierProof && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                <span>{savingCashierProof ? 'Submitting...' : 'Confirm & Submit Proof'}</span>
+                <span>
+                  {savingCashierProof
+                    ? 'Processing...'
+                    : userRole === 'admin'
+                      ? approvedReportDeficit > 0.009
+                        ? 'Confirm, Verify & Deduct'
+                        : 'Confirm, Verify & Post'
+                      : 'Confirm & Submit Proof'}
+                </span>
               </button>
             </div>
           </div>

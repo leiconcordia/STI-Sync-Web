@@ -27,6 +27,7 @@ import { toast } from 'sonner';
 import { isSasCreatedEvent } from '../../events/utils/organization-display.utils';
 import { useMiscFeeConfigs } from '../hooks/useMiscFeeStream';
 import { useEventPayablesStream } from '../hooks/usePayableStream';
+import { useRetainedActivityFunds } from '../hooks/useRetainedFundStream';
 
 interface DisbursementVoucherModalProps {
   isOpen: boolean;
@@ -101,7 +102,11 @@ export default function DisbursementVoucherModal({
   const [chequeNumber, setChequeNumber] = useState<string>('');
   const [disbursementDate, setDisbursementDate] = useState<string>('');
   const [remarks, setRemarks] = useState<string>('');
-  const { saoEligibleBuckets } = useMiscFeeConfigs();
+  const { saoEligibleBuckets, activeConfig } = useMiscFeeConfigs();
+  const { saoRetainedFund } = useRetainedActivityFunds(
+    null,
+    (event as any)?.schoolYear || activeConfig?.schoolYear
+  );
   const [proposalFallbackData, setProposalFallbackData] = useState<Record<string, any> | null>(null);
   const [legacyFallbackBucketId, setLegacyFallbackBucketId] = useState<string>('');
 
@@ -884,6 +889,28 @@ export default function DisbursementVoucherModal({
                   </strong>
                 </span>
                 <span className="text-[10px] text-slate-500">Isolated from Misc Fee buckets</span>
+              </div>
+            )}
+
+            {effectiveFundingSource === 'retained_sao_fund' && (
+              <div className="p-3.5 bg-purple-50/70 border border-purple-200 rounded-xl space-y-1.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-purple-950 flex items-center gap-1.5">
+                    <Landmark className="w-3.5 h-3.5 text-purple-700" />
+                    SAO Retained Activity Fund Preview
+                  </span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200">
+                    Synced with Retained Funds
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-purple-900">
+                  <span>Current Available Retained Fund (SY {(event as any)?.schoolYear || activeConfig?.schoolYear}):</span>
+                  <strong className="font-mono">{formatCurrency(saoRetainedFund.availableBalance)}</strong>
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-rose-800">
+                  <span>Disbursement Asking Amount Posted on Save:</span>
+                  <strong className="font-mono">-{formatCurrency(approvedCeiling)}</strong>
+                </div>
               </div>
             )}
 

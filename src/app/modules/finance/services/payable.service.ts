@@ -472,6 +472,79 @@ export async function createPayable(payload: CreatePayablePayload): Promise<stri
   return newDocRef.id;
 }
 
+const SAS_ORG_SENTINELS = new Set([
+  '',
+  'sas',
+  'sas_admin',
+  'sao',
+  'sao_admin',
+  'admin',
+  'institutional',
+]);
+
+async function resolveSasContributionEventMeta(params: {
+  eventId?: string | null;
+  organizationId?: string | null;
+  type?: string | null;
+  schoolYear?: string | null;
+  semester?: string | null;
+}): Promise<{
+  isSasStudentContribution: boolean;
+  schoolYear?: string;
+  semester?: string;
+  eventTitle?: string;
+}> {
+  const rawOrg = String(params.organizationId || '').trim().toLowerCase();
+  if (rawOrg && !SAS_ORG_SENTINELS.has(rawOrg)) {
+    return { isSasStudentContribution: false };
+  }
+
+  let evData: any = null;
+  if (params.eventId && params.eventId !== 'unassigned') {
+    try {
+      let evSnap = await getDoc(doc(db, 'activities', params.eventId));
+      if (!evSnap.exists()) {
+        evSnap = await getDoc(doc(db, 'activity_proposals', params.eventId));
+      }
+      if (evSnap.exists()) {
+        evData = evSnap.data();
+      }
+    } catch {}
+  }
+
+  if (evData) {
+    const evOrg = String(
+      evData.hostingOrgId || evData.organizationId || evData.submittedByOrgId || ''
+    )
+      .trim()
+      .toLowerCase();
+    const isSasOwned =
+      !evOrg || SAS_ORG_SENTINELS.has(evOrg) || evData.createdByRole === 'admin';
+    if (!isSasOwned) {
+      return { isSasStudentContribution: false };
+    }
+    const src = String(evData.fundingSource || '').trim().toLowerCase();
+    const isContrib =
+      src === 'student_contributions' ||
+      (params.type === 'event_fee' &&
+        src !== 'school_budget' &&
+        src !== 'organization_funds' &&
+        src !== 'zero_budget');
+    return {
+      isSasStudentContribution: isContrib,
+      schoolYear: evData.schoolYear || evData.academicYear || params.schoolYear || undefined,
+      semester: evData.semester || params.semester || undefined,
+      eventTitle: evData.title || evData.eventName || undefined,
+    };
+  }
+
+  return {
+    isSasStudentContribution: params.type === 'event_fee',
+    schoolYear: params.schoolYear || undefined,
+    semester: params.semester || undefined,
+  };
+}
+
 /**
  * Record a full or partial payment for a payable
  */
@@ -549,6 +622,21 @@ export async function recordPayment(
   const isFullyTransferred =
     transferredAmt >= newPaidAmount && newPaidAmount > 0;
 
+  const sasMeta = await resolveSasContributionEventMeta({
+    eventId: data.eventId,
+    organizationId: data.organizationId,
+    type: data.type,
+    schoolYear: data.schoolYear,
+    semester: data.semester,
+  });
+  const alreadyRetainedCredited = Math.max(
+    0,
+    Number((data as any).retainedCreditedAmount) || 0
+  );
+  const retainedDelta = sasMeta.isSasStudentContribution
+    ? Math.max(0, Math.round((newPaidAmount - alreadyRetainedCredited) * 100) / 100)
+    : 0;
+
   let newStatus: PayableStatus = 'partial';
   let paidAtTimestamp: Timestamp | null = data.paidAt || null;
 
@@ -579,6 +667,7 @@ export async function recordPayment(
     recordedBy,
     paymentMethod,
     transferredToBudget: isFullyTransferred,
+    ...(retainedDelta > 0.009 ? { retainedCreditedAmount: newPaidAmount } : {}),
     updatedAt: serverTimestamp(),
   };
 
@@ -593,6 +682,27 @@ export async function recordPayment(
   }
 
   await updateDoc(payableRef, updates);
+
+  if (sasMeta.isSasStudentContribution && retainedDelta > 0.009) {
+    try {
+      const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
+      const evLabel =
+        sasMeta.eventTitle || data.eventTitle || data.title || 'SAS Activity';
+      await creditRetainedFundOnCollection({
+        collectionId: `pay_${payableId}_${Math.round(newPaidAmount * 100)}`,
+        amount: retainedDelta,
+        organizationId: 'sas',
+        eventId: data.eventId || undefined,
+        eventTitle: evLabel,
+        schoolYear: sasMeta.schoolYear,
+        semester: sasMeta.semester,
+        description: `Student Contribution Collection (${data.studentName || 'Student'}) – ${evLabel}`,
+        performedBy: recordedBy || 'SAS Admin',
+      });
+    } catch (retErr) {
+      console.warn('[recordPayment] Retained fund credit warning:', retErr);
+    }
+  }
 
   if (data.eventId) {
     try {
@@ -644,15 +754,57 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
       chunk.map((id) => getDoc(doc(db, PAYABLES_COLLECTION, id)).catch(() => null))
     );
     const affectedEventIds = new Set<string>();
+    const sasTotalsByEvent = new Map<
+      string,
+      {
+        amount: number;
+        count: number;
+        meta: Awaited<ReturnType<typeof resolveSasContributionEventMeta>>;
+        fallbackTitle?: string;
+      }
+    >();
     const batch = writeBatch(db);
-    chunk.forEach((id, idx) => {
-      const ref = doc(db, PAYABLES_COLLECTION, id);
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const id = chunk[idx];
+      const ref = doc(payablesRef, id);
       const snap = snaps[idx];
-      const existingData = snap && snap.exists() ? snap.data() : null;
+      const existingData = snap && snap.exists() ? (snap.data() as any) : null;
       if (existingData?.eventId) affectedEventIds.add(String(existingData.eventId));
       const assigned = existingData
         ? Number(existingData.assignedAmount ?? existingData.amount ?? 0)
         : 0;
+      const alreadyCredited = existingData
+        ? Math.max(0, Number(existingData.retainedCreditedAmount) || 0)
+        : 0;
+      const sasDelta =
+        assigned > 0
+          ? Math.max(0, Math.round((assigned - alreadyCredited) * 100) / 100)
+          : 0;
+
+      let creditThisRow = false;
+      if (existingData && sasDelta > 0.009) {
+        const sasMeta = await resolveSasContributionEventMeta({
+          eventId: existingData.eventId,
+          organizationId: existingData.organizationId,
+          type: existingData.type,
+          schoolYear: existingData.schoolYear,
+          semester: existingData.semester,
+        });
+        if (sasMeta.isSasStudentContribution) {
+          creditThisRow = true;
+          const evKey = String(existingData.eventId || 'unassigned');
+          const cur = sasTotalsByEvent.get(evKey) || {
+            amount: 0,
+            count: 0,
+            meta: sasMeta,
+            fallbackTitle: existingData.eventTitle || existingData.title,
+          };
+          cur.amount = Math.round((cur.amount + sasDelta) * 100) / 100;
+          cur.count += 1;
+          sasTotalsByEvent.set(evKey, cur);
+        }
+      }
+
       const updatePayload: Record<string, any> = {
         status: 'paid' as PayableStatus,
         paymentStatus: 'PAID',
@@ -660,6 +812,7 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
         paidAt: serverTimestamp(),
         recordedBy,
         paymentMethod: 'cash',
+        ...(creditThisRow && assigned > 0 ? { retainedCreditedAmount: assigned } : {}),
         updatedAt: serverTimestamp(),
       };
       if (assigned > 0) {
@@ -667,8 +820,32 @@ export async function bulkRecordPayment(payableIds: string[], recordedBy: string
         updatePayload.amountPaid = assigned;
       }
       batch.update(ref, updatePayload);
-    });
+    }
     await batch.commit();
+
+    if (sasTotalsByEvent.size > 0) {
+      try {
+        const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
+        for (const [evKey, info] of sasTotalsByEvent.entries()) {
+          if (info.amount <= 0.009) continue;
+          const evLabel = info.meta.eventTitle || info.fallbackTitle || 'SAS Activity';
+          await creditRetainedFundOnCollection({
+            collectionId: `bulkpay_${Date.now()}_${evKey}`,
+            amount: info.amount,
+            organizationId: 'sas',
+            eventId: evKey !== 'unassigned' ? evKey : undefined,
+            eventTitle: evLabel,
+            schoolYear: info.meta.schoolYear,
+            semester: info.meta.semester,
+            description: `Student Contribution Collection (${info.count} paid) – ${evLabel}`,
+            performedBy: recordedBy || 'SAS Admin',
+          });
+        }
+      } catch (retErr) {
+        console.warn('[bulkRecordPayment] Retained fund credit warning:', retErr);
+      }
+    }
+
     for (const evId of affectedEventIds) {
       try {
         await syncEventContributionCollectionSnapshot(evId);
@@ -1745,6 +1922,28 @@ export async function transferCollectionGroupToLedger(params: {
 
   const batchId = `TRANS-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
 
+  const sasMeta =
+    targetLedger !== 'org'
+      ? await resolveSasContributionEventMeta({
+          eventId,
+          organizationId,
+          type,
+        })
+      : { isSasStudentContribution: false };
+
+  const retainedCreditDelta =
+    targetLedger !== 'org'
+      ? eligibleDocs.reduce((sum, d) => {
+          const data = d.data();
+          const isPaidStatus = String(data.status || '').toLowerCase() === 'paid';
+          const hasPaid = (Number(data.paidAmount) || 0) > 0;
+          const assignedAmt = Number(data.assignedAmount) || 0;
+          const effectivePaid = hasPaid ? Number(data.paidAmount) : isPaidStatus ? assignedAmt : 0;
+          const alreadyRetained = Math.max(0, Number(data.retainedCreditedAmount) || 0);
+          return sum + Math.max(0, effectivePaid - alreadyRetained);
+        }, 0)
+      : 0;
+
   // Batch commit in chunks of 450
   const chunks = [];
   for (let i = 0; i < eligibleDocs.length; i += 450) {
@@ -1763,6 +1962,7 @@ export async function transferCollectionGroupToLedger(params: {
       batch.update(docSnap.ref, {
         paidAmount: effectivePaid,
         transferredAmount: effectivePaid,
+        ...(targetLedger !== 'org' ? { retainedCreditedAmount: effectivePaid } : {}),
         transferredToBudget: true,
         transferredAt: serverTimestamp(),
         transferredBatchId: batchId,
@@ -1807,16 +2007,18 @@ export async function transferCollectionGroupToLedger(params: {
 
   // Mirror revenue into persistent SAO Retained Student Activity Fund for SAS collections only
   // (Organizations use organization_ledger as their single unified Club Treasury)
-  if (targetLedger !== 'org') {
+  if (targetLedger !== 'org' && retainedCreditDelta > 0.009) {
     try {
       const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
       await creditRetainedFundOnCollection({
         collectionId: batchId,
-        amount: totalTransferDelta,
+        amount: retainedCreditDelta,
         organizationId: 'sas',
         eventId: eventId && eventId !== 'unassigned' ? eventId : undefined,
-        eventTitle: displayTitle,
-        description: `Student Contribution Collection – ${displayTitle}`,
+        eventTitle: sasMeta.eventTitle || displayTitle,
+        schoolYear: sasMeta.schoolYear,
+        semester: sasMeta.semester,
+        description: `Student Contribution Collection – ${sasMeta.eventTitle || displayTitle}`,
         performedBy: recordedByUid || 'SAO Admin',
       });
     } catch (retErr) {
@@ -2177,6 +2379,7 @@ export async function applyCashierContributionPayments(params: {
     orNumber: string;
     paidAt: Timestamp;
     addedAmount: number;
+    retainedDelta: number;
   }> = [];
 
   for (const item of items) {
@@ -2195,6 +2398,8 @@ export async function applyCashierContributionPayments(params: {
 
     const alreadyTransferred = Math.max(0, Number(pData.transferredAmount) || 0);
     const deltaToCredit = Math.max(0, effectivePaid - alreadyTransferred);
+    const alreadyRetainedCredited = Math.max(0, Number(pData.retainedCreditedAmount) || 0);
+    const retainedDelta = Math.max(0, effectivePaid - alreadyRetainedCredited);
 
     let paidAtTs = nowTs;
     if (item.paidDate) {
@@ -2210,12 +2415,23 @@ export async function applyCashierContributionPayments(params: {
       orNumber: (item.orNumber || batchReferenceNo || '').trim(),
       paidAt: paidAtTs,
       addedAmount: deltaToCredit,
+      retainedDelta,
     });
   }
 
   if (updatedEntries.length === 0) {
     return { updatedCount: 0, totalCollectedAmount: 0, batchId: '', routedToRetainedFund: false };
   }
+
+  const sasMeta = await resolveSasContributionEventMeta({
+    eventId,
+    schoolYear,
+    semester,
+    type: 'event_fee',
+  });
+  const totalRetainedCredit = Math.round(
+    updatedEntries.reduce((sum, e) => sum + e.retainedDelta, 0) * 100
+  ) / 100;
 
   for (let i = 0; i < updatedEntries.length; i += 450) {
     const chunk = updatedEntries.slice(i, i + 450);
@@ -2236,6 +2452,7 @@ export async function applyCashierContributionPayments(params: {
         qrTicketUnlocked: true,
         transferredToBudget: true,
         transferredAmount: entry.paidAmount,
+        ...(sasMeta.isSasStudentContribution ? { retainedCreditedAmount: entry.paidAmount } : {}),
         transferredAt: serverTimestamp(),
         transferredBatchId: batchId,
         updatedAt: serverTimestamp(),
@@ -2248,9 +2465,6 @@ export async function applyCashierContributionPayments(params: {
     updatedEntries.reduce((sum, e) => sum + e.addedAmount, 0) * 100
   ) / 100;
 
-  // Check if this activity's Financial Liquidation has already been approved & settled:
-  // - Before liquidation settlement: funds stay as active activity cash-on-hand (avoids double-counting when surplus returns).
-  // - After liquidation settlement (extra Cashier collection while activity is still open): credit directly to SAS Student Contribution & Retained Funds!
   let isLiquidationSettled = false;
   try {
     const liqSnap = await getDocs(
@@ -2291,25 +2505,27 @@ export async function applyCashierContributionPayments(params: {
       receiptProofUrl: receiptProof?.url || null,
       createdAt: serverTimestamp(),
     });
+  }
 
-    if (isLiquidationSettled) {
-      try {
-        const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
-        await creditRetainedFundOnCollection({
-          collectionId: batchId,
-          amount: totalCollectedAmount,
-          organizationId: 'sas',
-          eventId,
-          eventTitle,
-          schoolYear,
-          semester,
-          description: `Extra Cashier Collection (Post-Liquidation • ${updatedEntries.length} paid) – ${eventTitle}`,
-          performedBy: recordedByName || recordedByUid || 'SAS Admin',
-        });
-        routedToRetainedFund = true;
-      } catch (retErr) {
-        console.warn('[applyCashierContributionPayments] SAO retained credit warning:', retErr);
-      }
+  if (sasMeta.isSasStudentContribution && totalRetainedCredit > 0.009) {
+    try {
+      const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
+      await creditRetainedFundOnCollection({
+        collectionId: batchId,
+        amount: totalRetainedCredit,
+        organizationId: 'sas',
+        eventId,
+        eventTitle: sasMeta.eventTitle || eventTitle,
+        schoolYear: sasMeta.schoolYear || schoolYear,
+        semester: sasMeta.semester || semester,
+        description: isLiquidationSettled
+          ? `Extra Cashier Collection (Post-Liquidation • ${updatedEntries.length} paid) – ${sasMeta.eventTitle || eventTitle}`
+          : `Cashier Student Contribution Upload (${updatedEntries.length} paid) – ${sasMeta.eventTitle || eventTitle}`,
+        performedBy: recordedByName || recordedByUid || 'SAS Admin',
+      });
+      routedToRetainedFund = true;
+    } catch (retErr) {
+      console.warn('[applyCashierContributionPayments] SAO retained credit warning:', retErr);
     }
   }
 
@@ -2330,4 +2546,111 @@ export async function applyCashierContributionPayments(params: {
     batchId,
     routedToRetainedFund,
   };
+}
+
+/**
+ * Reconciles any uncredited paid Student Contribution payables and any unposted Disbursement Voucher
+ * for an SAS event into `SAO_CAMPUS__SY_<schoolYear>` (idempotent via `retainedCreditedAmount` and `disb_${eventId}`).
+ */
+export async function reconcileSasContributionEventToRetainedFund(
+  eventId: string,
+  performedBy = 'SAS Admin'
+): Promise<{ syncedCollectionAmount: number; syncedDisbursementAmount: number }> {
+  if (!eventId) return { syncedCollectionAmount: 0, syncedDisbursementAmount: 0 };
+
+  let evData: any = null;
+  for (const col of ['activities', 'activity_proposals', 'events']) {
+    const snap = await getDoc(doc(db, col, eventId));
+    if (snap.exists()) {
+      evData = snap.data();
+      break;
+    }
+  }
+  if (!evData) return { syncedCollectionAmount: 0, syncedDisbursementAmount: 0 };
+
+  const fundingSource = String(evData.fundingSource || '').trim().toLowerCase();
+  const orgRaw = String(evData.hostingOrgId || evData.organizationId || evData.submittedByOrgId || '')
+    .trim()
+    .toLowerCase();
+  const isSasOwned = !orgRaw || SAS_ORG_SENTINELS.has(orgRaw) || evData.createdByRole === 'admin';
+  if (!isSasOwned || (fundingSource !== 'student_contributions' && fundingSource !== 'retained_sao_fund')) {
+    return { syncedCollectionAmount: 0, syncedDisbursementAmount: 0 };
+  }
+
+  let syncedCollectionAmount = 0;
+  let syncedDisbursementAmount = 0;
+  const eventTitle = evData.title || evData.eventName || 'SAS Activity';
+  const schoolYear = evData.schoolYear || evData.academicYear;
+  const semester = evData.semester;
+
+  const { creditRetainedFundOnCollection, deductRetainedFundOnDisbursement } = await import(
+    './retained-fund.service'
+  );
+
+  // 1. Sync uncredited paid payables
+  const paySnap = await getDocs(query(collection(db, PAYABLES_COLLECTION), where('eventId', '==', eventId)));
+  const uncreditedRows: Array<{ ref: any; effectivePaid: number; delta: number }> = [];
+  for (const d of paySnap.docs) {
+    const p = d.data() as any;
+    const st = String(p.status || '').toLowerCase();
+    if (st !== 'paid' && !(Number(p.paidAmount) > 0)) continue;
+    if (st === 'refund_pending' || st === 'refunded' || st === 'waived' || st === 'cancelled') continue;
+    const effectivePaid = Math.max(0, Number(p.paidAmount) || Number(p.assignedAmount) || 0);
+    const alreadyCredited = Math.max(0, Number(p.retainedCreditedAmount) || 0);
+    const delta = Math.round((effectivePaid - alreadyCredited) * 100) / 100;
+    if (delta > 0.009) {
+      uncreditedRows.push({ ref: d.ref, effectivePaid, delta });
+      syncedCollectionAmount = Math.round((syncedCollectionAmount + delta) * 100) / 100;
+    }
+  }
+
+  if (uncreditedRows.length > 0 && syncedCollectionAmount > 0.009) {
+    const syncBatchId = `SYNC_${eventId}_${Date.now()}`;
+    await creditRetainedFundOnCollection({
+      collectionId: syncBatchId,
+      amount: syncedCollectionAmount,
+      organizationId: 'sas',
+      eventId,
+      eventTitle,
+      schoolYear,
+      semester,
+      description: `Student Contribution Sync (${uncreditedRows.length} paid) – ${eventTitle}`,
+      performedBy,
+    });
+    for (let i = 0; i < uncreditedRows.length; i += 450) {
+      const batch = writeBatch(db);
+      for (const row of uncreditedRows.slice(i, i + 450)) {
+        batch.update(row.ref, {
+          retainedCreditedAmount: row.effectivePaid,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+  }
+
+  // 2. Sync unposted Disbursement Voucher deduction
+  const voucher = evData.disbursementVoucher;
+  if (voucher?.fileUrl) {
+    const disbursedAmt = Number(voucher.amountDisbursed) || Number(evData.totalApprovedBudget) || 0;
+    if (disbursedAmt > 0.009) {
+      const disbSnap = await getDoc(doc(db, 'retained_fund_ledger', `disb_${eventId}`));
+      if (!disbSnap.exists()) {
+        await deductRetainedFundOnDisbursement({
+          eventId,
+          eventTitle,
+          disbursedAmount: disbursedAmt,
+          organizationId: 'sas',
+          createdByRole: evData.createdByRole || 'admin',
+          schoolYear,
+          semester,
+          chequeNumber: voucher.chequeNumber,
+          performedBy: voucher.uploadedByName || performedBy,
+        });
+        syncedDisbursementAmount = disbursedAmt;
+      }
+    }
+  }
+
+  return { syncedCollectionAmount, syncedDisbursementAmount };
 }

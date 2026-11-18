@@ -1916,9 +1916,16 @@ export async function saveEventDisbursementVoucher(
   const eventData = eventSnap.exists() ? (eventSnap.data() as any) : {};
   await updateDoc(eventRef, updatePayload);
 
-  // Deduct disbursed amount from the auto-detected Miscellaneous Fee bucket(s) (strictly only for school_budget)
+  // Deduct disbursed amount from the auto-detected Miscellaneous Fee bucket(s) (school_budget)
+  // OR from SAS Student Contribution & Retained Funds (`student_contributions` / `retained_sao_fund`)
   try {
     let resolvedFundingSource = String(eventData?.fundingSource || '');
+    let resolvedOrgId = String(
+      eventData?.hostingOrgId || eventData?.organizationId || eventData?.submittedByOrgId || ''
+    ).trim();
+    let resolvedCreatedByRole = String(eventData?.createdByRole || '');
+    let resolvedSchoolYear = String(eventData?.schoolYear || eventData?.academicYear || '');
+    let resolvedSemester = String(eventData?.semester || '');
     let bucketId: string | undefined = eventData?.miscFeeBucketId;
     let bucketIds: string[] = Array.isArray(eventData?.miscFeeBucketIds) ? eventData.miscFeeBucketIds : [];
     let bucketAllocations: any[] =
@@ -1929,19 +1936,33 @@ export async function saveEventDisbursementVoucher(
           : [];
     let bucketName: string | undefined = eventData?.miscFeeBucketName;
 
-    if (!bucketId && bucketIds.length === 0 && bucketAllocations.length === 0 && !bucketName) {
+    if (
+      (!bucketId && bucketIds.length === 0 && bucketAllocations.length === 0 && !bucketName) ||
+      !resolvedFundingSource ||
+      !resolvedSchoolYear
+    ) {
       const propSnap = await getDoc(doc(db, 'activity_proposals', eventId));
       if (propSnap.exists()) {
         const pData = propSnap.data() as any;
         resolvedFundingSource = resolvedFundingSource || String(pData?.fundingSource || '');
-        bucketId = pData?.miscFeeBucketId;
-        if (Array.isArray(pData?.miscFeeBucketIds)) bucketIds = pData.miscFeeBucketIds;
-        if (Array.isArray(pData?.allocations) && pData.allocations.length > 0) {
-          bucketAllocations = pData.allocations.filter((a: any) => a.fundType === 'misc_fee');
-        } else if (Array.isArray(pData?.miscFeeBucketAllocations)) {
-          bucketAllocations = pData.miscFeeBucketAllocations;
+        if (!resolvedOrgId) {
+          resolvedOrgId = String(
+            pData?.hostingOrgId || pData?.organizationId || pData?.submittedByOrgId || ''
+          ).trim();
         }
-        bucketName = pData?.miscFeeBucketName;
+        if (!resolvedCreatedByRole) resolvedCreatedByRole = String(pData?.createdByRole || '');
+        if (!resolvedSchoolYear) resolvedSchoolYear = String(pData?.schoolYear || pData?.academicYear || '');
+        if (!resolvedSemester) resolvedSemester = String(pData?.semester || '');
+        bucketId = bucketId || pData?.miscFeeBucketId;
+        if (bucketIds.length === 0 && Array.isArray(pData?.miscFeeBucketIds)) bucketIds = pData.miscFeeBucketIds;
+        if (bucketAllocations.length === 0) {
+          if (Array.isArray(pData?.allocations) && pData.allocations.length > 0) {
+            bucketAllocations = pData.allocations.filter((a: any) => a.fundType === 'misc_fee');
+          } else if (Array.isArray(pData?.miscFeeBucketAllocations)) {
+            bucketAllocations = pData.miscFeeBucketAllocations;
+          }
+        }
+        bucketName = bucketName || pData?.miscFeeBucketName;
       }
     }
 
@@ -1964,6 +1985,32 @@ export async function saveEventDisbursementVoucher(
       bucketIds = bucketAllocations.map((a: any) => a.bucketId).filter(Boolean);
     }
 
+    const disbursedAmount = Number(voucher.amountDisbursed) || Number(eventData?.totalApprovedBudget) || 0;
+    const isSasStudentContribOrRetained =
+      resolvedFundingSource === 'student_contributions' ||
+      resolvedFundingSource === 'retained_sao_fund';
+    const isSasSentinelOrg =
+      !resolvedOrgId ||
+      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(resolvedOrgId.toLowerCase()) ||
+      resolvedCreatedByRole === 'admin';
+
+    if (isSasStudentContribOrRetained && (isSasSentinelOrg || resolvedFundingSource === 'retained_sao_fund') && disbursedAmount > 0) {
+      const { deductRetainedFundOnDisbursement } = await import(
+        '../../finance/services/retained-fund.service'
+      );
+      await deductRetainedFundOnDisbursement({
+        eventId,
+        eventTitle: eventData?.title || eventData?.eventName || 'SAS Activity',
+        disbursedAmount,
+        organizationId: 'sas',
+        createdByRole: resolvedCreatedByRole || 'admin',
+        schoolYear: resolvedSchoolYear || undefined,
+        semester: resolvedSemester || undefined,
+        chequeNumber: voucher.chequeNumber,
+        performedBy: voucher.uploadedByName || 'SAS Admin',
+      });
+    }
+
     const isIsolatedNonMisc =
       resolvedFundingSource === 'student_contributions' ||
       resolvedFundingSource === 'retained_sao_fund' ||
@@ -1980,9 +2027,9 @@ export async function saveEventDisbursementVoucher(
         bucketIds: bucketIds.length > 0 ? bucketIds : bucketId ? [bucketId] : [],
         bucketAllocations,
         bucketName: bucketName || bucketId,
-        amount: Number(voucher.amountDisbursed) || Number(eventData?.totalApprovedBudget) || 0,
-        schoolYear: eventData?.schoolYear,
-        semester: eventData?.semester,
+        amount: disbursedAmount,
+        schoolYear: resolvedSchoolYear || eventData?.schoolYear,
+        semester: resolvedSemester || eventData?.semester,
         chequeNumber: voucher.chequeNumber,
         performedBy: voucher.uploadedByName || 'User',
       });

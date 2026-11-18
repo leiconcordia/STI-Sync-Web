@@ -125,6 +125,8 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
     let shs = 0;
     let shsGrade11 = 0;
     let shsGrade12 = 0;
+    let shs2ndSemExplicit = 0;
+    let shs2ndSemGrade12Explicit = 0;
     let collegeTotal = 0;
     let college1stSemExplicit = 0;
     let college2ndSemExplicit = 0;
@@ -143,6 +145,7 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
       }
 
       const ylLower = String(s.yearLevel || s.year || '').toLowerCase();
+      const semLower = String(s.semester || '').toLowerCase();
 
       const isCollege =
         s.academicLevel === 'COLLEGE' ||
@@ -155,14 +158,20 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
         shs++;
         if (ylLower.includes('11')) shsGrade11++;
         else if (ylLower.includes('12')) shsGrade12++;
+        if (semLower.includes('2nd')) {
+          shs2ndSemExplicit++;
+          if (ylLower.includes('12')) shs2ndSemGrade12Explicit++;
+        }
       } else {
         collegeTotal++;
-        const semLower = String(s.semester || '').toLowerCase();
         if (semLower.includes('2nd')) college2ndSemExplicit++;
         else college1stSemExplicit++;
       }
     }
 
+    // SHS enrollment spans the School Year (annual/trimester), so adding new SHS students auto-adds to active pools
+    const shs2ndSem = shs;
+    const shs2ndSemGrade12 = shsGrade12;
     const college1stSem = college1stSemExplicit > 0 ? college1stSemExplicit : collegeTotal;
     const college2ndSem = college2ndSemExplicit > 0 ? college2ndSemExplicit : collegeTotal;
     const college = collegeTotal;
@@ -171,6 +180,10 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
       shs,
       shsGrade11,
       shsGrade12,
+      shs2ndSem,
+      shs2ndSemGrade12,
+      shs2ndSemExplicit,
+      shs2ndSemGrade12Explicit,
       college,
       college1stSem,
       college2ndSem,
@@ -183,6 +196,8 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
       return {
         shsEnrolled: liveRegistryCounts.shs,
         shsGrade12Enrolled: liveRegistryCounts.shsGrade12,
+        shs2ndSemEnrolled: liveRegistryCounts.shs2ndSem,
+        shs2ndSemGrade12Enrolled: liveRegistryCounts.shs2ndSemGrade12,
         college1stSemEnrolled: liveRegistryCounts.college1stSem,
         college2ndSemEnrolled: liveRegistryCounts.college2ndSem,
         isUsingLiveRegistry: true,
@@ -191,6 +206,8 @@ export function useMiscFeeConfigs(selectedSchoolYear?: string | null) {
     return {
       shsEnrolled: viewedConfig.shsEnrolledOverride || 0,
       shsGrade12Enrolled: viewedConfig.shsEnrolledOverride || 0,
+      shs2ndSemEnrolled: viewedConfig.shsEnrolledOverride || 0,
+      shs2ndSemGrade12Enrolled: viewedConfig.shsEnrolledOverride || 0,
       college1stSemEnrolled: viewedConfig.college1stSemEnrolledOverride || 0,
       college2ndSemEnrolled: viewedConfig.college2ndSemEnrolledOverride || 0,
       isUsingLiveRegistry: false,

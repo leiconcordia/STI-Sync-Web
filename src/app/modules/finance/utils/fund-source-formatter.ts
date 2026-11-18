@@ -36,6 +36,7 @@ function buildBucketTermLines(
   const col1Rate = Number(b.college1stSemRateTY) || 0;
   const col2Rate = Number(b.college2ndSemRateTY) || 0;
   const shsRate = Number(b.shsRateTY) || 0;
+  const shs2ndRate = Number(b.shs2ndSemRateTY) || 0;
   const isGrade12Only = String(b.level || '').toLowerCase().includes('grade 12');
 
   const tLines: string[] = [];
@@ -60,7 +61,14 @@ function buildBucketTermLines(
       }
     }
 
-    if (shsRate > 0 && !hasCarryOver) {
+    if (shs2ndRate > 0) {
+      const scopeTag = isGrade12Only ? ' (Grade 12)' : '';
+      const shs2ndCount = item.shs2ndSemEnrolled ?? item.shsEnrolled;
+      const shs2ndAmount = item.shs2ndSemPool ?? shs2ndRate * shs2ndCount;
+      sLines.push(
+        `${b.particular}${scopeTag} (2nd Sem SHS) – ₱${fmtAmount(shs2ndRate)} x ${shs2ndCount.toLocaleString()} students = ₱${fmtAmount(shs2ndAmount)}`
+      );
+    } else if (shsRate > 0 && !hasCarryOver) {
       const scopeTag = isGrade12Only ? ' (Grade 12)' : '';
       sLines.push(
         `${b.particular}${scopeTag} – Annual SHS (1st Sem: ₱${fmtAmount(shsRate)} x ${item.shsEnrolled.toLocaleString()} students = ₱${fmtAmount(item.shsAnnualPool)}; 2nd Sem Carry-Over: ₱0.00)`

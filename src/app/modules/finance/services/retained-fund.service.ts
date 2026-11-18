@@ -30,6 +30,51 @@ export function normalizeRetainedSchoolYear(sy?: string | null): string {
     .trim();
 }
 
+export function isSasOrganizationId(orgId?: string | null, createdByRole?: string | null): boolean {
+  const raw = String(orgId || '').trim().toLowerCase();
+  return !raw || SAS_SENTINELS.has(raw) || createdByRole === 'admin' || createdByRole === 'sas_admin';
+}
+
+/**
+ * Resolves the School Year & Term for a Retained Fund transaction so entries never
+ * accidentally fall back to unscoped legacy docs when an active School Year exists.
+ */
+async function resolveEffectiveRetainedPeriod(params: {
+  schoolYear?: string | null;
+  semester?: string | null;
+  eventId?: string | null;
+}): Promise<{ schoolYear: string; semester: string }> {
+  let cleanSy = normalizeRetainedSchoolYear(params.schoolYear);
+  let cleanSem = String(params.semester || '').trim();
+
+  if ((!cleanSy || !cleanSem) && params.eventId) {
+    try {
+      for (const col of ['activities', 'activity_proposals', 'events', 'proposals']) {
+        const snap = await getDoc(doc(db, col, params.eventId));
+        if (snap.exists()) {
+          const d = snap.data() as any;
+          if (!cleanSy) cleanSy = normalizeRetainedSchoolYear(d.schoolYear || d.academicYear);
+          if (!cleanSem) cleanSem = String(d.semester || '').trim();
+          if (cleanSy && cleanSem) break;
+        }
+      }
+    } catch {}
+  }
+
+  if (!cleanSy || !cleanSem) {
+    try {
+      const { getActiveMiscFeeAcademicContext } = await import('./misc-fee.service');
+      const ctx = await getActiveMiscFeeAcademicContext();
+      if (ctx) {
+        if (!cleanSy) cleanSy = normalizeRetainedSchoolYear(ctx.schoolYear);
+        if (!cleanSem) cleanSem = ctx.semester;
+      }
+    } catch {}
+  }
+
+  return { schoolYear: cleanSy, semester: cleanSem };
+}
+
 export function buildScopedRetainedBucketId(baseBucketId: string, schoolYear?: string | null): string {
   const cleanSy = normalizeRetainedSchoolYear(schoolYear);
   if (!cleanSy) return baseBucketId;
@@ -243,10 +288,16 @@ export async function creditRetainedFundOnCollection(params: {
   description?: string;
   performedBy?: string;
 }): Promise<void> {
+  const period = await resolveEffectiveRetainedPeriod({
+    schoolYear: params.schoolYear,
+    semester: params.semester,
+    eventId: params.eventId,
+  });
+
   const identity = resolveRetainedBucketIdentity({
     organizationId: params.organizationId,
     organizationName: params.organizationName,
-    schoolYear: params.schoolYear,
+    schoolYear: period.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -260,8 +311,8 @@ export async function creditRetainedFundOnCollection(params: {
       `Student Contribution Collection – ${params.eventTitle || 'Activity Payable'}`,
     eventId: params.eventId,
     eventTitle: params.eventTitle,
-    schoolYear: params.schoolYear,
-    semester: params.semester,
+    schoolYear: period.schoolYear,
+    semester: period.semester,
     performedBy: params.performedBy,
   });
 }
@@ -280,10 +331,16 @@ export async function deductRetainedFundOnProposalApproval(params: {
   semester?: string;
   performedBy?: string;
 }): Promise<void> {
+  const period = await resolveEffectiveRetainedPeriod({
+    schoolYear: params.schoolYear,
+    semester: params.semester,
+    eventId: params.eventId,
+  });
+
   const identity = resolveRetainedBucketIdentity({
     organizationId: params.organizationId,
     organizationName: params.organizationName,
-    schoolYear: params.schoolYear,
+    schoolYear: period.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -295,9 +352,78 @@ export async function deductRetainedFundOnProposalApproval(params: {
     description: `Approved Event Budget – ${params.eventTitle || 'Retained Fund Event'}`,
     eventId: params.eventId,
     eventTitle: params.eventTitle,
+    schoolYear: period.schoolYear,
+    semester: period.semester,
+    performedBy: params.performedBy,
+  });
+}
+
+/**
+ * Deducts released Disbursement Voucher funds from the SAS Student Contribution & Retained Fund
+ * (`SAO_CAMPUS__SY_<sy>`) whenever SAS disburses an event funded by `student_contributions` or `retained_sao_fund`.
+ * Automatically subtracts any amount already deducted on AP approval (`event_${eventId}`) so there is zero double-deduction.
+ */
+export async function deductRetainedFundOnDisbursement(params: {
+  eventId: string;
+  eventTitle?: string;
+  disbursedAmount: number;
+  organizationId?: string | null;
+  organizationName?: string | null;
+  createdByRole?: string | null;
+  schoolYear?: string;
+  semester?: string;
+  chequeNumber?: string;
+  performedBy?: string;
+}): Promise<void> {
+  const grossDisbursed = Math.max(0, Math.round((Number(params.disbursedAmount) || 0) * 100) / 100);
+  if (!params.eventId || grossDisbursed <= 0) return;
+
+  const period = await resolveEffectiveRetainedPeriod({
     schoolYear: params.schoolYear,
     semester: params.semester,
+    eventId: params.eventId,
+  });
+
+  const identity = resolveRetainedBucketIdentity({
+    organizationId: params.organizationId,
+    organizationName: params.organizationName,
+    createdByRole: params.createdByRole,
+    schoolYear: period.schoolYear,
+  });
+
+  const disbLedgerId = `disb_${params.eventId}`;
+  const disbRef = doc(db, RETAINED_FUND_LEDGER_COLLECTION, disbLedgerId);
+  const disbSnap = await getDoc(disbRef);
+  if (disbSnap.exists()) return;
+
+  let alreadyApprovedDeducted = 0;
+  try {
+    const approvalSnap = await getDoc(doc(db, RETAINED_FUND_LEDGER_COLLECTION, `event_${params.eventId}`));
+    if (approvalSnap.exists()) {
+      alreadyApprovedDeducted = Math.max(0, Number((approvalSnap.data() as any)?.amount) || 0);
+    }
+  } catch {}
+
+  const remainingToDeduct = Math.max(
+    0,
+    Math.round((grossDisbursed - alreadyApprovedDeducted) * 100) / 100
+  );
+  if (remainingToDeduct <= 0.009) return;
+
+  const chequeLabel = params.chequeNumber ? ` (Cheque: ${params.chequeNumber})` : '';
+  await postRetainedFundTransaction({
+    ledgerDocId: disbLedgerId,
+    identity,
+    type: 'event_expense_deduction',
+    amount: remainingToDeduct,
+    deltaBalance: -remainingToDeduct,
+    description: `Disbursement Voucher Released – ${params.eventTitle || 'SAS Activity'}${chequeLabel}`,
+    eventId: params.eventId,
+    eventTitle: params.eventTitle,
+    schoolYear: period.schoolYear,
+    semester: period.semester,
     performedBy: params.performedBy,
+    requireSufficientBalance: false,
   });
 }
 
@@ -326,11 +452,16 @@ export async function creditRetainedFundSurplusOnLiquidation(params: {
 
   const isSurplus = net > 0;
   const absAmount = Math.abs(net);
+  const period = await resolveEffectiveRetainedPeriod({
+    schoolYear: params.schoolYear,
+    semester: params.semester,
+    eventId: params.eventId,
+  });
   const identity = resolveRetainedBucketIdentity({
     organizationId: params.organizationId,
     organizationName: params.organizationName,
     createdByRole: params.createdByRole,
-    schoolYear: params.schoolYear,
+    schoolYear: period.schoolYear,
   });
 
   await postRetainedFundTransaction({
@@ -341,12 +472,12 @@ export async function creditRetainedFundSurplusOnLiquidation(params: {
     deltaBalance: isSurplus ? absAmount : -absAmount,
     description: isSurplus
       ? `Retained Liquidation Surplus – ${params.eventTitle || 'Event Liquidation'}`
-      : `Liquidation Deficit Adjustment – ${params.eventTitle || 'Event Liquidation'}`,
+      : `Reimbursed Liquidation Overspend – ${params.eventTitle || 'Event Liquidation'}`,
     eventId: params.eventId,
     eventTitle: params.eventTitle,
     liquidationId: params.liquidationId,
-    schoolYear: params.schoolYear,
-    semester: params.semester,
+    schoolYear: period.schoolYear,
+    semester: period.semester,
     performedBy: params.performedBy,
     requireSufficientBalance: params.requireSufficientBalance,
   });

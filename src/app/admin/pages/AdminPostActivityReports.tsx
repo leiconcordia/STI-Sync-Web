@@ -271,7 +271,10 @@ export default function AdminPostActivityReports() {
   };
 
   const handleCreateSasPAR = (eventId: string) => {
-    setEditingReport(null);
+    const existingEditable = pars.find(
+      (p) => p.eventId === eventId && (p.status === 'draft' || p.status === 'returned')
+    );
+    setEditingReport(existingEditable || null);
     setWizardEventId(eventId);
     setShowWizardModal(true);
   };
@@ -350,9 +353,8 @@ export default function AdminPostActivityReports() {
         {/* Solid Admin Button without gradients */}
         <button
           onClick={() => {
-            if (eligibleEvents.length > 0) {
-              setWizardEventId(eligibleEvents[0].id);
-            }
+            setEditingReport(null);
+            setWizardEventId(eligibleEvents.length === 1 ? eligibleEvents[0].id : '');
             setShowWizardModal(true);
           }}
           disabled={eligibleEvents.length === 0}
@@ -763,31 +765,35 @@ export default function AdminPostActivityReports() {
       </div>
 
       {/* Creation Modal for SAS Internal Activities */}
-      <PostActivityReportWizardModal
-        isOpen={showWizardModal}
-        onClose={() => {
-          setShowWizardModal(false);
-          setEditingReport(null);
-        }}
-        onSuccess={() => {
-          setShowWizardModal(false);
-          setEditingReport(null);
-        }}
-        eligibleEvents={eligibleEvents}
-        initialEventId={wizardEventId}
-        initialReport={editingReport}
-        currentUser={{
-          uid: adminUid,
-          name: adminName,
-          email: adminEmail,
-          role: 'admin',
-          roleTitle: adminRoleTitle,
-          organizationId: 'sao_admin',
-          organizationName: 'Student Affairs Services (SAS)',
-          signatureUrl: adminSignatureUrl,
-        }}
-        isSasAdmin={true}
-      />
+      {showWizardModal && (
+        <PostActivityReportWizardModal
+          isOpen={showWizardModal}
+          onClose={() => {
+            setShowWizardModal(false);
+            setEditingReport(null);
+            setWizardEventId('');
+          }}
+          onSuccess={() => {
+            setShowWizardModal(false);
+            setEditingReport(null);
+            setWizardEventId('');
+          }}
+          eligibleEvents={eligibleEvents}
+          initialEventId={wizardEventId}
+          initialReport={editingReport}
+          currentUser={{
+            uid: adminUid,
+            name: adminName,
+            email: adminEmail,
+            role: 'admin',
+            roleTitle: adminRoleTitle,
+            organizationId: 'sao_admin',
+            organizationName: 'Student Affairs Services (SAS)',
+            signatureUrl: adminSignatureUrl,
+          }}
+          isSasAdmin={true}
+        />
+      )}
 
       {/* Detail & Review Modal */}
       <PostActivityReportDetailModal

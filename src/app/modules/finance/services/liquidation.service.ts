@@ -2401,15 +2401,27 @@ async function settlePreLiquidationExcessCollectionsIfAny(
     const paySnap = await getDocs(
       query(collection(db, 'payables'), where('eventId', '==', eventId))
     );
+    const paidDocs = paySnap.docs
+      .map((d) => d.data() as any)
+      .filter((p) => String(p.status || '').toLowerCase() === 'paid');
+
     const totalCollected =
       Math.round(
-        paySnap.docs
-          .map((d) => d.data() as any)
-          .filter((p) => String(p.status || '').toLowerCase() === 'paid')
-          .reduce((s, p) => s + (Number(p.paidAmount) || Number(p.assignedAmount) || 0), 0) * 100
+        paidDocs.reduce(
+          (s, p) => s + (Number(p.paidAmount) || Number(p.assignedAmount) || 0),
+          0
+        ) * 100
       ) / 100;
 
     if (totalCollected <= 0.009) return;
+
+    const totalAlreadyCredited =
+      Math.round(
+        paidDocs.reduce(
+          (s, p) => s + Math.max(0, Number(p.retainedCreditedAmount) || 0),
+          0
+        ) * 100
+      ) / 100;
 
     const allocs = await resolveLiquidationSourceAllocations(data);
     const retainedTopUp =
@@ -2420,8 +2432,23 @@ async function settlePreLiquidationExcessCollectionsIfAny(
       ) / 100;
 
     const allocatedBasis = Number(data?.allocatedBudget ?? data?.amountAdvanced ?? 0) || 0;
-    const allocatedFromNewCollections = Math.max(0, Math.round((allocatedBasis - retainedTopUp) * 100) / 100);
-    const excessUnallocated = Math.round((totalCollected - allocatedFromNewCollections) * 100) / 100;
+    const allocatedFromNewCollections = Math.max(
+      0,
+      Math.round((allocatedBasis - retainedTopUp) * 100) / 100
+    );
+
+    // Check if Disbursement Voucher already deducted from Retained Fund; if both collections and disbursement
+    // were already posted live, excess unallocated cash is already reflected in availableBalance.
+    let hasLiveDisbLedger = false;
+    try {
+      const disbLedgerSnap = await getDoc(doc(db, 'retained_fund_ledger', `disb_${eventId}`));
+      hasLiveDisbLedger = disbLedgerSnap.exists();
+    } catch {}
+
+    const uncreditedOffset = hasLiveDisbLedger
+      ? totalAlreadyCredited
+      : Math.max(totalAlreadyCredited, allocatedFromNewCollections);
+    const excessUnallocated = Math.round((totalCollected - uncreditedOffset) * 100) / 100;
 
     if (excessUnallocated > 0.009) {
       const { creditRetainedFundOnCollection } = await import('./retained-fund.service');
@@ -2511,7 +2538,19 @@ export async function verifyCashierSettlementProofs(
                   returnAmount: Math.round(netAmount * 100) / 100,
                 },
               ]
-            : [];
+            : (meta.effectiveFundingSource === 'student_contributions' ||
+                  meta.effectiveFundingSource === 'retained_sao_fund') &&
+                isSasEvent
+              ? [
+                  {
+                    bucketId: 'SAO_CAMPUS',
+                    bucketName: 'SAO / Campus Student Activity Fund',
+                    fundType: 'student_contribution_retained' as const,
+                    originalAllocatedAmount: Number(data.allocatedBudget ?? 0),
+                    returnAmount: Math.round(netAmount * 100) / 100,
+                  },
+                ]
+              : [];
 
     if (candidateReturns.length === 0) {
       throw new Error(

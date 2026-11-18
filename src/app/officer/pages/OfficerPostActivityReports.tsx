@@ -247,8 +247,11 @@ export default function OfficerPostActivityReports() {
   };
 
   const handleCreateForEvent = (eventId: string) => {
+    const existingEditable = pars.find(
+      (p) => p.eventId === eventId && (p.status === 'draft' || p.status === 'returned')
+    );
     setWizardEventId(eventId);
-    setEditingReport(null);
+    setEditingReport(existingEditable || null);
     setShowWizardModal(true);
   };
 
@@ -327,7 +330,7 @@ export default function OfficerPostActivityReports() {
         <button
           onClick={() => {
             setEditingReport(null);
-            setWizardEventId(eligibleEvents.length > 0 ? eligibleEvents[0].id : '');
+            setWizardEventId(eligibleEvents.length === 1 ? eligibleEvents[0].id : '');
             setShowWizardModal(true);
           }}
           disabled={eligibleEvents.length === 0}
@@ -711,32 +714,36 @@ export default function OfficerPostActivityReports() {
       </div>
 
       {/* Creation / Edit Wizard Modal */}
-      <PostActivityReportWizardModal
-        isOpen={showWizardModal}
-        onClose={() => {
-          setShowWizardModal(false);
-          setEditingReport(null);
-        }}
-        onSuccess={() => {
-          setShowWizardModal(false);
-          setEditingReport(null);
-        }}
-        eligibleEvents={eligibleEvents}
-        initialEventId={wizardEventId}
-        initialReport={editingReport}
-        currentUser={{
-          uid: userUid,
-          name: userName,
-          email: userEmail,
-          role: profile?.isAdviser ? 'adviser' : 'officer',
-          roleTitle: profile?.isAdviser ? 'Organization Adviser' : 'Organization Officer',
-          isAdviser: Boolean(profile?.isAdviser),
-          organizationId: orgId,
-          organizationName: orgName,
-          signatureUrl: profile?.signatureUrl || null,
-        }}
-        isSasAdmin={false}
-      />
+      {showWizardModal && (
+        <PostActivityReportWizardModal
+          isOpen={showWizardModal}
+          onClose={() => {
+            setShowWizardModal(false);
+            setEditingReport(null);
+            setWizardEventId('');
+          }}
+          onSuccess={() => {
+            setShowWizardModal(false);
+            setEditingReport(null);
+            setWizardEventId('');
+          }}
+          eligibleEvents={eligibleEvents}
+          initialEventId={wizardEventId}
+          initialReport={editingReport}
+          currentUser={{
+            uid: userUid,
+            name: userName,
+            email: userEmail,
+            role: profile?.isAdviser ? 'adviser' : 'officer',
+            roleTitle: profile?.isAdviser ? 'Organization Adviser' : 'Organization Officer',
+            isAdviser: Boolean(profile?.isAdviser),
+            organizationId: orgId,
+            organizationName: orgName,
+            signatureUrl: profile?.signatureUrl || null,
+          }}
+          isSasAdmin={false}
+        />
+      )}
 
       {/* Detail / Inspection Modal */}
       <PostActivityReportDetailModal

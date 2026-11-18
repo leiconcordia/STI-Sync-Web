@@ -83,6 +83,9 @@ export function createDefaultMiscFeeConfig(
     shsUploadedForSY: false,
     college1stSemUploaded: false,
     college2ndSemUploaded: false,
+    collegeUploadCount: 0,
+    shsUploadCount: 0,
+    uploadedImportFingerprints: [],
     buckets: [],
   };
 }
@@ -118,11 +121,24 @@ export async function carryOver1stSemBalancesTo2ndSem(
   counts: {
     shsEnrolled: number;
     shsGrade12Enrolled?: number;
+    shs2ndSemEnrolled?: number;
+    shs2ndSemGrade12Enrolled?: number;
     college1stSemEnrolled: number;
     college2ndSemEnrolled: number;
   },
   performedBy = 'SAS Admin'
 ): Promise<MiscFeeConfigDocument> {
+  if (config.status === 'CLOSED' || config.isActive === false) {
+    throw new Error(
+      `Cannot carry over balances inside closed historical SY ${config.schoolYear}. Carry-over is strictly within the active School Year only.`
+    );
+  }
+  if (config.is1stSemCarriedOver || config.activeSemester === '2nd Semester') {
+    throw new Error(
+      `1st Semester unspent balances for SY ${config.schoolYear} have already been carried over to 2nd Semester.`
+    );
+  }
+
   const updatedBuckets: MiscFeeBucket[] = config.buckets.map((b) => {
     const computed = computeBucketBalance(b, counts, '1st Semester');
     return {
@@ -133,8 +149,8 @@ export async function carryOver1stSemBalancesTo2ndSem(
 
   const updatedConfig: MiscFeeConfigDocument = {
     ...config,
-    status: config.status || 'ACTIVE',
-    isActive: config.isActive ?? true,
+    status: 'ACTIVE',
+    isActive: true,
     activeSemester: '2nd Semester',
     is1stSemCarriedOver: true,
     buckets: updatedBuckets,
@@ -224,11 +240,16 @@ export function validateNewSchoolYear(
   if (referenceYears.length > 0) {
     referenceYears.sort((a, b) => b.start - a.start);
     const latest = referenceYears[0];
-    if (startYear <= latest.start) {
+    const expectedStart = latest.start + 1;
+    const expectedSy = `${expectedStart}-${expectedStart + 1}`;
+    if (startYear !== expectedStart) {
       return {
         valid: false,
         normalized: clean,
-        error: `New School Year must be after SY ${latest.sy} (e.g. ${latest.start + 1}-${latest.start + 2}).`,
+        error:
+          startYear <= latest.start
+            ? `New School Year must be after SY ${latest.sy}. Next consecutive School Year is SY ${expectedSy}.`
+            : `Cannot skip School Years. Next consecutive School Year after SY ${latest.sy} is SY ${expectedSy}.`,
       };
     }
   }
@@ -296,7 +317,7 @@ export async function cloneMiscFeeConfigForNewSchoolYear(
     );
   }
 
-  // Initialize brand-new SY with ₱0.00 Misc Pools, Carry-Over, and Counters
+  // Initialize brand-new SY with ₱0.00 Misc Pools, Carry-Over, and Counters (Zero Past-SY Carry-Over)
   const newConfig: MiscFeeConfigDocument = {
     id: buildMiscFeeDocId(cleanSy),
     schoolYear: cleanSy,
@@ -311,6 +332,9 @@ export async function cloneMiscFeeConfigForNewSchoolYear(
     shsUploadedForSY: false,
     college1stSemUploaded: false,
     college2ndSemUploaded: false,
+    collegeUploadCount: 0,
+    shsUploadCount: 0,
+    uploadedImportFingerprints: [],
     buckets: [],
   };
 

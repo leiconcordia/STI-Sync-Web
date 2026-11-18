@@ -9,11 +9,11 @@ import {
   Lock,
   AlertTriangle,
   Coins,
-  Wallet,
   Eye,
   Search,
   History,
   ShieldCheck,
+  RefreshCw,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -21,7 +21,13 @@ import {
   useMiscFeeConfigs,
   useMiscFeeLedger,
 } from '../../../modules/finance/hooks/useMiscFeeStream';
-import { useRetainedActivityFunds } from '../../../modules/finance/hooks/useRetainedFundStream';
+import {
+  useRetainedActivityFunds,
+  useSasContributionActivities,
+  type SasContributionActivitySummary,
+} from '../../../modules/finance/hooks/useRetainedFundStream';
+import { RetainedActivityDetailsModal } from '../../../modules/finance/components/RetainedActivityDetailsModal';
+import { reconcileSasContributionEventToRetainedFund } from '../../../modules/finance/services/payable.service';
 import {
   saveMiscFeeConfig,
   carryOver1stSemBalancesTo2ndSem,
@@ -36,6 +42,9 @@ import {
   parseMiscFeeExcelWorkbook,
   computeBucketBalance,
   inferSaoActivityEligibility,
+  getMiscFeeUploadCounts,
+  MAX_TERTIARY_UPLOADS_PER_SY,
+  MAX_SHS_UPLOADS_PER_SY,
 } from '../../../modules/finance/utils/misc-fee-excel-importer';
 import { MiscFeeBucketTransactionsModal } from '../../../modules/finance/components/MiscFeeBucketTransactionsModal';
 import { logAuditEvent } from '../../../modules/audit/services/audit.service';
@@ -44,6 +53,7 @@ import type {
   MiscFeeConfigDocument,
   MiscFeeSemesterTerm,
   MiscFeeHeadcountSource,
+  MiscFeeUploadFingerprint,
   ComputedBucketBalance,
 } from '../../../modules/finance/types/misc-fee.types';
 import { formatCurrency } from '../../../utils/currency';
@@ -60,6 +70,9 @@ interface PendingMiscImportPreview {
   college2ndSemEnrolledOverride: number;
   parsedBuckets: MiscFeeBucket[];
   mergedBuckets: MiscFeeBucket[];
+  newFingerprints: MiscFeeUploadFingerprint[];
+  addedCollegeCount: number;
+  addedShsCount: number;
 }
 
 export default function MiscFeeMaintenance() {
@@ -75,15 +88,60 @@ export default function MiscFeeMaintenance() {
   const { data: miscFeeLedger = [] } = useMiscFeeLedger();
   const {
     saoRetainedFund,
-    orgRetainedFunds,
     ledgerEntries: retainedLedgerEntries,
     loading: retainedLoading,
   } = useRetainedActivityFunds(null, viewedConfig.schoolYear);
+  const saoOnlyLedgerEntries = useMemo(
+    () => retainedLedgerEntries.filter((entry) => entry.ownerType === 'sao'),
+    [retainedLedgerEntries]
+  );
+  const { activities: sasContributionActivities, loading: sasActivitiesLoading } =
+    useSasContributionActivities(viewedConfig.schoolYear, saoOnlyLedgerEntries);
 
   const [activeTab, setActiveTab] = useState<'misc_pools' | 'retained_funds'>('misc_pools');
   const [particularSearch, setParticularSearch] = useState('');
   const [inspectedBucket, setInspectedBucket] = useState<ComputedBucketBalance | null>(null);
+  const [retainedActivitySearch, setRetainedActivitySearch] = useState('');
+  const [retainedSourceFilter, setRetainedSourceFilter] = useState<'all' | 'student_contributions' | 'retained_sao_fund'>('all');
+  const [inspectedRetainedActivityId, setInspectedRetainedActivityId] = useState<string | null>(null);
+  const [syncingEventId, setSyncingEventId] = useState<string | null>(null);
   const [draftConfig, setDraftConfig] = useState<MiscFeeConfigDocument>(viewedConfig);
+
+  const filteredSasActivities = useMemo(() => {
+    const q = retainedActivitySearch.trim().toLowerCase();
+    return sasContributionActivities.filter((act) => {
+      if (retainedSourceFilter !== 'all' && act.fundingSource !== retainedSourceFilter) return false;
+      if (!q) return true;
+      return (
+        act.eventTitle.toLowerCase().includes(q) ||
+        (act.chequeNumber || '').toLowerCase().includes(q)
+      );
+    });
+  }, [sasContributionActivities, retainedActivitySearch, retainedSourceFilter]);
+
+  const inspectedRetainedActivity = useMemo<SasContributionActivitySummary | null>(
+    () => sasContributionActivities.find((a) => a.eventId === inspectedRetainedActivityId) || null,
+    [sasContributionActivities, inspectedRetainedActivityId]
+  );
+
+  const handleSyncRetainedActivity = async (e: React.MouseEvent, act: SasContributionActivitySummary) => {
+    e.stopPropagation();
+    setSyncingEventId(act.eventId);
+    try {
+      const res = await reconcileSasContributionEventToRetainedFund(act.eventId);
+      if (res.syncedCollectionAmount > 0 || res.syncedDisbursementAmount > 0) {
+        toast.success(
+          `Synced ${formatCurrency(res.syncedCollectionAmount)} collections and ${formatCurrency(res.syncedDisbursementAmount)} disbursement for "${act.eventTitle}".`
+        );
+      } else {
+        toast.info('Activity collections & disbursement are already up to date.');
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to sync activity records.');
+    } finally {
+      setSyncingEventId(null);
+    }
+  };
   const [isSaving, setIsSaving] = useState(false);
   const [newSchoolYearInput, setNewSchoolYearInput] = useState('');
   const [showNewSyModal, setShowNewSyModal] = useState(false);
@@ -111,6 +169,8 @@ export default function MiscFeeMaintenance() {
       return {
         shsEnrolled: liveRegistryCounts.shs,
         shsGrade12Enrolled: liveRegistryCounts.shsGrade12,
+        shs2ndSemEnrolled: liveRegistryCounts.shs2ndSem,
+        shs2ndSemGrade12Enrolled: liveRegistryCounts.shs2ndSemGrade12,
         college1stSemEnrolled: liveRegistryCounts.college1stSem,
         college2ndSemEnrolled: liveRegistryCounts.college2ndSem,
       };
@@ -118,10 +178,17 @@ export default function MiscFeeMaintenance() {
     return {
       shsEnrolled: Number(draftConfig.shsEnrolledOverride) || 0,
       shsGrade12Enrolled: Number(draftConfig.shsEnrolledOverride) || 0,
+      shs2ndSemEnrolled: Number(draftConfig.shsEnrolledOverride) || 0,
+      shs2ndSemGrade12Enrolled: Number(draftConfig.shsEnrolledOverride) || 0,
       college1stSemEnrolled: Number(draftConfig.college1stSemEnrolledOverride) || 0,
       college2ndSemEnrolled: Number(draftConfig.college2ndSemEnrolledOverride) || 0,
     };
   }, [draftConfig, liveRegistryCounts]);
+
+  const uploadCounts = useMemo(() => getMiscFeeUploadCounts(draftConfig), [draftConfig]);
+  const isAllUploadQuotasReached =
+    uploadCounts.collegeCount >= MAX_TERTIARY_UPLOADS_PER_SY &&
+    uploadCounts.shsCount >= MAX_SHS_UPLOADS_PER_SY;
 
   const displayedBuckets = useMemo(() => {
     const q = particularSearch.trim().toLowerCase();
@@ -172,6 +239,13 @@ export default function MiscFeeMaintenance() {
       toast.error(`SY ${draftConfig.schoolYear} is closed (read-only history). Switch to Active SY ${activeConfig.schoolYear} to upload.`);
       return;
     }
+    if (isAllUploadQuotasReached) {
+      toast.error(
+        `Upload limit reached for SY ${draftConfig.schoolYear}: Tertiary (${uploadCounts.collegeCount}/${MAX_TERTIARY_UPLOADS_PER_SY}) and SHS (${uploadCounts.shsCount}/${MAX_SHS_UPLOADS_PER_SY}) are already uploaded.`
+      );
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -180,6 +254,15 @@ export default function MiscFeeMaintenance() {
       const parsedFromFilesMap = new Map<string, MiscFeeBucket>();
       const detectedTypes: ('SHS' | 'COLLEGE' | 'COMBINED')[] = [];
       const fileNames: string[] = [];
+      const existingHashes = new Set(
+        (draftConfig.uploadedImportFingerprints || []).map((f) => f.contentHash)
+      );
+      const sessionHashes = new Set<string>();
+      const newFingerprints: MiscFeeUploadFingerprint[] = [];
+      let runningCollegeCount = uploadCounts.collegeCount;
+      let runningShsCount = uploadCounts.shsCount;
+      let addedCollegeCount = 0;
+      let addedShsCount = 0;
       let excludedCount = 0;
       let detectedSy = draftConfig.schoolYear;
       let shsCount = draftConfig.shsEnrolledOverride;
@@ -196,7 +279,56 @@ export default function MiscFeeMaintenance() {
         const buffer = await file.arrayBuffer();
         const parsed = parseMiscFeeExcelWorkbook(buffer, currentBuckets, {
           targetTerm: draftConfig.activeSemester,
+          fallbackSchoolYear: draftConfig.schoolYear,
+          existingShsUploadCount: runningShsCount,
+          existingCollegeUploadCount: runningCollegeCount,
         });
+
+        const includesCollege =
+          parsed.templateType === 'COLLEGE' || parsed.templateType === 'COMBINED';
+        const includesShs =
+          parsed.templateType === 'SHS' || parsed.templateType === 'COMBINED';
+
+        if (existingHashes.has(parsed.contentHash) || sessionHashes.has(parsed.contentHash)) {
+          const label =
+            parsed.templateType === 'COLLEGE'
+              ? 'Tertiary (College)'
+              : parsed.templateType === 'SHS'
+              ? 'SHS'
+              : 'Combined';
+          throw new Error(
+            `Duplicate Excel detected ("${file.name}"): the exact same ${label} Miscellaneous Fee rows were already uploaded for SY ${parsed.schoolYear || draftConfig.schoolYear}.`
+          );
+        }
+
+        if (includesCollege && runningCollegeCount >= MAX_TERTIARY_UPLOADS_PER_SY) {
+          throw new Error(
+            `Tertiary (College) Miscellaneous Fees can only be uploaded TWICE per School Year (${runningCollegeCount}/${MAX_TERTIARY_UPLOADS_PER_SY} limit already reached for SY ${draftConfig.schoolYear}).`
+          );
+        }
+        if (includesShs && runningShsCount >= MAX_SHS_UPLOADS_PER_SY) {
+          throw new Error(
+            `SHS Miscellaneous Fees can only be uploaded ONCE per School Year (${runningShsCount}/${MAX_SHS_UPLOADS_PER_SY} already uploaded for SY ${draftConfig.schoolYear}).`
+          );
+        }
+
+        if (includesCollege) {
+          runningCollegeCount++;
+          addedCollegeCount++;
+        }
+        if (includesShs) {
+          runningShsCount++;
+          addedShsCount++;
+        }
+        sessionHashes.add(parsed.contentHash);
+        newFingerprints.push({
+          templateType: parsed.templateType,
+          contentHash: parsed.contentHash,
+          fileName: file.name,
+          term: draftConfig.activeSemester,
+          uploadedAt: new Date().toISOString(),
+        });
+
         fileNames.push(file.name);
         excludedCount += parsed.excludedCount || 0;
         if (!detectedTypes.includes(parsed.templateType)) {
@@ -231,6 +363,9 @@ export default function MiscFeeMaintenance() {
         college2ndSemEnrolledOverride: col2Count,
         parsedBuckets: Array.from(parsedFromFilesMap.values()),
         mergedBuckets: currentBuckets,
+        newFingerprints,
+        addedCollegeCount,
+        addedShsCount,
       });
     } catch (err: any) {
       console.error('[MiscFeeMaintenance] Excel import error:', err);
@@ -245,6 +380,26 @@ export default function MiscFeeMaintenance() {
     if (!pendingImport) return;
     if (isViewingHistory) {
       toast.error(`Cannot modify closed historical School Year ${draftConfig.schoolYear}.`);
+      return;
+    }
+    const latestCounts = getMiscFeeUploadCounts(draftConfig);
+    if (latestCounts.collegeCount + pendingImport.addedCollegeCount > MAX_TERTIARY_UPLOADS_PER_SY) {
+      toast.error(
+        `Tertiary (College) upload blocked: maximum of ${MAX_TERTIARY_UPLOADS_PER_SY} upload per School Year already reached.`
+      );
+      return;
+    }
+    if (latestCounts.shsCount + pendingImport.addedShsCount > MAX_SHS_UPLOADS_PER_SY) {
+      toast.error(
+        `SHS upload blocked: maximum of ${MAX_SHS_UPLOADS_PER_SY} uploads per School Year already reached.`
+      );
+      return;
+    }
+    const existingHashes = new Set(
+      (draftConfig.uploadedImportFingerprints || []).map((f) => f.contentHash)
+    );
+    if (pendingImport.newFingerprints.some((fp) => existingHashes.has(fp.contentHash))) {
+      toast.error(`Duplicate Excel upload blocked for SY ${draftConfig.schoolYear}.`);
       return;
     }
     const cleanImportSy = normalizeMiscSchoolYear(pendingImport.schoolYear);
@@ -269,12 +424,16 @@ export default function MiscFeeMaintenance() {
           ? {
               shsEnrolled: liveRegistryCounts.shs,
               shsGrade12Enrolled: liveRegistryCounts.shsGrade12,
+              shs2ndSemEnrolled: liveRegistryCounts.shs2ndSem,
+              shs2ndSemGrade12Enrolled: liveRegistryCounts.shs2ndSemGrade12,
               college1stSemEnrolled: liveRegistryCounts.college1stSem,
               college2ndSemEnrolled: liveRegistryCounts.college2ndSem,
             }
           : {
               shsEnrolled: pendingImport.shsEnrolledOverride || 0,
               shsGrade12Enrolled: pendingImport.shsEnrolledOverride || 0,
+              shs2ndSemEnrolled: pendingImport.shsEnrolledOverride || 0,
+              shs2ndSemGrade12Enrolled: pendingImport.shsEnrolledOverride || 0,
               college1stSemEnrolled: pendingImport.college1stSemEnrolledOverride || 0,
               college2ndSemEnrolled: pendingImport.college2ndSemEnrolledOverride || 0,
             };
@@ -308,19 +467,38 @@ export default function MiscFeeMaintenance() {
         pendingImport.detectedTypes.includes('COLLEGE') ||
         pendingImport.detectedTypes.includes('COMBINED');
 
+      const nextCollegeCount = Math.min(
+        MAX_TERTIARY_UPLOADS_PER_SY,
+        latestCounts.collegeCount + pendingImport.addedCollegeCount
+      );
+      const nextShsCount = Math.min(
+        MAX_SHS_UPLOADS_PER_SY,
+        latestCounts.shsCount + pendingImport.addedShsCount
+      );
+
       const updated: MiscFeeConfigDocument = {
         ...draftConfig,
         id: buildMiscFeeDocId(pendingImport.schoolYear),
         schoolYear: pendingImport.schoolYear,
         status: 'ACTIVE',
         isActive: true,
+        collegeUploadCount: nextCollegeCount,
+        shsUploadCount: nextShsCount,
+        uploadedImportFingerprints: [
+          ...(draftConfig.uploadedImportFingerprints || []),
+          ...pendingImport.newFingerprints,
+        ],
         shsUploadedForSY: draftConfig.shsUploadedForSY || uploadedShs,
         college1stSemUploaded:
           draftConfig.college1stSemUploaded ||
-          (uploadedCollege && draftConfig.activeSemester === '1st Semester'),
+          (uploadedCollege &&
+            (draftConfig.activeSemester === '1st Semester' ||
+              pendingImport.mergedBuckets.some((b) => (Number(b.college1stSemRateTY) || 0) > 0))),
         college2ndSemUploaded:
           draftConfig.college2ndSemUploaded ||
-          (uploadedCollege && draftConfig.activeSemester === '2nd Semester'),
+          (uploadedCollege &&
+            (draftConfig.activeSemester === '2nd Semester' ||
+              pendingImport.mergedBuckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0))),
         headcountSource: pendingImport.headcountSource,
         shsEnrolledOverride: pendingImport.shsEnrolledOverride,
         college1stSemEnrolledOverride: pendingImport.college1stSemEnrolledOverride,
@@ -441,7 +619,7 @@ export default function MiscFeeMaintenance() {
             </h2>
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Unified School Year &amp; Term control: SHS Misc (once per School Year) &amp; Tertiary Misc (Term 1 + Term 2 upload), synced with Registrar headcounts.
+            Unified School Year &amp; Term control: SHS Misc (once per SY, auto-adds to active semester) &amp; Tertiary Misc (up to 2 uploads per SY) with Zero Past-SY Carry-Over.
           </p>
         </div>
 
@@ -476,15 +654,15 @@ export default function MiscFeeMaintenance() {
           />
           <button
             type="button"
-            disabled={isViewingHistory}
+            disabled={isViewingHistory || isAllUploadQuotasReached}
             onClick={() => fileInputRef.current?.click()}
             className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
           >
             <FileSpreadsheet className="w-4 h-4" />
             <span>
-              {draftConfig.activeSemester === '2nd Semester'
-                ? 'Upload Term 2 Tertiary .xlsx'
-                : 'Import SHS / College .xlsx'}
+              {isAllUploadQuotasReached
+                ? `Upload Limit Reached (${uploadCounts.collegeCount}/${MAX_TERTIARY_UPLOADS_PER_SY} Tertiary • ${uploadCounts.shsCount}/${MAX_SHS_UPLOADS_PER_SY} SHS)`
+                : 'Import SHS / Tertiary .xlsx'}
             </span>
           </button>
 
@@ -575,7 +753,7 @@ export default function MiscFeeMaintenance() {
             {formatCurrency(totals.totalPool)}
           </p>
           <p className="text-[11px] text-blue-800/80 mt-0.5">
-            SHS ({effectiveCounts.shsEnrolled}) + College ({draftConfig.activeSemester === '2nd Semester' ? effectiveCounts.college2ndSemEnrolled : effectiveCounts.college1stSemEnrolled})
+            SHS ({draftConfig.activeSemester === '2nd Semester' ? effectiveCounts.shs2ndSemEnrolled : effectiveCounts.shsEnrolled}) + College ({draftConfig.activeSemester === '2nd Semester' ? effectiveCounts.college2ndSemEnrolled : effectiveCounts.college1stSemEnrolled})
           </p>
         </div>
 
@@ -630,7 +808,12 @@ export default function MiscFeeMaintenance() {
             <button
               type="button"
               onClick={handleCarryOverTo2ndSem}
-              disabled={isSaving || isViewingHistory || draftConfig.activeSemester === '2nd Semester'}
+              disabled={
+                isSaving ||
+                isViewingHistory ||
+                draftConfig.activeSemester === '2nd Semester' ||
+                Boolean(draftConfig.is1stSemCarriedOver)
+              }
               className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed text-indigo-800 border border-indigo-200 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               <ArrowRightLeft className="w-3.5 h-3.5" />
@@ -689,7 +872,7 @@ export default function MiscFeeMaintenance() {
               className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D] bg-white disabled:bg-gray-100"
             >
               <option value="1st Semester">1st Semester (Term 1: SHS + Tertiary)</option>
-              <option value="2nd Semester">2nd Semester (Term 2: Carry-Over + Tertiary)</option>
+              <option value="2nd Semester">2nd Semester (Term 2: Carry-Over + Tertiary + SHS)</option>
             </select>
           </div>
 
@@ -765,7 +948,7 @@ export default function MiscFeeMaintenance() {
           </div>
         </div>
 
-        {/* Academic Cycle Sync Checklist */}
+        {/* Academic Cycle Sync & Upload Quota Checklist */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100 text-[11px] text-gray-600">
           <div className="flex flex-wrap items-center gap-2">
             <span>
@@ -775,27 +958,23 @@ export default function MiscFeeMaintenance() {
               </strong>
             </span>
             <span className={`px-2 py-0.5 rounded-full font-bold ${
-              draftConfig.shsUploadedForSY || displayedBuckets.some((b) => (Number(b.shsRateTY) || 0) > 0)
+              uploadCounts.collegeCount >= MAX_TERTIARY_UPLOADS_PER_SY
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : uploadCounts.collegeCount > 0
+                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                : 'bg-slate-100 text-slate-600 border border-slate-200'
+            }`}>
+              Tertiary (Max {MAX_TERTIARY_UPLOADS_PER_SY}/SY): {uploadCounts.collegeCount} / {MAX_TERTIARY_UPLOADS_PER_SY} Uploaded
+            </span>
+            <span className={`px-2 py-0.5 rounded-full font-bold ${
+              uploadCounts.shsCount >= MAX_SHS_UPLOADS_PER_SY
                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                 : 'bg-slate-100 text-slate-600 border border-slate-200'
             }`}>
-              SHS Misc (Once/SY): {draftConfig.shsUploadedForSY || displayedBuckets.some((b) => (Number(b.shsRateTY) || 0) > 0) ? 'Uploaded' : 'Pending'}
+              SHS (Once/SY • Max {MAX_SHS_UPLOADS_PER_SY}/SY): {uploadCounts.shsCount} / {MAX_SHS_UPLOADS_PER_SY} Uploaded
             </span>
-            <span className={`px-2 py-0.5 rounded-full font-bold ${
-              draftConfig.college1stSemUploaded || displayedBuckets.some((b) => (Number(b.college1stSemRateTY) || 0) > 0)
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                : 'bg-slate-100 text-slate-600 border border-slate-200'
-            }`}>
-              Tertiary Term 1: {draftConfig.college1stSemUploaded || displayedBuckets.some((b) => (Number(b.college1stSemRateTY) || 0) > 0) ? 'Uploaded' : 'Pending'}
-            </span>
-            <span className={`px-2 py-0.5 rounded-full font-bold ${
-              draftConfig.college2ndSemUploaded || displayedBuckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0)
-                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                : draftConfig.activeSemester === '2nd Semester'
-                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                : 'bg-slate-100 text-slate-500 border border-slate-200'
-            }`}>
-              Tertiary Term 2: {draftConfig.college2ndSemUploaded || displayedBuckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0) ? 'Uploaded' : draftConfig.activeSemester === '2nd Semester' ? 'Upload Term 2 Excel' : 'Upcoming'}
+            <span className="px-2 py-0.5 rounded-full font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              Zero Past-SY Carry-Over Enforced (SY {draftConfig.schoolYear} starts fresh at ₱0.00)
             </span>
           </div>
           {draftConfig.headcountSource === 'student_registry' &&
@@ -818,7 +997,7 @@ export default function MiscFeeMaintenance() {
               2. SAO-Eligible Miscellaneous Fee Particulars (Read-Only from Uploaded Excel)
             </h3>
             <p className="text-[11px] text-gray-500">
-              Formula: (SHS Rate × {effectiveCounts.shsEnrolled} [G12: {effectiveCounts.shsGrade12Enrolled}]) + (College 1st Sem Rate × {effectiveCounts.college1stSemEnrolled}) for 1st Sem; Carry-Over + (College 2nd Sem Rate × {effectiveCounts.college2ndSemEnrolled}) for 2nd Sem.
+              Formula: (SHS 1st Sem Rate × {effectiveCounts.shsEnrolled} [G12: {effectiveCounts.shsGrade12Enrolled}]) + (College 1st Sem Rate × {effectiveCounts.college1stSemEnrolled}) for 1st Sem; Carry-Over + (College 2nd Sem Rate × {effectiveCounts.college2ndSemEnrolled}) + (SHS 2nd Sem Rate × {effectiveCounts.shs2ndSemEnrolled}) for 2nd Sem.
             </p>
           </div>
 
@@ -892,7 +1071,12 @@ export default function MiscFeeMaintenance() {
                       </span>
                     </td>
                     <td className="p-2.5 text-right font-mono text-gray-700">
-                      {formatCurrency(b.shsRateTY)}
+                      <span>{formatCurrency(b.shsRateTY)}</span>
+                      {(Number(b.shs2ndSemRateTY) || 0) > 0 && (
+                        <span className="block text-[10px] text-blue-700 font-semibold">
+                          2nd: {formatCurrency(b.shs2ndSemRateTY || 0)}
+                        </span>
+                      )}
                     </td>
                     <td className="p-2.5 text-right font-mono text-gray-700">
                       {formatCurrency(b.college1stSemRateTY)}
@@ -949,10 +1133,11 @@ export default function MiscFeeMaintenance() {
             <ShieldCheck className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-bold text-emerald-900">
-                School-Year Scoped Student Contribution &amp; Retained Funds — SY {draftConfig.schoolYear}
+                School / SAS-Scoped Student Contribution &amp; Retained Funds — SY {draftConfig.schoolYear}
               </p>
               <p className="text-emerald-800 leading-relaxed">
-                Student Contribution collections and Retained Fund surpluses{' '}
+                Tracks <strong>School / SAS-created Student Contribution activities and SAS Retained Funds only</strong>{' '}
+                (student organization collections go directly to each organization&apos;s own Club Treasury). These funds{' '}
                 <strong>never mix with School Miscellaneous Fees</strong> and{' '}
                 <strong>reset to ₱0.00 whenever a New School Year starts</strong>. Past years&apos; balances remain{' '}
                 <strong>recorded in closed School Year history only</strong> and are never carried over into the new academic year.
@@ -1000,92 +1185,221 @@ export default function MiscFeeMaintenance() {
 
             <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200">
               <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
-                Drawn for Future Activities
+                Disbursed &amp; Drawn for Activities
               </p>
               <p className="text-xl font-black text-amber-900 mt-1 font-mono">
                 {formatCurrency(saoRetainedFund.totalDisbursedOrSpent)}
               </p>
               <p className="text-[11px] text-amber-700 mt-0.5">
-                Deducted from SAO Retained Student Activity Fund
+                Deducted via SAS Disbursement &amp; Retained Draws
               </p>
             </div>
           </div>
 
-          {/* Organization Treasuries / Club Retained Surpluses */}
+          {/* SAS Student Collection & Retained Fund Activities Breakdown */}
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-2xs">
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Wallet className="w-4 h-4 text-purple-700" />
-                <h3 className="text-sm font-bold text-[#001A4D]">
-                  Organization / Club Retained Student Contribution Balances
+            <div className="p-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-bold text-[#001A4D] flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#0E4EBD]" />
+                  <span>
+                    SAS Student Collection &amp; Retained Fund Activities — SY {draftConfig.schoolYear}
+                  </span>
                 </h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  Tracks paid students after every Cashier upload, Disbursement Voucher deductions, and Liquidation Surplus / Reimbursements once proof is attached.
+                </p>
               </div>
-              <span className="text-[11px] font-semibold text-gray-500">
-                {orgRetainedFunds.length} Organization Bucket(s)
-              </span>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={retainedSourceFilter}
+                  onChange={(e) => setRetainedSourceFilter(e.target.value as any)}
+                  className="px-2.5 py-1.5 border border-gray-300 rounded-xl text-xs font-semibold text-gray-700 bg-white outline-none"
+                >
+                  <option value="all">All SAS Sources ({sasContributionActivities.length})</option>
+                  <option value="student_contributions">Student Collection Only</option>
+                  <option value="retained_sao_fund">Retained SAO Fund Only</option>
+                </select>
+
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={retainedActivitySearch}
+                    onChange={(e) => setRetainedActivitySearch(e.target.value)}
+                    placeholder="Search Activity or Cheque #..."
+                    className="pl-8 pr-3 py-1.5 border border-gray-300 rounded-xl text-xs bg-white focus:ring-2 focus:ring-blue-500/20 outline-none w-52"
+                  />
+                </div>
+              </div>
             </div>
 
-            {orgRetainedFunds.length === 0 ? (
+            {sasActivitiesLoading ? (
               <div className="p-8 text-center text-xs text-gray-500">
-                No club-retained Student Contribution surpluses or collections posted yet. When a student organization liquidates a Student Contribution event with surplus, it automatically lands here and in their Club Treasury.
+                Loading SAS Student Collection &amp; Retained Fund activities...
+              </div>
+            ) : filteredSasActivities.length === 0 ? (
+              <div className="p-8 text-center text-xs text-gray-500">
+                No SAS Student Collection or Retained SAO Fund activities recorded for SY {draftConfig.schoolYear}.
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead>
                     <tr className="bg-slate-50 border-b border-gray-200 text-gray-600 font-bold">
-                      <th className="py-2.5 px-3">Organization</th>
-                      <th className="py-2.5 px-3 text-right">Collected Revenue</th>
-                      <th className="py-2.5 px-3 text-right">Surpluses Retained</th>
-                      <th className="py-2.5 px-3 text-right">Expenses Drawn</th>
-                      <th className="py-2.5 px-3 text-right bg-purple-50 text-purple-900">
-                        Available Retained Balance
-                      </th>
+                      <th className="py-2.5 px-3 min-w-[210px]">Activity &amp; Source</th>
+                      <th className="py-2.5 px-3 text-right">Asking Budget</th>
+                      <th className="py-2.5 px-3 text-center">Students Paid</th>
+                      <th className="py-2.5 px-3 text-right">Collected (+)</th>
+                      <th className="py-2.5 px-3 text-right">Disbursed (−)</th>
+                      <th className="py-2.5 px-3">Liquidation Result (Proof)</th>
+                      <th className="py-2.5 px-3 text-center">Inspect</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {orgRetainedFunds.map((orgFund) => (
-                      <tr key={orgFund.id} className="hover:bg-slate-50/70">
-                        <td className="p-2.5 font-bold text-[#001A4D]">
-                          {orgFund.organizationName || orgFund.organizationId}
-                        </td>
-                        <td className="p-2.5 text-right font-mono text-gray-700">
-                          {formatCurrency(orgFund.totalContributionsCollected)}
-                        </td>
-                        <td className="p-2.5 text-right font-mono text-emerald-700 font-semibold">
-                          {formatCurrency(orgFund.totalSurplusesRetained)}
-                        </td>
-                        <td className="p-2.5 text-right font-mono text-rose-700">
-                          {formatCurrency(orgFund.totalDisbursedOrSpent)}
-                        </td>
-                        <td className="p-2.5 text-right font-mono font-black text-purple-900 bg-purple-50/40">
-                          {formatCurrency(orgFund.availableBalance)}
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredSasActivities.map((act) => {
+                      const stageBadge =
+                        act.liquidationStage === 'surplus_returned' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 font-mono">
+                            +{formatCurrency(act.surplusReturned)} Surplus
+                          </span>
+                        ) : act.liquidationStage === 'reimbursed' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200 font-mono">
+                            -{formatCurrency(act.reimbursedAmount)} Reimbursed
+                          </span>
+                        ) : act.liquidationStage === 'awaiting_verification' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                            Proof Attached • Awaiting Verify
+                          </span>
+                        ) : act.liquidationStage === 'awaiting_proof' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                            {act.variance >= 0 ? 'Surplus' : 'Reimbursement'} • Needs Proof
+                          </span>
+                        ) : act.liquidationStage === 'pending_approval' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700">
+                            Liquidation Under Review
+                          </span>
+                        ) : act.liquidationStage === 'balanced' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            Settled (Exact)
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-gray-400">Not Liquidated</span>
+                        );
+
+                      return (
+                        <tr
+                          key={act.eventId}
+                          onClick={() => setInspectedRetainedActivityId(act.eventId)}
+                          className="hover:bg-blue-50/40 cursor-pointer transition-colors"
+                        >
+                          <td className="p-2.5">
+                            <span className="font-bold text-[#001A4D] block">{act.eventTitle}</span>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <span
+                                className={`text-[10px] font-bold px-1.5 py-0.2 rounded ${
+                                  act.fundingSource === 'student_contributions'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-purple-50 text-purple-700 border border-purple-200'
+                                }`}
+                              >
+                                {act.fundingSource === 'student_contributions'
+                                  ? 'Student Collection'
+                                  : 'Retained SAO Fund'}
+                              </span>
+                              {act.dateLabel && (
+                                <span className="text-[10px] text-gray-400">{act.dateLabel}</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="p-2.5 text-right font-mono font-semibold text-gray-800">
+                            {formatCurrency(act.askingBudget)}
+                          </td>
+                          <td className="p-2.5 text-center">
+                            {act.fundingSource === 'student_contributions' || act.totalPayablesCount > 0 ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-800 border border-blue-200">
+                                <Users className="w-3 h-3" />
+                                {act.paidCount} / {act.totalPayablesCount} Paid
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-gray-400">N/A</span>
+                            )}
+                          </td>
+                          <td className="p-2.5 text-right font-mono font-bold text-emerald-700">
+                            {act.totalCollected > 0 ? `+${formatCurrency(act.totalCollected)}` : formatCurrency(0)}
+                          </td>
+                          <td className="p-2.5 text-right font-mono font-bold text-amber-800">
+                            {act.hasDisbursementVoucher ? (
+                              <div>
+                                <span>-{formatCurrency(act.disbursedAmount)}</span>
+                                {act.chequeNumber && (
+                                  <span className="block text-[10px] font-normal text-gray-500">
+                                    {act.chequeNumber}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] font-normal text-gray-400">Not Disbursed</span>
+                            )}
+                          </td>
+                          <td className="p-2.5">{stageBadge}</td>
+                          <td className="p-2.5 text-center">
+                            <div className="inline-flex items-center gap-1">
+                              {act.needsSync && (
+                                <button
+                                  type="button"
+                                  disabled={syncingEventId === act.eventId}
+                                  onClick={(e) => handleSyncRetainedActivity(e, act)}
+                                  className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                                  title="Sync unposted paid students or disbursement voucher into Retained Funds"
+                                >
+                                  <RefreshCw
+                                    className={`w-3 h-3 ${syncingEventId === act.eventId ? 'animate-spin' : ''}`}
+                                  />
+                                  Sync
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setInspectedRetainedActivityId(act.eventId);
+                                }}
+                                className="px-2.5 py-1 rounded-lg text-blue-700 hover:bg-blue-100 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Inspect Paid Students & Retained Fund Trail"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                View
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
             )}
           </div>
 
-          {/* Retained Student Activity Fund Transaction Ledger */}
+          {/* Retained Student Activity Fund Transaction Ledger (SAS / School Only) */}
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-2xs">
             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <History className="w-4 h-4 text-[#0E4EBD]" />
                 <h3 className="text-sm font-bold text-[#001A4D]">
-                  Retained Student Activity Fund Ledger (Audit Trail)
+                  SAS Retained Student Activity Fund Ledger (Audit Trail)
                 </h3>
               </div>
               <span className="text-[11px] font-semibold text-gray-500">
-                {retainedLedgerEntries.length} Recorded Transaction(s)
+                {saoOnlyLedgerEntries.length} Recorded Transaction(s)
               </span>
             </div>
 
-            {retainedLedgerEntries.length === 0 ? (
+            {saoOnlyLedgerEntries.length === 0 ? (
               <div className="p-8 text-center text-xs text-gray-500">
-                No retained Student Contribution transactions recorded yet.
+                No School / SAS retained Student Contribution transactions recorded yet.
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -1100,7 +1414,7 @@ export default function MiscFeeMaintenance() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {retainedLedgerEntries.slice(0, 50).map((entry) => {
+                    {saoOnlyLedgerEntries.slice(0, 50).map((entry) => {
                       const isCredit =
                         entry.type === 'collection_income' ||
                         entry.type === 'liquidation_surplus_retained';
@@ -1110,9 +1424,7 @@ export default function MiscFeeMaintenance() {
                             {entry.createdAt ? formatAppDateTime(entry.createdAt) : '—'}
                           </td>
                           <td className="p-2.5 font-semibold text-[#001A4D]">
-                            {entry.ownerType === 'sao'
-                              ? 'SAO Campus Activity Fund'
-                              : entry.organizationName || entry.bucketId}
+                            SAS Retained Activity Fund
                           </td>
                           <td className="p-2.5 text-gray-800">{entry.description}</td>
                           <td className="p-2.5">
@@ -1155,6 +1467,13 @@ export default function MiscFeeMaintenance() {
         ledgerEntries={filteredMiscLedger}
       />
 
+      {/* SAS Student Collection & Retained Activity Student-Level Drill-Down Modal */}
+      <RetainedActivityDetailsModal
+        isOpen={Boolean(inspectedRetainedActivity)}
+        onClose={() => setInspectedRetainedActivityId(null)}
+        activity={inspectedRetainedActivity}
+      />
+
       {/* Excel Import Confirmation Modal */}
       {pendingImport && (() => {
         const previewCounts =
@@ -1162,12 +1481,16 @@ export default function MiscFeeMaintenance() {
             ? {
                 shsEnrolled: liveRegistryCounts.shs,
                 shsGrade12Enrolled: liveRegistryCounts.shsGrade12,
+                shs2ndSemEnrolled: liveRegistryCounts.shs2ndSem,
+                shs2ndSemGrade12Enrolled: liveRegistryCounts.shs2ndSemGrade12,
                 college1stSemEnrolled: liveRegistryCounts.college1stSem,
                 college2ndSemEnrolled: liveRegistryCounts.college2ndSem,
               }
             : {
                 shsEnrolled: pendingImport.shsEnrolledOverride || 0,
                 shsGrade12Enrolled: pendingImport.shsEnrolledOverride || 0,
+                shs2ndSemEnrolled: pendingImport.shsEnrolledOverride || 0,
+                shs2ndSemGrade12Enrolled: pendingImport.shsEnrolledOverride || 0,
                 college1stSemEnrolled: pendingImport.college1stSemEnrolledOverride || 0,
                 college2ndSemEnrolled: pendingImport.college2ndSemEnrolledOverride || 0,
               };
@@ -1177,10 +1500,9 @@ export default function MiscFeeMaintenance() {
           pendingImport.schoolYear &&
           activeAcademicTerm.schoolYear &&
           pendingImport.schoolYear.toLowerCase() !== activeAcademicTerm.schoolYear.toLowerCase();
-        const isShsRepeatInTerm2 =
-          draftConfig.activeSemester === '2nd Semester' &&
-          Boolean(draftConfig.shsUploadedForSY) &&
-          pendingImport.detectedTypes.includes('SHS');
+        const isSecondTertiaryAddition =
+          pendingImport.addedCollegeCount > 0 &&
+          uploadCounts.collegeCount >= 1;
         const isZeroHeadcount =
           previewCounts.shsEnrolled === 0 &&
           previewCounts.college1stSemEnrolled === 0 &&
@@ -1192,7 +1514,7 @@ export default function MiscFeeMaintenance() {
           if (!b.saoEligible) continue;
           const comp = computeBucketBalance(b, previewCounts, draftConfig.activeSemester);
           previewPool1st += comp.pool1stSem;
-          previewPool2nd += comp.college2ndSemPool;
+          previewPool2nd += comp.college2ndSemPool + (comp.shs2ndSemPool ?? 0);
         }
 
         return (
@@ -1219,13 +1541,13 @@ export default function MiscFeeMaintenance() {
               </div>
 
               <div className="p-5 overflow-y-auto space-y-4">
-                {(isSyMismatch || isShsRepeatInTerm2 || isZeroHeadcount) && (
+                {(isSyMismatch || isSecondTertiaryAddition || isZeroHeadcount) && (
                   <div className="space-y-2">
-                    {isShsRepeatInTerm2 && (
+                    {isSecondTertiaryAddition && (
                       <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 flex items-start gap-2 text-xs text-blue-900">
                         <AlertTriangle className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
                         <span>
-                          <strong>SHS Annual Notice:</strong> SHS Miscellaneous Fees are uploaded only once per School Year and are already recorded for <strong>SY {draftConfig.schoolYear}</strong>. In Term 2, only the <strong>Tertiary / College</strong> document normally needs re-upload.
+                          <strong>Tertiary Upload 2 of 2:</strong> Confirming this upload uses your second (final) Tertiary upload slot for <strong>SY {draftConfig.schoolYear}</strong> while preserving 1st Semester rates.
                         </span>
                       </div>
                     )}
@@ -1275,7 +1597,7 @@ export default function MiscFeeMaintenance() {
                   </div>
                   <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
                     <span className="text-[10px] font-bold uppercase text-emerald-700 block">
-                      2nd Sem Col Pool ({previewCounts.college2ndSemEnrolled} Col)
+                      2nd Sem Pool ({previewCounts.college2ndSemEnrolled} Col + {previewCounts.shs2ndSemEnrolled} SHS)
                     </span>
                     <span className="text-sm font-black text-emerald-800 font-mono">
                       {formatCurrency(previewPool2nd)}
@@ -1308,7 +1630,12 @@ export default function MiscFeeMaintenance() {
                                 </span>
                               </td>
                               <td className="py-2 px-2 text-right font-mono">
-                                {formatCurrency(b.shsRateTY)}
+                                <span>{formatCurrency(b.shsRateTY)}</span>
+                                {(Number(b.shs2ndSemRateTY) || 0) > 0 && (
+                                  <span className="block text-[10px] text-blue-700 font-semibold">
+                                    2nd: {formatCurrency(b.shs2ndSemRateTY || 0)}
+                                  </span>
+                                )}
                               </td>
                               <td className="py-2 px-2 text-right font-mono">
                                 {formatCurrency(b.college1stSemRateTY)}
@@ -1320,7 +1647,7 @@ export default function MiscFeeMaintenance() {
                                 {formatCurrency(comp.pool1stSem)}
                               </td>
                               <td className="py-2 px-3 text-right font-mono font-bold text-emerald-700">
-                                {formatCurrency(comp.college2ndSemPool)}
+                                {formatCurrency(comp.college2ndSemPool + (comp.shs2ndSemPool ?? 0))}
                               </td>
                             </tr>
                           );
@@ -1365,7 +1692,7 @@ export default function MiscFeeMaintenance() {
               This closes <strong>SY {activeConfig.schoolYear}</strong> into read-only history (recording its 1st Sem, Carry-Over, 2nd Sem, Student Contribution, and Retained Funds) and initializes the new School Year at <strong>₱0.00</strong> across <strong>Miscellaneous Pools, Budget Carry-Over, Student Contributions, and Retained Funds</strong>. Old funds are never added to the new academic year.
             </p>
             <p className="text-[11px] text-blue-800 bg-blue-50 border border-blue-200 rounded-xl p-2.5">
-              After initializing, upload the new School Year&apos;s <strong>SHS (Annual)</strong> + <strong>Tertiary Term 1</strong> Miscellaneous Excel files and sync Student Registry.
+              After initializing, upload the new School Year&apos;s <strong>Tertiary (Max {MAX_TERTIARY_UPLOADS_PER_SY}/SY)</strong> and <strong>SHS (Once/SY • Max {MAX_SHS_UPLOADS_PER_SY}/SY)</strong> Miscellaneous Excel files anytime in any order and sync Student Registry. Past-year funds never carry over.
             </p>
             <div>
               <label className="block text-xs font-bold text-gray-700 mb-1">

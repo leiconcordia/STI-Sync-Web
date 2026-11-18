@@ -1,6 +1,14 @@
 export type MiscFeeSemesterTerm = '1st Semester' | '2nd Semester';
 export type MiscFeeHeadcountSource = 'student_registry' | 'template_override';
 
+export interface MiscFeeUploadFingerprint {
+  templateType: 'SHS' | 'COLLEGE' | 'COMBINED';
+  contentHash: string;
+  fileName: string;
+  term: MiscFeeSemesterTerm;
+  uploadedAt: string;
+}
+
 export interface MiscFeeBucket {
   id: string;
   particular: string;
@@ -13,6 +21,8 @@ export interface MiscFeeBucket {
   saoEligible: boolean;
   shsRateLY: number;
   shsRateTY: number;
+  shs2ndSemRateLY?: number;
+  shs2ndSemRateTY?: number;
   college1stSemRateLY: number;
   college1stSemRateTY: number;
   college2ndSemRateLY: number;
@@ -38,6 +48,9 @@ export interface MiscFeeConfigDocument {
   shsUploadedForSY?: boolean;
   college1stSemUploaded?: boolean;
   college2ndSemUploaded?: boolean;
+  collegeUploadCount?: number;
+  shsUploadCount?: number;
+  uploadedImportFingerprints?: MiscFeeUploadFingerprint[];
   closedAt?: any;
   buckets: MiscFeeBucket[];
   updatedAt?: any;
@@ -48,9 +61,11 @@ export interface ComputedBucketBalance {
   bucket: MiscFeeBucket;
   shsEnrolled: number;
   shsGrade12Enrolled: number;
+  shs2ndSemEnrolled?: number;
   college1stSemEnrolled: number;
   college2ndSemEnrolled: number;
   shsAnnualPool: number;
+  shs2ndSemPool?: number;
   college1stSemPool: number;
   college2ndSemPool: number;
   pool1stSem: number;

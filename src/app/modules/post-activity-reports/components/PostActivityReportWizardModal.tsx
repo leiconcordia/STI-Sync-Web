@@ -22,7 +22,6 @@ import {
   Send,
   Loader2,
   FileText,
-  HelpCircle,
   RotateCcw,
   BookOpen,
   Target,
@@ -77,15 +76,6 @@ import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBa
 import PARFlowBuilder from './PARFlowBuilder';
 import { subscribeToSignatories } from '../../signatories/services/signatory.service';
 import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
-import {
-  AIAssistButton,
-  AISuggestionModal,
-  enhancePARNarrative,
-  suggestKeyLearnings,
-  generatePARRecommendations,
-  polishGrammar,
-  generateText,
-} from '../../ai';
 
 interface PostActivityReportWizardModalProps {
   isOpen: boolean;
@@ -482,161 +472,6 @@ export default function PostActivityReportWizardModal({
     }
   };
 
-  // AI Assistant State
-  const [aiModalOpen, setAiModalOpen] = useState(false);
-  const [aiModalTitle, setAiModalTitle] = useState('');
-  const [aiModalDesc, setAiModalDesc] = useState('');
-  const [aiOriginalText, setAiOriginalText] = useState('');
-  const [aiSuggestionText, setAiSuggestionText] = useState('');
-  const [aiSuggestionList, setAiSuggestionList] = useState<string[]>([]);
-  const [aiModalMode, setAiModalMode] = useState<'text' | 'choice' | 'list'>('text');
-  const [isAILoading, setIsAILoading] = useState(false);
-  const [isGeneratingRecs, setIsGeneratingRecs] = useState(false);
-  const [aiTargetField, setAiTargetField] = useState<'mechanics' | 'narrative' | 'learnings' | 'enrichment'>('narrative');
-  const [activeAIAction, setActiveAIAction] = useState<(() => Promise<void>) | null>(null);
-
-  const handleEnhanceActualMechanics = async () => {
-    const raw = actualMechanics.trim();
-    if (!raw) {
-      toast.info('Please enter some brief notes about how the mechanics were conducted first.');
-      return;
-    }
-    const action = async () => {
-      setIsAILoading(true);
-      const polished = await polishGrammar(raw, 'Actual Event Mechanics (Conducted)');
-      setIsAILoading(false);
-      if (polished) {
-        setAiTargetField('mechanics');
-        setAiModalTitle('Enhance Actual Mechanics');
-        setAiModalDesc('Polished narrative of actual procedures conducted during the event:');
-        setAiOriginalText(raw);
-        setAiSuggestionText(polished);
-        setAiModalMode('text');
-        setAiModalOpen(true);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleEnhanceCurriculumEnrichment = async () => {
-    const eventTitle = selectedEvent?.title || 'Campus Event';
-    const action = async () => {
-      setIsAILoading(true);
-      const prompt = `
-Event Title: "${eventTitle}"
-Conducted Mechanics: "${actualMechanics || ''}"
-Key Learnings: "${keyLearnings.join('; ') || ''}"
-Current Draft: "${classroomEnrichment || ''}"
-
-Explain how the outcomes of this event enrich students' academic learning in the classroom and reinforce STI graduate attributes.
-Write 1 clear, formal academic paragraph of 40-70 words.
-Output ONLY the paragraph text.
-`;
-      const enriched = await generateText(prompt);
-      setIsAILoading(false);
-      if (enriched) {
-        setAiTargetField('enrichment');
-        setAiModalTitle('Classroom Curriculum Enrichment');
-        setAiModalDesc('Institutional statement linking practical event experiences to curriculum competencies:');
-        setAiOriginalText(classroomEnrichment);
-        setAiSuggestionText(enriched);
-        setAiModalMode('text');
-        setAiModalOpen(true);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleEnhanceNarrative = async () => {
-    const eventTitle = selectedEvent?.title || 'Campus Event';
-    const action = async () => {
-      setIsAILoading(true);
-      const narrative = await enhancePARNarrative(eventTitle, achievementNarrative, registeredCount, attendedCount);
-      setIsAILoading(false);
-      if (narrative) {
-        setAiTargetField('narrative');
-        setAiModalTitle('Achievement Narrative');
-        setAiModalDesc('Comprehensive accomplishments statement based on turnout and results:');
-        setAiOriginalText(achievementNarrative);
-        setAiSuggestionText(narrative);
-        setAiModalMode('text');
-        setAiModalOpen(true);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleSuggestKeyLearningsAction = async () => {
-    const eventTitle = selectedEvent?.title || 'Campus Event';
-    const action = async () => {
-      setIsAILoading(true);
-      const learnings = await suggestKeyLearnings(eventTitle, actualMechanics || achievementNarrative);
-      setIsAILoading(false);
-      if (learnings && learnings.length > 0) {
-        setAiTargetField('learnings');
-        setAiModalTitle('Suggested Key Learnings');
-        setAiModalDesc('Select learning takeaways to include in your Post-Activity Report:');
-        setAiSuggestionList(learnings);
-        setAiModalMode('list');
-        setAiModalOpen(true);
-      }
-    };
-    setActiveAIAction(() => action);
-    await action();
-  };
-
-  const handleAutoDraft4Recommendations = async () => {
-    if (!selectedEvent) {
-      toast.info('Please select an event in Overview first.');
-      return;
-    }
-    setIsGeneratingRecs(true);
-    const recs = await generatePARRecommendations(selectedEvent.title, issuesEncountered, achievementNarrative);
-    setIsGeneratingRecs(false);
-    if (recs) {
-      if (recs.programFlow) {
-        setProgFlowObsList(parseRemarkList(recs.programFlow.observations));
-        setProgFlowRecList(parseRemarkList(recs.programFlow.recommendations));
-      }
-      if (recs.participantEngagement) {
-        setEngagementObsList(parseRemarkList(recs.participantEngagement.observations));
-        setEngagementRecList(parseRemarkList(recs.participantEngagement.recommendations));
-      }
-      if (recs.technicalSetup) {
-        setTechSetupObsList(parseRemarkList(recs.technicalSetup.observations));
-        setTechSetupRecList(parseRemarkList(recs.technicalSetup.recommendations));
-      }
-      if (recs.participantPreparedness) {
-        setPrepObsList(parseRemarkList(recs.participantPreparedness.observations));
-        setPrepRecList(parseRemarkList(recs.participantPreparedness.recommendations));
-      }
-      toast.success('Successfully drafted Remarks observations & recommendations!');
-    }
-  };
-
-  const handleApplyAIText = (appliedText: string, applyMode: 'replace' | 'append') => {
-    if (aiTargetField === 'mechanics') {
-      setActualMechanics(applyMode === 'append' && actualMechanics ? `${actualMechanics}\n\n${appliedText}` : appliedText);
-      toast.success('Actual mechanics updated!');
-    } else if (aiTargetField === 'narrative') {
-      setAchievementNarrative(applyMode === 'append' && achievementNarrative ? `${achievementNarrative}\n\n${appliedText}` : appliedText);
-      toast.success('Achievement narrative updated!');
-    } else if (aiTargetField === 'enrichment') {
-      setClassroomEnrichment(applyMode === 'append' && classroomEnrichment ? `${classroomEnrichment}\n\n${appliedText}` : appliedText);
-      toast.success('Curriculum enrichment updated!');
-    }
-  };
-
-  const handleApplyAIList = (items: string[]) => {
-    if (aiTargetField === 'learnings') {
-      setKeyLearnings([...keyLearnings, ...items]);
-      toast.success(`Added ${items.length} learning item(s)!`);
-    }
-  };
-
   // Subscribe to real-time institutional signatories
   useEffect(() => {
     const unsub = subscribeToSignatories((list) => {
@@ -644,6 +479,13 @@ Output ONLY the paragraph text.
     });
     return () => unsub();
   }, []);
+
+  // Keep selectedEventId synced with initialEventId / initialReport whenever wizard opens
+  useEffect(() => {
+    if (!isOpen) return;
+    setSelectedEventId(initialReport?.eventId || initialEventId || '');
+    setActiveTab('overview');
+  }, [isOpen, initialEventId, initialReport?.id, initialReport?.eventId]);
 
   // Initialize from editing document if provided
   useEffect(() => {
@@ -1692,8 +1534,8 @@ Output ONLY the paragraph text.
                   </div>
                 </div>
               )}
-              {/* Event Picker if creating new */}
-              {!initialReport && (
+              {/* Event Picker only when creating new without a pre-selected 15-day due activity */}
+              {!initialReport && !initialEventId && (
                 <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-200">
                   <label className="block text-xs font-bold uppercase tracking-wider text-[#001A4D] mb-1.5">
                     Select Concluded Event (Liquidation Approved)
@@ -2178,13 +2020,6 @@ Output ONLY the paragraph text.
                       Review the planned objectives from the Activity Proposal and provide an institutional narrative of how they were met.
                     </p>
                   </div>
-                  <AIAssistButton
-                    label="Enhance Narrative"
-                    onClick={handleEnhanceNarrative}
-                    isLoading={isAILoading && aiTargetField === 'narrative'}
-                    disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'narrative'))}
-                    tooltip="Draft or elevate accomplishment narrative using attendance and event data"
-                  />
                 </div>
 
                 {/* Objectives from linked AP */}
@@ -2253,13 +2088,6 @@ Output ONLY the paragraph text.
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <AIAssistButton
-                      label="Suggest Learnings"
-                      onClick={handleSuggestKeyLearningsAction}
-                      isLoading={isAILoading && aiTargetField === 'learnings'}
-                      disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'learnings'))}
-                      tooltip="Generate key learnings from executed activity"
-                    />
                     <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
                       {keyLearnings.length} added
                     </span>
@@ -2335,13 +2163,6 @@ Output ONLY the paragraph text.
                       (Explain how the activity complemented or enhanced classroom learning)
                     </p>
                   </div>
-                  <AIAssistButton
-                    label="Draft Enrichment"
-                    onClick={handleEnhanceCurriculumEnrichment}
-                    isLoading={isAILoading && aiTargetField === 'enrichment'}
-                    disabled={Boolean((isAILoading || isGeneratingRecs) && !(isAILoading && aiTargetField === 'enrichment'))}
-                    tooltip="Draft institutional alignment with classroom curriculum and STI graduate attributes"
-                  />
                 </div>
                 <textarea
                   rows={2}
@@ -2455,14 +2276,6 @@ Output ONLY the paragraph text.
                     Add itemized observations and actionable recommendations across the four standard STI institutional areas. You can add as many items as needed for each.
                   </p>
                 </div>
-                <AIAssistButton
-                  label="Auto-Draft Remarks"
-                  onClick={handleAutoDraft4Recommendations}
-                  isLoading={isGeneratingRecs}
-                  disabled={isAILoading || isGeneratingRecs}
-                  variant="primary"
-                  tooltip="Generate observations and recommendations for Program Flow, Engagement, Tech Setup, and Prep"
-                />
               </div>
 
               {/* 1. Program Flow and Time Management */}
@@ -2905,24 +2718,6 @@ Output ONLY the paragraph text.
           </div>
         </div>
       </div>
-
-      {/* AI Suggestion Preview Modal */}
-      <AISuggestionModal
-        isOpen={aiModalOpen}
-        onClose={() => setAiModalOpen(false)}
-        title={aiModalTitle}
-        description={aiModalDesc}
-        originalText={aiOriginalText}
-        suggestionText={aiSuggestionText}
-        suggestionList={aiSuggestionList}
-        mode={aiModalMode}
-        isLoading={isAILoading}
-        onApplyText={handleApplyAIText}
-        onApplyList={handleApplyAIList}
-        onRegenerate={() => {
-          if (activeAIAction) activeAIAction();
-        }}
-      />
 
       {/* Side-by-Side Activity Proposal Guidance Drawer */}
       <PARProposalGuidanceDrawer

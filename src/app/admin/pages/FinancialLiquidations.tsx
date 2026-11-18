@@ -150,6 +150,7 @@ export function FinancialLiquidations() {
   const [returnAllocationRows, setReturnAllocationRows] = useState<SurplusReturnAllocation[]>([]);
   const [deficitAllocationRows, setDeficitAllocationRows] = useState<DeficitDeductionAllocation[]>([]);
   const [deficitSupplementalOptions, setDeficitSupplementalOptions] = useState<SupplementalBucketOption[]>([]);
+  const seededAdminDeficitKeyRef = useRef<string>('');
   const [collectionAbsorbRows, setCollectionAbsorbRows] = useState<DeficitDeductionAllocation[]>([]);
   const [collectionAbsorbOptions, setCollectionAbsorbOptions] = useState<SupplementalBucketOption[]>([]);
   const [absorbNoteDraft, setAbsorbNoteDraft] = useState('');
@@ -270,10 +271,11 @@ export function FinancialLiquidations() {
           }
 
           if (deficit > 0.009) {
+            const savedRows = selectedReport.deficitDeductionAllocations || [];
             const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
               totalDeficit: deficit,
               sourceAllocations: allocs,
-              savedDeficitRows: selectedReport.deficitDeductionAllocations || [],
+              savedDeficitRows: savedRows,
               computedBuckets,
               saoEligibleBuckets,
               saoRetainedFund,
@@ -282,9 +284,12 @@ export function FinancialLiquidations() {
               targetOrgName: selectedReport.organizationName,
               orgLedgerBalance: selectedOrgLedgerBalance,
             });
+            const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
+            seededAdminDeficitKeyRef.current = `${selectedReport.id}::${deficit}::${savedSig}`;
             setDeficitAllocationRows(initialRows);
             setDeficitSupplementalOptions(supplementalOptions);
           } else {
+            seededAdminDeficitKeyRef.current = '';
             setDeficitAllocationRows([]);
             setDeficitSupplementalOptions([]);
           }
@@ -310,13 +315,17 @@ export function FinancialLiquidations() {
     };
   }, [selectedReport?.id]);
 
-  // Keep live bucket balances & supplemental choices synchronized while modal is open
+  // Keep live bucket balances & supplemental choices synchronized while preserving admin's manual bucket edits
   useEffect(() => {
-    if (!selectedReport || selectedReportDeficit <= 0.009) return;
+    if (!selectedReport || selectedReportDeficit <= 0.009) {
+      seededAdminDeficitKeyRef.current = '';
+      return;
+    }
+    const savedRows = selectedReport.deficitDeductionAllocations || [];
     const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
       totalDeficit: selectedReportDeficit,
       sourceAllocations,
-      savedDeficitRows: selectedReport.deficitDeductionAllocations || [],
+      savedDeficitRows: savedRows,
       computedBuckets,
       saoEligibleBuckets,
       saoRetainedFund,
@@ -326,15 +335,20 @@ export function FinancialLiquidations() {
       orgLedgerBalance: selectedOrgLedgerBalance,
     });
     setDeficitSupplementalOptions(supplementalOptions);
+    const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
+    const targetSeedKey = `${selectedReport.id}::${selectedReportDeficit}::${savedSig}`;
     setDeficitAllocationRows((prev) => {
+      if (seededAdminDeficitKeyRef.current !== targetSeedKey) {
+        if (initialRows.length > 0 || savedRows.length > 0) {
+          seededAdminDeficitKeyRef.current = targetSeedKey;
+          return initialRows;
+        }
+        return prev;
+      }
       if (prev.length === 0) return initialRows;
       const availMap = new Map<string, number>();
       initialRows.forEach((r) => availMap.set(r.bucketId, r.availableBalance));
       supplementalOptions.forEach((o) => availMap.set(o.bucketId, o.availableBalance));
-      const allZero = prev.every((r) => Number(r.deductAmount) === 0);
-      if (allZero && !(selectedReport.deficitDeductionAllocations?.length)) {
-        return initialRows;
-      }
       return prev.map((r) => ({
         ...r,
         availableBalance: availMap.has(r.bucketId) ? availMap.get(r.bucketId)! : r.availableBalance,
@@ -342,6 +356,7 @@ export function FinancialLiquidations() {
     });
   }, [
     selectedReport?.id,
+    selectedReport?.deficitDeductionAllocations,
     selectedReportDeficit,
     sourceAllocations,
     computedBuckets,
