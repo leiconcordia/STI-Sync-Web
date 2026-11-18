@@ -30,6 +30,11 @@ import {
   isStudentSignedUpForActivity,
   normalizeMemberIdentifiers,
 } from '../utils/member-removal.utils';
+import {
+  checkStudentDepartmentEligibility,
+  isOrganizationCrossDepartmental,
+  resolveCanonicalDepartment,
+} from '../utils/department-eligibility.utils';
 
 const COLLECTION = 'organization_members';
 
@@ -283,39 +288,77 @@ export async function ensureMembershipPayable(
 
 export const addMember = async (payload: AddMemberPayload, addedBy: string): Promise<string> => {
   try {
-    // Enforce organization department eligibility
+    let resolvedDeptId = (payload.departmentId || '').trim();
+    let resolvedDeptName = (payload.department || '').trim();
+
+    // Strictly enforce organization department eligibility (non-cross-departmental clubs accept same-dept students only)
     if (payload.organizationId) {
       const orgRef = doc(db, 'organizations', payload.organizationId);
       const orgSnap = await getDoc(orgRef);
       if (orgSnap.exists()) {
-        const orgData = orgSnap.data();
-        const isCross =
-          !orgData.departmentId ||
-          orgData.departmentId === 'cross-departmental' ||
-          orgData.scope === 'cross-departmental' ||
-          orgData.isCrossDepartmental === true;
+        const orgData = { id: orgSnap.id, ...orgSnap.data() };
+        const [studentInfo, deptsSnap, coursesSnap] = await Promise.all([
+          resolveStudentForClubPayable(payload.studentId || payload.authUid || '', {
+            authUid: payload.authUid,
+            studentSchoolId: payload.studentId,
+            course: payload.course,
+            year: payload.year,
+            section: payload.section,
+            department: payload.department,
+          }),
+          getDocs(collection(db, 'departments')).catch(() => null),
+          getDocs(collection(db, 'courses')).catch(() => null),
+        ]);
 
-        if (!isCross) {
-          const sDept = (payload.department || '').toLowerCase().trim();
-          const orgDeptName = (orgData.departmentName || orgData.department || '').toLowerCase().trim();
-          const orgDeptCode = (orgData.departmentCode || '').toLowerCase().trim();
+        const departmentsList = deptsSnap
+          ? deptsSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          : [];
+        const coursesList = coursesSnap
+          ? coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          : [];
 
-          const matches =
-            !sDept ||
-            (orgDeptName && (sDept.includes(orgDeptName) || orgDeptName.includes(sDept))) ||
-            (orgDeptCode && (sDept.includes(orgDeptCode) || orgDeptCode.includes(sDept)));
+        const studentCandidate = {
+          studentId: studentInfo.studentSchoolId || payload.studentId,
+          authUid: studentInfo.authUid || payload.authUid,
+          departmentId: studentInfo.departmentId || payload.departmentId || '',
+          departmentName: studentInfo.departmentName || payload.department || '',
+          department: studentInfo.departmentName || payload.department || '',
+          courseCode: studentInfo.courseCode || payload.course || '',
+          courseName: studentInfo.courseName || '',
+        };
 
-          if (!matches) {
-            throw new Error(
-              `Cannot add member: This organization is restricted to ${orgData.departmentName || orgData.departmentCode || 'departmental'} students.`
-            );
-          }
+        const eligibility = checkStudentDepartmentEligibility(
+          orgData,
+          studentCandidate,
+          departmentsList,
+          coursesList
+        );
+
+        if (!eligibility.eligible) {
+          throw new Error(
+            eligibility.reason ||
+              `Cannot add member: This organization is restricted to ${eligibility.orgDeptLabel} students.`
+          );
+        }
+
+        const canonicalStudentDept = resolveCanonicalDepartment(
+          studentCandidate,
+          departmentsList,
+          coursesList
+        );
+        if (!resolvedDeptId && canonicalStudentDept.canonicalDeptId) {
+          resolvedDeptId = canonicalStudentDept.canonicalDeptId;
+        }
+        if (!resolvedDeptName && canonicalStudentDept.canonicalName) {
+          resolvedDeptName = canonicalStudentDept.canonicalName;
         }
       }
     }
 
     const addPromise = addDoc(collection(db, COLLECTION), {
       ...payload,
+      ...(resolvedDeptId ? { departmentId: resolvedDeptId } : {}),
+      department: resolvedDeptName || payload.department || '',
       isOfficer: false,
       addedBy,
       dateJoined: payload.status === 'active' ? serverTimestamp() : null,
@@ -433,6 +476,53 @@ export const approveMemberApplication = async (
   const orgId = memberData.organizationId;
   const studentId = memberData.studentId || memberDocId;
   const studentName = memberData.studentName || 'Student';
+
+  if (orgId) {
+    const orgSnap = await getDoc(doc(db, 'organizations', orgId)).catch(() => null);
+    if (orgSnap && orgSnap.exists()) {
+      const orgData = { id: orgSnap.id, ...orgSnap.data() };
+      if (!isOrganizationCrossDepartmental(orgData)) {
+        const [studentInfo, deptsSnap, coursesSnap] = await Promise.all([
+          resolveStudentForClubPayable(studentId, {
+            authUid: memberData.authUid,
+            studentSchoolId: memberData.studentSchoolId || memberData.studentId,
+            course: memberData.course,
+            year: memberData.year,
+            section: memberData.section,
+            department: memberData.department,
+          }),
+          getDocs(collection(db, 'departments')).catch(() => null),
+          getDocs(collection(db, 'courses')).catch(() => null),
+        ]);
+        const departmentsList = deptsSnap
+          ? deptsSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          : [];
+        const coursesList = coursesSnap
+          ? coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+          : [];
+
+        const eligibility = checkStudentDepartmentEligibility(
+          orgData,
+          {
+            studentId: studentInfo.studentSchoolId || studentId,
+            departmentId: studentInfo.departmentId || memberData.departmentId || '',
+            departmentName: studentInfo.departmentName || memberData.department || '',
+            department: studentInfo.departmentName || memberData.department || '',
+            courseCode: studentInfo.courseCode || memberData.course || '',
+            courseName: studentInfo.courseName || '',
+          },
+          departmentsList,
+          coursesList
+        );
+        if (!eligibility.eligible) {
+          throw new Error(
+            eligibility.reason ||
+              `Cannot approve applicant: This organization only accepts ${eligibility.orgDeptLabel} students.`
+          );
+        }
+      }
+    }
+  }
 
   // 1. Update member status
   await updateDoc(memberRef, {

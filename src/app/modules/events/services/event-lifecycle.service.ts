@@ -38,6 +38,7 @@ import {
   PAR_SUBMISSION_DAYS,
 } from '../utils/activity-compliance.utils';
 import { isEventLiquidationExempt } from '../utils/organization-display.utils';
+import { getLiquidationSettlementState } from '../../finance/utils/liquidation-settlement.utils';
 
 export interface EventArchiveReadinessSummary {
   eventTitle: string;
@@ -326,13 +327,17 @@ export async function checkEventArchiveReadiness(
     const liqSnap = await getDocs(liqQ);
     totalLiqs = liqSnap.docs.length;
 
-    const activeLiqs = liqSnap.docs.map((d) => d.data());
+    const activeLiqs = liqSnap.docs
+      .map((d) => d.data())
+      .filter(
+        (l: any) =>
+          !l.isDeleted &&
+          l.status !== 'voided' &&
+          l.status !== 'cancelled'
+      );
+    totalLiqs = activeLiqs.length;
     const unapproved = activeLiqs.filter(
-      (l: any) =>
-        l.status !== 'approved' &&
-        l.status !== 'settled' &&
-        l.status !== 'voided' &&
-        l.status !== 'cancelled'
+      (l: any) => l.status !== 'approved' && l.status !== 'settled'
     );
 
     unapprovedLiqs = unapproved.length;
@@ -340,13 +345,34 @@ export async function checkEventArchiveReadiness(
     const isLiqExempt = isEventLiquidationExempt(eventData);
 
     if (!isLiqExempt && (totalLiqs > 0 || Number(eventData.totalApprovedBudget || 0) > 0)) {
-      if (unapprovedLiqs > 0) {
+      if (totalLiqs === 0) {
+        liquidationStatus = 'pending';
+        blockingReasons.push(
+          'Event has an approved budget but no Financial Liquidation has been submitted and settled yet.'
+        );
+      } else if (unapprovedLiqs > 0) {
         liquidationStatus = 'pending';
         blockingReasons.push(
           `Event has ${unapprovedLiqs} unapproved financial liquidation record(s). Liquidation must be reviewed and approved by SAO before archiving.`
         );
       } else {
-        liquidationStatus = 'approved';
+        const unsettled = activeLiqs.filter((l: any) => {
+          const st = getLiquidationSettlementState(l);
+          return !st.isSettled && !st.isExactZero;
+        });
+        if (unsettled.length > 0) {
+          liquidationStatus = 'pending';
+          const needsProof = unsettled.some(
+            (l: any) => getLiquidationSettlementState(l).settlementStatus === 'pending_proof'
+          );
+          blockingReasons.push(
+            needsProof
+              ? 'Financial Liquidation is approved, but Cashier Return / Reimbursement proof has not been uploaded and verified yet.'
+              : 'Financial Liquidation settlement proof is uploaded and awaiting SAS Admin verification before archiving.'
+          );
+        } else {
+          liquidationStatus = 'approved';
+        }
       }
     } else if (isLiqExempt) {
       liquidationStatus = 'none_required';

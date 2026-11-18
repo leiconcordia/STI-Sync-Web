@@ -41,12 +41,53 @@ import type {
 } from '../types/par.types';
 import { autoArchiveApprovedPAR } from '../../reports/services/report-archive.service';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { isEventLiquidationExempt } from '../../events/utils/organization-display.utils';
 import { parSubmissionDeadline } from '../../events/utils/activity-compliance.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 import { getActiveMiscFeeAcademicContext } from '../../finance/services/misc-fee.service';
+import { evaluatePARLiquidationGate } from '../../finance/utils/liquidation-settlement.utils';
 
 export const PAR_COLLECTION = 'post_activity_reports';
+
+async function fetchActiveEventLiquidation(
+  eventId: string,
+  preferredLiquidationId?: string
+): Promise<any | null> {
+  if (preferredLiquidationId) {
+    try {
+      const liqSnap = await getDoc(doc(db, 'liquidations', preferredLiquidationId));
+      if (liqSnap.exists()) {
+        const d = { id: liqSnap.id, ...liqSnap.data() } as any;
+        const st = String(d.status || '').toLowerCase();
+        if (st !== 'voided' && st !== 'cancelled' && d.isDeleted !== true) {
+          return d;
+        }
+      }
+    } catch {}
+  }
+
+  if (!eventId) return null;
+  try {
+    const liqSnap = await getDocs(
+      query(collection(db, 'liquidations'), where('eventId', '==', eventId))
+    );
+    const candidates = liqSnap.docs
+      .map((d) => ({ id: d.id, ...d.data() } as any))
+      .filter((d) => {
+        const st = String(d.status || '').toLowerCase();
+        return st !== 'voided' && st !== 'cancelled' && d.isDeleted !== true;
+      });
+    if (candidates.length === 0) return null;
+    return (
+      candidates.find((c) => c.status === 'approved') ||
+      candidates.find((c) => c.status === 'under_review' || c.status === 'pending') ||
+      candidates[0]
+    );
+  } catch {
+    return null;
+  }
+}
 
 const AP_COLLECTIONS = ['activities', 'activity_proposals', 'proposals'] as const;
 
@@ -564,36 +605,22 @@ export async function saveOrSubmitPAR(
     }
   }
 
-  // Resolve linked Financial Liquidation (LF-01) for 1:1:1 consistency
-  let targetLiquidationId = eventData.liquidationReportId || formData.liquidationId || '';
-  let targetLiquidationRef = eventData.liquidationRefNumber || formData.liquidationRefNumber || '';
+  // Resolve linked Financial Liquidation (LF-01) for 1:1:1 consistency & submission gate
+  const activeLiqDoc = await fetchActiveEventLiquidation(
+    formData.eventId,
+    eventData.liquidationReportId || formData.liquidationId || ''
+  );
+  const targetLiquidationId = activeLiqDoc?.id || eventData.liquidationReportId || formData.liquidationId || '';
+  const targetLiquidationRef = activeLiqDoc?.referenceNo || eventData.liquidationRefNumber || formData.liquidationRefNumber || '';
 
-  if (!targetLiquidationId) {
-    try {
-      const liqSnap = await getDocs(
-        query(collection(db, 'liquidations'), where('eventId', '==', formData.eventId))
-      );
-      const activeLiq = liqSnap.docs.find((d) => {
-        const st = (d.data().status || '').toLowerCase();
-        return st !== 'voided' && st !== 'cancelled';
-      });
-      if (activeLiq) {
-        targetLiquidationId = activeLiq.id;
-        targetLiquidationRef = activeLiq.data().referenceNo || targetLiquidationRef;
-      }
-    } catch (err) {
-      console.warn('[saveOrSubmitPAR] Notice resolving liquidation by eventId:', err);
-    }
-  }
-
-  if (targetLiquidationId && !targetLiquidationRef) {
-    try {
-      const liqDoc = await getDoc(doc(db, 'liquidations', targetLiquidationId));
-      if (liqDoc.exists()) {
-        targetLiquidationRef = liqDoc.data().referenceNo || '';
-      }
-    } catch (err) {
-      console.warn('[saveOrSubmitPAR] Notice fetching liquidation reference:', err);
+  if (submit) {
+    const gate = evaluatePARLiquidationGate({
+      event: eventData,
+      liquidation: activeLiqDoc,
+      isExempt: isEventLiquidationExempt(eventData),
+    });
+    if (!gate.allowedToSubmit) {
+      throw new Error(gate.submitReason);
     }
   }
 
@@ -975,6 +1002,25 @@ export async function endorsePARStep(
     }
   }
 
+  if (isFullyApproved && !wasAlreadyApproved && data.eventId) {
+    let parentEventData: any = null;
+    try {
+      const evSnap = await getDoc(doc(db, EVENTS_COLLECTION, data.eventId));
+      if (evSnap.exists()) parentEventData = evSnap.data();
+    } catch {}
+    if (parentEventData) {
+      const activeLiqDoc = await fetchActiveEventLiquidation(data.eventId, data.liquidationId);
+      const gate = evaluatePARLiquidationGate({
+        event: parentEventData,
+        liquidation: activeLiqDoc,
+        isExempt: isEventLiquidationExempt(parentEventData),
+      });
+      if (!gate.allowedToApprove) {
+        throw new Error(gate.approveReason);
+      }
+    }
+  }
+
   const endorsementRemark: PARRemark = {
     id: `rem-${Date.now()}`,
     authorName: signatory.name || 'Signatory',
@@ -1204,6 +1250,25 @@ export async function approvePAR(
       remarksHistory: arrayUnion(sanitizeFirestorePayload(releaseRemark)),
     }));
     return;
+  }
+
+  if (data.eventId) {
+    let parentEventData: any = null;
+    try {
+      const evSnap = await getDoc(doc(db, EVENTS_COLLECTION, data.eventId));
+      if (evSnap.exists()) parentEventData = evSnap.data();
+    } catch {}
+    if (parentEventData) {
+      const activeLiqDoc = await fetchActiveEventLiquidation(data.eventId, data.liquidationId);
+      const gate = evaluatePARLiquidationGate({
+        event: parentEventData,
+        liquidation: activeLiqDoc,
+        isExempt: isEventLiquidationExempt(parentEventData),
+      });
+      if (!gate.allowedToApprove) {
+        throw new Error(gate.approveReason);
+      }
+    }
   }
 
   const approvalRemark: PARRemark = {

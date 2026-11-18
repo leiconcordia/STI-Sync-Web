@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Camera, Building2, Save, Users, Crown, ShieldAlert, Loader2, AlertCircle } from 'lucide-react';
+import { Camera, Building2, Save, Users, Crown, ShieldAlert, Loader2, AlertCircle, Lock } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
@@ -33,12 +33,13 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
   const activeRoleName = isAdviser ? 'adviser' : (activeRoleDoc?.name?.toLowerCase() || '');
 
   const canEdit = isAdviser || ['president', 'vice president', 'secretary'].includes(activeRoleName);
+  const canEditLogo = isAdviser;
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
-  const [formData, setFormData] = useState<Partial<OrganizationDocument>>({});
+  const [descriptionText, setDescriptionText] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -46,18 +47,14 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
   // Initialize form data when org data loads
   useEffect(() => {
     if (activeOrg) {
-      setFormData({
-        name: activeOrg.name,
-        acronym: activeOrg.acronym,
-        typeId: activeOrg.typeId,
-        departmentId: activeOrg.departmentId,
-        description: activeOrg.description || '',
-      });
+      setDescriptionText(activeOrg.description || '');
       setLogoPreview(activeOrg.logoUrl || null);
+      setLogoFile(null);
     }
   }, [activeOrg]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canEditLogo) return;
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       if (file.size > 5 * 1024 * 1024) {
@@ -71,16 +68,21 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
 
   const handleSave = async () => {
     if (!canEdit || !activeOrg) return;
-    
+
     setIsSubmitting(true);
     setError(null);
     setSuccess(false);
-    
+
     try {
-      await updateOrganization(activeOrg.id, formData, logoFile);
+      // Strictly send only permitted editable fields (never overwrite SAS-governed Name, Acronym, Type, or Department Scope)
+      await updateOrganization(
+        activeOrg.id,
+        { description: descriptionText.trim() },
+        canEditLogo ? logoFile : null
+      );
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
-      setLogoFile(null); // Clear the pending file since it's uploaded
+      setLogoFile(null);
     } catch (err: any) {
       setError(err.message || 'Failed to update organization profile.');
     } finally {
@@ -115,6 +117,8 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
   const inputClass = `w-full px-4 py-2 border border-[#E0E0E0] rounded-lg text-sm transition-colors focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none ${
     !canEdit ? 'bg-gray-50 text-gray-600 cursor-not-allowed' : 'bg-white'
   }`;
+  const lockedInputClass =
+    'w-full px-4 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-500 cursor-not-allowed outline-none select-none';
 
   return (
     <div className={`space-y-6 ${embedded ? '' : 'pb-12 max-w-5xl mx-auto'}`}>
@@ -168,6 +172,18 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                 <Building2 className="w-5 h-5 text-[#888780]" /> Identity Details
               </h2>
               
+              <div className="p-3 mb-5 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-2.5 text-xs text-slate-600">
+                <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+                <span>
+                  Chartered identity fields (Organization Name, Acronym, Type, and Department Scope) are locked and governed by SAS Admin.
+                  {canEditLogo
+                    ? ' You may update the Organization Logo and Description / Mission.'
+                    : canEdit
+                    ? ' You may update the Description / Mission.'
+                    : ''}
+                </span>
+              </div>
+
               <div className="flex flex-col sm:flex-row gap-6 mb-8">
                 <div className="flex flex-col items-center gap-3">
                   <div className="w-32 h-32 rounded-xl bg-gray-100 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center overflow-hidden relative group">
@@ -176,9 +192,9 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                     ) : (
                       <Building2 className="w-10 h-10 text-gray-400" />
                     )}
-                    
-                    {canEdit && (
-                      <div 
+
+                    {canEditLogo && (
+                      <div
                         className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center cursor-pointer text-white"
                         onClick={() => fileInputRef.current?.click()}
                       >
@@ -187,38 +203,51 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
                       </div>
                     )}
                   </div>
-                  <input 
+                  <input
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileChange}
                     accept="image/jpeg,image/png,image/webp"
                     className="hidden"
                   />
-                  {canEdit && <p className="text-xs text-gray-500">JPG, PNG (Max 5MB)</p>}
+                  {canEditLogo ? (
+                    <p className="text-xs text-gray-500">JPG, PNG (Max 5MB)</p>
+                  ) : (
+                    <p className="text-[11px] text-gray-400 flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      Adviser / SAS Managed
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex-1 space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Organization Name *</label>
-                    <input 
+                    <label className="flex items-center gap-1.5 text-sm font-medium text-gray-500 mb-1">
+                      <span>Organization Name *</span>
+                      <Lock className="w-3.5 h-3.5 text-gray-400" />
+                    </label>
+                    <input
                       type="text"
-                      value={formData.name || ''}
-                      onChange={(e) => setFormData({...formData, name: e.target.value})}
-                      disabled={!canEdit}
-                      className={inputClass}
-                      placeholder="e.g. Society of Information Technology Enthusiasts"
+                      value={activeOrg.name || ''}
+                      readOnly
+                      disabled
+                      title="Locked — managed by SAS Admin"
+                      className={lockedInputClass}
                     />
                   </div>
-                  
+
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Acronym *</label>
-                    <input 
+                    <label className="flex items-center gap-1.5 text-sm font-medium text-gray-500 mb-1">
+                      <span>Acronym *</span>
+                      <Lock className="w-3.5 h-3.5 text-gray-400" />
+                    </label>
+                    <input
                       type="text"
-                      value={formData.acronym || ''}
-                      onChange={(e) => setFormData({...formData, acronym: e.target.value})}
-                      disabled={!canEdit}
-                      className={inputClass}
-                      placeholder="e.g. SITE"
+                      value={activeOrg.acronym || ''}
+                      readOnly
+                      disabled
+                      title="Locked — managed by SAS Admin"
+                      className={lockedInputClass}
                     />
                   </div>
                 </div>
@@ -226,28 +255,29 @@ export default function OrganizationProfile({ embedded = false }: { embedded?: b
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Organization Type *</label>
+                  <label className="flex items-center gap-1.5 text-sm font-medium text-gray-500 mb-1">
+                    <span>Organization Type *</span>
+                    <Lock className="w-3.5 h-3.5 text-gray-400" />
+                  </label>
                   <select
-                    value={formData.typeId || ''}
-                    onChange={(e) => setFormData({...formData, typeId: e.target.value})}
-                    disabled={!canEdit}
-                    className={inputClass}
+                    value={activeOrg.typeId || ''}
+                    disabled
+                    title="Locked — managed by SAS Admin"
+                    className={lockedInputClass}
                   >
                     {types.filter(t => !t.archived).map(type => (
                       <option key={type.id} value={type.id}>{type.name}</option>
                     ))}
                   </select>
                 </div>
-                
-
               </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Description / Mission</label>
-                <textarea 
+                <textarea
                   rows={4}
-                  value={formData.description || ''}
-                  onChange={(e) => setFormData({...formData, description: e.target.value})}
+                  value={descriptionText}
+                  onChange={(e) => setDescriptionText(e.target.value)}
                   disabled={!canEdit}
                   className={`${inputClass} resize-none`}
                   placeholder="Describe your organization's purpose and goals..."

@@ -184,7 +184,7 @@ export default function HistoricalBudgetPicker({
               <Sparkles className="w-3.5 h-3.5 text-[#FFD41C]" />
             </h4>
             <p className="text-[11px] text-gray-500">
-              Reference a previous year's event to auto-populate "Last Year's Actual (PHP)" figures.
+              Reference a previous year's event to populate <strong>Last Year's Actual (PHP)</strong> only — This Year's budget is configured from your selected funds.
             </p>
           </div>
         </div>
@@ -223,7 +223,7 @@ export default function HistoricalBudgetPicker({
                 Found {matches.length} matching past {matches.length === 1 ? 'activity' : 'activities'} for "{activeQuery}":
               </span>
             </span>
-            <span className="text-[10px] text-gray-400">Click to auto-populate Last Year's Budget</span>
+            <span className="text-[10px] text-gray-400">Populates Last Year's Actual only</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">

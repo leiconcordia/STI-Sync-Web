@@ -41,6 +41,7 @@ import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signat
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { createNotification } from '../../notifications';
 import { autoArchiveApprovedLiquidation } from '../../reports/services/report-archive.service';
+import { buildLiquidationApprovalNotificationPayload, isSasOwnedLiquidation } from '../utils/liquidation-settlement.utils';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import {
@@ -1199,6 +1200,28 @@ export const approveLiquidationReport = async (
   } catch (archErr) {
     console.warn('[approveLiquidationReport] Approved report storage notice:', archErr);
   }
+
+  // Notify maker clearly if there is a Returnable Surplus, Reimbursement Deficit, or Exact Match
+  if (!(docData as any)?.isCancellationLiquidation) {
+    try {
+      const notif = buildLiquidationApprovalNotificationPayload(id, { ...mergedApprovedData, ...settlementFields });
+      await createNotification({
+        recipientRole: notif.recipientRole,
+        targetOrgId: notif.targetOrgId,
+        targetOrgName: notif.targetOrgName,
+        type: 'document_approved',
+        category: 'financial_liquidation',
+        title: notif.title,
+        message: notif.message,
+        resourceId: id,
+        resourceType: 'liquidation',
+        actionRoute: notif.actionRoute,
+        senderName: options?.reviewerName || 'SAS Adviser',
+      });
+    } catch (notifErr) {
+      console.warn('[approveLiquidationReport] Approval notification warning:', notifErr);
+    }
+  }
 };
 
 /**
@@ -1564,6 +1587,27 @@ export async function endorseLiquidationStep(
       await autoArchiveApprovedLiquidation(liquidationId, { ...data, ...rawUpdates }, signerUid || signatory.email);
     } catch (archErr) {
       console.warn('[endorseLiquidationStep] Approved report storage notice:', archErr);
+    }
+
+    if (!(data as any)?.isCancellationLiquidation) {
+      try {
+        const notif = buildLiquidationApprovalNotificationPayload(liquidationId, { ...data, ...rawUpdates });
+        await createNotification({
+          recipientRole: notif.recipientRole,
+          targetOrgId: notif.targetOrgId,
+          targetOrgName: notif.targetOrgName,
+          type: 'document_approved',
+          category: 'financial_liquidation',
+          title: notif.title,
+          message: notif.message,
+          resourceId: liquidationId,
+          resourceType: 'liquidation',
+          actionRoute: notif.actionRoute,
+          senderName: signatory.name || 'Institutional Signatory',
+        });
+      } catch (notifErr) {
+        console.warn('[endorseLiquidationStep] Approval notification warning:', notifErr);
+      }
     }
   }
 
@@ -2246,7 +2290,7 @@ async function finalizeCancelledEventFromLiquidation(
           : `Your activity cancellation and financial liquidation were approved. The activity is now officially cancelled.`,
       resourceId: eventId,
       resourceType: 'event',
-      actionRoute: '/officer/finance',
+      actionRoute: '/officer/liquidation',
       senderName: 'Signatory Pipeline',
     });
   } catch (notifErr) {
@@ -2664,6 +2708,27 @@ export async function verifyCashierSettlementProofs(
       updatedAt: serverTimestamp(),
     })
   );
+
+  // Notify organization maker once SAS Admin verifies return/reimbursement settlement
+  if (!isSasOwnedLiquidation(data) && data.organizationId) {
+    try {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName || 'Student Organization',
+        type: 'document_approved',
+        category: 'financial_liquidation',
+        title: `Settlement Verified: ${data.eventTitle || 'Activity'}`,
+        message: `SAS verified the ${netAmount < -0.009 ? 'reimbursement' : 'Cashier return'} proof for "${data.eventTitle || 'Activity'}" and posted the bucket settlement.${auditDetails}`,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: `/officer/liquidation?id=${liquidationId}`,
+        senderName: actor.name || 'SAS Admin',
+      });
+    } catch (notifErr) {
+      console.warn('[verifyCashierSettlementProofs] Notification warning:', notifErr);
+    }
+  }
 }
 
 /**

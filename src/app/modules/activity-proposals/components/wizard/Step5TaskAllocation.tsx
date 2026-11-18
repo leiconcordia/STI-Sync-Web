@@ -18,8 +18,9 @@ import {
   AlertTriangle,
   CheckCircle2,
 } from 'lucide-react';
-import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
+import { format } from 'date-fns';
 import type { ProposalFormData, ProposalTask } from '../../types/proposal.types';
+import { POST_EVENT_TASK_WINDOW_DAYS, resolveTaskDateBounds } from '../../utils/proposal-calculations';
 
 interface Step5Props {
   formData: ProposalFormData;
@@ -28,22 +29,24 @@ interface Step5Props {
 }
 
 export default function Step5TaskAllocation({ formData, onChange, errors = {} }: Step5Props) {
-  const eventDate = formData.date || formData.sessions?.[0]?.date || '';
   const todayStr = useMemo(() => format(new Date(), 'yyyy-MM-dd'), []);
-  const standardMinDate = useMemo(() => format(addDays(new Date(), 15), 'yyyy-MM-dd'), []);
   const isUrgent = Boolean(formData.isUrgent);
-  const minTaskDate = isUrgent ? todayStr : standardMinDate;
-
-  // Latest task date: strictly 1 day before eventDate, except same-day urgent or day-15 boundary
-  const maxTaskDate = useMemo(() => {
-    if (!eventDate) return '';
-    const parsed = parseISO(eventDate);
-    if (!isValid(parsed)) return '';
-    if ((isUrgent && eventDate === todayStr) || (!isUrgent && eventDate === standardMinDate)) {
-      return eventDate;
-    }
-    return format(subDays(parsed, 1), 'yyyy-MM-dd');
-  }, [eventDate, isUrgent, todayStr, standardMinDate]);
+  const {
+    standardMinDate,
+    minTaskDate,
+    implementationStartDate: eventDate,
+    implementationEndDate,
+    maxTaskDate,
+  } = useMemo(
+    () =>
+      resolveTaskDateBounds({
+        eventDate: formData.date,
+        sessions: formData.sessions,
+        isUrgent,
+        todayStr,
+      }),
+    [formData.date, formData.sessions, isUrgent, todayStr]
+  );
 
   const tasks: ProposalTask[] = formData.tasks && formData.tasks.length > 0
     ? formData.tasks
@@ -100,7 +103,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             </h4>
           </div>
           <p className="text-xs text-indigo-700/90 mt-0.5 leading-relaxed">
-            Itemize preparatory milestones, assigned committees, and completion dates. All tasks must occur <strong>strictly prior</strong> to the implementation date.
+            Itemize preparatory and post-activity milestones, assigned committees, and completion dates. Tasks may occur before, during, or up to <strong>+{POST_EVENT_TASK_WINDOW_DAYS} days after</strong> the implementation date.
           </p>
         </div>
       </div>
@@ -110,12 +113,17 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-blue-600 flex-shrink-0" />
           <span>
-            Target Implementation Date: <strong className="text-blue-900 font-bold">{eventDate || 'Not set in Step 4'}</strong>
+            Target Implementation Date:{' '}
+            <strong className="text-blue-900 font-bold">
+              {implementationEndDate && eventDate && implementationEndDate !== eventDate
+                ? `${eventDate} – ${implementationEndDate}`
+                : eventDate || 'Not set in Step 4'}
+            </strong>
           </span>
         </div>
         <div className="text-[11px] text-blue-800 font-medium">
           {maxTaskDate ? (
-            <span>Latest allowed task completion: <strong>{maxTaskDate}</strong> (1 day prior)</span>
+            <span>Latest allowed task completion: <strong>{maxTaskDate}</strong> (+{POST_EVENT_TASK_WINDOW_DAYS} days post-event)</span>
           ) : (
             <span className="text-amber-700 font-semibold">⚠ Please configure event date in Step 4</span>
           )}
@@ -126,7 +134,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
       <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-800 flex items-start gap-2">
         <Clock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
         <div className="leading-relaxed">
-          <strong>Sequencing Policy:</strong> The first scheduled task and all subsequent tasks cannot match or succeed the implementation date. All tasks must be completed strictly prior to <strong>{eventDate || 'the event date'}</strong>.
+          <strong>Sequencing Policy:</strong> Tasks may be scheduled before, on, or after the implementation date (e.g., post-event liquidation &amp; PAR), but must never exceed <strong>+{POST_EVENT_TASK_WINDOW_DAYS} calendar days</strong> after <strong>{implementationEndDate || 'the implementation date'}</strong>{maxTaskDate ? ` (latest: ${maxTaskDate})` : ''}.
         </div>
       </div>
 
@@ -255,7 +263,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                 <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>
-                    Cannot match or occur on/after the implementation date ({eventDate}). All preparatory tasks must be completed strictly prior to the event date (latest: {maxTaskDate}).
+                    Cannot exceed {maxTaskDate}. Task completion dates are allowed up to +{POST_EVENT_TASK_WINDOW_DAYS} calendar days after the implementation date ({implementationEndDate || eventDate}).
                   </span>
                 </div>
               )}
@@ -306,7 +314,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
           <span>Total Milestones: <strong className="text-slate-800">{tasks.length}</strong></span>
         </div>
         <div className="text-slate-500">
-          {tasks.filter(t => !!t.taskName && !!t.completionDate && (!eventDate || t.completionDate < eventDate)).length} valid preparatory tasks ready
+          {tasks.filter(t => !!t.taskName && !!t.completionDate && (!maxTaskDate || t.completionDate <= maxTaskDate) && t.completionDate >= minTaskDate).length} valid task milestones ready
         </div>
       </div>
     </div>

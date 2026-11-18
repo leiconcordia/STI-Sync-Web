@@ -2338,7 +2338,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 <img
                   src={orgLogo}
                   alt={orgAcronym}
-                  className="w-9 h-9 rounded-lg object-cover border border-blue-200 shadow-xs"
+                  className="w-9 h-9 rounded-lg object-contain bg-white border border-blue-200 shadow-xs"
                 />
               ) : (
                 <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] flex items-center justify-center text-white font-bold text-xs shadow-xs">

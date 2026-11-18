@@ -550,8 +550,8 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
                                 linkedAt: new Date().toISOString(),
                               },
                             });
-                            toast.success(`Linked "${m.title}" budget to Step 6 Financials!`, {
-                              description: 'Historical figures will be auto-filled in the Last Year\'s Actual column.',
+                            toast.success(`Linked "${m.title}" historical reference to Step 6 Financials!`, {
+                              description: 'Last Year\'s Actual column populated for reference — configure This Year\'s budget via your selected funds.',
                             });
                           }}
                           className="px-2.5 py-1 text-[11px] font-bold bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-md transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"

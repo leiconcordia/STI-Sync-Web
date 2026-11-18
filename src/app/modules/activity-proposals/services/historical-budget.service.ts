@@ -9,6 +9,7 @@
 import { collection, getDocs, query, limit } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { FinancialProjections, FinancialLineItem } from '../types/proposal.types';
+import { calculateFinancialTotals } from '../utils/proposal-calculations';
 
 export interface HistoricalActivityMatch {
   id: string;
@@ -207,7 +208,8 @@ export function mapHistoricalLineItems(
       currentProjections.expenses[0].thisYearProposed === 0);
 
   if (isCurrentEmpty && derivedPastExpenses.length > 0) {
-    // Clone historical items as baseline
+    // Clone item labels and populate ONLY Last Year's Actual; leave This Year's Proposed at ₱0
+    // so the proposer configures this year's budget strictly from selected funds.
     updatedExpenses = derivedPastExpenses.map((past, idx) => {
       const pastAmt = Number(past.totalAmount || past.thisYearProposed || 0);
       return {
@@ -216,9 +218,9 @@ export function mapHistoricalLineItems(
         lastYearActual: pastAmt,
         originalLastYearActual: pastAmt,
         isHistoricalEdited: false,
-        thisYearProposed: pastAmt, // default proposed to last year's as starting point
-        totalAmount: pastAmt,
-        adjustment: 0,
+        thisYearProposed: 0,
+        totalAmount: 0,
+        adjustment: -pastAmt,
         remarks: past.remarks || '',
       };
     });
@@ -265,22 +267,19 @@ export function mapHistoricalLineItems(
   };
 
   if (isCurrentRevEmpty && pastRevenues.length > 0) {
+    // Populate ONLY Last Year's Actual revenue for comparison (never pre-fill This Year's
+    // Proposed Revenue or copy past fund/bucket IDs — this year comes strictly from selected funds).
     updatedRevenues = pastRevenues.map((past, idx) => {
       const pastAmt = Number(past.totalAmount || past.thisYearProposed || 0);
-      const preservedId =
-        String(past.id || '').startsWith('rev-bucket-') ||
-        String(past.id || '').startsWith('rev-contrib-')
-          ? past.id
-          : `rev-hist-${Date.now()}-${idx + 1}`;
       return {
-        id: preservedId,
-        description: past.description || 'Revenue Source',
+        id: `rev-hist-${Date.now()}-${idx + 1}`,
+        description: past.description || 'Last Year Fund Source Reference',
         lastYearActual: pastAmt,
         originalLastYearActual: pastAmt,
         isHistoricalEdited: false,
-        thisYearProposed: pastAmt,
-        totalAmount: pastAmt,
-        adjustment: 0,
+        thisYearProposed: 0,
+        totalAmount: 0,
+        adjustment: -pastAmt,
         remarks: past.remarks || '',
       };
     });
@@ -313,18 +312,11 @@ export function mapHistoricalLineItems(
     });
   }
 
-  // Recalculate totals
-  const totalRev = updatedRevenues.reduce((s, r) => s + (Number(r.totalAmount) || 0), 0);
-  const totalExp = updatedExpenses.reduce((s, e) => s + (Number(e.totalAmount) || 0), 0);
+  // Recalculate totals & adjustments without altering thisYearProposed on any row
+  const recalculatedProjections = calculateFinancialTotals(updatedRevenues, updatedExpenses);
 
   return {
-    recalculatedProjections: {
-      revenues: updatedRevenues,
-      expenses: updatedExpenses,
-      totalRevenue: totalRev,
-      totalExpenses: totalExp,
-      balance: totalRev - totalExp,
-    },
+    recalculatedProjections,
     originalHistoricalTotal,
   };
 }

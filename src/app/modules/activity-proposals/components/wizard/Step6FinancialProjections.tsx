@@ -377,20 +377,38 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
   };
 
   const handleClearHistoricalReference = () => {
-    const cleanRevs = currentProjections.revenues.map((r) => {
-      const { originalLastYearActual, isHistoricalEdited, ...rest } = r;
-      return rest as FinancialLineItem;
-    });
+    const cleanRevs = currentProjections.revenues
+      .filter((r) => !(String(r.id || '').startsWith('rev-hist-') && Number(r.thisYearProposed || 0) === 0))
+      .map((r) => {
+        const { originalLastYearActual, isHistoricalEdited, ...rest } = r;
+        return {
+          ...(rest as FinancialLineItem),
+          lastYearActual: 0,
+        };
+      });
     const cleanExps = currentProjections.expenses.map((e) => {
       const { originalLastYearActual, isHistoricalEdited, ...rest } = e;
-      return rest as FinancialLineItem;
+      return {
+        ...(rest as FinancialLineItem),
+        lastYearActual: 0,
+      };
     });
+    const safeRevs =
+      cleanRevs.length > 0
+        ? cleanRevs
+        : [
+            {
+              id: 'rev-1',
+              description: '',
+              lastYearActual: 0,
+              thisYearProposed: 0,
+              totalAmount: 0,
+              adjustment: 0,
+              remarks: '',
+            },
+          ];
     onChange({
-      financialProjections: {
-        ...currentProjections,
-        revenues: cleanRevs,
-        expenses: cleanExps,
-      },
+      financialProjections: calculateFinancialTotals(safeRevs, cleanExps),
       historicalReference: null,
     });
   };
@@ -652,13 +670,20 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
           onChange={(source) => {
             const updates: Partial<ProposalFormData> = { fundingSource: source };
             const customRows = getCustomRevenueRows(currentProjections.revenues);
+            const existingManagedHist = currentProjections.revenues.find((r) =>
+              isManagedFundRow(r) && Number(r.lastYearActual || 0) > 0
+            );
+            const preservedLastYear = Number(existingManagedHist?.lastYearActual || 0);
             const defaultRow: FinancialLineItem = {
               id: 'rev-1',
               description: '',
-              lastYearActual: 0,
+              lastYearActual: preservedLastYear,
+              ...(existingManagedHist?.originalLastYearActual !== undefined
+                ? { originalLastYearActual: existingManagedHist.originalLastYearActual }
+                : {}),
               thisYearProposed: 0,
               totalAmount: 0,
-              adjustment: 0,
+              adjustment: -preservedLastYear,
               remarks: '',
             };
             if (source === 'zero_budget') {
@@ -722,10 +747,13 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                   {
                     id: 'rev-contrib-new',
                     description: contrib.description,
-                    lastYearActual: 0,
+                    lastYearActual: preservedLastYear,
+                    ...(existingManagedHist?.originalLastYearActual !== undefined
+                      ? { originalLastYearActual: existingManagedHist.originalLastYearActual }
+                      : {}),
                     thisYearProposed: contrib.totalProjected,
                     totalAmount: contrib.totalProjected,
-                    adjustment: contrib.totalProjected,
+                    adjustment: contrib.totalProjected - preservedLastYear,
                     remarks: contrib.remarks,
                   },
                   ...customRows,
@@ -736,9 +764,12 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               const hasExistingBucketRows = currentProjections.revenues.some((r) =>
                 String(r.id).startsWith('rev-bucket-')
               );
+              const histRefRows = currentProjections.revenues.filter(
+                (r) => String(r.id || '').startsWith('rev-hist-') && Number(r.thisYearProposed || 0) === 0
+              );
               if (!hasExistingBucketRows) {
                 updates.financialProjections = calculateFinancialTotals(
-                  [{ ...defaultRow }, ...customRows],
+                  [...(histRefRows.length > 0 ? histRefRows : [{ ...defaultRow }]), ...customRows],
                   currentProjections.expenses
                 );
               }

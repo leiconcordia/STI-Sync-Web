@@ -160,6 +160,10 @@ function formatSubmittedDate(dateStr?: any): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+function isSasOrg(orgId?: string): boolean {
+  return ['sas', 'sas_admin', 'sao', 'sao_admin'].includes((orgId || '').toLowerCase());
+}
+
 export function EventApprovals() {
   const navigate = useNavigate();
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
@@ -464,8 +468,16 @@ export function EventApprovals() {
           }
         }
 
-        // Organization filter
-        if (filterOrg !== "all" && event.hostingOrgId !== filterOrg) return false;
+        // Organization / Origin filter (All vs Club Proposals vs SAS Authored vs Specific Org)
+        if (filterOrg === "club_proposals") {
+          const isSasItem = isSasOrg(event.hostingOrgId) || isSasCreatedEvent(event, orgMap);
+          if (isSasItem) return false;
+        } else if (filterOrg === "sas") {
+          const isSasItem = isSasOrg(event.hostingOrgId) || isSasCreatedEvent(event, orgMap);
+          if (!isSasItem) return false;
+        } else if (filterOrg !== "all" && event.hostingOrgId !== filterOrg) {
+          return false;
+        }
 
         // Category filter
         if (filterCategory !== "all" && event.eventCategoryId !== filterCategory) return false;
@@ -487,7 +499,7 @@ export function EventApprovals() {
         return true;
       })
       .sort(compareActivityProposals);
-  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters, availableSchoolYears]);
+  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters, availableSchoolYears, orgMap]);
 
   // Filtered drafts list (Urgents first, then latest submissions)
   const filteredDrafts = useMemo(() => {
@@ -521,7 +533,13 @@ export function EventApprovals() {
           }
         }
 
-        if (filterOrg !== "all" && draft.hostingOrgId !== filterOrg) return false;
+        if (filterOrg === "club_proposals") {
+          if (isSasOrg(draft.hostingOrgId) || isSasCreatedEvent(draft, orgMap)) return false;
+        } else if (filterOrg === "sas") {
+          if (!isSasOrg(draft.hostingOrgId) && !isSasCreatedEvent(draft, orgMap)) return false;
+        } else if (filterOrg !== "all" && draft.hostingOrgId !== filterOrg) {
+          return false;
+        }
         if (filterCategory !== "all" && draft.eventCategoryId !== filterCategory) return false;
         const q = searchQuery.toLowerCase().trim();
         if (q && !draft.title?.toLowerCase().includes(q) && !draft.referenceId?.toLowerCase().includes(q)) return false;
@@ -554,9 +572,24 @@ export function EventApprovals() {
   const archivedCount = events.filter((e) => e.isArchived === true && !e.isDeleted).length;
   const rejectedCount = events.filter((e) => e.proposalStatus === "rejected" && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
   const cancelledCount = events.filter((e) => (e.status === "cancelled" || e.proposalStatus === "cancelled") && !e.isArchived && !e.isDeleted).length;
-  const isSasOrg = (orgId?: string) => ['sas', 'sas_admin', 'sao', 'sao_admin'].includes(orgId || '');
-  const proposalsCount = events.filter((e) => !isSasOrg(e.hostingOrgId) && !e.isArchived && !e.isDeleted).length;
-  const saoMadeCount = events.filter((e) => isSasOrg(e.hostingOrgId) && !e.isArchived && !e.isDeleted).length;
+  const proposalsCount = events.filter(
+    (e) =>
+      !isSasOrg(e.hostingOrgId) &&
+      !isSasCreatedEvent(e, orgMap) &&
+      !e.isArchived &&
+      !e.isDeleted &&
+      e.proposalStatus !== "draft" &&
+      (e as any).lifecycleStatus !== "draft" &&
+      !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))
+  ).length;
+  const saoMadeCount = events.filter(
+    (e) =>
+      (isSasOrg(e.hostingOrgId) || isSasCreatedEvent(e, orgMap)) &&
+      !e.isArchived &&
+      !e.isDeleted &&
+      e.proposalStatus !== "draft" &&
+      (e as any).lifecycleStatus !== "draft"
+  ).length;
   const draftsCount = filteredDrafts.length;
 
   // Active list & Pagination
@@ -935,56 +968,76 @@ export function EventApprovals() {
         </div>
 
         {/* 4. Club Proposals */}
-        <div
+        <button
+          type="button"
           onClick={() => {
-            handleTabChange("all");
-            setFilterOrg("all");
+            if (filterOrg === "club_proposals") {
+              setFilterOrg("all");
+            } else {
+              handleTabChange("all");
+              setFilterOrg("club_proposals");
+            }
           }}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs bg-white border-gray-200 hover:border-purple-300 hover:shadow-sm`}
+          aria-pressed={filterOrg === "club_proposals"}
+          className={`w-full text-left p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
+            filterOrg === "club_proposals"
+              ? "bg-gradient-to-br from-purple-600 to-indigo-700 text-white border-purple-700 ring-2 ring-purple-400/30 shadow-md"
+              : "bg-white border-gray-200 hover:border-purple-300 hover:shadow-sm"
+          }`}
         >
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
+            <span className={`text-xs font-bold uppercase tracking-wider ${filterOrg === "club_proposals" ? "text-purple-100" : "text-gray-500"}`}>
               Club Proposals
             </span>
-            <div className="p-2 rounded-xl bg-purple-50 text-purple-600">
+            <div className={`p-2 rounded-xl ${filterOrg === "club_proposals" ? "bg-white/20 text-white" : "bg-purple-50 text-purple-600"}`}>
               <Calendar className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-2xl font-black mb-1 text-gray-900">
+          <div className={`text-2xl font-black mb-1 ${filterOrg === "club_proposals" ? "text-white" : "text-gray-900"}`}>
             {eventsLoading ? "..." : proposalsCount}
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-purple-700">
-              Student Org Initiatives
+            <span className={`text-[11px] font-medium ${filterOrg === "club_proposals" ? "text-purple-100" : "text-purple-700"}`}>
+              {filterOrg === "club_proposals" ? "Filter active • Click to clear" : "Student Org Initiatives"}
             </span>
           </div>
-        </div>
+        </button>
 
         {/* 5. SAS Authored */}
-        <div
+        <button
+          type="button"
           onClick={() => {
-            handleTabChange("all");
-            setFilterOrg("sas");
+            if (filterOrg === "sas") {
+              setFilterOrg("all");
+            } else {
+              handleTabChange("all");
+              setFilterOrg("sas");
+            }
           }}
-          className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm`}
+          aria-pressed={filterOrg === "sas"}
+          className={`w-full text-left p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${
+            filterOrg === "sas"
+              ? "bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] text-white border-[#001A4D] ring-2 ring-blue-400/30 shadow-md"
+              : "bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm"
+          }`}
         >
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-gray-500">
+            <span className={`text-xs font-bold uppercase tracking-wider ${filterOrg === "sas" ? "text-blue-100" : "text-gray-500"}`}>
               SAS Authored
             </span>
-            <div className="p-2 rounded-xl bg-blue-50 text-[#001A4D]">
-              <FileEdit className="w-4 h-4 text-[#001A4D]" />
+            <div className={`p-2 rounded-xl ${filterOrg === "sas" ? "bg-white/20 text-white" : "bg-blue-50 text-[#001A4D]"}`}>
+              <FileEdit className={`w-4 h-4 ${filterOrg === "sas" ? "text-white" : "text-[#001A4D]"}`} />
             </div>
           </div>
-          <div className="text-2xl font-black mb-1 text-gray-900">
+          <div className={`text-2xl font-black mb-1 ${filterOrg === "sas" ? "text-white" : "text-gray-900"}`}>
             {eventsLoading ? "..." : saoMadeCount}
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-medium text-blue-800">
-              Institutional Events
+            <span className={`text-[11px] font-medium ${filterOrg === "sas" ? "text-blue-100" : "text-blue-800"}`}>
+              {filterOrg === "sas" ? "Filter active • Click to clear" : "Institutional Events"}
             </span>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* ── Main Container: Filters + Fixed Table + Pagination ── */}
@@ -1109,13 +1162,15 @@ export function EventApprovals() {
             </div>
 
             <div>
-              <span className="text-gray-500 font-semibold mr-1.5">Org:</span>
+              <span className="text-gray-500 font-semibold mr-1.5">Org / Origin:</span>
               <select
                 value={filterOrg}
                 onChange={(e) => setFilterOrg(e.target.value)}
                 className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
               >
-                <option value="all">All Organizations</option>
+                <option value="all">All Organizations &amp; SAS</option>
+                <option value="club_proposals">Club Proposals (All Student Orgs)</option>
+                <option value="sas">SAS Authored (Institutional)</option>
                 {orgs.map((o) => (
                   <option key={o.id} value={o.id}>
                     {o.acronym || o.name}

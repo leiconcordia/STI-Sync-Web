@@ -39,6 +39,8 @@ import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firesto
 import { db } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import { LIQUIDATIONS_COLLECTION } from '../../finance/services/liquidation.service';
+import { evaluatePARLiquidationGate } from '../../finance/utils/liquidation-settlement.utils';
+import { isEventLiquidationExempt } from '../../events/utils/organization-display.utils';
 import {
   saveOrSubmitPAR,
   generateDefaultPARSignatoryChain,
@@ -729,7 +731,11 @@ export default function PostActivityReportWizardModal({
           try {
             const liqSnap = await getDoc(doc(db, LIQUIDATIONS_COLLECTION, explicitLiqId));
             if (liqSnap.exists()) {
-              liquidationDoc = { id: liqSnap.id, ...liqSnap.data() };
+              const cand = { id: liqSnap.id, ...liqSnap.data() } as any;
+              const st = String(cand.status || '').toLowerCase();
+              if (st !== 'voided' && st !== 'cancelled' && cand.isDeleted !== true) {
+                liquidationDoc = cand;
+              }
             }
           } catch (liqErr) {
             console.warn('[PostActivityReportWizardModal] Liquidation fetch by ID notice:', liqErr);
@@ -741,11 +747,17 @@ export default function PostActivityReportWizardModal({
               query(collection(db, LIQUIDATIONS_COLLECTION), where('eventId', '==', selectedEventId))
             );
             if (!liqQuery.empty) {
-              const docs = liqQuery.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+              const docs = liqQuery.docs
+                .map((d) => ({ id: d.id, ...d.data() } as any))
+                .filter((d) => {
+                  const st = String(d.status || '').toLowerCase();
+                  return st !== 'voided' && st !== 'cancelled' && d.isDeleted !== true;
+                });
               liquidationDoc =
                 docs.find((d) => d.status === 'approved') ||
-                docs.find((d) => d.status === 'under_review') ||
-                docs[0];
+                docs.find((d) => d.status === 'under_review' || d.status === 'pending') ||
+                docs[0] ||
+                null;
             }
           } catch (liqQErr) {
             console.warn('[PostActivityReportWizardModal] Liquidation query notice:', liqQErr);
@@ -1197,6 +1209,18 @@ export default function PostActivityReportWizardModal({
       return false;
     }
 
+    const parGate = evaluatePARLiquidationGate({
+      event: selectedEvent,
+      liquidation: wizardLiquidationDoc,
+      isExempt: isEventLiquidationExempt(selectedEvent),
+    });
+    if (!parGate.allowedToSubmit) {
+      toast.error('PAR Submission Locked', {
+        description: parGate.submitReason,
+      });
+      return false;
+    }
+
     setValidationErrors({});
     return true;
   };
@@ -1412,6 +1436,11 @@ export default function PostActivityReportWizardModal({
 
   const netBalance = totalRevenue - totalDisbursed;
   const isSurplus = netBalance >= 0;
+  const parLiquidationGate = evaluatePARLiquidationGate({
+    event: selectedEvent,
+    liquidation: wizardLiquidationDoc,
+    isExempt: isEventLiquidationExempt(selectedEvent),
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-sm animate-fade-in overflow-y-auto">
@@ -1493,6 +1522,21 @@ export default function PostActivityReportWizardModal({
             );
           })}
         </div>
+
+        {/* FL Settlement Lock Banner (Drafting stays open; Submit locked until FL is approved + proof uploaded) */}
+        {selectedEventId && !parLiquidationGate.allowedToSubmit && (
+          <div className="mx-6 mt-3 p-3 rounded-xl bg-amber-50 border border-amber-300 flex items-start gap-2.5 text-xs text-amber-950">
+            <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-bold text-amber-900">
+                PAR Submission Locked Pending Financial Liquidation &amp; Proof
+              </p>
+              <p className="text-amber-900/90 leading-relaxed">
+                {parLiquidationGate.submitReason}
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
@@ -2697,9 +2741,10 @@ export default function PostActivityReportWizardModal({
               isAdviserOrAdmin && (
                 <button
                   type="button"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !parLiquidationGate.allowedToSubmit}
+                  title={!parLiquidationGate.allowedToSubmit ? parLiquidationGate.submitReason : undefined}
                   onClick={() => handleSubmitOrDraft(true)}
-                  className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 cursor-pointer"
+                  className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                 >
                   {isSubmitting ? (
                     <>

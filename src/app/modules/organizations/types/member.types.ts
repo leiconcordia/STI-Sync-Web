@@ -20,6 +20,7 @@ export interface OrganizationMemberDocument {
   course: string;
   year: string;
   section?: string;
+  departmentId?: string;
   department: string;
   contactNumber: string;
   status: OrganizationMemberStatus;
@@ -49,6 +50,7 @@ export interface AddMemberPayload {
   course: string;
   year: string;
   section?: string;
+  departmentId?: string;
   department: string;
   contactNumber: string;
   status: OrganizationMemberStatus;

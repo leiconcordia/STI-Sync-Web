@@ -1,12 +1,23 @@
 import { formatPersonName } from '../../utils/name.utils';
-import { useState, useEffect } from 'react';
-import { X, Search, Loader2, Building2 } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { X, Search, Loader2, Building2, AlertTriangle, Lock } from 'lucide-react';
+import { toast } from 'sonner';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
-import { useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import {
+  useActiveAcademicPeriods,
+  useDepartments,
+  useCourses,
+} from '../../modules/academic/hooks/useAcademicStream';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { addMember } from '../../modules/organizations/services/member.service';
 import type { AddMemberPayload } from '../../modules/organizations/types/member.types';
+import {
+  checkStudentDepartmentEligibility,
+  isOrganizationCrossDepartmental,
+  resolveCanonicalDepartment,
+  resolveOrgDepartmentDisplay,
+} from '../../modules/organizations/utils/department-eligibility.utils';
 
 interface AddMemberModalProps {
   isOpen: boolean;
@@ -19,14 +30,17 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
   const { data: allStudents = [], loading: loadingStudents } = useStudents();
   const { members: existingOrgMembers = [], loading: loadingMembers } = useOrgMembers(organizationId);
   const { data: orgs = [] } = useOrganizationStream();
+  const { data: departments = [] } = useDepartments();
+  const { data: courses = [] } = useCourses();
   const { isStudentPendingReEnrollment } = useActiveAcademicPeriods();
 
   const activeOrg = orgs.find((o) => o.id === organizationId);
-  
+
   const [searchQuery, setSearchQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
   const [formData, setFormData] = useState({
     studentId: '',
     authUid: '',
@@ -35,6 +49,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     course: '',
     year: '',
     section: '',
+    departmentId: '',
     department: '',
     contactNumber: '',
     paymentStatus: 'outstanding' as 'paid' | 'outstanding',
@@ -44,6 +59,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     if (isOpen) {
       setSearchQuery('');
       setShowDropdown(false);
+      setSubmitError(null);
       setFormData({
         studentId: '',
         authUid: '',
@@ -52,6 +68,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
         course: '',
         year: '',
         section: '',
+        departmentId: '',
         department: '',
         contactNumber: '',
         paymentStatus: 'outstanding',
@@ -59,38 +76,52 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
     }
   }, [isOpen]);
 
-  const isCrossDept =
-    !activeOrg?.departmentId ||
-    activeOrg?.departmentId === 'cross-departmental' ||
-    activeOrg?.scope === 'cross-departmental' ||
-    activeOrg?.isCrossDepartmental === true;
+  const isCrossDept = useMemo(
+    () => isOrganizationCrossDepartmental(activeOrg),
+    [activeOrg]
+  );
 
-  // Check if a student is eligible (active + enrolled, and department match if org is departmental)
-  const isStudentEligible = (student: any): boolean => {
-    if (!student) return false;
-    if (student.status !== 'ACTIVE') return false;
-    if (isStudentPendingReEnrollment(student)) return false;
+  const orgDeptLabel = useMemo(
+    () => resolveOrgDepartmentDisplay(activeOrg, departments),
+    [activeOrg, departments]
+  );
 
-    // Cross-departmental organizations are open to all students
-    if (isCrossDept) return true;
+  // Evaluate active/enrolled status and strict department eligibility
+  const evaluateStudentEligibility = (student: any) => {
+    if (!student) {
+      return { eligible: false, deptLabel: 'Unknown', reason: 'Student record not found.' };
+    }
+    if (student.archived || student.status !== 'ACTIVE' || isStudentPendingReEnrollment(student)) {
+      return {
+        eligible: false,
+        deptLabel: resolveCanonicalDepartment(student, departments, courses).label,
+        reason: 'Student must be Active and enrolled for the current term.',
+      };
+    }
 
-    // Department-specific organizations: check student department match
-    const sDeptId = student.departmentId;
-    const sDeptName = (student.department || student.departmentName || '').toLowerCase().trim();
-    const orgDeptId = activeOrg?.departmentId;
-    const orgDeptName = (activeOrg?.departmentName || '').toLowerCase().trim();
-    const orgDeptCode = (activeOrg?.departmentCode || '').toLowerCase().trim();
-
-    if (sDeptId && orgDeptId && sDeptId === orgDeptId) return true;
-    if (sDeptName && orgDeptName && (sDeptName.includes(orgDeptName) || orgDeptName.includes(sDeptName))) return true;
-    if (sDeptName && orgDeptCode && (sDeptName.includes(orgDeptCode) || orgDeptCode.includes(sDeptName))) return true;
-
-    return false;
+    const deptResult = checkStudentDepartmentEligibility(activeOrg, student, departments, courses);
+    return {
+      eligible: deptResult.eligible,
+      deptLabel: deptResult.studentDeptLabel,
+      reason: deptResult.reason,
+    };
   };
 
   if (!isOpen) return null;
 
   const handleSelectStudent = (student: any) => {
+    const check = evaluateStudentEligibility(student);
+    if (!check.eligible) {
+      const msg =
+        check.reason ||
+        `Cannot select student: This organization is restricted to ${orgDeptLabel} students.`;
+      setSubmitError(msg);
+      toast.error(msg);
+      return;
+    }
+
+    const resolvedDept = resolveCanonicalDepartment(student, departments, courses);
+    setSubmitError(null);
     setFormData({
       ...formData,
       studentId: student.studentId || student.id || '',
@@ -100,7 +131,8 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
       course: student.courseCode || student.courseName || '',
       year: student.yearLevel || '',
       section: student.section || '',
-      department: student.department || student.departmentName || '',
+      departmentId: resolvedDept.canonicalDeptId || student.departmentId || '',
+      department: resolvedDept.canonicalName || student.departmentName || student.department || '',
       contactNumber: student.contactNumber || student.phone || '',
     });
     setSearchQuery('');
@@ -109,25 +141,39 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSubmitError(null);
+
     if (!formData.studentId || !formData.studentName) {
-      alert('Student ID and Name are required.');
+      const msg = 'Please select an eligible student from the search dropdown.';
+      setSubmitError(msg);
+      toast.error(msg);
       return;
     }
 
-    if (!isCrossDept) {
-      const studentObj = allStudents.find(
-        (s) =>
-          (s.studentId && s.studentId.trim().toLowerCase() === formData.studentId.trim().toLowerCase()) ||
-          (s.id && s.id.trim().toLowerCase() === formData.studentId.trim().toLowerCase())
-      );
-      if (studentObj && !isStudentEligible(studentObj)) {
-        alert(
-          `Cannot add member: This organization is restricted to ${activeOrg?.departmentName || activeOrg?.departmentCode || 'departmental'} students.`
-        );
-        return;
-      }
+    const studentObj = allStudents.find(
+      (s) =>
+        (s.studentId && s.studentId.trim().toLowerCase() === formData.studentId.trim().toLowerCase()) ||
+        (s.id && s.id.trim().toLowerCase() === formData.studentId.trim().toLowerCase()) ||
+        (s.authUid && formData.authUid && s.authUid.trim().toLowerCase() === formData.authUid.trim().toLowerCase())
+    );
+
+    if (!studentObj) {
+      const msg = 'Student record could not be verified in the active Student Registry.';
+      setSubmitError(msg);
+      toast.error(msg);
+      return;
     }
-    
+
+    const check = evaluateStudentEligibility(studentObj);
+    if (!check.eligible) {
+      const msg =
+        check.reason ||
+        `Cannot add member: This organization is restricted strictly to ${orgDeptLabel} students.`;
+      setSubmitError(msg);
+      toast.error(msg);
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const payload: AddMemberPayload = {
@@ -139,17 +185,21 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
         course: formData.course || '',
         year: formData.year || '',
         section: formData.section || '',
+        departmentId: formData.departmentId || undefined,
         department: formData.department || '',
         contactNumber: formData.contactNumber || '',
         organizationId,
         status: 'active',
       };
-      
+
       await addMember(payload, addedBy);
+      toast.success(`${payload.studentName} added to ${activeOrg?.acronym || activeOrg?.name || 'organization'}.`);
       onClose();
     } catch (err: any) {
       console.error(err);
-      alert(`Failed to add member: ${err.message}`);
+      const msg = err?.message || 'Failed to add member.';
+      setSubmitError(msg);
+      toast.error(msg);
     } finally {
       setIsSubmitting(false);
     }
@@ -169,7 +219,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                   <span className="text-emerald-300 font-semibold">• Open to All Students</span>
                 ) : (
                   <span className="text-amber-300 font-semibold">
-                    • Exclusive to {activeOrg.departmentName || activeOrg.departmentCode || 'Department'} Students
+                    • Exclusive to {orgDeptLabel} Students
                   </span>
                 )}
               </p>
@@ -181,6 +231,13 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
         </div>
 
         <div className="p-6 overflow-y-auto flex-1 space-y-4">
+          {submitError && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-start gap-2.5 text-xs text-rose-900">
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <span>{submitError}</span>
+            </div>
+          )}
+
           {/* Quick Search Student */}
           <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Search Eligible Student</label>
@@ -191,7 +248,7 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
                 placeholder={
                   isCrossDept
                     ? "Search active student by name, ID, or email..."
-                    : `Search ${activeOrg?.departmentCode || activeOrg?.departmentName || 'department'} student by name, ID, or email...`
+                    : `Search ${orgDeptLabel} student by name, ID, or email...`
                 }
                 value={searchQuery}
                 onChange={(e) => {
@@ -205,79 +262,117 @@ export function AddMemberModal({ isOpen, onClose, organizationId, addedBy }: Add
             <p className="text-[11px] text-gray-500 mt-1">
               {isCrossDept
                 ? "Showing active, enrolled students from any department."
-                : `Showing active students strictly belonging to ${activeOrg?.departmentName || activeOrg?.departmentCode || 'this department'}.`}
+                : `Restricted strictly to active ${orgDeptLabel} students. Students from other departments cannot be added.`}
             </p>
 
             {/* Dropdown */}
             {showDropdown && searchQuery.trim().length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#E0E0E0] rounded-lg shadow-xl z-50 max-h-52 overflow-y-auto">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[#E0E0E0] rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
                 {loadingStudents || loadingMembers ? (
                   <div className="p-3 text-sm text-gray-500 text-center">Loading eligible students...</div>
                 ) : (
                   (() => {
-                    const query = searchQuery.trim().toLowerCase();
+                    const queryText = searchQuery.trim().toLowerCase();
                     const existingMemberIds = new Set<string>();
                     const existingMemberEmails = new Set<string>();
 
                     existingOrgMembers.forEach((m) => {
+                      const st = String(m.status || '').toLowerCase();
+                      if (st === 'removed' || st === 'rejected') return;
                       if (m.studentId) existingMemberIds.add(m.studentId.toLowerCase().trim());
+                      if (m.studentSchoolId) existingMemberIds.add(m.studentSchoolId.toLowerCase().trim());
+                      if (m.authUid) existingMemberIds.add(m.authUid.toLowerCase().trim());
                       if (m.email) existingMemberEmails.add(m.email.toLowerCase().trim());
                     });
 
-                    const matches = allStudents
+                    const activeMatches = allStudents
                       .filter((s) => {
-                        if (!s) return false;
+                        if (!s || s.archived || s.status !== 'ACTIVE' || isStudentPendingReEnrollment(s)) {
+                          return false;
+                        }
 
-                        // 1. Program and enrollment eligibility check
-                        if (!isStudentEligible(s)) return false;
-
-                        // 2. Exclude students already registered in this org
+                        // Exclude students already registered in this org
                         const sDocId = (s.id || '').toLowerCase().trim();
+                        const sAuthUid = (s.authUid || '').toLowerCase().trim();
                         const sSchoolId = (s.studentId || '').toLowerCase().trim();
                         const sEmail = (s.email || '').toLowerCase().trim();
 
                         if (
                           existingMemberIds.has(sDocId) ||
+                          (sAuthUid && existingMemberIds.has(sAuthUid)) ||
                           (sSchoolId && existingMemberIds.has(sSchoolId)) ||
                           (sEmail && existingMemberEmails.has(sEmail))
                         ) {
                           return false;
                         }
 
-                        // 3. Search query matching
+                        // Search query matching
                         const fullName = `${s.firstName || ''} ${s.lastName || ''}`.toLowerCase();
-                        return fullName.includes(query) || sSchoolId.includes(query) || sEmail.includes(query);
+                        return fullName.includes(queryText) || sSchoolId.includes(queryText) || sEmail.includes(queryText);
                       })
-                      .slice(0, 5);
+                      .map((s) => ({
+                        student: s,
+                        check: evaluateStudentEligibility(s),
+                      }))
+                      .sort((a, b) => Number(b.check.eligible) - Number(a.check.eligible))
+                      .slice(0, 6);
 
-                    if (matches.length === 0) {
+                    if (activeMatches.length === 0) {
                       return (
                         <div className="p-3 text-xs text-gray-500 text-center">
                           {isCrossDept
                             ? `No eligible students found matching "${searchQuery}".`
-                            : `No eligible ${activeOrg?.departmentName || activeOrg?.departmentCode || 'departmental'} students found matching "${searchQuery}".`}
+                            : `No active students found matching "${searchQuery}". Only ${orgDeptLabel} students can join this organization.`}
                         </div>
                       );
                     }
 
-                    return matches.map((s) => (
-                      <div
-                        key={s.id}
-                        onClick={() => handleSelectStudent(s)}
-                        className="px-4 py-2.5 hover:bg-blue-50/60 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
-                      >
-                        <div className="font-medium text-[#001A4D] text-sm">{formatPersonName(s)}</div>
-                        <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className="font-mono">{s.studentId}</span>
-                          <span>•</span>
-                          <span className="text-[#0E4EBD] font-semibold">{s.courseCode || s.courseName || 'Student'}</span>
-                          <span>•</span>
-                          <span className="text-gray-600 font-medium">{s.departmentName || s.department || 'Department'}</span>
-                          <span>•</span>
-                          <span className="text-green-600 font-semibold">Active</span>
+                    return activeMatches.map(({ student: s, check }) => {
+                      if (!check.eligible) {
+                        return (
+                          <div
+                            key={s.id}
+                            aria-disabled="true"
+                            onClick={() => handleSelectStudent(s)}
+                            className="px-4 py-2.5 bg-rose-50/40 border-b border-gray-100 last:border-0 cursor-not-allowed opacity-75"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-medium text-gray-600 text-sm">{formatPersonName(s)}</span>
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200 text-[10px] font-bold">
+                                <Lock className="w-2.5 h-2.5" />
+                                Different Dept
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <span className="font-mono">{s.studentId}</span>
+                              <span>•</span>
+                              <span>{s.courseCode || s.courseName || 'Student'}</span>
+                              <span>•</span>
+                              <span className="text-rose-700 font-medium">{check.deptLabel}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={s.id}
+                          onClick={() => handleSelectStudent(s)}
+                          className="px-4 py-2.5 hover:bg-blue-50/60 cursor-pointer border-b border-gray-100 last:border-0 transition-colors"
+                        >
+                          <div className="font-medium text-[#001A4D] text-sm">{formatPersonName(s)}</div>
+                          <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5 flex-wrap">
+                            <span className="font-mono">{s.studentId}</span>
+                            <span>•</span>
+                            <span className="text-[#0E4EBD] font-semibold">{s.courseCode || s.courseName || 'Student'}</span>
+                            <span>•</span>
+                            <span className="text-gray-600 font-medium">{check.deptLabel}</span>
+                            <span>•</span>
+                            <span className="text-green-600 font-semibold">Eligible</span>
+                          </div>
                         </div>
-                      </div>
-                    ));
+                      );
+                    });
                   })()
                 )}
               </div>

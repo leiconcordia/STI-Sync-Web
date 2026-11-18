@@ -36,6 +36,8 @@ import {
   formatPHP,
   checkProjectedBalance,
   validateBucketAllocations,
+  resolveTaskDateBounds,
+  POST_EVENT_TASK_WINDOW_DAYS,
   PROJECTED_REVENUE_DEFICIT_WARNING,
 } from '../utils/proposal-calculations';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
@@ -829,21 +831,17 @@ export default function CreateProposalModal({
     }
 
     if (stepNumber === 5) {
-      const eventDate = data.date || data.sessions?.[0]?.date || '';
-      const todayStr = format(new Date(), 'yyyy-MM-dd');
-      const standardMinDate = format(addDays(new Date(), 15), 'yyyy-MM-dd');
       const isUrgent = Boolean(data.isUrgent);
-
-      let maxTaskDate = '';
-      if (eventDate) {
-        const parsedEvent = parseISO(eventDate);
-        if (isValid(parsedEvent)) {
-          maxTaskDate =
-            (isUrgent && eventDate === todayStr) || (!isUrgent && eventDate === standardMinDate)
-              ? eventDate
-              : format(subDays(parsedEvent, 1), 'yyyy-MM-dd');
-        }
-      }
+      const {
+        todayStr,
+        standardMinDate,
+        implementationEndDate,
+        maxTaskDate,
+      } = resolveTaskDateBounds({
+        eventDate: data.date,
+        sessions: data.sessions,
+        isUrgent,
+      });
 
       if (!data.tasks || data.tasks.length === 0) {
         errs.tasks = 'At least one task milestone is required.';
@@ -871,7 +869,7 @@ export default function CreateProposalModal({
             break;
           }
           if (maxTaskDate && t.completionDate > maxTaskDate) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot exceed ${maxTaskDate}. All preparatory tasks must be completed prior to the implementation date (${eventDate}).`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot exceed ${maxTaskDate} (+${POST_EVENT_TASK_WINDOW_DAYS} calendar days after implementation date ${implementationEndDate}).`;
             break;
           }
           if (i > 0 && data.tasks[i - 1]?.completionDate && t.completionDate < data.tasks[i - 1].completionDate) {

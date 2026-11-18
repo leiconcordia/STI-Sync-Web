@@ -19,6 +19,7 @@ import {
   Lock,
   Trash2,
   Undo2,
+  Upload,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useOrgLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
@@ -28,6 +29,7 @@ import { LiquidationExportPreviewModal } from '../../modules/finance/components/
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
 import { isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
+import { getLiquidationSettlementState } from '../../modules/finance/utils/liquidation-settlement.utils';
 import { deleteLiquidationReport, withdrawLiquidationReport } from '../../modules/finance/services/liquidation.service';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
@@ -286,6 +288,15 @@ export default function FinancialLiquidation() {
       .sort((a, b) => (a.daysRemaining ?? 999) - (b.daysRemaining ?? 999));
   }, [events, liquidations]);
 
+  const pendingSettlementReports = useMemo(() => {
+    return liquidations
+      .filter((l) => !l.isDeleted && getLiquidationSettlementState(l).requiresMakerAction)
+      .map((l) => ({
+        report: l,
+        settlement: getLiquidationSettlementState(l),
+      }));
+  }, [liquidations]);
+
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredReports.length / ITEMS_PER_PAGE));
   const paginatedItems = useMemo(() => {
@@ -470,6 +481,60 @@ export default function FinancialLiquidation() {
           </div>
         </div>
       </div>
+
+      {/* ── Post-Approval Return / Reimbursement Proof Action Required Banner ── */}
+      {pendingSettlementReports.length > 0 && (
+        <div className="bg-blue-50/90 border-2 border-[#0E4EBD]/40 rounded-2xl p-4 space-y-2.5 shadow-2xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-[#001A4D]">
+              <AlertCircle className="w-4 h-4 text-[#0E4EBD]" />
+              <span>
+                Approved Liquidations Requiring Return / Reimbursement Proof ({pendingSettlementReports.length})
+              </span>
+            </div>
+            <span className="text-[11px] text-[#0E4EBD] font-semibold">
+              Required before submitting Post-Activity Report (PAR)
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {pendingSettlementReports.map(({ report, settlement }) => {
+              const isDeficit = settlement.deficitAmount > 0.009;
+              const amt = isDeficit
+                ? settlement.deficitAmount
+                : settlement.amountToReturn || settlement.surplusAmount;
+              return (
+                <div
+                  key={report.id}
+                  className="px-3 py-2 rounded-xl border border-blue-200 bg-white text-xs flex flex-wrap items-center gap-2.5 shadow-2xs"
+                >
+                  <span className="font-bold text-[#001A4D] truncate max-w-[210px]">
+                    {report.eventTitle}
+                  </span>
+                  <span
+                    className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                      isDeficit
+                        ? 'bg-rose-100 text-rose-800'
+                        : 'bg-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    {isDeficit
+                      ? `Reimburse ${formatCurrency(amt)}`
+                      : `Returnable ${formatCurrency(amt)}`}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEdit(report)}
+                    className="px-2.5 py-1 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                  >
+                    <Upload className="w-3 h-3 text-[#FFD41C]" />
+                    <span>Upload Proof</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── 15-Day Post-Conclusion FL Dues Tracker ── */}
       {pendingFlDues.length > 0 && (
@@ -686,6 +751,7 @@ export default function FinancialLiquidation() {
 
                   const utilPct = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 100;
                   const isOverBudget = spent > allocated && allocated > 0;
+                  const settlement = getLiquidationSettlementState(report);
 
                   return (
                     <tr key={report.id} className="hover:bg-slate-50/80 transition-colors">
@@ -767,12 +833,56 @@ export default function FinancialLiquidation() {
 
                       {/* Status */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
-                        {statusBadge(report.status)}
+                        <div className="flex flex-col items-start gap-1">
+                          {statusBadge(report.status)}
+                          {isApproved && settlement.requiresMakerAction && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                              <AlertCircle className="w-2.5 h-2.5 text-amber-700" />
+                              {settlement.deficitAmount > 0.009
+                                ? `Reimburse ${formatCurrency(settlement.deficitAmount)} Proof Needed`
+                                : `Return ${formatCurrency(settlement.amountToReturn || settlement.surplusAmount)} Receipt Needed`}
+                            </span>
+                          )}
+                          {isApproved && settlement.awaitingSasVerification && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                              <Clock className="w-2.5 h-2.5" />
+                              Proof Uploaded • Awaiting SAS
+                            </span>
+                          )}
+                          {isApproved && settlement.isSettled && !settlement.isExactZero && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              {settlement.isClubDirect ? 'Club Ledger Settled' : 'Settlement Verified'}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Actions */}
                       <td className="py-3.5 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
+                          {isApproved && settlement.requiresMakerAction && (
+                            <button
+                              onClick={() => handleOpenEdit(report)}
+                              className="px-2.5 py-1 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title="Upload Cashier return receipt or reimbursement proof"
+                            >
+                              <Upload className="w-3 h-3 text-[#FFD41C]" />
+                              <span>Settle / Upload Proof</span>
+                            </button>
+                          )}
+
+                          {isApproved && settlement.awaitingSasVerification && (
+                            <button
+                              onClick={() => handleOpenEdit(report)}
+                              className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                              title="View uploaded settlement proof"
+                            >
+                              <Receipt className="w-3 h-3" />
+                              <span>Settlement Proof</span>
+                            </button>
+                          )}
+
                           {isApproved && (
                             <button
                               onClick={() => setExportReport(report)}
@@ -1021,6 +1131,48 @@ export default function FinancialLiquidation() {
                         )}
                       </div>
                     )}
+                    {viewingDetailReport.status === 'approved' &&
+                      (() => {
+                        const detSettlement = getLiquidationSettlementState(viewingDetailReport);
+                        if (detSettlement.isExactZero) return null;
+                        return (
+                          <div
+                            className={`mt-2.5 p-2.5 rounded-lg border text-[11px] flex flex-wrap items-center justify-between gap-2 ${
+                              detSettlement.requiresMakerAction
+                                ? 'bg-amber-50 border-amber-300 text-amber-950'
+                                : detSettlement.awaitingSasVerification
+                                  ? 'bg-blue-50 border-blue-200 text-blue-900'
+                                  : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                            }`}
+                          >
+                            <span className="font-semibold">
+                              {detSettlement.requiresMakerAction
+                                ? detSettlement.deficitAmount > 0.009
+                                  ? `Action Required: Upload Reimbursement / Supplemental Proof for ${formatCurrency(detSettlement.deficitAmount)} to unlock PAR submission.`
+                                  : `Action Required: Deposit ${formatCurrency(detSettlement.amountToReturn || detSettlement.surplusAmount)} and upload Cashier Return Receipt to unlock PAR submission.`
+                                : detSettlement.awaitingSasVerification
+                                  ? 'Settlement proof uploaded — awaiting SAS Admin verification.'
+                                  : detSettlement.isClubDirect
+                                    ? 'Club Treasury settlement posted to Finance Center.'
+                                    : 'Cashier return / reimbursement settlement verified & posted.'}
+                            </span>
+                            {detSettlement.requiresMakerAction && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const toSettle = viewingDetailReport;
+                                  setViewingDetailReport(null);
+                                  handleOpenEdit(toSettle);
+                                }}
+                                className="px-2.5 py-1 bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-md text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <Upload className="w-3 h-3 text-[#FFD41C]" />
+                                <span>Upload Proof Now</span>
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })()}
                   </div>
                 );
               })()}
@@ -1256,6 +1408,24 @@ export default function FinancialLiquidation() {
 
             <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
               <div className="flex items-center gap-2">
+                {viewingDetailReport.status === 'approved' &&
+                  (getLiquidationSettlementState(viewingDetailReport).requiresMakerAction ||
+                    getLiquidationSettlementState(viewingDetailReport).awaitingSasVerification) && (
+                    <button
+                      onClick={() => {
+                        const toSettle = viewingDetailReport;
+                        setViewingDetailReport(null);
+                        handleOpenEdit(toSettle);
+                      }}
+                      className="px-4 py-2 bg-[#0E4EBD] hover:bg-[#001A4D] text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+                    >
+                      <Upload className="w-4 h-4 text-[#FFD41C]" />
+                      {getLiquidationSettlementState(viewingDetailReport).requiresMakerAction
+                        ? 'Upload Return / Reimburse Proof'
+                        : 'View Uploaded Settlement Proof'}
+                    </button>
+                  )}
+
                 {viewingDetailReport.status === 'approved' && (
                   <button
                     onClick={() => {

@@ -103,15 +103,15 @@ export default function OfficerLogin() {
       {/* Right Panel - Single Viewport Fit Login Form with Redesigned Enlarged STI_ORMOC_LOGO */}
       <div className="w-1/2 h-full bg-white flex items-center justify-center p-6 lg:p-10 overflow-hidden">
         <div className="w-full max-w-[480px]">
-          {/* Logo Header Section - Circle Framed Logo */}
+          {/* Logo Header Section */}
           <div className="text-center mb-6">
             <div className="inline-block relative mb-3 group">
-              <div className="absolute -inset-1.5 bg-gradient-to-r from-[#FFD41C] via-[#0E4EBD] to-[#FFD41C] rounded-full blur-md opacity-40 group-hover:opacity-70 transition duration-500" />
-              <div className="relative w-28 h-28 md:w-32 md:h-32 rounded-full overflow-hidden shadow-xl mx-auto flex items-center justify-center transition-transform duration-300 group-hover:scale-[1.03]">
+              <div className="absolute -inset-1.5 bg-gradient-to-r from-[#FFD41C] via-[#0E4EBD] to-[#FFD41C] rounded-2xl blur-md opacity-40 group-hover:opacity-70 transition duration-500" />
+              <div className="relative w-36 md:w-40 aspect-[5/4] rounded-2xl overflow-hidden shadow-xl mx-auto flex items-center justify-center transition-transform duration-300 group-hover:scale-[1.03]">
                 <img
                   src={stiOrmocLogo}
                   alt="STI College Ormoc Logo"
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain"
                 />
               </div>
             </div>

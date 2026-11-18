@@ -4,7 +4,7 @@
  * Automated calculation engines for financial projections and STI 15-day policy verification.
  */
 
-import { differenceInCalendarDays, parseISO, isValid, format } from 'date-fns';
+import { addDays, differenceInCalendarDays, parseISO, isValid, format } from 'date-fns';
 import type {
   FinancialLineItem,
   FinancialProjections,
@@ -191,6 +191,60 @@ export function check15DayRule(
     daysDiff,
     earliestDate: earliest.toISOString().split('T')[0],
     policyRequirement: '15 calendar days before start of initial task/event',
+  };
+}
+
+export const POST_EVENT_TASK_WINDOW_DAYS = 15;
+
+/**
+ * Computes valid task completion date bounds for Step 5 Task List:
+ * - Minimum: today (if Urgent) or today + 15 calendar days (standard rule).
+ * - Maximum: up to +15 calendar days after the latest implementation/session date
+ *   (allowing post-event wrap-up, FL, and PAR tasks, but never past +15 days).
+ */
+export function resolveTaskDateBounds(params: {
+  eventDate?: string;
+  sessions?: Array<{ date?: string }>;
+  isUrgent?: boolean;
+  todayStr?: string;
+}): {
+  todayStr: string;
+  standardMinDate: string;
+  minTaskDate: string;
+  implementationStartDate: string;
+  implementationEndDate: string;
+  maxTaskDate: string;
+} {
+  const now = params.todayStr && isValid(parseISO(params.todayStr))
+    ? parseISO(params.todayStr)
+    : new Date();
+  const todayStr = format(now, 'yyyy-MM-dd');
+  const standardMinDate = format(addDays(now, 15), 'yyyy-MM-dd');
+  const minTaskDate = params.isUrgent ? todayStr : standardMinDate;
+
+  const validDates = Array.from(
+    new Set(
+      [
+        params.eventDate || '',
+        ...((params.sessions || []).map((s) => s?.date || '')),
+      ]
+        .filter((d) => Boolean(d) && isValid(parseISO(d)))
+    )
+  ).sort();
+
+  const implementationStartDate = validDates[0] || '';
+  const implementationEndDate = validDates[validDates.length - 1] || '';
+  const maxTaskDate = implementationEndDate
+    ? format(addDays(parseISO(implementationEndDate), POST_EVENT_TASK_WINDOW_DAYS), 'yyyy-MM-dd')
+    : '';
+
+  return {
+    todayStr,
+    standardMinDate,
+    minTaskDate,
+    implementationStartDate,
+    implementationEndDate,
+    maxTaskDate,
   };
 }
 

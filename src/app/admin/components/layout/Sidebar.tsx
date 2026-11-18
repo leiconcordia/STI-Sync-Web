@@ -59,13 +59,13 @@ export function Sidebar() {
 
   return (
     <div className="fixed left-0 top-0 h-screen w-[260px] bg-[#001A4D] flex flex-col">
-      {/* Centered Large Circular Logo Section (No White Border) */}
+      {/* Centered Logo Section */}
       <div className="p-6 border-b border-white/10 flex flex-col items-center text-center">
-        <div className="w-20 h-20 rounded-full overflow-hidden shadow-xl mb-3 flex items-center justify-center bg-[#001A4D]">
+        <div className="w-24 aspect-[5/4] rounded-2xl overflow-hidden shadow-xl mb-3 flex items-center justify-center bg-[#001A4D]">
           <img
             src={stiOrmocLogo}
-            alt="STI College Logo"
-            className="w-full h-full object-cover"
+            alt="STI College Ormoc Logo"
+            className="w-full h-full object-contain"
           />
         </div>
         <h1 className="text-white font-black text-lg tracking-tight leading-tight">

@@ -18,6 +18,7 @@ import {
   FileSignature,
   Shield,
   AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { collection, query, where, getDocs, updateDoc, doc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../../services/firebase';
@@ -112,6 +113,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
 
   // Form State
   const [fullName, setFullName] = useState('');
+  const [employeeIdDisplay, setEmployeeIdDisplay] = useState('');
   const [contactNumber, setContactNumber] = useState('');
   const [email, setEmail] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
@@ -128,35 +130,57 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
   const [hasDrawnSig, setHasDrawnSig] = useState(false);
   const [sigHistory, setSigHistory] = useState<ImageData[]>([]);
 
-  // Auto-fetch adviser's signature from Firestore if not in session yet
+  // Load adviser record details (signatureUrl, employeeId, contactNumber, profilePhotoUrl) from Firestore
   useEffect(() => {
     if (profile?.signatureUrl) {
       setSignatureUrl(profile.signatureUrl);
-    } else if (isAdviser && profile?.email) {
-      const fetchAdviserSig = async () => {
-        try {
-          const qAdv = query(
-            collection(db, 'organization_advisers'),
-            where('email', '==', profile.email)
-          );
-          const snap = await getDocs(qAdv);
-          const found = snap.docs.find((d) => d.data().signatureUrl);
-          if (found) {
-            const url = found.data().signatureUrl;
-            setSignatureUrl(url);
-            const raw = localStorage.getItem('sti_sync_officer_session');
-            if (raw) {
-              const parsed = JSON.parse(raw);
-              parsed.signatureUrl = url;
-              localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
-            }
-          }
-        } catch (e) {
-          console.warn('[OfficerSettings] Error loading adviser signature:', e);
-        }
-      };
-      fetchAdviserSig();
     }
+    if (!isAdviser || !profile?.email) return;
+
+    let cancelled = false;
+    const fetchAdviserProfile = async () => {
+      try {
+        const qAdv = query(
+          collection(db, 'organization_advisers'),
+          where('email', '==', profile.email.trim().toLowerCase())
+        );
+        const snap = await getDocs(qAdv);
+        if (cancelled) return;
+
+        const advDocs = snap.docs.map((d) => d.data());
+        const withSig = advDocs.find((d) => d.signatureUrl);
+        if (withSig?.signatureUrl) {
+          setSignatureUrl(withSig.signatureUrl);
+          const raw = localStorage.getItem('sti_sync_officer_session');
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              parsed.signatureUrl = withSig.signatureUrl;
+              localStorage.setItem('sti_sync_officer_session', JSON.stringify(parsed));
+            } catch {}
+          }
+        }
+
+        const withEmpId = advDocs.find((d) => d.employeeId);
+        if (withEmpId?.employeeId) {
+          setEmployeeIdDisplay(String(withEmpId.employeeId));
+        }
+        const withContact = advDocs.find((d) => d.contactNumber);
+        if (withContact?.contactNumber) {
+          setContactNumber(String(withContact.contactNumber));
+        }
+        const withPhoto = advDocs.find((d) => d.profilePhotoUrl);
+        if (withPhoto?.profilePhotoUrl) {
+          setPhotoUrl(String(withPhoto.profilePhotoUrl));
+        }
+      } catch (e) {
+        console.warn('[OfficerSettings] Error loading adviser profile:', e);
+      }
+    };
+    fetchAdviserProfile();
+    return () => {
+      cancelled = true;
+    };
   }, [profile?.signatureUrl, isAdviser, profile?.email]);
 
   // Security Form State
@@ -360,7 +384,7 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
 
   // Populate form with real data
   useEffect(() => {
-    if (currentStudent) {
+    if (currentStudent && !isAdviser) {
       const derivedName = formatPersonName(currentStudent);
       setFullName(derivedName || profile?.studentName || '');
       setContactNumber(currentStudent.contactNumber || '');
@@ -369,33 +393,46 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
     } else if (profile) {
       setFullName(profile.studentName || '');
       setEmail(profile.email || '');
+      if (isAdviser && (profile as any).employeeId) {
+        setEmployeeIdDisplay(String((profile as any).employeeId));
+      }
     }
-  }, [currentStudent, profile]);
+  }, [currentStudent, profile, isAdviser]);
 
   const handleSaveAccount = async () => {
-    if (isAdviser) {
-      toast.success('Adviser profile settings updated.');
-      return;
-    }
-    if (!currentStudent?.id) {
-      toast.error('Student record not found in system.');
-      return;
-    }
     setIsSaving(true);
     try {
-      const nameParts = fullName.trim().split(' ');
-      const firstName = nameParts[0] || '';
-      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : '';
+      if (isAdviser) {
+        if (profile?.email) {
+          const qAdv = query(
+            collection(db, 'organization_advisers'),
+            where('email', '==', profile.email.trim().toLowerCase())
+          );
+          const advSnap = await getDocs(qAdv);
+          for (const d of advSnap.docs) {
+            await updateDoc(doc(db, 'organization_advisers', d.id), {
+              contactNumber: contactNumber.trim(),
+              profilePhotoUrl: photoUrl || null,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+        toast.success('Adviser contact & profile photo updated!');
+        return;
+      }
 
+      if (!currentStudent?.id) {
+        toast.error('Student record not found in system.');
+        return;
+      }
+
+      // Only editable personal fields (Full Name & Email stay locked to Registrar/Auth records)
       await updateStudent(currentStudent.id, {
-        firstName,
-        lastName,
         contactNumber: contactNumber.trim(),
-        email: email.trim().toLowerCase(),
         profilePhotoUrl: photoUrl,
       });
 
-      toast.success('Account profile updated successfully!');
+      toast.success('Contact details updated successfully!');
     } catch (err: any) {
       console.error('Error updating profile:', err);
       toast.error('Failed to update profile: ' + (err.message || 'Unknown error'));
@@ -414,9 +451,22 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
 
     setIsUploadingPhoto(true);
     try {
-      const res = await uploadToCloudinary(file, { folder: 'students/profile' });
+      const folder = isAdviser ? 'advisers/profile' : 'students/profile';
+      const res = await uploadToCloudinary(file, { folder });
       setPhotoUrl(res.secureUrl);
-      if (currentStudent?.id) {
+      if (isAdviser && profile?.email) {
+        const qAdv = query(
+          collection(db, 'organization_advisers'),
+          where('email', '==', profile.email.trim().toLowerCase())
+        );
+        const advSnap = await getDocs(qAdv);
+        for (const d of advSnap.docs) {
+          await updateDoc(doc(db, 'organization_advisers', d.id), {
+            profilePhotoUrl: res.secureUrl,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      } else if (currentStudent?.id) {
         await updateStudent(currentStudent.id, { profilePhotoUrl: res.secureUrl });
       }
       toast.success('Profile photo updated successfully!');
@@ -578,32 +628,52 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </div>
                     </div>
 
+                    <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-2.5 text-xs text-slate-600">
+                      <Lock className="w-4 h-4 text-slate-500 shrink-0" />
+                      <span>
+                        Official identity fields (Name, ID, Role, and Email Address) are locked and managed by the Registrar / SAS Admin. You may update your Contact Number, Profile Photo, and E-Signature.
+                      </span>
+                    </div>
+
                     <div className="grid grid-cols-2 gap-4">
                       <div className="col-span-2">
-                        <label className="block text-[#001A4D] text-[13px] font-medium mb-1.5">Full Name</label>
+                        <label className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 mb-1.5">
+                          <span>Full Name</span>
+                          <Lock className="w-3.5 h-3.5 text-gray-400" />
+                        </label>
                         <input
                           type="text"
                           value={fullName}
-                          onChange={e => setFullName(e.target.value)}
-                          className={inputClass}
+                          readOnly
+                          title="Locked — managed by Registrar / SAS Admin"
+                          className={readOnlyClass}
                         />
                       </div>
 
                       <div>
-                        <label className="block text-[13px] font-medium text-gray-500 mb-1.5">
-                          {isAdviser ? 'Faculty / Employee ID' : 'Student ID'}
+                        <label className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 mb-1.5">
+                          <span>{isAdviser ? 'Faculty / Employee ID' : 'Student ID'}</span>
+                          <Lock className="w-3.5 h-3.5 text-gray-400" />
                         </label>
                         <input
                           type="text"
-                          value={profile?.studentId || currentStudent?.studentId || 'N/A'}
+                          value={
+                            isAdviser
+                              ? employeeIdDisplay ||
+                                (profile?.studentId && !profile.studentId.includes('@')
+                                  ? profile.studentId
+                                  : 'Not Assigned')
+                              : profile?.studentId || currentStudent?.studentId || 'N/A'
+                          }
                           readOnly
                           className={readOnlyClass}
                         />
                       </div>
 
                       <div>
-                        <label className="block text-[13px] font-medium text-gray-500 mb-1.5">
-                          {isAdviser ? 'Designation' : 'Course & Year'}
+                        <label className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 mb-1.5">
+                          <span>{isAdviser ? 'Designation' : 'Course & Year'}</span>
+                          <Lock className="w-3.5 h-3.5 text-gray-400" />
                         </label>
                         <input
                           type="text"
@@ -614,8 +684,9 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </div>
 
                       <div>
-                        <label className="block text-[13px] font-medium text-gray-500 mb-1.5">
-                          {isAdviser ? 'Portal Role' : 'Officer Role'}
+                        <label className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 mb-1.5">
+                          <span>{isAdviser ? 'Portal Role' : 'Officer Role'}</span>
+                          <Lock className="w-3.5 h-3.5 text-gray-400" />
                         </label>
                         <input
                           type="text"
@@ -637,12 +708,16 @@ export default function OfficerSettings({ defaultTab = 'account' }: OfficerSetti
                       </div>
 
                       <div className="col-span-2">
-                        <label className="block text-[#001A4D] text-[13px] font-medium mb-1.5">Email Address</label>
+                        <label className="flex items-center gap-1.5 text-[13px] font-medium text-gray-500 mb-1.5">
+                          <span>Email Address</span>
+                          <Lock className="w-3.5 h-3.5 text-gray-400" />
+                        </label>
                         <input
                           type="email"
                           value={email}
-                          onChange={e => setEmail(e.target.value)}
-                          className={inputClass}
+                          readOnly
+                          title="Locked — institutional login email managed by SAS Admin"
+                          className={readOnlyClass}
                         />
                       </div>
                     </div>

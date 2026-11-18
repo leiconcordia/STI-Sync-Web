@@ -250,8 +250,8 @@ export default function SignatoryLayout() {
       {/* ── MOBILE TOP BAR ── */}
       <div className="md:hidden bg-[#001A4D] text-white px-4 py-3 flex items-center justify-between shadow-md sticky top-0 z-50">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full overflow-hidden bg-white p-0.5">
-            <img src={stiOrmocLogo} alt="STI Logo" className="w-full h-full object-cover rounded-full" />
+          <div className="w-10 h-8 rounded-lg overflow-hidden flex items-center justify-center">
+            <img src={stiOrmocLogo} alt="STI College Ormoc Logo" className="w-full h-full object-contain rounded-lg" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
@@ -297,11 +297,11 @@ export default function SignatoryLayout() {
           {/* Brand Header */}
           <div className="pt-2 pb-6 px-2 border-b border-white/10">
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-2xl overflow-hidden bg-white p-0.5 shadow-md shrink-0 border border-white/20">
+              <div className="w-14 h-11 rounded-xl overflow-hidden shadow-md shrink-0 border border-white/20 flex items-center justify-center">
                 <img
                   src={stiOrmocLogo}
                   alt="STI College Ormoc Logo"
-                  className="w-full h-full object-cover rounded-xl"
+                  className="w-full h-full object-contain"
                 />
               </div>
               <div className="min-w-0">
