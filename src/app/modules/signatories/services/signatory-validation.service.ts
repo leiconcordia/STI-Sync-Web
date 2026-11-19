@@ -22,6 +22,7 @@ import {
   getDefaultWorkflowSettings,
   saveDefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
+import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 import {
   DefaultWorkflowSettings,
   WorkflowPipelineKey,
@@ -298,20 +299,77 @@ export async function checkDocumentAuthorityChangeEligibility(
     };
   }
 
-  // If changing to cannot_sign, check if assigned in templates or has pending docs for this docType
+  // If changing to cannot_sign, check if pending in-flight documents still rely on this signatory
+  // Default workflow template assignments for disallowed documents are automatically pruned on save.
   const [allTemplates, pendingDocs] = await Promise.all([
     getSignatoryWorkflowAssignments(signatoryId, signatoryEmail),
     getSignatoryPendingDocuments(signatoryId, signatoryEmail, docType),
   ]);
 
   const templateAssignments = allTemplates.filter((t) => t.documentType === docType);
-  const canProceed = templateAssignments.length === 0 && pendingDocs.length === 0;
+  const canProceed = pendingDocs.length === 0;
 
   return {
     canProceed,
     templateAssignments,
     pendingDocuments: pendingDocs,
   };
+}
+
+/**
+ * Removes a signatory from any Default Approval Workflow template whose documentType
+ * is no longer included in `allowedWorkflows`.
+ */
+export async function pruneSignatoryFromDisallowedTemplates(
+  signatoryId: string,
+  signatoryEmail: string,
+  allowedWorkflows: WorkflowDocumentType[],
+  adminEmail = 'admin@ormoc.sti.edu.ph'
+): Promise<number> {
+  const settings = await getDefaultWorkflowSettings();
+  const cleanEmail = (signatoryEmail || '').trim().toLowerCase();
+  const allowedSet = new Set(allowedWorkflows);
+  const updatedSettings: Partial<DefaultWorkflowSettings> = {};
+  let removedCount = 0;
+
+  const pipelineKeys: WorkflowPipelineKey[] = [
+    'adviser_ap',
+    'adviser_fl',
+    'adviser_par',
+    'admin_ap',
+    'admin_fl',
+    'admin_par',
+  ];
+
+  for (const key of pipelineKeys) {
+    const meta = WORKFLOW_PIPELINES_META.find((m) => m.key === key);
+    if (!meta || allowedSet.has(meta.documentType)) continue;
+
+    const existingSteps = settings[key] || [];
+    const nextSteps = existingSteps.filter((step) => {
+      const matchId = Boolean(step.signatoryUid && step.signatoryUid === signatoryId);
+      const matchEmail = Boolean(
+        cleanEmail &&
+        step.signatoryEmail &&
+        step.signatoryEmail.trim().toLowerCase() === cleanEmail
+      );
+      if (matchId || matchEmail) {
+        removedCount++;
+        return false;
+      }
+      return true;
+    });
+
+    if (nextSteps.length !== existingSteps.length) {
+      (updatedSettings as any)[key] = normalizeApprovalStages(nextSteps);
+    }
+  }
+
+  if (removedCount > 0) {
+    await saveDefaultWorkflowSettings(updatedSettings, adminEmail);
+  }
+
+  return removedCount;
 }
 
 /**

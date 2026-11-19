@@ -21,7 +21,13 @@ import {
   WorkflowPipelineKey,
   WorkflowStepTemplate,
 } from '../types/approval-workflow.types';
-import { normalizeApprovalStages } from '../utils/stage-normalization.utils';
+import {
+  normalizeApprovalStages,
+  filterTemplateStepsBySignatoryScope,
+  findMatchedSignatoryForStep,
+} from '../utils/stage-normalization.utils';
+
+export { filterTemplateStepsBySignatoryScope, findMatchedSignatoryForStep };
 
 const SETTINGS_COLLECTION = 'system_settings';
 const WORKFLOWS_DOC_ID = 'default_approval_workflows';

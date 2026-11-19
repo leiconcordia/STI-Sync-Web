@@ -9,7 +9,21 @@ import {
   liquidationSubmissionDeadline,
   parSubmissionDeadline,
 } from '../../events/utils/activity-compliance.utils';
-import { normalizeMiscSchoolYear } from '../../finance/services/misc-fee.service';
+import {
+  resolveUnifiedActiveAcademicTerm,
+  buildAvailableSchoolYears,
+  matchesSchoolYearFilter,
+  resolveDefaultSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+} from './academic-period-filter.utils';
+
+export {
+  resolveUnifiedActiveAcademicTerm,
+  buildAvailableSchoolYears,
+  matchesSchoolYearFilter,
+  resolveDefaultSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+};
 
 /** Extracts epoch milliseconds from Firestore Timestamp, serialized timestamp, Date, or string. */
 export function extractTimestampMs(val: any): number {
@@ -46,81 +60,6 @@ export function getSubmissionTimestampMs(record: any, fallbackDateStr?: string):
     extractTimestampMs(fallbackDateStr) ||
     0
   );
-}
-
-/**
- * Resolves the unified active academic context (MiscFeeConfigs first, falling back to Semesters).
- */
-export function resolveUnifiedActiveAcademicTerm(params: {
-  activeConfig?: MiscFeeConfigDocument | null;
-  configs?: MiscFeeConfigDocument[];
-  activeCollegePeriod?: SemesterDocument | null;
-  activeShsPeriod?: SemesterDocument | null;
-}): { schoolYear: string; semester: string } {
-  const { activeConfig, configs = [], activeCollegePeriod, activeShsPeriod } = params;
-  const openMisc =
-    (activeConfig && activeConfig.status !== 'CLOSED' ? activeConfig : null) ||
-    configs.find((c) => c.isActive === true && c.status !== 'CLOSED') ||
-    configs.find((c) => c.status !== 'CLOSED') ||
-    activeConfig;
-
-  const miscSy = normalizeMiscSchoolYear(openMisc?.schoolYear);
-  const legacyPeriod = activeCollegePeriod || activeShsPeriod;
-  const schoolYear = miscSy || normalizeMiscSchoolYear(legacyPeriod?.academicYear) || '';
-  const semester =
-    (miscSy && openMisc?.activeSemester) ||
-    legacyPeriod?.semester ||
-    (legacyPeriod as any)?.term ||
-    openMisc?.activeSemester ||
-    '1st Semester';
-
-  return { schoolYear, semester };
-}
-
-/**
- * Builds the sorted list of available School Years combining MiscFeeConfigs, Semesters, and record values.
- */
-export function buildAvailableSchoolYears(params: {
-  configs?: MiscFeeConfigDocument[];
-  semesters?: SemesterDocument[];
-  records?: Array<{ schoolYear?: string | null }>;
-  activeSchoolYear?: string;
-}): string[] {
-  const set = new Set<string>();
-  const addSy = (raw?: string | null) => {
-    const clean = normalizeMiscSchoolYear(raw);
-    if (clean) set.add(clean);
-  };
-  (params.configs || []).forEach((c) => addSy(c.schoolYear));
-  (params.semesters || []).forEach((s) => addSy(s.academicYear));
-  (params.records || []).forEach((r) => addSy(r.schoolYear));
-  addSy(params.activeSchoolYear);
-  return Array.from(set).sort().reverse();
-}
-
-/**
- * Strict School Year matcher: prevents untagged legacy records from leaking into
- * newly initialized School Years (e.g., SY 2027-2028 after Zero Reset).
- */
-export function matchesSchoolYearFilter(params: {
-  recordSchoolYear?: string | null;
-  filterSchoolYear: string;
-  availableSchoolYears: string[];
-}): boolean {
-  const filterNorm = normalizeMiscSchoolYear(params.filterSchoolYear).toLowerCase();
-  if (!filterNorm || filterNorm === 'all') return true;
-
-  const recNorm = normalizeMiscSchoolYear(params.recordSchoolYear).toLowerCase();
-  if (recNorm) {
-    return recNorm === filterNorm;
-  }
-
-  // Legacy records without a stamped schoolYear only belong under the oldest/baseline SY
-  if (params.availableSchoolYears.length <= 1) return true;
-  const oldestSy = normalizeMiscSchoolYear(
-    params.availableSchoolYears[params.availableSchoolYears.length - 1]
-  ).toLowerCase();
-  return !oldestSy || filterNorm === oldestSy;
 }
 
 const AP_CLOSED_STATUSES = new Set(['approved', 'completed', 'rejected', 'cancelled', 'canceled']);
@@ -178,7 +117,7 @@ export function comparePostActivityReports(
   return getSubmissionTimestampMs(b) - getSubmissionTimestampMs(a);
 }
 
-/** 2 = Urgent / Overdue / Cancellation, 1 = Due Soon (<= 3 days) or Pending Settlement Proof, 0 = Standard */
+/** 2 = Urgent / Overdue, 1 = Due Soon (<= 3 days) or Pending Settlement Proof, 0 = Standard */
 export function getLiquidationUrgencyRank(
   liq: LiquidationDocument,
   eventsById?: Map<string, EventDocument>
@@ -195,8 +134,7 @@ export function getLiquidationUrgencyRank(
   const parentEvent = liq.eventId ? eventsById?.get(liq.eventId) : undefined;
   if (
     Boolean((liq as any).isUrgent) ||
-    Boolean((parentEvent as any)?.isUrgent) ||
-    Boolean(liq.isCancellationLiquidation)
+    Boolean((parentEvent as any)?.isUrgent)
   ) {
     return 2;
   }

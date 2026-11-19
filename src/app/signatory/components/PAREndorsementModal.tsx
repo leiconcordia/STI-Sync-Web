@@ -50,6 +50,7 @@ import {
   PAR_COLLECTION,
 } from '../../modules/post-activity-reports/services/par.service';
 import { exportPostActivityReportPDF } from '../../modules/post-activity-reports/utils/par-pdf-exporter';
+import { resolvePARRemarksDescription } from '../../modules/post-activity-reports/utils/par-remarks.utils';
 import { getSasSignatoryConfig } from '../../modules/signatories/services/sas-signatory.service';
 import { SAS_ADMINS_COLLECTION } from '../../modules/auth/services/auth.service';
 import { formatPersonName } from '../../utils/name.utils';
@@ -96,19 +97,6 @@ function cleanSigUrl(val?: unknown): string {
   const trimmed = val.trim();
   if (!trimmed || trimmed.includes('[base64-')) return '';
   return trimmed;
-}
-
-function extractRemarkItems(primaryList?: unknown, fallbackString?: unknown): string[] {
-  if (Array.isArray(primaryList) && primaryList.length > 0) {
-    return primaryList.map((v) => String(v).trim()).filter(Boolean);
-  }
-  if (typeof fallbackString === 'string' && fallbackString.trim()) {
-    return fallbackString
-      .split('\n')
-      .map((line) => line.replace(/^[•\-*]\s*/, '').trim())
-      .filter(Boolean);
-  }
-  return [];
 }
 
 function isImageAttachment(url: string, fileType?: string, name?: string): boolean {
@@ -777,13 +765,6 @@ export default function PAREndorsementModal({
   const photosList = activeReport.photos || [];
   const totalAttachedDocsCount = consolidatedAttachments.length;
 
-  const remarkCategories = [
-    { key: 'recommendations.programFlow', title: '1. Program Flow and Content', data: activeReport.recommendations?.programFlow as any },
-    { key: 'recommendations.participantEngagement', title: '2. Participant Engagement', data: activeReport.recommendations?.participantEngagement as any },
-    { key: 'recommendations.technicalSetup', title: '3. Technical Setup', data: activeReport.recommendations?.technicalSetup as any },
-    { key: 'recommendations.participantPreparedness', title: '4. Participant Preparedness and Expectations', data: activeReport.recommendations?.participantPreparedness as any },
-  ];
-
   const resultSubsections: Array<{ num: string; title: string; value?: string; fallback?: string }> = [
     { num: '3.', title: 'Enrichment of Learning Beyond the Classroom', value: activeReport.results?.classroomEnrichment },
     { num: '4.', title: 'Reason for Venue Selection', value: activeReport.results?.venueAssessment },
@@ -1264,19 +1245,6 @@ export default function PAREndorsementModal({
                 <Award className="w-4 h-4 text-[#0E4EBD]" />
                 Results of the Activity
               </h4>
-              <div className="flex items-center gap-2">
-                {activeReport.results?.compositeSuccessScore !== undefined && (
-                  <span className="text-[11px] font-black px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                    {activeReport.results.compositeSuccessScore}% Success Rating
-                  </span>
-                )}
-                <span className="text-[11px] font-bold text-blue-700 uppercase bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
-                  {(activeReport.results?.objectiveStatus || 'fully_achieved').replace('_', ' ')}
-                </span>
-                {diffByPath.get('results.objectiveStatus') && (
-                  <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
-                )}
-              </div>
             </div>
 
             {/* 1. Achievement of Objectives */}
@@ -1370,53 +1338,17 @@ export default function PAREndorsementModal({
           </div>
 
           {/* Remarks (For Future Activity Improvements) */}
-          <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-              Remarks (For Future Activity Improvements)
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-              {remarkCategories.map((cat) => {
-                const obsItems = extractRemarkItems(cat.data?.observationsList, cat.data?.observations);
-                const recItems = extractRemarkItems(cat.data?.recommendationsList, cat.data?.recommendations);
-                return (
-                  <div key={cat.key} className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <strong className="text-slate-900 block">{cat.title}</strong>
-                      {diffByPath.get(cat.key) && <InlineRevisionBadge diff={diffByPath.get(cat.key)} />}
-                    </div>
-                    <div>
-                      <span className="text-[11px] font-semibold text-slate-500 block">Observations:</span>
-                      {obsItems.length > 0 ? (
-                        <ul className="mt-0.5 space-y-0.5 text-slate-700">
-                          {obsItems.map((item, i) => (
-                            <li key={i} className="flex items-start gap-1.5">
-                              <span className="text-slate-400">•</span>
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </div>
-                    <div>
-                      <span className="text-[11px] font-semibold text-slate-500 block">Recommendations:</span>
-                      {recItems.length > 0 ? (
-                        <ul className="mt-0.5 space-y-0.5 text-slate-700">
-                          {recItems.map((item, i) => (
-                            <li key={i} className="flex items-start gap-1.5">
-                              <span className="text-blue-500">•</span>
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+          <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                Remarks (For Future Activity Improvements)
+              </h4>
+              {(diffByPath.get('remarks') || diffByPath.get('recommendations')) && (
+                <InlineRevisionBadge diff={diffByPath.get('remarks') || diffByPath.get('recommendations')} />
+              )}
+            </div>
+            <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs text-slate-700 leading-relaxed whitespace-pre-line">
+              {resolvePARRemarksDescription(activeReport) || 'No remarks provided.'}
             </div>
           </div>
 

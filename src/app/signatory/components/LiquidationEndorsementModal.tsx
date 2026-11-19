@@ -135,14 +135,14 @@ export default function LiquidationEndorsementModal({
     let isMounted = true;
     (async () => {
       try {
-        const evSnap = await getDoc(doc(db, 'events', liquidation.eventId));
-        if (evSnap.exists() && isMounted) {
-          setLinkedEvent(evSnap.data());
-          return;
-        }
         const actSnap = await getDoc(doc(db, 'activities', liquidation.eventId));
         if (actSnap.exists() && isMounted) {
           setLinkedEvent(actSnap.data());
+          return;
+        }
+        const evSnap = await getDoc(doc(db, 'events', liquidation.eventId));
+        if (evSnap.exists() && isMounted) {
+          setLinkedEvent(evSnap.data());
         }
       } catch (err) {
         console.warn('[LiquidationEndorsementModal] Event lookup:', err);
@@ -693,6 +693,7 @@ export default function LiquidationEndorsementModal({
           {/* LEFT PANE: LINE ITEMS & FINANCIAL AUDIT (COL-SPAN-7) */}
           {/* ═════════════════════════════════════════════════════════════ */}
           <div className="lg:col-span-7 flex flex-col h-full overflow-y-auto p-5 sm:p-6 space-y-5 border-r border-slate-200 bg-white">
+
             {/* Revision Banner if liquidation has past revision history */}
             {hasRevisions && (
               <RevisionFeedbackBanner

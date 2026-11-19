@@ -14,6 +14,7 @@
 
 import { jsPDF } from 'jspdf';
 import type { PostActivityReportDocument, PARApprovalStep } from '../types/par.types';
+import { resolvePARRemarksDescription } from './par-remarks.utils';
 import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.utils';
 import { STI_LOGO_BASE64 } from '../../activity-proposals/utils/sti-logo-asset';
 
@@ -715,57 +716,30 @@ export async function buildPostActivityReportPDF(
   }
   cursorY += 2.2;
 
-  const recCats = [
-    { title: '1. Program Flow and Content', data: rawReport.recommendations?.programFlow },
-    { title: '2. Participant Engagement', data: rawReport.recommendations?.participantEngagement },
-    { title: '3. Technical Setup', data: rawReport.recommendations?.technicalSetup },
-    { title: '4. Participant Preparedness and Expectations', data: rawReport.recommendations?.participantPreparedness },
-  ];
-
-  const extractList = (val: any): string[] => {
-    if (Array.isArray(val)) return val.map((v) => String(v).trim()).filter(Boolean);
-    if (typeof val === 'string' && val.trim()) {
-      return val.split('\n').map((s) => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
-    }
-    return [];
-  };
-
-  for (const cat of recCats) {
-    const obs = extractList((cat.data as any)?.observationsList || cat.data?.observations);
-    const recs = extractList((cat.data as any)?.recommendationsList || cat.data?.recommendations);
-
-    checkPageBreak(12);
-    doc.setFont('times', 'bold');
+  const singleRemarks = resolvePARRemarksDescription(rawReport);
+  if (singleRemarks) {
+    const paragraphs = singleRemarks.split(/\r?\n/);
+    doc.setFont('times', 'normal');
     doc.setFontSize(9.5);
     doc.setTextColor(0, 0, 0);
-    doc.text(cat.title, col1X, cursorY);
-    cursorY += 3.8;
-
-    const renderRemarkSublist = (subLabel: string, items: string[]) => {
-      doc.setFont('times', 'bold');
-      doc.setFontSize(9.2);
-      doc.text(subLabel, col1X + 4, cursorY);
-      cursorY += 3.7;
-
-      doc.setFont('times', 'normal');
-      doc.setFontSize(9.2);
-      for (const item of items) {
-        const split: string[] = doc.splitTextToSize(`• ${item}`, col1Width - 10);
-        for (const l of split) {
-          if (cursorY + 3.7 > bottomLimit) {
-            doc.addPage();
-            cursorY = topMargin;
-          }
-          doc.text(l, col1X + 6, cursorY);
-          cursorY += 3.7;
-        }
+    for (const para of paragraphs) {
+      if (!para.trim()) {
+        cursorY += 2.2;
+        continue;
       }
-      cursorY += 0.6;
-    };
-
-    if (obs.length > 0) renderRemarkSublist('Observations:', obs);
-    if (recs.length > 0) renderRemarkSublist('Recommendations:', recs);
-    cursorY += 1.2;
+      const wrappedLines: string[] = doc.splitTextToSize(para, col1Width - 1);
+      for (const wl of wrappedLines) {
+        if (cursorY + 3.8 > bottomLimit) {
+          doc.addPage();
+          cursorY = topMargin;
+        }
+        doc.text(wl, col1X, cursorY);
+        cursorY += 3.8;
+      }
+    }
+    cursorY += 1.5;
+  } else {
+    cursorY += 1.5;
   }
 
   // VIII. Attachments (if applicable) — centered plain list matching PAR_updated1.docx

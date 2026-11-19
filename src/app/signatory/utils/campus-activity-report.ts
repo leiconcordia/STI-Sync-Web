@@ -262,7 +262,7 @@ export function buildCampusActivityRows({
     const period = periods.find((item) => item.id === source.semesterId);
     const dates = activityScheduleDates(source);
     const excluded = [source.status, source.proposalStatus, source.lifecycleStatus, proposal?.status].map(normalized)
-      .find((status) => ['cancelled', 'canceled', 'rejected'].includes(status));
+      .find((status) => ['cancelled', 'canceled', 'cancellation_pending', 'rejected'].includes(status));
     const concluded = !excluded && isActivityConcluded(source);
     const apStatus = excluded ? (excluded === 'rejected' ? 'rejected' : 'cancelled')
       : concluded ? 'approved' : proposalStatus(proposal || source);
@@ -277,7 +277,15 @@ export function buildCampusActivityRows({
     // A linked report may retain financial obligations missing from a legacy activity mirror.
     const recordedFunds = Math.max(Number(liquidation?.allocatedBudget || 0), Number(liquidation?.amountAdvanced || 0), Number(liquidation?.totalActualSpending || 0));
     const exempt = isEventLiquidationExempt({ ...source, approvedBudget: Math.max(Number(source.approvedBudget || 0), recordedFunds) });
-    const flStatus = exempt ? 'exempt' : liquidation ? documentStatus(liquidation) : excluded ? 'not_required' : concluded ? 'missing' : 'not_due';
+    const flStatus = exempt
+      ? 'exempt'
+      : liquidation
+        ? documentStatus(liquidation)
+        : excluded
+          ? 'not_required'
+          : concluded
+            ? 'missing'
+            : 'not_due';
     const parStatus = par ? documentStatus(par) : excluded ? 'not_required' : concluded ? 'missing' : 'not_due';
     const missingFL = Boolean(concluded && !exempt && ['missing', 'draft'].includes(flStatus));
     const missingPAR = Boolean(concluded && ['missing', 'draft'].includes(parStatus));
@@ -313,7 +321,11 @@ export function buildCampusActivityRows({
       proposalStatus: apStatus, activityState, flStatus, parStatus, exempt, concluded: Boolean(concluded),
       missingFL, missingPAR, returned: Boolean(returned), fullyCleared,
       awaitingMySignature: [proposal, liquidation, par].some((record) => record && pendingIds.has(record.id)),
-      outstanding: excluded ? 'No post-activity requirements' : fullyCleared ? 'All required reports approved' : outstandingParts.join('; ') || (concluded ? 'Awaiting required approvals' : 'Post-activity reports not due yet'),
+      outstanding: excluded
+        ? 'No disbursement / no post-activity requirements'
+        : fullyCleared
+          ? 'All required reports approved'
+          : outstandingParts.join('; ') || (concluded ? 'Awaiting required approvals' : 'Post-activity reports not due yet'),
       deadline, daysRemaining, parDeadline, parDaysRemaining, parOverdue, overdue, attendees: typeof attendance === 'number' && Number.isFinite(attendance) ? attendance : null,
       activity: source, proposal, liquidation, par,
     }];

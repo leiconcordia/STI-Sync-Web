@@ -5,7 +5,7 @@ import {
   ArrowLeft, Download, Clock, CheckCircle, CheckCircle2, XCircle, RotateCcw,
   Calendar, MapPin, Users, Shield, Receipt, FileText, FileCheck, History,
   ChevronRight, Eye, Send, Gavel, Check, X, AlertTriangle, AlertCircle, Rocket,
-  FileImage, Coins, FolderArchive, Trash2, FileSignature, Lock, Unlock,
+  FileImage, Coins, Trash2, FileSignature, Lock, Unlock,
   Target, Wrench, Megaphone, ListChecks, TrendingUp, UserCheck, Smartphone, QrCode, DollarSign, SlidersHorizontal,
   PenTool, ShieldCheck, Undo2, GitCompare, ChevronDown, Upload, Building2, Loader2
 } from 'lucide-react';
@@ -35,17 +35,12 @@ import {
   type SasSignatoryConfig,
 } from '../../modules/signatories/services/sas-signatory.service';
 import {
-  CancelEventModal,
-  canCancelEvent,
   canWithdrawProposal,
   ConcludeEventModal,
-  ArchiveEventModal,
   DeleteArchivedEventModal,
   getEventTimingStatus,
   isEventAttendanceEnabled,
   isProposalFullySigned,
-  isEventCancelled,
-  isEventCancellationPending,
   PublishStudentFeedModal,
   AttendanceScannersModal,
 } from '../../modules/events';
@@ -164,7 +159,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const [remarks, setRemarks] = useState(event.adviserRemarks || '');
   const [remarksError, setRemarksError] = useState(false);
   const [activeModal, setActiveModal] = useState<ActiveModal>('none');
-  const [showCancelModal, setShowCancelModal] = useState(false);
   const [showReleaseConfirmModal, setShowReleaseConfirmModal] = useState(false);
   const [showApproveConfirmModal, setShowApproveConfirmModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -485,13 +479,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   const { data: sections = [] } = useSections();
   const { profile } = useAdviserProfile();
 
-  const isCancelled =
-    activeEvent.isCancelled ||
-    activeEvent.lifecycleStatus === 'cancelled' ||
-    activeEvent.status === 'cancelled' ||
-    activeEvent.proposalStatus === 'cancelled';
-  const cancelCheck = canCancelEvent(activeEvent, 'admin');
-
   // Registry organization map for robust host resolution
   const orgMap = useMemo(() => {
     const map = new Map<string, { name: string; acronym?: string; logoUrl?: string | null }>();
@@ -638,7 +625,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
   // Multi-tiered check: Officially approved activities are unlocked
   const isApproved = useMemo(() => {
-    if (isCancelled) return false;
     if (isCompleted) return true;
 
     const chain: any[] = displayApprovalChain || [];
@@ -720,7 +706,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
     return false;
   }, [
-    isCancelled,
     isCompleted,
     displayApprovalChain,
     activeEvent,
@@ -745,7 +730,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
   // Adviser Decision panel should ONLY show if and only if the proposal is coming from an Org AND SAS needs to review it
   const showAdviserDecision = useMemo(() => {
-    if (isCancelled || isApproved || isCompleted) return false;
+    if (isApproved || isCompleted) return false;
     // Must be an Org proposal, NOT authored/created by SAS
     if (isSasCreated) return false;
 
@@ -820,7 +805,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
     // If no chain, Org proposal pending in SAS admin needs review
     return true;
-  }, [isCancelled, isApproved, isCompleted, isSasCreated, sasReleasedLocally, displayApprovalChain, sasStep, activeEvent, liveEvent, fullProposal]);
+  }, [isApproved, isCompleted, isSasCreated, sasReleasedLocally, displayApprovalChain, sasStep, activeEvent, liveEvent, fullProposal]);
 
 
   const initialDecision: Decision = isApproved
@@ -844,7 +829,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
   }, [isApproved, activeEvent.proposalStatus]);
 
   const [showConcludeModal, setShowConcludeModal] = useState(false);
-  const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const timing = getEventTimingStatus(activeEvent);
@@ -1047,6 +1031,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
       if (event?.id) {
         await updateDoc(doc(db, 'events', event.id), {
           fundingSource: newSource,
+          studentPayablesEnabled: newSource === 'student_contributions',
           updatedAt: new Date().toISOString(),
         });
       }
@@ -1055,14 +1040,23 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         try {
           await updateDoc(doc(db, 'activity_proposals', propId), {
             fundingSource: newSource,
+            studentPayablesEnabled: newSource === 'student_contributions',
             updatedAt: new Date().toISOString(),
           });
         } catch (e) {
           console.warn('Could not update activity_proposals doc directly:', e);
         }
       }
-      setActiveEvent((prev: any) => ({ ...prev, fundingSource: newSource }));
-      setFullProposal((prev: any) => ({ ...prev, fundingSource: newSource }));
+      setActiveEvent((prev: any) => ({
+        ...prev,
+        fundingSource: newSource,
+        studentPayablesEnabled: newSource === 'student_contributions',
+      }));
+      setFullProposal((prev: any) => ({
+        ...prev,
+        fundingSource: newSource,
+        studentPayablesEnabled: newSource === 'student_contributions',
+      }));
       setIsFundingSourceMenuOpen(false);
       toast.success(
         newSource === 'organization_funds'
@@ -1514,20 +1508,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
     completed: { bg: 'bg-blue-50 text-blue-800 border-blue-300', text: 'text-blue-700', label: 'Completed Activity', icon: CheckCircle2 },
     returned: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Returned for Revision', icon: RotateCcw },
     rejected: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Rejected Proposal', icon: XCircle },
-    cancelled: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Cancelled Activity', icon: XCircle },
   };
 
-  const currentStatusKey = isCancelled
-    ? 'cancelled'
-    : isCompleted
-      ? 'completed'
-      : (isApproved || decision === 'approved')
-        ? 'approved'
-        : decision === 'rejected' || (activeEvent.proposalStatus || '').toLowerCase() === 'rejected'
-          ? 'rejected'
-          : decision === 'returned' || (activeEvent.proposalStatus || '').toLowerCase() === 'returned'
-            ? 'returned'
-            : (activeEvent.proposalStatus || activeEvent.status || 'draft').toLowerCase();
+  const currentStatusKey = isCompleted
+    ? 'completed'
+    : (isApproved || decision === 'approved')
+      ? 'approved'
+      : decision === 'rejected' || (activeEvent.proposalStatus || '').toLowerCase() === 'rejected'
+        ? 'rejected'
+        : decision === 'returned' || (activeEvent.proposalStatus || '').toLowerCase() === 'returned'
+          ? 'returned'
+          : (activeEvent.proposalStatus || activeEvent.status || 'draft').toLowerCase();
   const currentStatus = (isApproved || decision === 'approved')
     ? statusColors.approved
     : (statusColors[currentStatusKey] || statusColors.draft);
@@ -2028,13 +2019,15 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     )}
 
                     {/* 4. Financial Liquidation */}
-                    <button
-                      type="button"
-                      disabled={
+                    {(() => {
+                      const isFlDisabled =
                         !isApproved ||
                         (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
-                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
-                      }
+                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher);
+                      return (
+                    <button
+                      type="button"
+                      disabled={isFlDisabled}
                       onClick={() => {
                         if (isLiquidationExempt) {
                           toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
@@ -2058,24 +2051,18 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         setIsCashModalOpen(true);
                       }}
                       className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        !isApproved ||
-                        (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
-                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                        isFlDisabled
                           ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                           : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          !isApproved ||
-                          (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
-                          (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                          isFlDisabled
                             ? 'bg-amber-50 text-amber-600 border border-amber-200'
                             : 'bg-blue-50 text-[#001A4D] border border-blue-200'
                         }`}>
-                          {!isApproved ||
-                          (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
-                          (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher) ? (
+                          {isFlDisabled ? (
                             <Lock className="w-4 h-4" />
                           ) : (
                             <Receipt className="w-4 h-4" />
@@ -2099,25 +2086,22 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                         </div>
                       </div>
                       <span className={`shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full border ${
-                        !isApproved ||
-                        (!isLiquidationExempt && isLiquidationLockedByCollectionGap) ||
-                        (!isLiquidationExempt && isVoucherRequired && !hasDisbursementVoucher)
+                        isFlDisabled
                           ? 'bg-amber-50 text-amber-700 border-amber-200'
                           : 'bg-blue-50 text-[#001A4D] border-blue-200'
                       }`}>
                         {isLiquidationExempt
                           ? 'Exempt'
-                          : !isApproved ||
-                            isLiquidationLockedByCollectionGap ||
-                            (isVoucherRequired && !hasDisbursementVoucher)
+                          : isFlDisabled
                           ? 'Locked'
                           : 'Report'}
                       </span>
                     </button>
+                      );
+                    })()}
 
-                    {/* 5. Student Contribution Payables & Cashier Upload */}
-                    {(effectiveFundingSource === 'student_contributions' ||
-                      Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled)) && (
+                    {/* 5. Student Contribution Payables & Cashier Upload (Strictly Student Contribution APs only) */}
+                    {isStudentContributionEvent && (
                       <button
                         type="button"
                         disabled={!isApproved}
@@ -2196,7 +2180,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   {/* Section 4: Lifecycle & Actions */}
                   {((event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent) ||
                     ((event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isOrgManagedEvent) ||
-                    (!isCancelled && cancelCheck.canCancel) ||
                     event.isArchived) && (
                     <div className="space-y-1 pt-2">
                       <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -2204,7 +2187,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       </div>
 
                       {/* Conclude Action */}
-                      {!isCancelled && !isEventCancellationPending(activeEvent) && event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
+                      {event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isOrgManagedEvent && (
                         <button
                           type="button"
                           onClick={() => {
@@ -2228,56 +2211,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           </div>
                           <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
                             Finish
-                          </span>
-                        </button>
-                      )}
-
-                      {/* Archive Action */}
-                      {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isOrgManagedEvent && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsUtilsOpen(false);
-                            setShowArchiveModal(true);
-                          }}
-                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-indigo-50 text-indigo-900 border border-transparent hover:border-indigo-200 transition-colors cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200 flex items-center justify-center shrink-0">
-                              <FolderArchive className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold truncate">Archive Activity</div>
-                              <div className="text-[11px] text-indigo-600 truncate">Move to historical archives</div>
-                            </div>
-                          </div>
-                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
-                            Archive
-                          </span>
-                        </button>
-                      )}
-
-                      {/* Cancel Action */}
-                      {!isCancelled && cancelCheck.canCancel && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsUtilsOpen(false);
-                            setShowCancelModal(true);
-                          }}
-                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-rose-50 text-rose-900 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center shrink-0">
-                              <AlertTriangle className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold truncate">Cancel Activity</div>
-                              <div className="text-[11px] text-rose-600 truncate">Cancel event with justification</div>
-                            </div>
-                          </div>
-                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
-                            Cancel
                           </span>
                         </button>
                       )}
@@ -2391,7 +2324,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           </div>
 
           {/* Review Progress (For pending proposals) */}
-          {!isApproved && !isCancelled && (
+          {!isApproved && (
             <div className="bg-white border border-gray-200 rounded-xl p-3.5 shadow-xs">
               <div className="flex items-center gap-2 mb-2.5">
                 <CheckCircle className="w-4 h-4 text-[#0E4EBD]" />
@@ -2433,23 +2366,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
         {/* Center Column: 10 Form AP-01 Proposal Sections */}
         <main ref={centerRef} className="flex-1 overflow-y-auto bg-gray-50/30 p-6 lg:p-8 space-y-8">
-          {isCancelled ? (
-            <div className="p-5 rounded-2xl bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 shadow-xs flex items-start gap-4">
-              <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center flex-shrink-0 text-red-600">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-bold text-red-900 text-base">This Activity has been Cancelled</h3>
-                <p className="text-sm text-red-800 mt-1">
-                  <span className="font-semibold text-red-900">Reason:</span> {event.cancellationReason || 'No reason specified'}
-                </p>
-                <div className="text-xs text-red-600 mt-2 flex flex-wrap items-center gap-3">
-                  <span>Cancelled by: <strong className="text-red-700">{event.cancelledBy || 'Administrator'}</strong></span>
-                  {event.cancelledAt && <span>• {formatAppDateTime(event.cancelledAt)}</span>}
-                </div>
-              </div>
-            </div>
-          ) : !isCompleted && !isApproved && (event.proposalStatus === 'rejected' || event.proposalStatus === 'returned') ? (
+          {!isCompleted && !isApproved && (event.proposalStatus === 'rejected' || event.proposalStatus === 'returned') ? (
             <div className={`p-4 rounded-xl border-l-4 ${event.proposalStatus === 'rejected' ? 'bg-red-50 border-red-500' : 'bg-amber-50 border-amber-500'}`}>
               <p className="text-sm font-bold text-gray-800">
                 {event.proposalStatus === 'rejected'
@@ -3662,49 +3579,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
 
         {/* RIGHT COLUMN — 3rd Pane: Decision & Execution Side */}
         <aside className="w-80 lg:w-96 flex-shrink-0 border-l border-gray-200 bg-gray-50/70 flex flex-col overflow-y-auto p-5 space-y-5">
-          {isCancelled ? (
-            <div className="space-y-4">
-              <div className="flex items-center gap-2 mb-1">
-                <XCircle className="w-5 h-5 text-red-600" />
-                <div>
-                  <p className="text-[#001A4D] font-bold text-base">Cancelled Activity</p>
-                  <p className="text-gray-500 text-xs">Official cancellation notice.</p>
-                </div>
-              </div>
-
-              <div className="bg-gradient-to-br from-red-600 to-rose-700 rounded-2xl p-5 text-white shadow-xs space-y-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
-                    <XCircle className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h4 className="font-extrabold text-base text-white">Activity Cancelled</h4>
-                    <p className="text-xs text-red-100">All attendance gates closed</p>
-                  </div>
-                </div>
-                {event.cancelledAt && (
-                  <div className="pt-2 border-t border-white/20 flex items-center justify-between text-xs text-white/90">
-                    <span>Cancelled Date:</span>
-                    <span className="font-semibold font-mono">{formatAppDateTime(event.cancelledAt)}</span>
-                  </div>
-                )}
-              </div>
-
-              {event.cancellationReason && (
-                <div className="bg-white border border-red-200 rounded-2xl p-4 text-xs text-red-900 shadow-xs">
-                  <p className="font-bold text-red-950 mb-1">Cancellation Reason:</p>
-                  <p className="leading-relaxed">{event.cancellationReason}</p>
-                </div>
-              )}
-
-              <button
-                onClick={onClose}
-                className="w-full py-2.5 bg-[#001A4D] text-white hover:bg-[#001A4D]/90 rounded-xl font-bold text-xs transition-colors shadow-xs cursor-pointer"
-              >
-                Close & Back to Approvals
-              </button>
-            </div>
-          ) : isApproved || isCompleted ? (
+          {isApproved || isCompleted ? (
             isSasCreated ? (
               /* 2. SAS INSTITUTIONAL EVENT — Management Controls (Only when fully endorsed/approved) */
               <div className="space-y-4">
@@ -4670,23 +4545,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         </div>
       )}
 
-      {/* CANCEL EVENT MODAL */}
-      {showCancelModal && (
-        <CancelEventModal
-          event={event}
-          role="admin"
-          userRole="admin"
-          userId={profile?.uid || 'admin-user'}
-          userName={profile?.displayName || 'SAO Admin'}
-          isOpen={showCancelModal}
-          onClose={() => setShowCancelModal(false)}
-          onSuccess={() => {
-            setShowCancelModal(false);
-            onClose();
-          }}
-        />
-      )}
-
       {/* CONCLUDE EVENT MODAL */}
       {showConcludeModal && (
         <ConcludeEventModal
@@ -4697,21 +4555,6 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           adminName={profile?.displayName || 'SAO Admin'}
           onSuccess={() => {
             setShowConcludeModal(false);
-            onClose();
-          }}
-        />
-      )}
-
-      {/* ARCHIVE EVENT MODAL */}
-      {showArchiveModal && (
-        <ArchiveEventModal
-          event={event}
-          isOpen={showArchiveModal}
-          onClose={() => setShowArchiveModal(false)}
-          adminUid={profile?.uid || 'admin-user'}
-          adminName={profile?.displayName || 'SAO Admin'}
-          onSuccess={() => {
-            setShowArchiveModal(false);
             onClose();
           }}
         />
@@ -4760,9 +4603,17 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           onClose={() => setIsDisbursementVoucherModalOpen(false)}
           event={activeEvent || event}
           userProfile={{
-            uid: profile?.uid,
-            displayName: profile?.displayName || 'SAS Administrator',
-            fullName: profile?.displayName || 'SAS Administrator',
+            uid: profile?.uid || adviserProfile?.uid,
+            displayName:
+              profile?.displayName ||
+              adviserProfile?.displayName ||
+              sasConfig?.name ||
+              'SAS Administrator',
+            fullName:
+              profile?.displayName ||
+              adviserProfile?.displayName ||
+              sasConfig?.name ||
+              'SAS Administrator',
             role: 'admin',
           }}
           userRole="admin"
@@ -4778,10 +4629,21 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
           onClose={() => setIsCashModalOpen(false)}
           orgId={event.hostingOrgId || (event as any).organizationId || 'sao_admin'}
           orgName={event.hostingOrgName || (event as any).organizationName || 'Student Affairs'}
-          userUid={profile?.uid || 'admin'}
-          userName={profile?.displayName || 'SAS Administrator'}
+          userUid={profile?.uid || adviserProfile?.uid || 'admin'}
+          userName={
+            profile?.displayName ||
+            adviserProfile?.displayName ||
+            sasConfig?.name ||
+            'SAS Administrator'
+          }
           userRole="admin"
-          userSignatureUrl={profile?.signatureUrl || (profile as any)?.signatureDataUrl || null}
+          userSignatureUrl={
+            profile?.signatureUrl ||
+            (profile as any)?.signatureDataUrl ||
+            adviserProfile?.signatureUrl ||
+            (adviserProfile as any)?.signatureDataUrl ||
+            null
+          }
           isAdviser={true}
           readOnly={isOrgManagedEvent}
           initialEventId={event.id}
@@ -4819,15 +4681,19 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                   Number((activeEvent as any)?.adminFeeOverride) ||
                   0
                 }
-                recordedByUid={profile?.uid || 'admin'}
-                recordedByName={profile?.displayName || 'SAS Administrator'}
+                recordedByUid={profile?.uid || adviserProfile?.uid || 'admin'}
+                recordedByName={
+                  profile?.displayName ||
+                  adviserProfile?.displayName ||
+                  sasConfig?.name ||
+                  'SAS Administrator'
+                }
                 isOfficer={false}
                 isClubEvent={isOrgManagedEvent}
                 hostingOrgName={
                   event.hostingOrgName || (event as any).organizationName || undefined
                 }
                 readOnly={isOrgManagedEvent}
-                isCancelled={isCancelled}
                 isQREnabled={Boolean(
                   (activeEvent as any)?.enableQRTickets || (activeEvent as any)?.enableQR
                 )}

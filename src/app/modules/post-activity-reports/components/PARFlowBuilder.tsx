@@ -47,7 +47,11 @@ import {
   isStepConfiguredPermanent,
   type DefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
-import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
+import {
+  formatStageTitle,
+  normalizeApprovalStages,
+  findMatchedSignatoryForStep,
+} from '../../workflow/utils/stage-normalization.utils';
 
 interface PARFlowBuilderProps {
   approvalChain: PARApprovalStep[];
@@ -118,6 +122,53 @@ export default function PARFlowBuilder({
       return Array.from({ length: currentMax }, (_, i) => ({ stageIndex: i + 1 }));
     });
   }, [approvalChain]);
+
+  // Adapt existing PAR approvalChain in real-time to signatory edits and workflow scope changes
+  useEffect(() => {
+    if (!approvalChain || approvalChain.length === 0) return;
+
+    let modified = false;
+    let filteredSteps = approvalChain.filter((step) =>
+      Boolean(step.signatoryUid && step.signatoryUid.trim() !== '')
+    );
+    if (filteredSteps.length !== approvalChain.length) {
+      modified = true;
+    }
+
+    if (activeSignatories.length > 0) {
+      filteredSteps = filteredSteps.filter((step) => {
+        const matched = findMatchedSignatoryForStep(step, activeSignatories);
+        if (matched && (matched.isActive === false || !isSignatoryApplicableTo(matched, 'par'))) {
+          modified = true;
+          return false;
+        }
+        return true;
+      });
+
+      filteredSteps = filteredSteps.map((step) => {
+        const matched = findMatchedSignatoryForStep(step, activeSignatories);
+        if (
+          matched &&
+          ((matched.name && matched.name !== step.signatoryName) ||
+            (matched.roleTitle && matched.roleTitle !== step.roleTitle) ||
+            (matched.department && matched.department !== step.department))
+        ) {
+          modified = true;
+          return {
+            ...step,
+            signatoryName: matched.name || step.signatoryName,
+            roleTitle: matched.roleTitle || step.roleTitle,
+            department: matched.department || step.department,
+          };
+        }
+        return step;
+      });
+    }
+
+    if (modified) {
+      onChange(normalizeApprovalStages(enforceSinglePARApprover(filteredSteps)));
+    }
+  }, [activeSignatories, approvalChain]);
 
   // Group steps by stageIndex using contiguous sequential indexing
   const stages = useMemo(() => {
@@ -889,11 +940,14 @@ export default function PARFlowBuilder({
                       {activeSignatories
                         .filter(
                           (sig) =>
+                            sig.isActive !== false &&
+                            isSignatoryApplicableTo(sig, 'par') &&
                             !approvalChain.some(
                               (s) =>
-                                s.signatoryUid === (sig.uid || sig.id) ||
+                                s.signatoryUid === sig.id ||
+                                (sig.uid && s.signatoryUid === sig.uid) ||
                                 (s.signatoryEmail && s.signatoryEmail.toLowerCase() === (sig.email || '').toLowerCase())
-                            ) && isSignatoryApplicableTo(sig, 'par')
+                            )
                         )
                         .map((sig) => {
                           const isApprover = Boolean(sig.canApprovePar || sig.role === 'school_president' || sig.role === 'school_administrator');

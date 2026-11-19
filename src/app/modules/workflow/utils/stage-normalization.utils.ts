@@ -9,6 +9,12 @@
  * - Admin Approval Workflow Settings
  */
 
+import type {
+  InstitutionalSignatory,
+  WorkflowDocumentType,
+} from '../../signatories/types/signatory.types';
+import { isSignatoryApplicableTo } from '../../signatories/utils/signatory-scope.utils.ts';
+
 /**
  * Universal stage naming formula.
  * @param stageIndex 1-based stage number (1, 2, 3...)
@@ -118,5 +124,85 @@ export function normalizeApprovalStages<T extends { stageIndex?: number; stageNa
   });
 
   return normalized;
+}
+
+export function findMatchedSignatoryForStep(
+  step: { signatoryUid?: string; signatoryEmail?: string },
+  signatories: InstitutionalSignatory[]
+): InstitutionalSignatory | undefined {
+  const cleanEmail = (step.signatoryEmail || '').trim().toLowerCase();
+  const cleanUid = (step.signatoryUid || '').trim();
+  if (!cleanUid && !cleanEmail) return undefined;
+  return signatories.find(
+    (s) =>
+      (cleanUid && (s.id === cleanUid || s.uid === cleanUid)) ||
+      (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail)
+  );
+}
+
+/**
+ * Filters out any workflow step or template entry whose assigned signatory is inactive
+ * or not eligible for the target document's Workflow Scope (`proposal` | `liquidation` | `par`).
+ */
+export function filterTemplateStepsBySignatoryScope<
+  T extends {
+    id?: string;
+    stageIndex?: number;
+    stageName?: string;
+    step?: number;
+    actionType?: string;
+    role?: string;
+    roleTitle?: string;
+    signatoryUid?: string;
+    signatoryEmail?: string;
+  }
+>(
+  steps: T[],
+  allSignatories: InstitutionalSignatory[],
+  docType: WorkflowDocumentType,
+  options?: { preserveBuiltinSasGate?: boolean; normalize?: boolean }
+): T[] {
+  if (!Array.isArray(steps) || steps.length === 0) return [];
+  if (!Array.isArray(allSignatories) || allSignatories.length === 0) {
+    return options?.normalize ? normalizeApprovalStages(steps) : steps;
+  }
+
+  const filtered = steps.filter((step) => {
+    if (
+      options?.preserveBuiltinSasGate &&
+      (step.role === 'sas_head' || step.role === 'sas_coordinator')
+    ) {
+      return true;
+    }
+
+    const matched = findMatchedSignatoryForStep(step, allSignatories);
+    if (matched) {
+      return matched.isActive !== false && isSignatoryApplicableTo(matched, docType);
+    }
+
+    const hasExplicitSigner = Boolean(
+      (step.signatoryUid && step.signatoryUid.trim()) ||
+      (step.signatoryEmail && step.signatoryEmail.trim())
+    );
+    if (hasExplicitSigner) {
+      // Built-in SAS Head is configured via sas-signatory service rather than institutional_signatories
+      if (step.role === 'sas_head' || step.role === 'sas_coordinator' || step.signatoryUid === 'sas_admin') {
+        return true;
+      }
+      return false;
+    }
+
+    // Generic role placeholder without explicit signer ID
+    if (docType !== 'liquidation') {
+      const roleLower = String(step.role || '').toLowerCase();
+      const titleLower = String(step.roleTitle || '').toLowerCase();
+      if (roleLower === 'accountant' || titleLower.includes('accountant') || titleLower.includes('auditor')) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  return options?.normalize ? normalizeApprovalStages(filtered) : filtered;
 }
 

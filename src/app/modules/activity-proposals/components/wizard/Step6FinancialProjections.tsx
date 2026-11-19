@@ -25,7 +25,6 @@ import {
   ShieldCheck,
   Lock,
   Calculator,
-  Users,
 } from 'lucide-react';
 import type {
   ProposalFormData,
@@ -43,6 +42,7 @@ import FundingSourceSelector from './FundingSourceSelector';
 import HistoricalBudgetPicker from './HistoricalBudgetPicker';
 import { stripSasPhrases } from '../../../events/utils/organization-display.utils';
 import {
+  hydrateHistoricalMatch,
   mapHistoricalLineItems,
   type HistoricalActivityMatch,
 } from '../../services/historical-budget.service';
@@ -51,7 +51,6 @@ import { useTargetAudienceStructure } from '../../../academic';
 import { useStudents } from '../../../students/hooks/useStudentStream';
 import { filterActiveStudents } from '../../utils/student-reach.utils';
 import { QuickCalculatorModal } from './QuickCalculatorModal';
-import { StudentPopulationGuideModal } from './StudentPopulationGuideModal';
 import { useMiscFeeConfigs } from '../../../finance/hooks/useMiscFeeStream';
 import {
   formatMiscFeeFundDescription,
@@ -68,7 +67,6 @@ interface Step6Props {
 
 export default function Step6FinancialProjections({ formData, onChange, errors = {} }: Step6Props) {
   const [showCalculatorModal, setShowCalculatorModal] = useState(false);
-  const [showStudentGuideModal, setShowStudentGuideModal] = useState(false);
 
   const audienceStructure = useTargetAudienceStructure();
   const { data: allStudentsData = [] } = useStudents();
@@ -347,17 +345,18 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     }
   }, [currentProjections.revenues, formData.allocations]);
 
-  const handleSelectHistorical = (match: HistoricalActivityMatch) => {
+  const handleSelectHistorical = async (match: HistoricalActivityMatch) => {
+    const hydratedMatch = await hydrateHistoricalMatch(match);
     const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
-      match,
+      hydratedMatch,
       currentProjections
     );
     onChange({
       financialProjections: recalculatedProjections,
       historicalReference: {
-        eventId: match.id,
-        eventTitle: match.title,
-        schoolYear: match.schoolYear,
+        eventId: hydratedMatch.id,
+        eventTitle: hydratedMatch.title,
+        schoolYear: hydratedMatch.schoolYear,
         originalTotalAmount: originalHistoricalTotal,
         isManuallyEdited: false,
         isLocked: true,
@@ -668,7 +667,10 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             });
           }}
           onChange={(source) => {
-            const updates: Partial<ProposalFormData> = { fundingSource: source };
+            const updates: Partial<ProposalFormData> = {
+              fundingSource: source,
+              ...(source !== 'student_contributions' ? { studentPayablesEnabled: false } : {}),
+            };
             const customRows = getCustomRevenueRows(currentProjections.revenues);
             const existingManagedHist = currentProjections.revenues.find((r) =>
               isManagedFundRow(r) && Number(r.lastYearActual || 0) > 0
@@ -830,19 +832,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <h3 className="text-sm font-bold text-slate-800">
                 A. Sources of Funds / Projected Revenues
               </h3>
-              <div className="flex items-center gap-1.5 ml-1">
-                <button
-                  type="button"
-                  onClick={() => setShowStudentGuideModal(true)}
-                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border border-blue-200 bg-blue-50/70 hover:bg-blue-100/80 text-[#003575] text-[11px] font-semibold shadow-2xs transition-colors"
-                  title="Open Student Population Guide (with SHS/College/Program/Section filters)"
-                  aria-label="Open Student Population Guide"
-                >
-                  <Users className="w-3.5 h-3.5 text-[#004A98]" />
-                  <span>{activeStudents.length.toLocaleString()}</span>
-                  <span className="hidden sm:inline text-blue-700/80 font-medium">Students</span>
-                </button>
-              </div>
             </div>
             <button
               type="button"
@@ -1295,12 +1284,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
       <QuickCalculatorModal
         isOpen={showCalculatorModal}
         onClose={() => setShowCalculatorModal(false)}
-      />
-      <StudentPopulationGuideModal
-        isOpen={showStudentGuideModal}
-        onClose={() => setShowStudentGuideModal(false)}
-        activeStudents={activeStudents}
-        structure={audienceStructure}
       />
     </div>
   );

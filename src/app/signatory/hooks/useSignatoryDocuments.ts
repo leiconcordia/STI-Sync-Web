@@ -80,17 +80,21 @@ export function useSignatoryDocuments(session: any) {
     const returned: ActivityProposal[] = [];
 
     allProposals.forEach((p) => {
-      if (!isCurrentDocument(p)) return;
+      if (!p || p.isDeleted === true || ['voided', 'deleted'].includes(String(p.status || '').toLowerCase())) {
+        return;
+      }
+      const isActiveLifecycleDoc = isCurrentDocument(p);
       const chain = p.approvalChain || [];
       const currentIdx = p.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
 
-      const isReturnedStatus = isDocumentCurrentlyReturned(p);
+      const isReturnedStatus = isActiveLifecycleDoc && isDocumentCurrentlyReturned(p);
       const hasPersonallySigned = !isReturnedStatus && (
         chain.some((s) => hasSignatorySignedStep(s, session)) ||
         hasSignatorySignedDocument(p, session)
       );
       const isApprovedStatus =
+        isActiveLifecycleDoc &&
         !isReturnedStatus &&
         (p.status === 'approved_president' ||
           (p as any).proposalStatus === 'approved' ||
@@ -115,7 +119,7 @@ export function useSignatoryDocuments(session: any) {
         (p as any).proposalStatus === 'pending_review' ||
         (p as any).proposalStatus === 'under_review');
 
-      if (canAccessProposal && !hasPersonallySigned) {
+      if (isActiveLifecycleDoc && canAccessProposal && !hasPersonallySigned) {
         if (isUnderReview) {
           const currentStage = p.currentStageIndex ?? 1;
           const hasStages = chain.some((s) => typeof s.stageIndex === 'number');

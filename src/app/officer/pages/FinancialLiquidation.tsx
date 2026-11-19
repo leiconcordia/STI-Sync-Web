@@ -29,7 +29,9 @@ import { LiquidationExportPreviewModal } from '../../modules/finance/components/
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
 import { isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
-import { getLiquidationSettlementState } from '../../modules/finance/utils/liquidation-settlement.utils';
+import {
+  getLiquidationSettlementState,
+} from '../../modules/finance/utils/liquidation-settlement.utils';
 import { deleteLiquidationReport, withdrawLiquidationReport } from '../../modules/finance/services/liquidation.service';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
@@ -50,7 +52,8 @@ import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream'
 import {
   buildAvailableSchoolYears,
   compareLiquidations,
-  matchesSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+  resolveDefaultSchoolYearFilter,
   resolveUnifiedActiveAcademicTerm,
 } from '../../modules/workflow/utils/table-priority-sort.utils';
 
@@ -94,6 +97,7 @@ export default function FinancialLiquidation() {
 
   const [showModal, setShowModal] = useState(false);
   const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
+  const [selectedDueEvent, setSelectedDueEvent] = useState<any>(null);
   const [deletingReport, setDeletingReport] = useState<LiquidationDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [viewingDetailReport, setViewingDetailReport] = useState<LiquidationDocument | null>(null);
@@ -155,20 +159,6 @@ export default function FinancialLiquidation() {
     return map;
   }, [events]);
 
-  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
-  useEffect(() => {
-    if (!unifiedActiveTerm.schoolYear) return;
-    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
-    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
-      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
-      setFilterSemester(unifiedActiveTerm.semester || 'all');
-      setHasInitializedPeriod(true);
-      lastAutoPeriodRef.current = periodKey;
-    } else if (!lastAutoPeriodRef.current) {
-      lastAutoPeriodRef.current = periodKey;
-    }
-  }, [unifiedActiveTerm, hasInitializedPeriod]);
-
   // Derived available school years and semesters
   const availableSchoolYears = useMemo(
     () =>
@@ -180,6 +170,28 @@ export default function FinancialLiquidation() {
       }),
     [miscConfigs, semesters, liquidations, events, unifiedActiveTerm.schoolYear]
   );
+
+  const defaultSchoolYear = useMemo(
+    () =>
+      resolveDefaultSchoolYearFilter({
+        unifiedSchoolYear: unifiedActiveTerm.schoolYear,
+        availableSchoolYears,
+      }),
+    [unifiedActiveTerm.schoolYear, availableSchoolYears]
+  );
+
+  // Sync default filter to active/current School Year (showing all semesters in Current SY by default)
+  useEffect(() => {
+    if (!defaultSchoolYear) return;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== defaultSchoolYear)) {
+      setFilterSchoolYear(defaultSchoolYear);
+      setFilterSemester('all');
+      setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    }
+  }, [defaultSchoolYear, hasInitializedPeriod]);
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -203,32 +215,43 @@ export default function FinancialLiquidation() {
     return Array.from(set);
   }, [semesters, liquidations, events]);
 
+  // Academic Period scoped liquidations & events (KPI cards, tab counts, dues, and table share this slice)
+  const periodLiquidations = useMemo(() => {
+    return liquidations.filter((report) => {
+      const parentEvent = report.eventId ? eventsById.get(report.eventId) : null;
+      return matchesRecordAcademicPeriod({
+        record: report,
+        parentEvent,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: parentEvent?.sessions?.[0]?.date,
+      });
+    });
+  }, [liquidations, eventsById, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
+  const periodEvents = useMemo(() => {
+    return events.filter((ev) =>
+      matchesRecordAcademicPeriod({
+        record: ev,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: ev.sessions?.[0]?.date,
+      })
+    );
+  }, [events, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
   // Filtered & Sorted Liquidations (LATEST FIRST by default)
   const filteredReports = useMemo(() => {
-    return liquidations
+    return periodLiquidations
       .filter((report) => {
         if (activeTab === 'pending') {
           if (report.status !== 'pending' && report.status !== 'under_review') return false;
         } else if (activeTab !== 'all' && report.status !== activeTab) {
           return false;
-        }
-
-        // School Year Filter (strict: untagged legacy records stay in baseline SY only)
-        if (filterSchoolYear !== 'all') {
-          const parentEvent = report.eventId ? eventsById.get(report.eventId) : null;
-          const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
-          const sy = report.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
-          if (!matchesSchoolYearFilter({ recordSchoolYear: sy, filterSchoolYear, availableSchoolYears })) {
-            return false;
-          }
-        }
-
-        // Semester Filter
-        if (filterSemester !== 'all') {
-          const parentEvent = report.eventId ? eventsById.get(report.eventId) : null;
-          const sem = (report.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (report.semesterId || parentEvent?.semesterId)) : null;
-          const term = report.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
-          if (term && term !== filterSemester) return false;
         }
 
         const q = searchQuery.toLowerCase().trim();
@@ -242,37 +265,38 @@ export default function FinancialLiquidation() {
         return true;
       })
       .sort((a, b) => compareLiquidations(a, b, eventsById));
-  }, [liquidations, activeTab, searchQuery, filterSchoolYear, filterSemester, eventsById, availableSchoolYears, semesters]);
+  }, [periodLiquidations, activeTab, searchQuery, eventsById]);
 
-  // Counts
+  // Counts (scoped to active School Year / Semester filter)
   const counts = {
-    all: liquidations.length,
-    pending: liquidations.filter((r) => r.status === 'pending' || r.status === 'under_review').length,
-    approved: liquidations.filter((r) => r.status === 'approved').length,
-    returned: liquidations.filter((r) => r.status === 'returned').length,
-    draft: liquidations.filter((r) => r.status === 'draft').length,
+    all: periodLiquidations.length,
+    pending: periodLiquidations.filter((r) => r.status === 'pending' || r.status === 'under_review').length,
+    approved: periodLiquidations.filter((r) => r.status === 'approved').length,
+    returned: periodLiquidations.filter((r) => r.status === 'returned').length,
+    draft: periodLiquidations.filter((r) => r.status === 'draft').length,
   };
 
-  // KPI calculations
+  // KPI calculations (scoped to active School Year / Semester filter)
   const pendingAmount = useMemo(() => {
-    return liquidations
+    return periodLiquidations
       .filter((l) => l.status === 'pending' || l.status === 'under_review')
       .reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
-  }, [liquidations]);
+  }, [periodLiquidations]);
 
   const approvedAmount = useMemo(() => {
-    return liquidations
+    return periodLiquidations
       .filter((l) => l.status === 'approved')
       .reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
-  }, [liquidations]);
+  }, [periodLiquidations]);
 
   const pendingFlDues = useMemo(() => {
-    return events
-      .filter((e) => !e.isDeleted && isActivityConcluded(e) && !isEventLiquidationExempt(e))
+    return periodEvents
+      .filter((e) => !e.isDeleted && !isEventLiquidationExempt(e))
       .map((e) => {
-        const liq = liquidations.find(
+        const liq = periodLiquidations.find(
           (l) => !l.isDeleted && l.status !== 'voided' && l.eventId === e.id
         );
+        if (!isActivityConcluded(e)) return null;
         if (liq && !['draft', 'returned'].includes(liq.status)) return null;
         const deadline = liquidationSubmissionDeadline(e, liq);
         const daysRemaining = deadline ? calendarDaysRemaining(deadline) : null;
@@ -286,7 +310,7 @@ export default function FinancialLiquidation() {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .sort((a, b) => (a.daysRemaining ?? 999) - (b.daysRemaining ?? 999));
-  }, [events, liquidations]);
+  }, [periodEvents, periodLiquidations]);
 
   const pendingSettlementReports = useMemo(() => {
     return liquidations
@@ -315,11 +339,19 @@ export default function FinancialLiquidation() {
 
   const handleOpenCreate = () => {
     setEditingReport(null);
+    setSelectedDueEvent(null);
     setShowModal(true);
   };
 
   const handleOpenEdit = (report: LiquidationDocument) => {
+    setSelectedDueEvent(null);
     setEditingReport(report);
+    setShowModal(true);
+  };
+
+  const handleOpenForDueEvent = (event: any) => {
+    setEditingReport(null);
+    setSelectedDueEvent(event);
     setShowModal(true);
   };
 
@@ -550,9 +582,12 @@ export default function FinancialLiquidation() {
           </div>
           <div className="flex flex-wrap gap-2">
             {pendingFlDues.slice(0, 6).map((due) => (
-              <div
+              <button
                 key={due.event.id}
-                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white ${
+                type="button"
+                onClick={() => (due.liq ? handleOpenEdit(due.liq) : handleOpenForDueEvent(due.event))}
+                title={due.liq ? `Open liquidation draft/revision for ${due.event.title}` : `File liquidation for ${due.event.title}`}
+                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white cursor-pointer transition-all hover:shadow-sm hover:border-[#0E4EBD] text-left ${
                   due.isOverdue ? 'border-rose-300' : 'border-amber-200'
                 }`}
               >
@@ -575,7 +610,7 @@ export default function FinancialLiquidation() {
                       : `(${due.daysRemaining}d left)`
                     : ''}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -657,18 +692,18 @@ export default function FinancialLiquidation() {
               ))}
             </select>
 
-            {(filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all')) && (
+            {(filterSchoolYear !== (defaultSchoolYear || 'all') || filterSemester !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
-                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
-                  setFilterSemester(unifiedActiveTerm.semester || 'all');
+                  setFilterSchoolYear(defaultSchoolYear || 'all');
+                  setFilterSemester('all');
                   setCurrentPage(1);
                 }}
                 className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"
-                title="Reset filters to current active academic semester"
+                title="Reset filters to current school year"
               >
-                Reset to Current
+                Reset to Current SY
               </button>
             )}
 
@@ -964,6 +999,7 @@ export default function FinancialLiquidation() {
           onClose={() => {
             setShowModal(false);
             setEditingReport(null);
+            setSelectedDueEvent(null);
           }}
           orgId={orgId}
           orgName={orgName}
@@ -974,6 +1010,8 @@ export default function FinancialLiquidation() {
           isAdviser={profile?.isAdviser}
           editingReport={editingReport}
           existingLiquidations={liquidations}
+          initialEventId={editingReport?.eventId || selectedDueEvent?.id}
+          initialEvent={selectedDueEvent || undefined}
         />
       )}
 

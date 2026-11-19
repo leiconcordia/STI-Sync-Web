@@ -50,14 +50,13 @@ import {
 } from '../../modules/events/utils/activity-compliance.utils';
 import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import {
-  createLiquidationReport,
-  updateLiquidationReport,
-  submitLiquidationReport,
-  withdrawLiquidationReport,
-  generateDefaultLiquidationChain,
   attachCashierSettlementProofs,
-  verifyCashierSettlementProofs,
+  createLiquidationReport,
+  generateDefaultLiquidationChain,
   resolveLiquidationSourceAllocations,
+  submitLiquidationReport,
+  updateLiquidationReport,
+  withdrawLiquidationReport,
 } from '../../modules/finance/services/liquidation.service';
 import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
 import {
@@ -68,6 +67,10 @@ import {
 import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
 import { useRetainedActivityFunds } from '../../modules/finance/hooks/useRetainedFundStream';
 import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
+import {
+  computeLiveStudentCollectionReimbursementCapacity,
+  isStudentCollectionFunding,
+} from '../../modules/finance/utils/liquidation-settlement.utils';
 import { useEventPayablesStream } from '../../modules/finance/hooks/usePayableStream';
 import {
   validateDeficitDeductionAllocations,
@@ -102,7 +105,36 @@ import {
   getFastCachedSignature,
   syncUserSignatureAcrossProfiles,
 } from '../../modules/signatories';
-import { getCachedSasSignatoryConfig } from '../../modules/signatories/services/sas-signatory.service';
+import {
+  getCachedSasSignatoryConfig,
+  getSasSignatoryConfig,
+} from '../../modules/signatories/services/sas-signatory.service';
+
+const GENERIC_STAFF_PLACEHOLDERS = new Set([
+  'sas administrator',
+  'sao administrator',
+  'sao admin',
+  'sas admin',
+  'admin',
+  'sas',
+  'sao',
+  'system',
+  'club adviser',
+  'officer',
+]);
+
+function isGenericStaffPlaceholder(name?: string | null): boolean {
+  return !name || GENERIC_STAFF_PLACEHOLDERS.has(name.trim().toLowerCase());
+}
+
+function firstValidStaffName(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    if (candidate && !isGenericStaffPlaceholder(candidate)) {
+      return candidate.trim();
+    }
+  }
+  return '';
+}
 import { toast } from 'sonner';
 
 interface OfficerLiquidationModalProps {
@@ -348,7 +380,7 @@ export default function OfficerLiquidationModal({
 
       const isEditingThisEvent = (editingReport && editingReport.eventId === e.id) || (initialEventId && initialEventId === e.id);
 
-      // Basic validity & non-cancellation / non-draft / non-rejected check
+      // Basic validity & non-draft / non-rejected / non-cancelled check
       const pStatus = (e.proposalStatus || '').toString().toLowerCase();
       const eStatus = (e.status || '').toString().toLowerCase();
       const lStatus = (e.lifecycleStatus || '').toString().toLowerCase();
@@ -356,9 +388,9 @@ export default function OfficerLiquidationModal({
       const isDraft = pStatus === 'draft';
       const isRejected = pStatus === 'rejected' || eStatus === 'rejected';
 
-      if (isCancelled || isDraft || isRejected) return false;
+      if (isDraft || isRejected || isCancelled) return false;
 
-      // Lifecycle check: Events must be officially approved (ongoing / recording receipts mode) or completed/concluded
+      // Lifecycle check: Events must be officially approved (ongoing / recording receipts mode) OR already completed/concluded
       const timingStatus = getEventTimingStatus(e);
       const isCompleted =
         eStatus === 'completed' ||
@@ -697,6 +729,8 @@ export default function OfficerLiquidationModal({
     return isEventConcluded(selectedEvent);
   }, [selectedEvent]);
 
+  const canSubmitLiquidation = isConcluded;
+
   const isSelectedEventExempt = useMemo(() => {
     return isEventLiquidationExempt(selectedEvent);
   }, [selectedEvent]);
@@ -718,7 +752,11 @@ export default function OfficerLiquidationModal({
 
   const { activeConfig, computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
   const effectiveSettlementOrgId = effectiveReport?.organizationId || orgId || null;
-  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(
+  const {
+    saoRetainedFund,
+    orgRetainedFunds,
+    ledgerEntries: retainedLedgerEntries,
+  } = useRetainedActivityFunds(
     effectiveSettlementOrgId,
     (effectiveReport as any)?.schoolYear || activeConfig?.schoolYear
   );
@@ -744,6 +782,41 @@ export default function OfficerLiquidationModal({
   }, [effectiveReport]);
 
   const approvedReportDeficit = Math.max(0, -approvedReportSurplus);
+
+  const isStudentCollectionSettlement = useMemo(() => {
+    return isStudentCollectionFunding({
+      fundingSource: effectiveSource,
+      allocations: settlementSourceAllocations,
+    });
+  }, [effectiveSource, settlementSourceAllocations]);
+
+  const liveStudentCollectionCapacity = useMemo(() => {
+    if (!isStudentCollectionSettlement) return 0;
+    return computeLiveStudentCollectionReimbursementCapacity({
+      isSasOwned: isEventSasOwned,
+      eventId: effectiveReport?.eventId || selectedEvent?.id || null,
+      liquidationId: effectiveReport?.id || null,
+      allocatedBudget:
+        Number(effectiveReport?.allocatedBudget ?? (isReportSubmittedOrApproved ? 0 : actualContribCollected + retainedContribTopUp)) ||
+        0,
+      saoAvailableBalance: Number(saoRetainedFund?.availableBalance) || 0,
+      retainedLedgerEntries,
+      orgLedgerEntries: settlementOrgLedger,
+    });
+  }, [
+    isStudentCollectionSettlement,
+    isEventSasOwned,
+    effectiveReport?.eventId,
+    selectedEvent?.id,
+    effectiveReport?.id,
+    effectiveReport?.allocatedBudget,
+    isReportSubmittedOrApproved,
+    actualContribCollected,
+    retainedContribTopUp,
+    saoRetainedFund?.availableBalance,
+    retainedLedgerEntries,
+    settlementOrgLedger,
+  ]);
 
   // Fetch linked AP bucket allocations only when report / event changes (never wipe edited deficit splits on stream ticks)
   useEffect(() => {
@@ -785,6 +858,7 @@ export default function OfficerLiquidationModal({
       : [];
     const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
       totalDeficit: approvedReportDeficit,
+      fundingSource: effectiveSource,
       sourceAllocations: settlementSourceAllocations,
       savedDeficitRows: savedRows,
       computedBuckets,
@@ -794,11 +868,14 @@ export default function OfficerLiquidationModal({
       targetOrgId: effectiveReport.organizationId || orgId,
       targetOrgName: effectiveReport.organizationName || orgName,
       orgLedgerBalance: settlementOrgLedgerBalance,
+      studentCollectionAvailableOverride: isStudentCollectionSettlement
+        ? liveStudentCollectionCapacity
+        : undefined,
     });
     setDeficitSupplementalOptions(supplementalOptions);
 
     const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
-    const targetSeedKey = `${effectiveReport.id}::${approvedReportDeficit}::${savedSig}`;
+    const targetSeedKey = `${effectiveReport.id}::${approvedReportDeficit}::${savedSig}::${isStudentCollectionSettlement ? 'sc' : 'std'}`;
 
     setDeficitAllocationRows((prev) => {
       if (seededDeficitKeyRef.current !== targetSeedKey) {
@@ -809,6 +886,9 @@ export default function OfficerLiquidationModal({
         return prev;
       }
       if (prev.length === 0) return initialRows;
+      if (isStudentCollectionSettlement) {
+        return initialRows;
+      }
       const availMap = new Map<string, number>();
       initialRows.forEach((r) => availMap.set(r.bucketId, r.availableBalance));
       supplementalOptions.forEach((o) => availMap.set(o.bucketId, o.availableBalance));
@@ -821,6 +901,9 @@ export default function OfficerLiquidationModal({
     effectiveReport?.id,
     effectiveReport?.deficitDeductionAllocations,
     approvedReportDeficit,
+    effectiveSource,
+    isStudentCollectionSettlement,
+    liveStudentCollectionCapacity,
     settlementSourceAllocations,
     computedBuckets,
     saoEligibleBuckets,
@@ -919,8 +1002,9 @@ export default function OfficerLiquidationModal({
     return validateDeficitDeductionAllocations({
       totalDeficit: approvedReportDeficit,
       rows: deficitAllocationRows,
+      mode: isStudentCollectionSettlement ? 'student_collections' : 'misc_or_mixed',
     });
-  }, [approvedReportDeficit, deficitAllocationRows]);
+  }, [approvedReportDeficit, deficitAllocationRows, isStudentCollectionSettlement]);
 
   const hasMiscFeeInSettlement = useMemo(() => {
     if (settlementSourceAllocations.some((a) => a.fundType === 'misc_fee')) return true;
@@ -944,6 +1028,9 @@ export default function OfficerLiquidationModal({
   const [employeeName, setEmployeeName] = useState<string>('');
   const [detectedEmployeeSource, setDetectedEmployeeSource] = useState<'club_adviser' | 'sas_admin' | 'manual'>('manual');
   const [detectedAdviserName, setDetectedAdviserName] = useState<string>('');
+  const [resolvedSasAdminName, setResolvedSasAdminName] = useState<string>(() =>
+    firstValidStaffName(getCachedSasSignatoryConfig()?.name)
+  );
   const [chequeNumber, setChequeNumber] = useState<string>(''); // Manually inputted, NO default value per user request!
   const [purpose, setPurpose] = useState<string>('');
   const [amountAdvanced, setAmountAdvanced] = useState<number>(0);
@@ -1042,26 +1129,49 @@ export default function OfficerLiquidationModal({
 
     if (eventIsSas) {
       detectedName =
-        (userRole === 'admin' ? userName : '') ||
-        selectedEvent.supervisorName ||
-        selectedEvent.createdByName ||
-        'SAO Administrator';
+        firstValidStaffName(
+          userRole === 'admin' ? userName : '',
+          attachedVoucher?.uploadedByRole === 'admin' ? attachedVoucher?.uploadedByName : '',
+          selectedEvent.supervisorName,
+          selectedEvent.createdByName,
+          resolvedSasAdminName,
+          getCachedSasSignatoryConfig()?.name
+        ) || 'SAS Administrator';
     } else {
-      if (effectiveIsAdviser && userName) {
-        detectedName = userName;
-      } else if (selectedEvent.supervisorName) {
-        detectedName = selectedEvent.supervisorName;
-      } else if (selectedEvent.adviserName) {
-        detectedName = selectedEvent.adviserName;
-      }
+      detectedName = firstValidStaffName(
+        effectiveIsAdviser ? userName : '',
+        selectedEvent.supervisorName,
+        selectedEvent.adviserName
+      );
     }
 
-    const initialEmployee = targetReport?.employeeName || detectedName;
+    const initialEmployee = firstValidStaffName(targetReport?.employeeName, detectedName) || detectedName;
     if (initialEmployee) {
       setDetectedAdviserName(detectedName || initialEmployee);
       setEmployeeName(initialEmployee);
     }
     setDetectedEmployeeSource(detectedSource);
+
+    // Async fallback: resolve live SAS Admin / Signatory name when placeholder or empty
+    let sasLookupCancelled = false;
+    if (eventIsSas || attachedVoucher?.uploadedByRole === 'admin') {
+      getSasSignatoryConfig()
+        .then((cfg) => {
+          const realSasName = firstValidStaffName(cfg?.name);
+          if (!sasLookupCancelled && realSasName) {
+            setResolvedSasAdminName(realSasName);
+            if (eventIsSas) {
+              setDetectedAdviserName((prev) =>
+                isGenericStaffPlaceholder(prev) ? realSasName : prev
+              );
+              setEmployeeName((prev) =>
+                isGenericStaffPlaceholder(prev) ? realSasName : prev
+              );
+            }
+          }
+        })
+        .catch(() => {});
+    }
 
     // Query organization if student club adviser is not yet detected on event or report
     const hostOrgId = selectedEvent.hostingOrgId || selectedEvent.organizationId || orgId;
@@ -1193,7 +1303,11 @@ export default function OfficerLiquidationModal({
     if (targetReport?.orNumber) {
       setOrNumber(targetReport.orNumber);
     }
-  }, [selectedEvent, effectiveReport, editingReport, userRole, userName, effectiveIsAdviser, isSasCreator, orgId, todayStr]);
+
+    return () => {
+      sasLookupCancelled = true;
+    };
+  }, [selectedEvent, effectiveReport, editingReport, userRole, userName, effectiveIsAdviser, isSasCreator, orgId, todayStr, resolvedSasAdminName]);
 
   // Extract proposed baseline items from selected event
   const proposedBaselineItems = useMemo(() => {
@@ -1496,7 +1610,9 @@ export default function OfficerLiquidationModal({
         setLineItems(normalizeLineItems(targetReport.lineItems || []));
 
         // Hydrate LF-01 Header from existing report
-        if (targetReport.employeeName) setEmployeeName(targetReport.employeeName);
+        if (targetReport.employeeName && !isGenericStaffPlaceholder(targetReport.employeeName)) {
+          setEmployeeName(targetReport.employeeName);
+        }
         if (targetReport.chequeNumber) setChequeNumber(targetReport.chequeNumber);
         if (targetReport.purpose) setPurpose(targetReport.purpose);
         if (targetReport.amountAdvanced) setAmountAdvanced(targetReport.amountAdvanced);
@@ -1568,7 +1684,9 @@ export default function OfficerLiquidationModal({
       setLineItems(normalizeLineItems(existing.lineItems || []));
 
       // Hydrate LF-01 Header from existing report
-      if (existing.employeeName) setEmployeeName(existing.employeeName);
+      if (existing.employeeName && !isGenericStaffPlaceholder(existing.employeeName)) {
+        setEmployeeName(existing.employeeName);
+      }
       if (existing.chequeNumber) setChequeNumber(existing.chequeNumber);
       if (existing.purpose) setPurpose(existing.purpose);
       if (existing.amountAdvanced) setAmountAdvanced(existing.amountAdvanced);
@@ -1764,7 +1882,7 @@ export default function OfficerLiquidationModal({
 
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
-      if (!isConcluded) {
+      if (!canSubmitLiquidation) {
         showValidationError('Cannot submit liquidation: This event has not yet concluded. You can record receipts and save drafts anytime during the event, and officially submit once the event concludes.');
         return;
       }
@@ -1865,7 +1983,14 @@ export default function OfficerLiquidationModal({
       const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl || '';
       const submitterRole = isSasCreator ? 'sas_admin' : effectiveIsAdviser ? 'adviser' : userRole;
       const submitterTitle = isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Organization Adviser' : 'Student Officer';
-      const submitterName = userName || (isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Club Adviser' : 'Officer');
+      const submitterName =
+        firstValidStaffName(userName) ||
+        (isSasCreator
+          ? firstValidStaffName(resolvedSasAdminName, getCachedSasSignatoryConfig()?.name) ||
+            'SAS Administrator'
+          : effectiveIsAdviser
+            ? 'Club Adviser'
+            : 'Officer');
 
       // Ensure approval chain statuses are set appropriately on submit
       const requiresSasPreApprovalGate = !isSasCreator && !isOrgFunds;
@@ -2309,7 +2434,13 @@ export default function OfficerLiquidationModal({
                       </span>
                     </span>
                     <p className="text-[11px] text-emerald-800 mt-0.5 font-mono">
-                      Check #{activeDisbursementVoucher.chequeNumber || 'N/A'} • Released: {activeDisbursementVoucher.disbursementDate || 'N/A'} • {formatCurrency(activeDisbursementVoucher.amountDisbursed || 0)} (Uploaded by {activeDisbursementVoucher.uploadedByName})
+                      Check #{activeDisbursementVoucher.chequeNumber || 'N/A'} • Released: {activeDisbursementVoucher.disbursementDate || 'N/A'} • {formatCurrency(activeDisbursementVoucher.amountDisbursed || 0)} (Uploaded by{' '}
+                      {activeDisbursementVoucher.uploadedByRole === 'admin' &&
+                      isGenericStaffPlaceholder(activeDisbursementVoucher.uploadedByName) &&
+                      resolvedSasAdminName
+                        ? resolvedSasAdminName
+                        : activeDisbursementVoucher.uploadedByName}
+                      )
                     </p>
                   </div>
                 </div>
@@ -2546,9 +2677,11 @@ export default function OfficerLiquidationModal({
                     <span>
                       <strong>Action Upon Approval — REIMBURSE OFFICER:</strong> Actual expenses exceed disbursed funds by{' '}
                       <strong>{formatCurrency(Math.abs(surplusOrDeficit))}</strong>.{' '}
-                      {isOrgFunds
-                        ? 'Reimburse the officer/advance holder from Club Funds (logged as Deficit Reimbursement -Expense in Finance Center).'
-                        : 'Process reimbursement via the STI Cashier for out-of-pocket expenses.'}
+                      {isStudentCollectionSettlement
+                        ? 'Reimbursement must come strictly from Student Collections (collect remaining student contributions first if available Student Collections funds cannot cover the overspend).'
+                        : isOrgFunds
+                          ? 'Reimburse the officer/advance holder from Club Funds (logged as Deficit Reimbursement -Expense in Finance Center).'
+                          : 'Process reimbursement via the STI Cashier for out-of-pocket expenses.'}
                     </span>
                   ) : (
                     <span>
@@ -2558,6 +2691,28 @@ export default function OfficerLiquidationModal({
                 </div>
               </div>
             )}
+
+            {isStudentCollectionSettlement &&
+              surplusOrDeficit < -0.009 &&
+              liveStudentCollectionCapacity + 0.009 < Math.abs(surplusOrDeficit) && (
+                <div className="px-3.5 py-2.5 rounded-lg border border-amber-300 bg-amber-50 text-xs text-amber-950 flex items-start gap-2.5">
+                  <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold text-amber-900">
+                      Insufficient Student Collections Funds — Collect First Before Reimbursement
+                    </p>
+                    <p className="mt-0.5">
+                      Overspend is <strong className="font-mono">{formatCurrency(Math.abs(surplusOrDeficit))}</strong>,
+                      but only <strong className="font-mono">{formatCurrency(liveStudentCollectionCapacity)}</strong>{' '}
+                      is currently available in Student Collections (Shortfall:{' '}
+                      <strong className="font-mono">
+                        {formatCurrency(Math.max(0, Math.abs(surplusOrDeficit) - liveStudentCollectionCapacity))}
+                      </strong>
+                      ). Post-approval reimbursement cannot push through until remaining student contributions are collected.
+                    </p>
+                  </div>
+                </div>
+              )}
 
             {/* Maker Surplus Bucket Return Configuration (1 Bucket Auto vs 2+ Buckets Configurable) */}
             {surplusOrDeficit > 0.009 &&
@@ -3494,6 +3649,7 @@ export default function OfficerLiquidationModal({
                               rows={deficitAllocationRows}
                               onChange={setDeficitAllocationRows}
                               supplementalOptions={deficitSupplementalOptions}
+                              isStudentCollection={isStudentCollectionSettlement}
                               disabled={savingCashierProof}
                               readOnly={isCashierProofReadOnly}
                             />
@@ -3515,7 +3671,9 @@ export default function OfficerLiquidationModal({
                             readOnly={isCashierProofReadOnly}
                             title={
                               approvedReportDeficit > 0.009
-                                ? `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
+                                ? isStudentCollectionSettlement
+                                  ? `Required Student Collections Reimbursement Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
+                                  : `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(approvedReportDeficit)})`
                                 : isSasStudentContribSettlement
                                   ? `Required Return Proof / Receipt (Return: ${formatCurrency(approvedReportSurplus)})`
                                   : `Required Cashier Surplus Return Receipt (Return: ${formatCurrency(
@@ -3528,7 +3686,9 @@ export default function OfficerLiquidationModal({
                             }
                             description={
                               approvedReportDeficit > 0.009
-                                ? 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
+                                ? isStudentCollectionSettlement
+                                  ? 'Actual expenses exceeded Student Collections budget. Once collected Student Collections funds cover the overspend, attach the signed Reimbursement Proof below.'
+                                  : 'Actual expenses exceeded disbursed budget. Select which bucket(s) above cover the overspend and attach the signed Reimbursement / Supplemental Voucher proof.'
                                 : isSasStudentContribSettlement
                                   ? 'Attach the Return Proof / Receipt to credit the unspent surplus into SAS Student Contribution & Retained Funds.'
                                   : 'Your liquidation is approved. Deposit the unspent surplus to the Campus Cashier and upload the Cashier Official Receipt / Return Slip below.'
@@ -3573,10 +3733,14 @@ export default function OfficerLiquidationModal({
                                 <span>
                                   {userRole === 'admin'
                                     ? approvedReportDeficit > 0.009
-                                      ? 'Verify Proof & Deduct from Bucket(s)'
+                                      ? isStudentCollectionSettlement
+                                        ? 'Verify Proof & Reimburse from Student Collections'
+                                        : 'Verify Proof & Deduct from Bucket(s)'
                                       : 'Verify Proof & Return to Bucket(s)'
                                     : approvedReportDeficit > 0.009
-                                      ? 'Save Coverage & Submit Proof'
+                                      ? isStudentCollectionSettlement
+                                        ? 'Save & Submit Reimbursement Proof'
+                                        : 'Save Coverage & Submit Proof'
                                       : 'Save & Submit Cashier Proof'}
                                 </span>
                               </button>
@@ -3642,7 +3806,7 @@ export default function OfficerLiquidationModal({
           ) : (
             <>
               <div className="text-xs">
-                {!isConcluded ? (
+                {!canSubmitLiquidation ? (
                   <div className="flex items-center gap-2 text-amber-900 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
                     <Clock className="w-4 h-4 text-amber-600 flex-shrink-0" />
                     <span>
@@ -3675,7 +3839,7 @@ export default function OfficerLiquidationModal({
                   className={`px-4 py-2 rounded-lg text-sm font-bold transition-all flex items-center gap-1.5 shadow-xs ${
                     isSubmitting || uploadingItemId !== null
                       ? 'opacity-60 cursor-not-allowed bg-gray-200 text-gray-500 border border-gray-300'
-                      : !isConcluded
+                      : !canSubmitLiquidation
                         ? 'bg-[#001A4D] hover:bg-[#002D72] text-[#FFD41C] cursor-pointer'
                         : 'bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 cursor-pointer'
                   }`}
@@ -3687,13 +3851,13 @@ export default function OfficerLiquidationModal({
                   )}
                   {uploadingItemId !== null
                     ? 'Uploading Receipt...'
-                    : !isConcluded
+                    : !canSubmitLiquidation
                       ? 'Save Receipts & Draft'
                       : 'Save Draft'}
                 </button>
 
-                {/* Submit Liquidation: Unlocked ONLY when event is concluded */}
-                {isConcluded ? (
+                {/* Submit Liquidation: Unlocked when event is concluded OR cancelled with disbursed funds */}
+                {canSubmitLiquidation ? (
                   <div className="flex items-center gap-2">
                     {!effectiveIsAdviser && userRole !== 'admin' && (
                       <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium">
@@ -3881,7 +4045,9 @@ export default function OfficerLiquidationModal({
                       setShowCashierProofConfirmModal(false);
                       toast.success(
                         approvedReportDeficit > 0.009
-                          ? 'Overspend proof verified & deducted from bucket(s)!'
+                          ? isStudentCollectionSettlement
+                            ? 'Overspend reimbursement verified & posted from Student Collections!'
+                            : 'Overspend proof verified & deducted from bucket(s)!'
                           : 'Surplus return verified & posted to bucket(s)!'
                       );
                     } else {
@@ -3902,7 +4068,9 @@ export default function OfficerLiquidationModal({
                       setShowCashierProofConfirmModal(false);
                       toast.success(
                         approvedReportDeficit > 0.009
-                          ? 'Overspend bucket coverage and proof submitted to SAS!'
+                          ? isStudentCollectionSettlement
+                            ? 'Student Collections reimbursement proof submitted to SAS!'
+                            : 'Overspend bucket coverage and proof submitted to SAS!'
                           : 'Cashier return receipt submitted to SAS and locked!'
                       );
                     }

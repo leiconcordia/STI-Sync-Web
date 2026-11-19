@@ -2,12 +2,13 @@
  * Post-Activity Report (PAR) Word-Template Populator
  *
  * Maps `PostActivityReportDocument`, linked proposal/liquidation financial data,
- * categorized recommendations, VIII. Attachments checkboxes, and Prepared by /
+ * Remarks description, VIII. Attachments checkboxes, and Prepared by /
  * Noted by digital signature images directly into `/templates/par_template.docx`
  * (a tagged clone of `docs/PAR_updated1.docx`).
  */
 
 import type { PostActivityReportDocument, PARApprovalStep } from '../types/par.types';
+import { resolvePARRemarksDescription } from './par-remarks.utils';
 import { resolveUserSignature } from '../../signatories';
 import { getSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import {
@@ -103,47 +104,8 @@ function formatDate(raw?: any): string {
   return String(raw);
 }
 
-function extractList(val: any): string[] {
-  if (Array.isArray(val)) return val.map((v) => String(v).trim()).filter(Boolean);
-  if (typeof val === 'string' && val.trim()) {
-    return val
-      .split('\n')
-      .map((s) => s.replace(/^[•\-\*]\s*/, '').trim())
-      .filter(Boolean);
-  }
-  return [];
-}
-
 function formatRemarksContent(report: PostActivityReportDocument): string {
-  const categories = [
-    { title: '1. Program Flow and Content', data: report.recommendations?.programFlow },
-    { title: '2. Participant Engagement', data: report.recommendations?.participantEngagement },
-    { title: '3. Technical Setup', data: report.recommendations?.technicalSetup },
-    {
-      title: '4. Participant Preparedness and Expectations',
-      data: report.recommendations?.participantPreparedness,
-    },
-  ];
-
-  const blocks: string[] = [];
-  for (const cat of categories) {
-    const obs = extractList((cat.data as any)?.observationsList || cat.data?.observations);
-    const recs = extractList((cat.data as any)?.recommendationsList || cat.data?.recommendations);
-    if (obs.length === 0 && recs.length === 0) continue;
-
-    const lines: string[] = [cat.title];
-    if (obs.length > 0) {
-      lines.push('Observations:');
-      obs.forEach((o) => lines.push(`• ${o}`));
-    }
-    if (recs.length > 0) {
-      lines.push('Recommendations:');
-      recs.forEach((r) => lines.push(`• ${r}`));
-    }
-    blocks.push(lines.join('\n'));
-  }
-
-  return blocks.join('\n\n');
+  return resolvePARRemarksDescription(report);
 }
 
 export async function buildPARTemplatePayload(

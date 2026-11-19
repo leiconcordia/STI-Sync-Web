@@ -20,16 +20,19 @@ import {
   Bell,
   Shield,
   ChevronLeft,
-  ChevronRight,
 } from "lucide-react";
 import { MetricCard } from "../components/dashboard/MetricCard";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
-import { Progress } from "../../components/ui/progress";
 import CreateProposalModal from "../../modules/activity-proposals/components/CreateProposalModal";
 import { CalendarAndActivityMonitorPane } from "../components/dashboard/CalendarAndActivityMonitorPane";
 import { SendLiquidationReminderModal } from "../../modules/finance/components/SendLiquidationReminderModal";
-import { resolveCleanOrgName } from "../../modules/events/utils/organization-display.utils";
+import {
+  resolveCleanOrgName,
+  isSasCreatedEvent,
+  isEventLiquidationExempt,
+} from "../../modules/events/utils/organization-display.utils";
+import { isActivityConcluded } from "../../modules/events/utils/activity-compliance.utils";
 
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import { useStudents } from "../../modules/students/hooks/useStudentStream";
@@ -38,10 +41,17 @@ import { useAllLiquidations } from "../../modules/finance/hooks/useLiquidationSt
 import { useOrganizationStream } from "../../modules/organizations/hooks/useOrganizationStream";
 import { formatCurrency } from "../../utils/currency";
 import { useIncomingDocuments } from "../../modules/documents/hooks/useDocumentStream";
-import { useActiveAcademicPeriods } from "../../modules/academic/hooks/useAcademicStream";
 import { useAdminPARs } from "../../modules/post-activity-reports/hooks/usePostActivityReportStream";
 import { getMillis, formatTimestampDate } from "../../modules/students/utils/date.utils";
 import { formatAppDate, format12HourTime } from "../../utils/date";
+import { useSemesters, useActiveAcademicPeriods } from "../../modules/academic/hooks/useAcademicStream";
+import { useMiscFeeConfigs } from "../../modules/finance/hooks/useMiscFeeStream";
+import {
+  buildAvailableSchoolYears,
+  computeDashboardKpiCounts,
+  resolveDefaultSchoolYearFilter,
+  resolveUnifiedActiveAcademicTerm,
+} from "../../modules/workflow/utils/academic-period-filter.utils";
 
 interface ApprovalItem {
   id: string;
@@ -66,25 +76,91 @@ function isOrganizationSubmission(
   orgName?: string | null,
   createdByRole?: string | null
 ): boolean {
-  const normalizedRole = (createdByRole || "").toLowerCase();
-  if (normalizedRole === "sas" || normalizedRole === "admin" || normalizedRole === "sas_admin") {
+  const normalizedRole = (createdByRole || "").toLowerCase().trim();
+  if (
+    ["sas", "sao", "admin", "sas_admin", "sao_admin", "sao_head", "super_admin"].includes(
+      normalizedRole
+    )
+  ) {
     return false;
   }
   const normalizedId = (orgId || "").trim().toLowerCase();
-  if (normalizedId === "sas" || normalizedId === "sao") return false;
+  if (
+    ["sas", "sao", "sas_admin", "sao_admin", "admin", "institutional", "sao_office"].includes(
+      normalizedId
+    )
+  ) {
+    return false;
+  }
 
   const normalizedName = (orgName || "").trim().toLowerCase();
   if (
     normalizedName === "sas" ||
     normalizedName === "sao" ||
-    normalizedName === "student affairs & services" ||
-    normalizedName === "student affairs and services" ||
+    normalizedName.includes("student affairs") ||
+    normalizedName.includes("(sas)") ||
+    normalizedName.includes("(sao)") ||
     normalizedName === "sti sas"
   ) {
     return false;
   }
 
   return Boolean(normalizedId || normalizedName);
+}
+
+function hasAlreadyBeenReleasedToSignatories(item: any, isSchoolFunded: boolean): boolean {
+  if (!item) return false;
+
+  if (item.sasVettedAt) return true;
+
+  if (Array.isArray(item.proposalHistory) && item.proposalHistory.length > 0) {
+    let lastResetIdx = -1;
+    let lastReleaseIdx = -1;
+    item.proposalHistory.forEach((h: any, idx: number) => {
+      if (["withdrawn", "submitted", "resubmitted", "returned"].includes(h?.action)) {
+        lastResetIdx = idx;
+      }
+      if (h?.action === "sas_vetted_and_released") {
+        lastReleaseIdx = idx;
+      }
+    });
+    if (lastReleaseIdx > lastResetIdx && lastReleaseIdx !== -1) {
+      return true;
+    }
+  }
+
+  const chain: any[] = Array.isArray(item.approvalChain) ? item.approvalChain : [];
+  if (chain.length > 0) {
+    const isSasStep = (s: any) =>
+      s?.role === "sas_head" ||
+      s?.role === "sas_coordinator" ||
+      s?.signatoryUid === "sas_admin" ||
+      String(s?.department || "").toLowerCase().includes("student affairs");
+
+    const sasStep = chain.find(isSasStep);
+    if (sasStep && (sasStep.status === "endorsed" || sasStep.status === "approved")) {
+      return true;
+    }
+
+    const anyDownstreamSigned = chain.some(
+      (s) => !isSasStep(s) && (s.status === "endorsed" || s.status === "approved")
+    );
+    if (anyDownstreamSigned) {
+      return true;
+    }
+
+    if (isSchoolFunded) {
+      if (item.isPendingSasVetting === false) return true;
+      const anyDownstreamActive = chain.some((s) => !isSasStep(s) && s.status === "current");
+      if (anyDownstreamActive && item.isPendingSasVetting !== true) {
+        return true;
+      }
+    }
+  } else if (isSchoolFunded && item.isPendingSasVetting === false) {
+    return true;
+  }
+
+  return false;
 }
 
 export function Dashboard() {
@@ -106,7 +182,40 @@ export function Dashboard() {
   const { pars: postActivityReports = [] } = useAdminPARs();
   const { data: organizations = [] } = useOrganizationStream();
   const { data: incomingDocs = [] } = useIncomingDocuments();
+  const { data: semesters = [] } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { configs: miscConfigs = [], activeConfig: activeMiscConfig } = useMiscFeeConfigs();
+
+  const unifiedActiveTerm = useMemo(
+    () =>
+      resolveUnifiedActiveAcademicTerm({
+        activeConfig: activeMiscConfig,
+        configs: miscConfigs,
+        activeCollegePeriod,
+        activeShsPeriod,
+      }),
+    [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
+  );
+
+  const availableSchoolYears = useMemo(
+    () =>
+      buildAvailableSchoolYears({
+        configs: miscConfigs,
+        semesters,
+        records: [...events, ...liquidations, ...postActivityReports],
+        activeSchoolYear: unifiedActiveTerm.schoolYear,
+      }),
+    [miscConfigs, semesters, events, liquidations, postActivityReports, unifiedActiveTerm.schoolYear]
+  );
+
+  const currentSchoolYear = useMemo(
+    () =>
+      resolveDefaultSchoolYearFilter({
+        unifiedSchoolYear: unifiedActiveTerm.schoolYear,
+        availableSchoolYears,
+      }),
+    [unifiedActiveTerm.schoolYear, availableSchoolYears]
+  );
 
   // ─── Time-of-Day Greeting ──────────────────────────────────────────────────
   const greeting = useMemo(() => {
@@ -131,86 +240,24 @@ export function Dashboard() {
     return students.filter((s) => s.status === "ACTIVE" || (s as any).status === "active");
   }, [students]);
 
-  // Pending activity proposals awaiting administrative review
-  const pendingActivities = useMemo(() => {
-    return events.filter(
-      (e) =>
-        !e.isArchived &&
-        !e.isDeleted &&
-        e.status !== "cancelled" &&
-        (e.proposalStatus === "pending_review" ||
-          e.proposalStatus === "pending" ||
-          (e as any).proposalStatus === "submitted" ||
-          (e as any).status === "pending")
-    );
-  }, [events]);
-
-  // Pending financial liquidations awaiting review
-  const pendingLiquidations = useMemo(() => {
-    return liquidations.filter(
-      (l) =>
-        l.status === "pending" ||
-        l.status === "pending_adviser_review" ||
-        (l as any).status === "submitted" ||
-        (l as any).status === "pending_review"
-    );
-  }, [liquidations]);
-
-  // Pending post-activity reports awaiting administrative review
-  const pendingPARs = useMemo(() => {
-    return postActivityReports.filter(
-      (p) => p.status === "under_review" || (p as any).status === "pending"
-    );
-  }, [postActivityReports]);
+  // Top 4 KPI card counts (both Orgs & SAS, strictly scoped to Current School Year)
+  const kpiCounts = useMemo(
+    () =>
+      computeDashboardKpiCounts({
+        events,
+        liquidations,
+        pars: postActivityReports,
+        semesters,
+        schoolYear: currentSchoolYear,
+        availableSchoolYears,
+      }),
+    [events, liquidations, postActivityReports, semesters, currentSchoolYear, availableSchoolYears]
+  );
 
   // Pending incoming submitted documents awaiting review
   const pendingIncomingDocs = useMemo(() => {
     return incomingDocs.filter((d) => d.status === "Pending" || (d as any).status === "pending");
   }, [incomingDocs]);
-
-  // Approved activities strictly cleared for execution (excluding pending, draft, returned, or concluded)
-  const approvedActivities = useMemo(() => {
-    const list = events.filter((e) => {
-      const pStatus = (e.proposalStatus || '').toLowerCase();
-      const status = ((e as any).status || '').toLowerCase();
-
-      // Must be approved / activated
-      const isApproved =
-        pStatus === 'approved' ||
-        pStatus === 'activated' ||
-        pStatus === 'approved_president';
-
-      if (!isApproved) return false;
-
-      const lifecycle = (((e as any).lifecycleStatus || '') as string).toLowerCase();
-
-      // Exclude concluded / completed / cancelled / archived
-      if (
-        pStatus === 'completed' ||
-        pStatus === 'concluded' ||
-        status === 'completed' ||
-        status === 'concluded' ||
-        status === 'cancelled' ||
-        status === 'archived' ||
-        lifecycle === 'completed' ||
-        lifecycle === 'concluded' ||
-        lifecycle === 'cancelled' ||
-        lifecycle === 'archived' ||
-        (e as any).isArchived
-      ) {
-        return false;
-      }
-
-      return true;
-    });
-
-    return list.sort((a, b) => {
-      const dateA = a.sessions?.[0]?.date || (a as any).targetImplementationDate || '';
-      const dateB = b.sessions?.[0]?.date || (b as any).targetImplementationDate || '';
-      if (dateA && dateB) return dateA.localeCompare(dateB);
-      return getMillis(b.createdAt) - getMillis(a.createdAt);
-    });
-  }, [events]);
 
   // Activities monitored by Calendar & Compliance Monitor (all approved, active, and concluded activities)
   const monitoredActivities = useMemo(() => {
@@ -272,7 +319,7 @@ export function Dashboard() {
     return map;
   }, [organizations]);
 
-  // ─── Organization Submissions & Action Queue (Newest First / LIFO) ────────
+  // ─── Organization Submissions & Action Queue (Urgent First, Strictly Pending SAS Action) ─
   const unifiedApprovalsQueue = useMemo(() => {
     const items: ApprovalItem[] = [];
 
@@ -285,12 +332,15 @@ export function Dashboard() {
 
     // 1. Pending Incoming Submitted Documents (Strictly Organization Submissions)
     pendingIncomingDocs.forEach((doc) => {
+      if (isSasCreatedEvent(doc, orgMap)) return;
       const orgId = (doc as any).senderOrgId || (doc as any).organizationId;
       const orgName = doc.senderOrgName;
       if (!isOrganizationSubmission(orgId, orgName, (doc as any).senderRole)) return;
 
-      const ms = getMillis((doc as any).submittedAt || doc.createdAt);
       const isSchoolFunded = (doc as any).fundingSource === "school_budget";
+      if (hasAlreadyBeenReleasedToSignatories(doc, isSchoolFunded)) return;
+
+      const ms = getMillis((doc as any).submittedAt || doc.createdAt);
       items.push({
         id: `doc-${doc.id}`,
         rawId: doc.id,
@@ -313,14 +363,63 @@ export function Dashboard() {
       });
     });
 
-    // 2. Pending Activity Proposals (Strictly Organization Submissions)
-    pendingActivities.forEach((e) => {
+    // 2. Pending Activity Proposals (Strictly Org-made, excluding SAS & already-released items)
+    events.forEach((e) => {
+      if (e.isArchived || e.isDeleted) return;
+      const pStatus = String(e.proposalStatus || "").toLowerCase().trim();
+      const status = String((e as any).status || "").toLowerCase().trim();
+      if (
+        [
+          "approved",
+          "activated",
+          "approved_president",
+          "completed",
+          "concluded",
+          "cancelled",
+          "rejected",
+          "returned",
+          "returned_for_revision",
+          "draft",
+        ].includes(pStatus) ||
+        ["approved", "completed", "concluded", "cancelled", "rejected", "returned", "draft"].includes(
+          status
+        ) ||
+        (e as any).isApproved === true
+      ) {
+        return;
+      }
+
+      const isPendingCandidate =
+        pStatus === "pending_review" ||
+        pStatus === "pending" ||
+        pStatus === "submitted" ||
+        pStatus === "under_review" ||
+        status === "pending" ||
+        status === "under_review";
+      if (!isPendingCandidate) return;
+
+      if (isSasCreatedEvent(e, orgMap)) return;
       const orgId = e.hostingOrgId || (e as any).organizationId;
       const cleanOrg = resolveCleanOrgName(e, orgMap);
       if (!isOrganizationSubmission(orgId, cleanOrg, (e as any).createdByRole)) return;
 
+      const fundingSrc = String((e as any).fundingSource || "organization_funds").toLowerCase().trim();
+      const isSchoolFunded = fundingSrc === "school_budget";
+      if (hasAlreadyBeenReleasedToSignatories(e, isSchoolFunded)) return;
+
       const ms = getMillis((e as any).submittedAt || e.createdAt || (e as any).updatedAt);
-      const isSchoolFunded = (e as any).fundingSource === "school_budget";
+      const isUrgent = Boolean((e as any).isUrgent);
+      const fundingBadge = isSchoolFunded
+        ? "School Funded"
+        : fundingSrc === "student_contributions"
+          ? "Student Collections"
+          : fundingSrc === "zero_budget"
+            ? "Zero Budget"
+            : "Club Funded";
+      const fundingBadgeClass = isSchoolFunded
+        ? "bg-blue-50 text-[#003B73] border-blue-200"
+        : "bg-emerald-50 text-emerald-700 border-emerald-200";
+
       items.push({
         id: `activity-${e.id}`,
         rawId: e.id,
@@ -331,32 +430,45 @@ export function Dashboard() {
         timestampMs: ms,
         dateFormatted: formatTimestampDate((e as any).submittedAt || e.createdAt || (e as any).updatedAt),
         route: `/home/event-approvals?tab=pending&id=${e.id}`,
-        badgeColor: (e as any).isUrgent ? "bg-rose-600" : "bg-[#0E4EBD]",
-        fundingBadge: isSchoolFunded ? "School Funded" : "Club Funded",
-        fundingBadgeClass: isSchoolFunded
-          ? "bg-blue-50 text-[#003B73] border-blue-200"
-          : "bg-emerald-50 text-emerald-700 border-emerald-200",
+        badgeColor: isUrgent ? "bg-rose-600" : "bg-[#0E4EBD]",
+        fundingBadge,
+        fundingBadgeClass,
         actionLabel: isSchoolFunded ? "Release to Signatories" : "Approve",
         actionButtonClass: isSchoolFunded
           ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
           : "bg-emerald-600 hover:bg-emerald-700 text-white",
-        isUrgent: Boolean((e as any).isUrgent),
+        isUrgent,
       });
     });
 
-    // 3. Pending Liquidations (Strictly Organization Submissions)
-    pendingLiquidations.forEach((l) => {
+    // 3. Pending Liquidations (Strictly Org-made, excluding SAS & already-released items)
+    liquidations.forEach((l) => {
+      if ((l as any).isDeleted || (l as any).isArchived) return;
+      const st = String(l.status || "").toLowerCase().trim();
+      if (
+        !["pending", "pending_adviser_review", "submitted", "pending_review", "under_review"].includes(st)
+      ) {
+        return;
+      }
+      if (isSasCreatedEvent(l, orgMap)) return;
+
       const orgId = l.organizationId || (l as any).orgId;
       const orgName = resolveCleanOrgName(l, orgMap);
       if (!isOrganizationSubmission(orgId, orgName, (l as any).createdByRole)) return;
 
+      const resolvedFunding = String(
+        (l as any).fundingSource ||
+          (l.eventId ? eventFundingMap.get(l.eventId) : undefined) ||
+          "organization_funds"
+      )
+        .toLowerCase()
+        .trim();
+      const isSchoolFunded = resolvedFunding === "school_budget";
+      if (hasAlreadyBeenReleasedToSignatories(l, isSchoolFunded)) return;
+
       const ms = getMillis(l.submittedAt || l.createdAt || l.updatedAt);
       const totalExp = Number(l.totalActualSpending ?? (l as any).totalExpenses ?? (l as any).totalAmount ?? 0);
       const title = l.eventTitle || (l as any).eventName || (l as any).title || "Financial Liquidation";
-      const resolvedFunding =
-        (l as any).fundingSource ||
-        (l.eventId ? eventFundingMap.get(l.eventId) : undefined);
-      const isSchoolFunded = resolvedFunding === "school_budget";
 
       items.push({
         id: `liq-${l.id}`,
@@ -369,7 +481,11 @@ export function Dashboard() {
         dateFormatted: formatTimestampDate(l.submittedAt || l.createdAt || l.updatedAt),
         route: `/home/liquidations?tab=pending&id=${l.id}`,
         badgeColor: "bg-amber-500",
-        fundingBadge: isSchoolFunded ? "School Funded" : "Club Funded",
+        fundingBadge: isSchoolFunded
+          ? "School Funded"
+          : resolvedFunding === "student_contributions"
+            ? "Student Collections"
+            : "Club Funded",
         fundingBadgeClass: isSchoolFunded
           ? "bg-blue-50 text-[#003B73] border-blue-200"
           : "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -380,11 +496,26 @@ export function Dashboard() {
       });
     });
 
-    // 4. Pending Post-Activity Reports (Strictly Organization Submissions)
-    pendingPARs.forEach((par) => {
+    // 4. Pending Post-Activity Reports (Strictly Org-made, excluding SAS & already-released items)
+    postActivityReports.forEach((par) => {
+      if ((par as any).isDeleted || (par as any).isArchived) return;
+      const st = String(par.status || "").toLowerCase().trim();
+      if (!["pending", "pending_review", "submitted", "under_review"].includes(st)) return;
+      if (isSasCreatedEvent(par, orgMap)) return;
+
       const orgId = (par as any).organizationId || (par as any).hostingOrgId;
       const orgName = resolveCleanOrgName(par, orgMap);
       if (!isOrganizationSubmission(orgId, orgName, (par as any).createdByRole)) return;
+
+      const resolvedFunding = String(
+        (par as any).fundingSource ||
+          (par.eventId ? eventFundingMap.get(par.eventId) : undefined) ||
+          "organization_funds"
+      )
+        .toLowerCase()
+        .trim();
+      const isSchoolFunded = resolvedFunding === "school_budget";
+      if (hasAlreadyBeenReleasedToSignatories(par, isSchoolFunded)) return;
 
       const ms = getMillis((par as any).submittedAt || par.createdAt || (par as any).updatedAt);
       items.push({
@@ -398,10 +529,14 @@ export function Dashboard() {
         dateFormatted: formatTimestampDate((par as any).submittedAt || par.createdAt || (par as any).updatedAt),
         route: `/home/post-activity-reports?id=${par.id}`,
         badgeColor: "bg-[#FF5E36]",
-        fundingBadge: "Club Activity Report",
-        fundingBadgeClass: "bg-orange-50 text-orange-700 border-orange-200",
-        actionLabel: "Approve",
-        actionButtonClass: "bg-emerald-600 hover:bg-emerald-700 text-white",
+        fundingBadge: isSchoolFunded ? "School Funded" : "Club Activity Report",
+        fundingBadgeClass: isSchoolFunded
+          ? "bg-blue-50 text-[#003B73] border-blue-200"
+          : "bg-orange-50 text-orange-700 border-orange-200",
+        actionLabel: isSchoolFunded ? "Release to Signatories" : "Approve",
+        actionButtonClass: isSchoolFunded
+          ? "bg-[#001A4D] hover:bg-[#0E4EBD] text-white"
+          : "bg-emerald-600 hover:bg-emerald-700 text-white",
       });
     });
 
@@ -413,28 +548,86 @@ export function Dashboard() {
       return b.timestampMs - a.timestampMs;
     });
     return items;
-  }, [pendingIncomingDocs, pendingActivities, pendingLiquidations, pendingPARs, orgMap, events]);
+  }, [pendingIncomingDocs, events, liquidations, postActivityReports, orgMap]);
 
-  // ─── Real Organization Activity Roster ─────────────────────────────────────
+  // ─── Real Organization Activity Roster & Club Compliance Stats ──────────────
   const organizationActivityList = useMemo(() => {
     return activeOrgs.map((org) => {
-      const orgActivities = events.filter((e) => e.hostingOrgId === org.id);
-      const approvedCount = orgActivities.filter((e) => e.proposalStatus === "approved").length;
-      const totalActivities = orgActivities.length || 1;
-      const progress = Math.min(100, Math.round((approvedCount / totalActivities) * 100));
+      const orgNameLower = org.name.trim().toLowerCase();
+      const orgAcronymLower = (org.acronym || "").trim().toLowerCase();
+
+      const orgActivities = events.filter((e) => {
+        if ((e as any).isArchived || (e as any).isDeleted) return false;
+        if (isSasCreatedEvent(e, orgMap)) return false;
+        const hOrg = String(e.hostingOrgId || (e as any).organizationId || "").trim();
+        if (hOrg && hOrg === org.id) return true;
+        const cleanName = resolveCleanOrgName(e, orgMap).trim().toLowerCase();
+        return cleanName === orgNameLower || (Boolean(orgAcronymLower) && cleanName === orgAcronymLower);
+      });
+
+      const approvedActivitiesList = orgActivities.filter((e) => {
+        const pStatus = String(e.proposalStatus || "").toLowerCase();
+        const status = String((e as any).status || "").toLowerCase();
+        const lifecycle = String((e as any).lifecycleStatus || "").toLowerCase();
+        if (
+          ["cancelled", "rejected", "draft", "archived"].includes(pStatus) ||
+          ["cancelled", "rejected", "draft", "archived"].includes(status) ||
+          ["cancelled", "rejected", "draft", "archived"].includes(lifecycle)
+        ) {
+          return false;
+        }
+        return (
+          ["approved", "activated", "approved_president", "completed", "concluded"].includes(pStatus) ||
+          ["approved", "activated", "completed", "concluded"].includes(status) ||
+          ["approved", "completed", "concluded"].includes(lifecycle) ||
+          (e as any).isApproved === true
+        );
+      });
+
+      let missingFlCount = 0;
+      let missingParCount = 0;
+
+      approvedActivitiesList.forEach((act) => {
+        if (!isActivityConcluded(act)) return;
+
+        if (!isEventLiquidationExempt(act)) {
+          const matchingLiq = liquidations.find(
+            (l) =>
+              !l.isDeleted &&
+              l.status !== "voided" &&
+              (l.status as any) !== "cancelled" &&
+              (l.eventId === act.id || (l as any).eventReportId === act.id)
+          );
+          const flSt = String(matchingLiq?.status || "").toLowerCase();
+          if (!matchingLiq || flSt === "draft") {
+            missingFlCount++;
+          }
+        }
+
+        const matchingPAR = postActivityReports.find(
+          (p) =>
+            !p.isDeleted &&
+            !["voided", "cancelled"].includes(String(p.status || "").toLowerCase()) &&
+            (p.eventId === act.id || (act as any).parId === p.id)
+        );
+        const parSt = String(matchingPAR?.status || "").toLowerCase();
+        if (!matchingPAR || parSt === "draft") {
+          missingParCount++;
+        }
+      });
 
       return {
         id: org.id,
         name: org.acronym || org.name,
         fullName: org.name,
         logoUrl: org.logoUrl,
-        activitiesCount: approvedCount,
-        totalActivities: orgActivities.length,
+        approvedCount: approvedActivitiesList.length,
+        missingFlCount,
+        missingParCount,
         memberCount: org.memberCount || 0,
-        progress: progress === 0 && approvedCount > 0 ? 100 : progress,
       };
     });
-  }, [activeOrgs, events]);
+  }, [activeOrgs, events, liquidations, postActivityReports, orgMap]);
 
   return (
     <div className="space-y-6 pb-6 relative">
@@ -465,18 +658,8 @@ export function Dashboard() {
               <div>
                 <div className="flex flex-wrap items-center gap-2 mb-1.5">
                   <span className="px-3 py-0.5 rounded-full text-xs font-bold bg-[#FFD41C] text-[#001A4D] uppercase tracking-wider">
-                    SAO Portal
+                    SAS Portal
                   </span>
-                  {activeCollegePeriod && (
-                    <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-white/20 text-white">
-                      College: {activeCollegePeriod.semester}
-                    </span>
-                  )}
-                  {activeShsPeriod && (
-                    <span className="px-3 py-0.5 rounded-full text-xs font-semibold bg-amber-400/25 text-amber-200 border border-amber-400/30">
-                      SHS: {activeShsPeriod.semester}
-                    </span>
-                  )}
                 </div>
                 <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">
                   {greeting}, {adviserDisplayName}.
@@ -485,60 +668,42 @@ export function Dashboard() {
                   STI College Ormoc — Real-time overview of student activities, approved activity schedules, post-activity reports, and financial liquidations.
                 </p>
               </div>
-
-              <div className="flex items-center gap-3 z-10 flex-shrink-0">
-                {!isRightPaneExpanded && (
-                  <Button
-                    type="button"
-                    onClick={() => setIsRightPaneExpanded(true)}
-                    className="bg-[#FFD41C] hover:bg-amber-400 text-[#001A4D] font-bold text-xs rounded-xl shadow-md flex items-center gap-2 cursor-pointer transition-transform active:scale-95"
-                  >
-                    <CalendarDays className="w-4 h-4 text-[#001A4D]" />
-                    <span>Activities & Calendar</span>
-                    <ChevronRight className="w-4 h-4" />
-                  </Button>
-                )}
-              </div>
             </div>
             <Shield className="absolute right-6 top-1/2 -translate-y-1/2 w-44 h-44 opacity-10 pointer-events-none" />
           </div>
 
           {/* Top 4 Real-Time Reactive Metric Cards */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* 1. Pending Activities */}
+            {/* 1. Pending Activity Proposals */}
             <MetricCard
-              title="Pending Activities"
-              value={pendingActivities.length}
+              title="Pending Activity Proposals"
+              value={kpiCounts.pendingActivityProposals}
               icon={CalendarCheck}
               gradient="blue"
-              change="Proposals awaiting SAO"
             />
 
-            {/* 2. Approved Activities */}
+            {/* 2. Approved Activity Proposals */}
             <MetricCard
-              title="Approved Activities"
-              value={approvedActivities.length}
+              title="Approved Activity Proposals"
+              value={kpiCounts.approvedActivityProposals}
               icon={CalendarDays}
               gradient="green"
-              change="Cleared for execution"
             />
 
-            {/* 3. Pending Liquidations */}
+            {/* 3. Pending Financial Liquidations */}
             <MetricCard
-              title="Pending Liquidations"
-              value={pendingLiquidations.length}
+              title="Pending Financial Liquidations"
+              value={kpiCounts.pendingFinancialLiquidations}
               icon={Receipt}
               gradient="gold"
-              change="Post-activity reviews"
             />
 
-            {/* 4. Post-Activity Reports */}
+            {/* 4. Pending Post-Activity Reports */}
             <MetricCard
-              title="Post-Activity Reports"
-              value={pendingPARs.length}
+              title="Pending Post-Activity Reports"
+              value={kpiCounts.pendingPostActivityReports}
               icon={FileCheck2}
               gradient="red-orange"
-              change="PAR reviews awaiting SAO"
             />
           </div>
 
@@ -556,7 +721,7 @@ export function Dashboard() {
                       </CardTitle>
                     </div>
                     <p className="text-[11px] text-gray-500 mt-0.5">
-                      Newest submissions on top • Release school-funded items to signatories or approve club-funded requests
+                      Urgent &amp; newest submissions on top • Release school-funded items to signatories or approve org-funded requests
                     </p>
                   </div>
                   <span className="px-2.5 py-0.5 bg-[#001A4D] text-white rounded-full text-xs font-mono font-bold">
@@ -642,8 +807,8 @@ export function Dashboard() {
                     </div>
                   ) : (
                     organizationActivityList.map((org) => (
-                      <div key={org.id} className="p-2.5 bg-gray-50/60 rounded-xl border border-gray-100">
-                        <div className="flex items-center gap-2.5 mb-1.5">
+                      <div key={org.id} className="p-2.5 bg-gray-50/60 rounded-xl border border-gray-100 space-y-2">
+                        <div className="flex items-center gap-2.5">
                           <div className="w-8 h-8 bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-lg flex items-center justify-center text-white font-bold text-xs uppercase overflow-hidden flex-shrink-0 shadow-xs">
                             {org.logoUrl ? (
                               <img src={org.logoUrl} alt={org.name} className="w-full h-full object-cover" />
@@ -651,15 +816,34 @@ export function Dashboard() {
                               org.name.slice(0, 3)
                             )}
                           </div>
-                          <div className="flex-1 min-w-0">
+                          <div className="flex-1 min-w-0 flex items-center justify-between gap-2">
                             <div className="font-bold text-[#001A4D] text-xs truncate">{org.fullName}</div>
-                            <div className="text-[11px] text-gray-500 flex items-center justify-between mt-0.5">
-                              <span>{org.activitiesCount} activity(ies) approved</span>
-                              <span>{org.memberCount} member(s)</span>
-                            </div>
+                            <span className="text-[11px] text-gray-500 shrink-0">{org.memberCount} member(s)</span>
                           </div>
                         </div>
-                        <Progress value={org.progress} className="h-1.5 bg-gray-200" />
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold bg-blue-50 text-[#001A4D] border border-blue-200">
+                            {org.approvedCount} Approved {org.approvedCount === 1 ? "Act" : "Acts"}
+                          </span>
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                              org.missingFlCount > 0
+                                ? "bg-amber-50 text-amber-800 border-amber-200"
+                                : "bg-slate-100 text-slate-500 border-slate-200"
+                            }`}
+                          >
+                            {org.missingFlCount} Missing FL
+                          </span>
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                              org.missingParCount > 0
+                                ? "bg-rose-50 text-rose-700 border-rose-200"
+                                : "bg-slate-100 text-slate-500 border-slate-200"
+                            }`}
+                          >
+                            {org.missingParCount} No PAR
+                          </span>
+                        </div>
                       </div>
                     ))
                   )}

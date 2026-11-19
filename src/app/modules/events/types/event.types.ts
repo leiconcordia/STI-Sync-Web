@@ -131,15 +131,6 @@ export interface EventDocument extends SoftDeletable, Archivable {
   archivedByName?: string | null;
   archivedReason?: string | null;
 
-  // ─── Cancellation & Financial Waiver Metadata ───
-  cancelledAt?: Timestamp | null;
-  cancelledBy?: string | null;
-  cancelledByName?: string | null;
-  cancelledByRole?: 'admin' | 'officer' | null;
-  cancellationReason?: string | null;
-  cancellationRefundPolicy?: 'refund_cash' | 'credit_next_event' | 'no_fees_collected' | null;
-  refundStatus?: 'none' | 'pending' | 'processing' | 'completed' | null;
-
   // ─── Review & Version Metadata ───
   approvedBy?: string | null;
   approvedAt?: Timestamp | null;
@@ -158,35 +149,6 @@ export interface EventDocument extends SoftDeletable, Archivable {
   versionLabel?: string;                   // e.g. "v1.0", "v2.0"
   proposalHistory?: EventProposalHistoryLog[];
   versionHistory?: EventVersionSnapshot[];
-}
-
-export interface EventCancellationPayload {
-  eventId: string;
-  cancelledBy: string;
-  cancelledByName?: string;
-  cancelledByRole: 'admin' | 'officer';
-  userOrgId?: string;
-  cancellationReason: string;
-  refundPolicy?: 'refund_cash' | 'credit_next_event' | 'no_fees_collected';
-  notifyAttendees?: boolean;
-  fundsSpent?: boolean;
-  amountSpent?: number;
-  spentRemarks?: string;
-  cashierSettlementProofs?: any[];
-  cashierReferenceNo?: string;
-}
-
-export interface EventCancellationResult {
-  eventId: string;
-  waivedPayablesCount: number;
-  refundPendingPayablesCount: number;
-  voidedLiquidationsCount: number;
-  keptLiquidationsCount?: number;
-  createdLiquidationId?: string | null;
-  cancellationPendingApproval?: boolean;
-  notifiedSignatoriesCount?: number;
-  qrTicketsRevoked: boolean;
-  cancelledAt: string;
 }
 
 export interface EventProposalHistoryLog {

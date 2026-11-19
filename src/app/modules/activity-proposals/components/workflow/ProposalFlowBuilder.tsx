@@ -40,7 +40,12 @@ import {
   isSignatoryApplicableTo,
 } from '../../../signatories/types/signatory.types';
 import { buildDynamicApprovalChain } from '../../utils/proposal-routing';
-import { formatStageTitle, normalizeApprovalStages } from '../../../workflow/utils/stage-normalization.utils';
+import {
+  formatStageTitle,
+  normalizeApprovalStages,
+  filterTemplateStepsBySignatoryScope,
+  findMatchedSignatoryForStep,
+} from '../../../workflow/utils/stage-normalization.utils';
 import {
   subscribeToSasSignatoryConfig,
   DEFAULT_SAS_SIGNATORY_CONFIG,
@@ -167,7 +172,7 @@ export default function ProposalFlowBuilder({
     if (!approvalChain || approvalChain.length === 0 || activeSignatories.length === 0) return;
 
     let modified = false;
-    // 1. Purge signatories that are liquidation-only or accountants
+    // 1. Purge signatories that are inactive or ineligible for Activity Proposals
     const filteredSteps = approvalChain.filter((step) => {
       // Never filter out fixed Stage 1 SAS for officer proposals
       if (
@@ -176,12 +181,8 @@ export default function ProposalFlowBuilder({
       ) {
         return true;
       }
-      const matched = activeSignatories.find(
-        (s) =>
-          s.id === step.signatoryUid ||
-          (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
-      );
-      if (matched && !isSignatoryApplicableTo(matched, 'proposal')) {
+      const matched = findMatchedSignatoryForStep(step, activeSignatories);
+      if (matched && (matched.isActive === false || !isSignatoryApplicableTo(matched, 'proposal'))) {
         modified = true;
         return false;
       }
@@ -190,11 +191,7 @@ export default function ProposalFlowBuilder({
 
     // 2. Synchronize edited names, titles, and departments from database
     const updatedSteps = filteredSteps.map((step) => {
-      const matched = activeSignatories.find(
-        (s) =>
-          s.id === step.signatoryUid ||
-          (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
-      );
+      const matched = findMatchedSignatoryForStep(step, activeSignatories);
       if (matched) {
         if (
           (matched.name && matched.name !== step.signatoryName) ||
@@ -513,11 +510,28 @@ export default function ProposalFlowBuilder({
     const hasAssignedSigners = (steps?: any[]) =>
       Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
 
-    if (!hasAssignedSigners(configuredTemplate)) {
+    const eligibleSignatories = activeSignatories.filter(
+      (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'proposal')
+    );
+
+    const primaryFiltered = Array.isArray(configuredTemplate)
+      ? filterTemplateStepsBySignatoryScope(configuredTemplate, activeSignatories, 'proposal', {
+          preserveBuiltinSasGate: !isSasCreator,
+          normalize: true,
+        })
+      : [];
+
+    if (hasAssignedSigners(primaryFiltered)) {
+      configuredTemplate = primaryFiltered;
+    } else {
       const alternateKey = isSasCreator ? 'adviser_ap' : 'admin_ap';
-      if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
-        configuredTemplate = workflowSettings?.[alternateKey];
-      }
+      const altFiltered = Array.isArray(workflowSettings?.[alternateKey])
+        ? filterTemplateStepsBySignatoryScope(workflowSettings[alternateKey], activeSignatories, 'proposal', {
+            preserveBuiltinSasGate: !isSasCreator,
+            normalize: true,
+          })
+        : [];
+      configuredTemplate = hasAssignedSigners(altFiltered) ? altFiltered : primaryFiltered;
     }
 
     if (configuredTemplate && configuredTemplate.length > 0) {
@@ -525,14 +539,19 @@ export default function ProposalFlowBuilder({
       const usedIds = new Set<string>();
 
       configuredTemplate.forEach((tpl: any, idx: number) => {
-        let matched = activeSignatories.find(
+        const hasExplicitSigner = Boolean(
+          (tpl.signatoryUid && String(tpl.signatoryUid).trim()) ||
+          (tpl.signatoryEmail && String(tpl.signatoryEmail).trim())
+        );
+
+        let matched = eligibleSignatories.find(
           (s) =>
-            (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+            (tpl.signatoryUid && (s.id === tpl.signatoryUid || s.uid === tpl.signatoryUid)) ||
             (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
         );
 
-        if (!matched && tpl.role) {
-          matched = activeSignatories.find(
+        if (!matched && !hasExplicitSigner && tpl.role) {
+          matched = eligibleSignatories.find(
             (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
           );
         }
@@ -550,6 +569,10 @@ export default function ProposalFlowBuilder({
             applicableScope: 'all',
             actionType: 'approver',
           };
+        }
+
+        if (hasExplicitSigner && !matched) {
+          return;
         }
 
         if (matched) usedIds.add(matched.id);

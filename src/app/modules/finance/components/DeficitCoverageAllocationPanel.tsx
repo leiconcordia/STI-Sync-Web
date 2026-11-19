@@ -48,15 +48,27 @@ export function resolveLiveBucketAvailableBalance(params: {
 
   if (bucketId === 'SAO_CAMPUS' || fundType === 'student_contribution_retained') {
     if (bucketId.startsWith('ORG_')) {
-      const orgMatch = orgRetainedFunds.find((f) => f.id === bucketId);
+      const cleanOrgId = bucketId.replace(/^ORG_/, '');
+      const orgMatch = orgRetainedFunds.find(
+        (f) =>
+          f.id === bucketId ||
+          f.id.startsWith(`${bucketId}__SY_`) ||
+          f.organizationId === cleanOrgId
+      );
       const retBal = Number(orgMatch?.availableBalance) || 0;
-      return retBal > 0 ? retBal : Math.max(0, Number(orgLedgerBalance) || 0);
+      const ledgerBal = Math.max(0, Number(orgLedgerBalance) || 0);
+      return ledgerBal > 0 ? ledgerBal : retBal;
     }
     return Math.max(0, Number(saoRetainedFund?.availableBalance) || 0);
   }
 
+  const cleanOrgId = bucketId.startsWith('ORG_') ? bucketId.replace(/^ORG_/, '') : bucketId;
   const orgMatch = orgRetainedFunds.find(
-    (f) => f.id === bucketId || (bucketName && f.organizationName?.toLowerCase() === bucketName.toLowerCase())
+    (f) =>
+      f.id === bucketId ||
+      f.id.startsWith(`${bucketId}__SY_`) ||
+      f.organizationId === cleanOrgId ||
+      (bucketName && f.organizationName?.toLowerCase() === bucketName.toLowerCase())
   );
   const retBal = Number(orgMatch?.availableBalance) || 0;
   return retBal > 0 ? retBal : Math.max(0, Number(orgLedgerBalance) || 0);
@@ -64,6 +76,7 @@ export function resolveLiveBucketAvailableBalance(params: {
 
 export function buildDeficitSeedAndSupplementalOptions(params: {
   totalDeficit: number;
+  fundingSource?: string | null;
   sourceAllocations: ProposalBucketAllocation[];
   savedDeficitRows?: DeficitDeductionAllocation[];
   computedBuckets: ComputedBucketBalance[];
@@ -73,12 +86,14 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
   targetOrgId?: string | null;
   targetOrgName?: string | null;
   orgLedgerBalance?: number;
+  studentCollectionAvailableOverride?: number;
 }): {
   initialRows: DeficitDeductionAllocation[];
   supplementalOptions: SupplementalBucketOption[];
 } {
   const {
     totalDeficit,
+    fundingSource,
     sourceAllocations,
     savedDeficitRows = [],
     computedBuckets,
@@ -88,6 +103,7 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
     targetOrgId,
     targetOrgName,
     orgLedgerBalance,
+    studentCollectionAvailableOverride,
   } = params;
 
   const getLiveAvail = (bucketId: string, bucketName: string, fundType: FundAllocationFundType) =>
@@ -100,6 +116,84 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
       orgRetainedFunds,
       orgLedgerBalance,
     });
+
+  const srcLower = String(fundingSource || '').trim().toLowerCase();
+  const hasMiscSource = sourceAllocations.some((a) => a.fundType === 'misc_fee');
+  const isStudentCollectionMode =
+    !hasMiscSource &&
+    (srcLower === 'student_contributions' ||
+      srcLower === 'retained_sao_fund' ||
+      (srcLower === '' &&
+        sourceAllocations.length > 0 &&
+        sourceAllocations.every(
+          (a) =>
+            a.fundType === 'student_contributions' ||
+            a.fundType === 'student_contribution_retained'
+        )));
+
+  const cleanOrgId = String(targetOrgId || '').trim();
+  const isSasSentinel =
+    !cleanOrgId ||
+    ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(
+      cleanOrgId.toLowerCase()
+    );
+
+  if (isStudentCollectionMode) {
+    const isSas = srcLower === 'retained_sao_fund' || isSasSentinel;
+    const canonicalBucketId = isSas ? 'SAO_CAMPUS' : `ORG_${cleanOrgId}`;
+    const canonicalBucketName = isSas
+      ? 'SAS Student Contribution & Retained Funds'
+      : `${targetOrgName || 'Organization'} Student Collections Fund`;
+    const liveAvail =
+      studentCollectionAvailableOverride !== undefined
+        ? Math.max(0, Number(studentCollectionAvailableOverride) || 0)
+        : getLiveAvail(canonicalBucketId, canonicalBucketName, 'student_contribution_retained');
+
+    const totalOriginalAllocated = sourceAllocations.reduce(
+      (sum, a) => sum + (Number(a.allocatedAmount) || 0),
+      0
+    );
+
+    const compatibleSaved = savedDeficitRows.filter(
+      (r) => !r.isSupplementalSource && r.fundType !== 'misc_fee'
+    );
+    const seedRows: DeficitDeductionAllocation[] =
+      compatibleSaved.length > 0
+        ? [
+            {
+              bucketId: canonicalBucketId,
+              bucketName: canonicalBucketName,
+              fundType: 'student_contribution_retained',
+              originalAllocatedAmount:
+                Number(compatibleSaved[0].originalAllocatedAmount) || totalOriginalAllocated,
+              availableBalance: liveAvail,
+              deductAmount: Math.min(
+                liveAvail,
+                Math.max(0, Number(compatibleSaved[0].deductAmount) || totalDeficit)
+              ),
+              isSupplementalSource: false,
+            },
+          ]
+        : computeWaterfallDeficitAllocations({
+            totalDeficit,
+            rows: [
+              {
+                bucketId: canonicalBucketId,
+                bucketName: canonicalBucketName,
+                fundType: 'student_contribution_retained',
+                originalAllocatedAmount: totalOriginalAllocated,
+                availableBalance: liveAvail,
+                deductAmount: 0,
+                isSupplementalSource: false,
+              },
+            ],
+          });
+
+    return {
+      initialRows: seedRows,
+      supplementalOptions: [],
+    };
+  }
 
   let initialRows: DeficitDeductionAllocation[] = [];
   if (savedDeficitRows.length > 0) {
@@ -140,11 +234,7 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
       availableBalance: Math.max(0, Number(saoRetainedFund.availableBalance) || 0),
     });
   }
-  const cleanOrgId = String(targetOrgId || '').trim();
-  if (
-    cleanOrgId &&
-    !['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(cleanOrgId.toLowerCase())
-  ) {
+  if (cleanOrgId && !isSasSentinel) {
     const orgAvail = getLiveAvail(`ORG_${cleanOrgId}`, targetOrgName || 'Organization Treasury', 'org_treasury');
     if (orgAvail > 0) {
       supplementalOptions.push({
@@ -164,6 +254,7 @@ interface DeficitCoverageAllocationPanelProps {
   rows: DeficitDeductionAllocation[];
   onChange: (rows: DeficitDeductionAllocation[]) => void;
   supplementalOptions: SupplementalBucketOption[];
+  isStudentCollection?: boolean;
   disabled?: boolean;
   readOnly?: boolean;
   title?: string;
@@ -180,19 +271,31 @@ export function DeficitCoverageAllocationPanel({
   rows,
   onChange,
   supplementalOptions,
+  isStudentCollection = false,
   disabled = false,
   readOnly = false,
-  title = 'Overspend Coverage Routing (Bucket Waterfall & Supplemental Selection)',
+  title,
 }: DeficitCoverageAllocationPanelProps) {
   const [selectedSuppId, setSelectedSuppId] = useState('');
+  const resolvedTitle =
+    title ||
+    (isStudentCollection
+      ? 'Student Collections Reimbursement Coverage Check'
+      : 'Overspend Coverage Routing (Bucket Waterfall & Supplemental Selection)');
 
   const validation = useMemo(
     () =>
       validateDeficitDeductionAllocations({
         totalDeficit,
         rows,
+        mode: isStudentCollection ? 'student_collections' : 'misc_or_mixed',
       }),
-    [totalDeficit, rows]
+    [totalDeficit, rows, isStudentCollection]
+  );
+
+  const studentShortfall = useMemo(
+    () => Math.max(0, Math.round((totalDeficit - validation.totalCapacityAvailable) * 100) / 100),
+    [totalDeficit, validation.totalCapacityAvailable]
   );
 
   const unusedSupplementalOptions = useMemo(() => {
@@ -243,15 +346,26 @@ export function DeficitCoverageAllocationPanel({
         <div>
           <h4 className="font-bold text-rose-950 text-xs uppercase tracking-wider flex items-center gap-1.5">
             <ArrowDownRight className="w-3.5 h-3.5 text-rose-700" />
-            {title}
+            {resolvedTitle}
           </h4>
           <p className="text-xs text-rose-900/80 mt-0.5">
-            Assign 100% of the <strong className="font-mono">{formatPHP(totalDeficit)}</strong> overspend
-            to bucket(s) with sufficient available balance. No unrecorded absorption is allowed.
+            {isStudentCollection ? (
+              <>
+                Reimbursement for the <strong className="font-mono">{formatPHP(totalDeficit)}</strong>{' '}
+                overspend must be funded strictly by collected Student Collections (Miscellaneous Fee
+                buckets cannot be used).
+              </>
+            ) : (
+              <>
+                Assign 100% of the <strong className="font-mono">{formatPHP(totalDeficit)}</strong>{' '}
+                overspend to bucket(s) with sufficient available balance. No unrecorded absorption is
+                allowed.
+              </>
+            )}
           </p>
         </div>
 
-        {!readOnly && rows.length > 0 && (
+        {!readOnly && !isStudentCollection && rows.length > 0 && (
           <button
             type="button"
             disabled={disabled}
@@ -264,12 +378,64 @@ export function DeficitCoverageAllocationPanel({
         )}
       </div>
 
+      {isStudentCollection && (
+        <div className="space-y-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+            <div className="p-2.5 rounded-xl bg-white border border-rose-200">
+              <span className="text-[10px] font-bold uppercase text-gray-500 block">
+                Overspend to Reimburse
+              </span>
+              <strong className="font-mono text-rose-800 text-sm">{formatPHP(totalDeficit)}</strong>
+            </div>
+            <div className="p-2.5 rounded-xl bg-white border border-rose-200">
+              <span className="text-[10px] font-bold uppercase text-gray-500 block">
+                Available Collected Funds
+              </span>
+              <strong
+                className={`font-mono text-sm ${
+                  studentShortfall > 0.009 ? 'text-rose-700' : 'text-emerald-700'
+                }`}
+              >
+                {formatPHP(validation.totalCapacityAvailable)}
+              </strong>
+            </div>
+            <div className="p-2.5 rounded-xl bg-white border border-rose-200">
+              <span className="text-[10px] font-bold uppercase text-gray-500 block">
+                Remaining Shortfall to Collect
+              </span>
+              <strong
+                className={`font-mono text-sm ${
+                  studentShortfall > 0.009 ? 'text-rose-700' : 'text-emerald-700'
+                }`}
+              >
+                {formatPHP(studentShortfall)}
+              </strong>
+            </div>
+          </div>
+
+          {studentShortfall > 0.009 && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-xs text-amber-950 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-amber-900">Collect Student Contributions First</p>
+                <p className="mt-0.5">
+                  Student Collections funds are currently short by{' '}
+                  <strong className="font-mono">{formatPHP(studentShortfall)}</strong>. Reimbursement
+                  cannot push through until remaining student contributions are collected and posted.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Selected / AP Buckets List */}
       <div className="space-y-2">
         {rows.map((row, idx) => {
           const rowErr = validation.perBucketErrors[row.bucketId];
-          const fundLabel =
-            row.fundType === 'misc_fee'
+          const fundLabel = isStudentCollection
+            ? 'Student Collections'
+            : row.fundType === 'misc_fee'
               ? 'Misc Fee'
               : row.fundType === 'org_treasury'
                 ? 'Org Treasury'
@@ -283,24 +449,27 @@ export function DeficitCoverageAllocationPanel({
             >
               <div className="min-w-0 space-y-0.5">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-                    #{idx + 1}
-                  </span>
+                  {!isStudentCollection && (
+                    <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                      #{idx + 1}
+                    </span>
+                  )}
                   <span className="text-xs font-bold text-[#001A4D] truncate">
                     {row.bucketName}
                   </span>
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-100 text-slate-700">
                     {fundLabel}
                   </span>
-                  {row.isSupplementalSource ? (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800">
-                      Supplemental Bucket
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">
-                      Approved AP Source
-                    </span>
-                  )}
+                  {!isStudentCollection &&
+                    (row.isSupplementalSource ? (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-indigo-100 text-indigo-800">
+                        Supplemental Bucket
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-blue-100 text-blue-800">
+                        Approved AP Source
+                      </span>
+                    ))}
                 </div>
                 <p className="text-[11px] text-gray-600 font-mono flex flex-wrap items-center gap-3">
                   {row.originalAllocatedAmount > 0 && (
@@ -356,7 +525,7 @@ export function DeficitCoverageAllocationPanel({
                           : 'border-rose-300 bg-white text-[#001A4D]'
                       } disabled:bg-gray-100 disabled:text-gray-400`}
                     />
-                    {row.isSupplementalSource && (
+                    {!isStudentCollection && row.isSupplementalSource && (
                       <button
                         type="button"
                         disabled={disabled}
@@ -384,7 +553,7 @@ export function DeficitCoverageAllocationPanel({
       </div>
 
       {/* Add Supplemental Bucket when AP buckets fall short or user wants to add another bucket */}
-      {!readOnly && unusedSupplementalOptions.length > 0 && (
+      {!readOnly && !isStudentCollection && unusedSupplementalOptions.length > 0 && (
         <div
           className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center gap-2 ${
             validation.needsAdditionalBucket || rows.length === 0

@@ -561,7 +561,7 @@ export default function MiscFeeMaintenance() {
       const updated = await carryOver1stSemBalancesTo2ndSem(draftConfig, effectiveCounts);
       setDraftConfig(updated);
       toast.success(
-        '1st Semester unspent Miscellaneous Fee balances carried over! Now upload your 2nd Term Tertiary Miscellaneous Excel.'
+        '1st Semester unspent Miscellaneous Fee balances carried over! Switched cleanly to 2nd Semester.'
       );
     } catch (err: any) {
       toast.error(err?.message || 'Failed to carry over balances.');
@@ -619,7 +619,7 @@ export default function MiscFeeMaintenance() {
             </h2>
           </div>
           <p className="text-xs text-gray-500 mt-1">
-            Unified School Year &amp; Term control: SHS Misc (once per SY, auto-adds to active semester) &amp; Tertiary Misc (up to 2 uploads per SY) with Zero Past-SY Carry-Over.
+            Manage School Year &amp; Term Miscellaneous Fee pools (1 upload covers SHS &amp; 1st/2nd Sem Tertiary) and inspect Disbursement Vouchers &amp; Return Proofs.
           </p>
         </div>
 
@@ -661,7 +661,7 @@ export default function MiscFeeMaintenance() {
             <FileSpreadsheet className="w-4 h-4" />
             <span>
               {isAllUploadQuotasReached
-                ? `Upload Limit Reached (${uploadCounts.collegeCount}/${MAX_TERTIARY_UPLOADS_PER_SY} Tertiary • ${uploadCounts.shsCount}/${MAX_SHS_UPLOADS_PER_SY} SHS)`
+                ? 'SHS & Tertiary Fees Uploaded ✓'
                 : 'Import SHS / Tertiary .xlsx'}
             </span>
           </button>
@@ -871,8 +871,8 @@ export default function MiscFeeMaintenance() {
               }
               className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-[#001A4D] bg-white disabled:bg-gray-100"
             >
-              <option value="1st Semester">1st Semester (Term 1: SHS + Tertiary)</option>
-              <option value="2nd Semester">2nd Semester (Term 2: Carry-Over + Tertiary + SHS)</option>
+              <option value="1st Semester">1st Semester</option>
+              <option value="2nd Semester">2nd Semester</option>
             </select>
           </div>
 
@@ -892,7 +892,7 @@ export default function MiscFeeMaintenance() {
               className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold text-gray-800 bg-white disabled:bg-gray-100"
             >
               <option value="student_registry">
-                Student Registry Bulk Import ({liveRegistryCounts.shs} SHS [G12: {liveRegistryCounts.shsGrade12}] / {liveRegistryCounts.college1stSem} Col 1S / {liveRegistryCounts.college2ndSem} Col 2S)
+                Student Registry ({liveRegistryCounts.shs} SHS • {draftConfig.activeSemester === '2nd Semester' ? liveRegistryCounts.college2ndSem : liveRegistryCounts.college1stSem} Col)
               </option>
               <option value="template_override">
                 Manual Headcount Override
@@ -948,33 +948,36 @@ export default function MiscFeeMaintenance() {
           </div>
         </div>
 
-        {/* Academic Cycle Sync & Upload Quota Checklist */}
+        {/* Academic Cycle Sync & Clean Upload Status */}
         <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-gray-100 text-[11px] text-gray-600">
           <div className="flex flex-wrap items-center gap-2">
-            <span>
-              Synced Cycle:{' '}
-              <strong className="text-[#001A4D]">
-                SY {draftConfig.schoolYear} ({draftConfig.activeSemester})
-              </strong>
+            <span className="px-2.5 py-0.5 rounded-full font-bold bg-blue-50 text-[#001A4D] border border-blue-200">
+              Active: SY {draftConfig.schoolYear} • {draftConfig.activeSemester}
             </span>
-            <span className={`px-2 py-0.5 rounded-full font-bold ${
+            <span className={`px-2.5 py-0.5 rounded-full font-bold ${
               uploadCounts.collegeCount >= MAX_TERTIARY_UPLOADS_PER_SY
                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                 : uploadCounts.collegeCount > 0
                 ? 'bg-blue-50 text-blue-700 border border-blue-200'
                 : 'bg-slate-100 text-slate-600 border border-slate-200'
             }`}>
-              Tertiary (Max {MAX_TERTIARY_UPLOADS_PER_SY}/SY): {uploadCounts.collegeCount} / {MAX_TERTIARY_UPLOADS_PER_SY} Uploaded
+              {uploadCounts.hasBothSemCollegeRates
+                ? 'Tertiary (1st & 2nd Sem): Uploaded ✓'
+                : uploadCounts.collegeCount >= MAX_TERTIARY_UPLOADS_PER_SY
+                ? 'Tertiary Misc: Uploaded ✓'
+                : `Tertiary Misc: ${uploadCounts.collegeCount} / ${MAX_TERTIARY_UPLOADS_PER_SY} Uploaded`}
             </span>
-            <span className={`px-2 py-0.5 rounded-full font-bold ${
+            <span className={`px-2.5 py-0.5 rounded-full font-bold ${
               uploadCounts.shsCount >= MAX_SHS_UPLOADS_PER_SY
                 ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                 : 'bg-slate-100 text-slate-600 border border-slate-200'
             }`}>
-              SHS (Once/SY • Max {MAX_SHS_UPLOADS_PER_SY}/SY): {uploadCounts.shsCount} / {MAX_SHS_UPLOADS_PER_SY} Uploaded
+              {uploadCounts.shsCount >= MAX_SHS_UPLOADS_PER_SY
+                ? 'SHS Misc: Uploaded ✓'
+                : `SHS Misc: ${uploadCounts.shsCount} / ${MAX_SHS_UPLOADS_PER_SY} Uploaded`}
             </span>
-            <span className="px-2 py-0.5 rounded-full font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
-              Zero Past-SY Carry-Over Enforced (SY {draftConfig.schoolYear} starts fresh at ₱0.00)
+            <span className="px-2.5 py-0.5 rounded-full font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+              Zero Past-SY Carry-Over (SY {draftConfig.schoolYear} starts fresh)
             </span>
           </div>
           {draftConfig.headcountSource === 'student_registry' &&
@@ -994,10 +997,10 @@ export default function MiscFeeMaintenance() {
         <div className="p-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-[#001A4D]">
-              2. SAO-Eligible Miscellaneous Fee Particulars (Read-Only from Uploaded Excel)
+              2. SAO-Eligible Miscellaneous Fee Pools ({draftConfig.activeSemester})
             </h3>
-            <p className="text-[11px] text-gray-500">
-              Formula: (SHS 1st Sem Rate × {effectiveCounts.shsEnrolled} [G12: {effectiveCounts.shsGrade12Enrolled}]) + (College 1st Sem Rate × {effectiveCounts.college1stSemEnrolled}) for 1st Sem; Carry-Over + (College 2nd Sem Rate × {effectiveCounts.college2ndSemEnrolled}) + (SHS 2nd Sem Rate × {effectiveCounts.shs2ndSemEnrolled}) for 2nd Sem.
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              Click any row (or <strong>View Proofs</strong>) to inspect event Disbursement Vouchers, Cashier Return Receipts, and ledger entries.
             </p>
           </div>
 
@@ -1024,32 +1027,27 @@ export default function MiscFeeMaintenance() {
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-50 border-b border-gray-200 text-gray-600 font-bold">
-                <th className="py-2.5 px-3 min-w-[230px]">Particular Name</th>
-                <th className="py-2.5 px-2 text-right">SHS Rate (₱)</th>
-                <th className="py-2.5 px-2 text-right">Col 1st Sem (₱)</th>
-                <th className="py-2.5 px-2 text-right">Col 2nd Sem (₱)</th>
-                <th className="py-2.5 px-3 text-right">1st Sem Revenue</th>
-                <th className="py-2.5 px-3 text-right">1st Sem Carry-Over</th>
-                <th className="py-2.5 px-3 text-right">2nd Sem Revenue</th>
+                <th className="py-2.5 px-3 min-w-[240px]">Particular Name</th>
+                <th className="py-2.5 px-3 text-right">Total Budget ({draftConfig.activeSemester})</th>
                 <th className="py-2.5 px-3 text-right">Disbursed</th>
                 <th className="py-2.5 px-3 text-right">Returned Surplus</th>
                 <th className="py-2.5 px-3 text-right bg-emerald-50/60 text-emerald-900">
-                  Available ({draftConfig.activeSemester})
+                  Available Balance
                 </th>
-                <th className="py-2.5 px-2 text-center">Track</th>
+                <th className="py-2.5 px-3 text-center">Ledger &amp; Proofs</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {displayedBuckets.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="p-10 text-center text-gray-500">
+                  <td colSpan={6} className="p-10 text-center text-gray-500">
                     <div className="flex flex-col items-center gap-2 max-w-md mx-auto">
                       <FileSpreadsheet className="w-8 h-8 text-emerald-600" />
                       <p className="text-sm font-bold text-[#001A4D]">
                         No SAO-Eligible Miscellaneous Fee Particulars Uploaded Yet
                       </p>
                       <p className="text-xs text-gray-500">
-                        Click <strong>Import SHS / College .xlsx</strong> above to upload your Miscellaneous Fee Excel files and fetch SAO-eligible Assessment pools.
+                        Click <strong>Import SHS / Tertiary .xlsx</strong> above to upload your Miscellaneous Fee Excel files and fetch SAO-eligible Assessment pools.
                       </p>
                     </div>
                   </td>
@@ -1057,62 +1055,54 @@ export default function MiscFeeMaintenance() {
               ) : (
                 displayedBuckets.map((b) => {
                 const c = computeBucketBalance(b, effectiveCounts, draftConfig.activeSemester);
+                const rateParts: string[] = [];
+                if ((Number(b.shsRateTY) || 0) > 0) rateParts.push(`SHS ${formatCurrency(b.shsRateTY)}`);
+                if ((Number(b.shs2ndSemRateTY) || 0) > 0) rateParts.push(`SHS 2S ${formatCurrency(b.shs2ndSemRateTY || 0)}`);
+                if ((Number(b.college1stSemRateTY) || 0) > 0) rateParts.push(`Col 1S ${formatCurrency(b.college1stSemRateTY)}`);
+                if ((Number(b.college2ndSemRateTY) || 0) > 0) rateParts.push(`Col 2S ${formatCurrency(b.college2ndSemRateTY)}`);
+
                 return (
                   <tr
                     key={b.id}
                     onClick={() => setInspectedBucket(c)}
                     className="hover:bg-blue-50/40 cursor-pointer transition-colors"
                   >
-                    <td className="p-2.5">
+                    <td className="p-3">
                       <span className="font-bold text-[#001A4D] block">{b.particular}</span>
-                      <span className="text-[10px] text-gray-400 block mt-0.5">
+                      <span className="text-[10px] text-gray-500 block mt-0.5">
                         {b.level !== 'All' ? `Level: ${b.level}` : 'All Levels'}
-                        {b.remarks ? ` • ${b.remarks}` : ''}
+                        {rateParts.length > 0 ? ` • ${rateParts.join(' • ')}` : ''}
                       </span>
                     </td>
-                    <td className="p-2.5 text-right font-mono text-gray-700">
-                      <span>{formatCurrency(b.shsRateTY)}</span>
-                      {(Number(b.shs2ndSemRateTY) || 0) > 0 && (
-                        <span className="block text-[10px] text-blue-700 font-semibold">
-                          2nd: {formatCurrency(b.shs2ndSemRateTY || 0)}
+                    <td className="p-3 text-right font-mono font-bold text-[#001A4D]">
+                      <span>{formatCurrency(c.currentPool)}</span>
+                      {draftConfig.activeSemester === '2nd Semester' && c.carryOverFrom1stSem > 0 && (
+                        <span className="block text-[10px] text-indigo-700 font-sans font-semibold">
+                          incl. {formatCurrency(c.carryOverFrom1stSem)} 1st Sem carry-over
                         </span>
                       )}
                     </td>
-                    <td className="p-2.5 text-right font-mono text-gray-700">
-                      {formatCurrency(b.college1stSemRateTY)}
-                    </td>
-                    <td className="p-2.5 text-right font-mono text-gray-700">
-                      {formatCurrency(b.college2ndSemRateTY)}
-                    </td>
-                    <td className="p-2.5 text-right font-mono font-semibold text-gray-700">
-                      {formatCurrency(c.pool1stSem)}
-                    </td>
-                    <td className="p-2.5 text-right font-mono text-indigo-700 font-semibold">
-                      {formatCurrency(c.carryOverFrom1stSem)}
-                    </td>
-                    <td className="p-2.5 text-right font-mono font-semibold text-gray-700">
-                      {formatCurrency(c.pool2ndSem)}
-                    </td>
-                    <td className="p-2.5 text-right font-mono text-amber-800">
+                    <td className="p-3 text-right font-mono font-semibold text-amber-800">
                       {formatCurrency(c.currentDisbursed)}
                     </td>
-                    <td className="p-2.5 text-right font-mono text-purple-800">
+                    <td className="p-3 text-right font-mono font-semibold text-purple-800">
                       {formatCurrency(c.currentReturnedSurplus)}
                     </td>
-                    <td className="p-2.5 text-right font-mono font-black text-emerald-800 bg-emerald-50/40">
+                    <td className="p-3 text-right font-mono font-black text-emerald-800 bg-emerald-50/40">
                       {formatCurrency(c.currentAvailable)}
                     </td>
-                    <td className="p-2.5 text-center">
+                    <td className="p-3 text-center">
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           setInspectedBucket(c);
                         }}
-                        className="p-1.5 rounded-lg text-blue-700 hover:bg-blue-100 transition-colors cursor-pointer"
-                        title="Inspect Revenue Formula & Ledger Transactions"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-[#001A4D] text-[11px] font-bold transition-colors cursor-pointer"
+                        title="View Disbursement Vouchers, Return Proofs & Ledger Transactions"
                       >
-                        <Eye className="w-4 h-4" />
+                        <Eye className="w-3.5 h-3.5 text-[#0E4EBD]" />
+                        <span>View Proofs</span>
                       </button>
                     </td>
                   </tr>

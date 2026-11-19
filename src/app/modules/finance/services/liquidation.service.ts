@@ -41,14 +41,21 @@ import { resolveSignatoryLabel, canSignatoryApproveDocument } from '../../signat
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 import { createNotification } from '../../notifications';
 import { autoArchiveApprovedLiquidation } from '../../reports/services/report-archive.service';
-import { buildLiquidationApprovalNotificationPayload, isSasOwnedLiquidation } from '../utils/liquidation-settlement.utils';
+import {
+  buildLiquidationApprovalNotificationPayload,
+  computeLiveStudentCollectionReimbursementCapacity,
+  isSasOwnedLiquidation,
+  isStudentCollectionFunding,
+} from '../utils/liquidation-settlement.utils';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import {
   getCachedWorkflowSettings,
   getDefaultWorkflowSettings,
   getBuiltinDefaultWorkflow,
+  filterTemplateStepsBySignatoryScope,
 } from '../../workflow/services/approval-workflow.service';
+import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 
 export const LIQUIDATIONS_COLLECTION = 'liquidations';
 
@@ -63,20 +70,20 @@ export async function generateDefaultLiquidationChain(
   providedSignatories?: InstitutionalSignatory[],
   isSasCreator = false
 ): Promise<LiquidationApprovalStep[]> {
-  let activeSignatories = providedSignatories;
+  let allSignatories = providedSignatories;
 
-  if (!activeSignatories || activeSignatories.length === 0) {
+  if (!allSignatories || allSignatories.length === 0) {
     try {
-      const snap = await getDocs(query(collection(db, SIGNATORIES_COLLECTION), where('isActive', '!=', false)));
-      activeSignatories = snap.docs.map((d) => ({ id: d.id, ...d.data() } as InstitutionalSignatory));
+      const snap = await getDocs(collection(db, SIGNATORIES_COLLECTION));
+      allSignatories = snap.docs.map((d) => ({ id: d.id, ...d.data() } as InstitutionalSignatory));
     } catch (e) {
       console.warn('[generateDefaultLiquidationChain] Could not fetch signatories:', e);
-      activeSignatories = [];
+      allSignatories = [];
     }
   }
 
-  // Filter out inactive signatories and those designated for proposals only
-  activeSignatories = (activeSignatories || []).filter(
+  // Filter out inactive signatories and those not eligible for Financial Liquidations
+  const activeSignatories = (allSignatories || []).filter(
     (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'liquidation')
   );
 
@@ -95,19 +102,35 @@ export async function generateDefaultLiquidationChain(
 
   let configuredTemplate = workflowSettings ? workflowSettings[pipelineKey] : undefined;
 
-  // Fallback: If target role's FL has no assigned signers, check if the other role's FL was configured
+  // Fallback: If target role's FL has no assigned eligible signers, check if the other role's FL was configured
   const hasAssignedSigners = (steps?: any[]) =>
     Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
 
-  if (!hasAssignedSigners(configuredTemplate)) {
+  const rawPrimaryFiltered = Array.isArray(configuredTemplate)
+    ? filterTemplateStepsBySignatoryScope(configuredTemplate, allSignatories, 'liquidation', {
+        normalize: true,
+      })
+    : [];
+
+  if (hasAssignedSigners(rawPrimaryFiltered)) {
+    configuredTemplate = rawPrimaryFiltered;
+  } else {
     const alternateKey = isSasCreator ? 'adviser_fl' : 'admin_fl';
-    if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
-      configuredTemplate = workflowSettings?.[alternateKey];
-    }
+    const altFiltered = Array.isArray(workflowSettings?.[alternateKey])
+      ? filterTemplateStepsBySignatoryScope(workflowSettings[alternateKey], allSignatories, 'liquidation', {
+          normalize: true,
+        })
+      : [];
+    configuredTemplate = hasAssignedSigners(altFiltered) ? altFiltered : rawPrimaryFiltered;
   }
 
   if (!configuredTemplate || configuredTemplate.length === 0) {
-    configuredTemplate = getBuiltinDefaultWorkflow(pipelineKey);
+    configuredTemplate = filterTemplateStepsBySignatoryScope(
+      getBuiltinDefaultWorkflow(pipelineKey),
+      allSignatories,
+      'liquidation',
+      { normalize: true }
+    );
   }
 
   if (configuredTemplate && configuredTemplate.length > 0) {
@@ -115,15 +138,20 @@ export async function generateDefaultLiquidationChain(
     const usedIds = new Set<string>();
 
     configuredTemplate.forEach((tpl: any, idx: number) => {
-      // 1. Try to find live matched signatory from maintenance by UID or email
+      const hasExplicitSigner = Boolean(
+        (tpl.signatoryUid && String(tpl.signatoryUid).trim()) ||
+        (tpl.signatoryEmail && String(tpl.signatoryEmail).trim())
+      );
+
+      // 1. Try to find live matched signatory from eligible maintenance roster by UID or email
       let matched = activeSignatories.find(
         (s) =>
-          (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+          (tpl.signatoryUid && (s.id === tpl.signatoryUid || s.uid === tpl.signatoryUid)) ||
           (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
       );
 
-      // 2. Fallback to role matching if no UID match and template only had role
-      if (!matched && tpl.role) {
+      // 2. Fallback to role matching ONLY if template had no explicit signatory assigned
+      if (!matched && !hasExplicitSigner && tpl.role) {
         matched = activeSignatories.find(
           (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
         );
@@ -146,11 +174,15 @@ export async function generateDefaultLiquidationChain(
         };
       }
 
+      // Strictly skip template steps pinned to a disallowed/inactive/missing explicit signatory
+      if (hasExplicitSigner && !matched) {
+        return;
+      }
+
       if (matched) {
         usedIds.add(matched.id);
       }
 
-      // Preserve step properties from template saved in settings if live matching is absent
       const resolvedUid = matched?.id || tpl.signatoryUid || `liq_step_${Date.now()}_${idx + 1}`;
       const resolvedName = matched?.name || tpl.signatoryName || tpl.roleTitle || 'Institutional Signatory';
       const resolvedEmail = matched?.email || tpl.signatoryEmail || '';
@@ -182,7 +214,7 @@ export async function generateDefaultLiquidationChain(
     });
 
     if (chain.length > 0) {
-      return chain;
+      return normalizeApprovalStages(chain);
     }
   }
 
@@ -373,7 +405,11 @@ export const createLiquidationReport = async (
 ): Promise<string> => {
   // ── STRICT 1:1:1 LIFECYCLE INVARIANT ──
   // An activity proposal can have at most ONE Financial Liquidation.
-  let eventMetadata: { schoolYear?: string; semester?: string; semesterId?: string } = {};
+  let eventMetadata: {
+    schoolYear?: string;
+    semester?: string;
+    semesterId?: string;
+  } = {};
   if (data.eventId) {
     // 1. Check existing liquidations in Firestore for this eventId
     const existingLiqSnap = await getDocs(
@@ -782,7 +818,7 @@ export const submitLiquidationReport = async (
     console.warn('[submitLiquidationReport] Event sync notice:', evtErr);
   }
 
-  // Real-time submission notification to SAS Admin
+  // Real-time submission notification to SAS Admin / Stage 1 Signatories
   try {
     const orgName = data?.organizationName || data?.organizationId || 'Student Organization';
     const eventName = data?.eventTitle || (data as any)?.eventName || 'Completed Event';
@@ -1144,8 +1180,13 @@ export const approveLiquidationReport = async (
       ? docData.cashierSettlementProofs
       : [],
   };
+  const isClubStudentContribOverspent =
+    isClubDirectLedgerSettlement &&
+    String((docData as any)?.fundingSource || '').trim().toLowerCase() === 'student_contributions' &&
+    rawVariance < -0.009;
+
   const settlementFields = resolvePostApprovalSettlement(mergedForSettlement);
-  if (isClubDirectLedgerSettlement) {
+  if (isClubDirectLedgerSettlement && !isClubStudentContribOverspent) {
     settlementFields.cashierSettlementStatus = 'verified';
   }
 
@@ -1176,16 +1217,13 @@ export const approveLiquidationReport = async (
         liquidationReportId: id,
         updatedAt: serverTimestamp(),
       }));
-      if ((docData as any)?.isCancellationLiquidation) {
-        await finalizeCancelledEventFromLiquidation(targetEventId, mergedApprovedData);
-      }
     } catch (e) {
       console.warn('[approveLiquidationReport] Event sync notice:', e);
     }
   }
 
-  // Post to ledger immediately for Club internal ledger liquidations (no Campus Cashier needed) or exact match (variance === 0)
-  if (isClubDirectLedgerSettlement || Math.abs(rawVariance) < 0.01) {
+  // Post to ledger immediately for Club internal ledger liquidations (except overspent Student Collections) or exact match (variance === 0)
+  if ((isClubDirectLedgerSettlement && !isClubStudentContribOverspent) || Math.abs(rawVariance) < 0.01) {
     try {
       await postLiquidationToLedger(id, mergedApprovedData, adminUserId);
       await settlePreLiquidationExcessCollectionsIfAny(id, mergedApprovedData, adminUserId);
@@ -1202,25 +1240,23 @@ export const approveLiquidationReport = async (
   }
 
   // Notify maker clearly if there is a Returnable Surplus, Reimbursement Deficit, or Exact Match
-  if (!(docData as any)?.isCancellationLiquidation) {
-    try {
-      const notif = buildLiquidationApprovalNotificationPayload(id, { ...mergedApprovedData, ...settlementFields });
-      await createNotification({
-        recipientRole: notif.recipientRole,
-        targetOrgId: notif.targetOrgId,
-        targetOrgName: notif.targetOrgName,
-        type: 'document_approved',
-        category: 'financial_liquidation',
-        title: notif.title,
-        message: notif.message,
-        resourceId: id,
-        resourceType: 'liquidation',
-        actionRoute: notif.actionRoute,
-        senderName: options?.reviewerName || 'SAS Adviser',
-      });
-    } catch (notifErr) {
-      console.warn('[approveLiquidationReport] Approval notification warning:', notifErr);
-    }
+  try {
+    const notif = buildLiquidationApprovalNotificationPayload(id, { ...mergedApprovedData, ...settlementFields });
+    await createNotification({
+      recipientRole: notif.recipientRole,
+      targetOrgId: notif.targetOrgId,
+      targetOrgName: notif.targetOrgName,
+      type: 'document_approved',
+      category: 'financial_liquidation',
+      title: notif.title,
+      message: notif.message,
+      resourceId: id,
+      resourceType: 'liquidation',
+      actionRoute: notif.actionRoute,
+      senderName: options?.reviewerName || 'SAS Adviser',
+    });
+  } catch (notifErr) {
+    console.warn('[approveLiquidationReport] Approval notification warning:', notifErr);
   }
 };
 
@@ -1527,10 +1563,19 @@ export async function endorseLiquidationStep(
       data.createdByRole === 'sas_admin' ||
       !dOrgLower ||
       ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(dOrgLower);
+    const endorseVariance =
+      Number(
+        data.surplusOrDeficit ??
+          ((data.allocatedBudget ?? 0) - (data.totalActualSpending ?? 0))
+      ) || 0;
+    const endorseFundingSrc = String((data as any).fundingSource || '').trim().toLowerCase();
+    const isClubStudentContribOverspent =
+      !isSasLiqDoc && endorseFundingSrc === 'student_contributions' && endorseVariance < -0.009;
     if (
       !isSasLiqDoc &&
-      ((data as any).fundingSource === 'organization_funds' ||
-        (data as any).fundingSource === 'student_contributions')
+      (endorseFundingSrc === 'organization_funds' ||
+        endorseFundingSrc === 'student_contributions') &&
+      !isClubStudentContribOverspent
     ) {
       rawUpdates.cashierSettlementStatus = 'verified';
     }
@@ -1548,15 +1593,12 @@ export async function endorseLiquidationStep(
         liquidationRefNumber: data.referenceNo || '',
         updatedAt: serverTimestamp(),
       }));
-      if (isFullyApproved && !wasAlreadyApproved && (data as any).isCancellationLiquidation) {
-        await finalizeCancelledEventFromLiquidation(data.eventId, data);
-      }
     } catch (evtErr) {
       console.warn('[endorseLiquidationStep] Event sync note:', evtErr);
     }
   }
 
-  // If newly approved, post immediately for Club internal ledger liquidations or exact match (variance === 0)
+  // If newly approved, post immediately for Club internal ledger liquidations (except overspent Student Collections) or exact match (variance === 0)
   if (isFullyApproved && !wasAlreadyApproved) {
     const variance =
       Number(
@@ -1569,12 +1611,15 @@ export async function endorseLiquidationStep(
       data.createdByRole === 'sas_admin' ||
       !dOrgLower ||
       ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(dOrgLower);
+    const endorseSrcLower = String((data as any).fundingSource || '').trim().toLowerCase();
     const isClubDirect =
       !isSasLiqDoc &&
-      ((data as any).fundingSource === 'organization_funds' ||
-        (data as any).fundingSource === 'student_contributions');
+      (endorseSrcLower === 'organization_funds' ||
+        endorseSrcLower === 'student_contributions');
+    const isClubStudentContribOverspent =
+      isClubDirect && endorseSrcLower === 'student_contributions' && variance < -0.009;
 
-    if (isClubDirect || Math.abs(variance) < 0.01) {
+    if ((isClubDirect && !isClubStudentContribOverspent) || Math.abs(variance) < 0.01) {
       try {
         await postLiquidationToLedger(liquidationId, { ...data, ...rawUpdates }, signerUid);
         await settlePreLiquidationExcessCollectionsIfAny(liquidationId, { ...data, ...rawUpdates }, signerUid);
@@ -1589,25 +1634,23 @@ export async function endorseLiquidationStep(
       console.warn('[endorseLiquidationStep] Approved report storage notice:', archErr);
     }
 
-    if (!(data as any)?.isCancellationLiquidation) {
-      try {
-        const notif = buildLiquidationApprovalNotificationPayload(liquidationId, { ...data, ...rawUpdates });
-        await createNotification({
-          recipientRole: notif.recipientRole,
-          targetOrgId: notif.targetOrgId,
-          targetOrgName: notif.targetOrgName,
-          type: 'document_approved',
-          category: 'financial_liquidation',
-          title: notif.title,
-          message: notif.message,
-          resourceId: liquidationId,
-          resourceType: 'liquidation',
-          actionRoute: notif.actionRoute,
-          senderName: signatory.name || 'Institutional Signatory',
-        });
-      } catch (notifErr) {
-        console.warn('[endorseLiquidationStep] Approval notification warning:', notifErr);
-      }
+    try {
+      const notif = buildLiquidationApprovalNotificationPayload(liquidationId, { ...data, ...rawUpdates });
+      await createNotification({
+        recipientRole: notif.recipientRole,
+        targetOrgId: notif.targetOrgId,
+        targetOrgName: notif.targetOrgName,
+        type: 'document_approved',
+        category: 'financial_liquidation',
+        title: notif.title,
+        message: notif.message,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: notif.actionRoute,
+        senderName: signatory.name || 'Institutional Signatory',
+      });
+    } catch (notifErr) {
+      console.warn('[endorseLiquidationStep] Approval notification warning:', notifErr);
     }
   }
 
@@ -1833,6 +1876,25 @@ async function postLiquidationToLedger(
       const expCollId = `${liquidationId}_org_contrib_expense`;
       const qDupExp = query(orgLedgerRef, where('collectionId', '==', expCollId));
       if ((await getDocs(qDupExp)).empty) {
+        if (netAmount < -0.009) {
+          const orgLedgerSnap = await getDocs(
+            query(orgLedgerRef, where('organizationId', '==', meta.organizationId))
+          );
+          const orgDocs = orgLedgerSnap.docs.map((d) => d.data() as any);
+          const netOrgBalance = computeLiveStudentCollectionReimbursementCapacity({
+            isSasOwned: false,
+            eventId,
+            liquidationId,
+            allocatedBudget: 0,
+            orgLedgerEntries: orgDocs,
+          });
+          if (netOrgBalance + 0.009 < actualSpent) {
+            const shortfall = Math.max(0, Math.round((actualSpent - netOrgBalance) * 100) / 100);
+            throw new Error(
+              `Insufficient Student Collections funds to reimburse ₱${Math.abs(netAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} overspend (Shortfall: ₱${shortfall.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). Collect remaining student contributions first before proceeding with reimbursement.`
+            );
+          }
+        }
         await addDoc(orgLedgerRef, {
           organizationId: meta.organizationId,
           semesterId,
@@ -2209,17 +2271,12 @@ async function postLiquidationToLedger(
  */
 function resolvePostApprovalSettlement(data: Partial<LiquidationDocument> | any): Record<string, any> {
   const surplusOrDeficit = Number(data?.surplusOrDeficit ?? 0);
-  const amountToReturn = Number(data?.amountToReturn ?? 0);
   const existingProofs = Array.isArray(data?.cashierSettlementProofs) ? data.cashierSettlementProofs : [];
-  const isCancellation = Boolean(data?.isCancellationLiquidation);
 
-  const needsCashierSettlement =
-    isCancellation ? amountToReturn > 0 || surplusOrDeficit !== 0 : surplusOrDeficit !== 0;
+  const needsCashierSettlement = surplusOrDeficit !== 0;
 
-  let cashierSettlementType: 'surplus_return' | 'deficit_reimbursement' | 'cancellation_return' | undefined;
-  if (isCancellation) {
-    cashierSettlementType = 'cancellation_return';
-  } else if (surplusOrDeficit > 0) {
+  let cashierSettlementType: 'surplus_return' | 'deficit_reimbursement' | undefined;
+  if (surplusOrDeficit > 0) {
     cashierSettlementType = 'surplus_return';
   } else if (surplusOrDeficit < 0) {
     cashierSettlementType = 'deficit_reimbursement';
@@ -2237,65 +2294,136 @@ function resolvePostApprovalSettlement(data: Partial<LiquidationDocument> | any)
 }
 
 /**
- * Finalizes a parent event from `cancellation_pending` to `cancelled` once its
- * Cancellation Financial Liquidation is approved by the FL signatory pipeline.
+ * Validates that overspent Student Collections liquidations never tap Miscellaneous Fee buckets
+ * and never proceed with reimbursement when live collected funds cannot absorb the overspend.
  */
-async function finalizeCancelledEventFromLiquidation(
-  eventId: string,
-  liqData: Partial<LiquidationDocument> | any
-): Promise<void> {
-  const eventUpdates = sanitizeFirestorePayload({
-    status: 'cancelled',
-    proposalStatus: 'cancelled',
-    lifecycleStatus: 'cancelled',
-    isCancelled: true,
-    isApproved: false,
-    cancellationStatus: 'approved',
-    cancelledAt: serverTimestamp(),
-    enableQRTickets: false,
-    scannerActivationCode: '',
-    updatedAt: serverTimestamp(),
+async function assertStudentCollectionReimbursementSufficient(
+  liquidationId: string,
+  data: Partial<LiquidationDocument> | any,
+  deficitAmount: number,
+  candidateDeficitRows?: DeficitDeductionAllocation[],
+  performerName = 'SAS Admin'
+): Promise<{
+  isStudentCollection: boolean;
+  isSasOwner: boolean;
+  liveAvailable: number;
+  meta: Awaited<ReturnType<typeof resolveLiquidationFundingMeta>>;
+}> {
+  const meta = await resolveLiquidationFundingMeta(data);
+  const allocs = await resolveLiquidationSourceAllocations(data);
+  const isStudentCollection = isStudentCollectionFunding({
+    fundingSource: meta.effectiveFundingSource,
+    allocations: allocs,
   });
 
-  const targetRef = doc(db, EVENTS_COLLECTION, eventId);
-  try {
-    await updateDoc(targetRef, eventUpdates);
-  } catch (err) {
-    console.warn('[finalizeCancelledEventFromLiquidation] activities update warning:', err);
+  if (!isStudentCollection) {
+    return { isStudentCollection: false, isSasOwner: false, liveAvailable: 0, meta };
   }
 
-  try {
-    const legacyRef = doc(db, 'events', eventId);
-    const legacySnap = await getDoc(legacyRef);
-    if (legacySnap.exists()) {
-      await updateDoc(legacyRef, eventUpdates);
+  const invalidRow = (candidateDeficitRows || []).find(
+    (r) => r.fundType === 'misc_fee' || r.isSupplementalSource === true
+  );
+  if (invalidRow) {
+    throw new Error(
+      `Miscellaneous Fee or supplemental bucket "${invalidRow.bucketName}" cannot be used for a Student Collections activity. Reimbursement must come solely from Student Collections funds.`
+    );
+  }
+
+  const orgLower = meta.organizationId.toLowerCase();
+  const isSasOwner =
+    meta.effectiveFundingSource === 'retained_sao_fund' ||
+    !meta.organizationId ||
+    ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgLower) ||
+    data?.createdByRole === 'admin';
+  const allocatedBudget = Number(data?.allocatedBudget ?? data?.amountAdvanced ?? 0) || 0;
+
+  let liveAvailable = 0;
+
+  if (isSasOwner) {
+    if (data?.eventId) {
+      try {
+        const { reconcileSasContributionEventToRetainedFund } = await import('./payable.service');
+        await reconcileSasContributionEventToRetainedFund(data.eventId, performerName);
+      } catch (syncErr) {
+        console.warn('[assertStudentCollectionReimbursementSufficient] SAS sync warning:', syncErr);
+      }
     }
-  } catch (err) {
-    console.warn('[finalizeCancelledEventFromLiquidation] legacy events update warning:', err);
+
+    const {
+      RETAINED_FUNDS_COLLECTION,
+      RETAINED_FUND_LEDGER_COLLECTION,
+      SAO_RETAINED_BUCKET_ID,
+      buildScopedRetainedBucketId,
+      normalizeRetainedSchoolYear,
+    } = await import('./retained-fund.service');
+
+    let effectiveSy = normalizeRetainedSchoolYear(meta.schoolYear);
+    if (!effectiveSy) {
+      try {
+        const ctx = await getActiveMiscFeeAcademicContext();
+        effectiveSy = normalizeRetainedSchoolYear(ctx?.schoolYear);
+      } catch {}
+    }
+
+    const scopedId = effectiveSy
+      ? buildScopedRetainedBucketId(SAO_RETAINED_BUCKET_ID, effectiveSy)
+      : SAO_RETAINED_BUCKET_ID;
+    let saoFundSnap = await getDoc(doc(db, RETAINED_FUNDS_COLLECTION, scopedId));
+    if (!saoFundSnap.exists() && scopedId !== SAO_RETAINED_BUCKET_ID) {
+      const legacySnap = await getDoc(doc(db, RETAINED_FUNDS_COLLECTION, SAO_RETAINED_BUCKET_ID));
+      const legacyData = legacySnap.exists() ? (legacySnap.data() as any) : null;
+      if (
+        legacyData &&
+        (!legacyData.migratedToSchoolYear ||
+          normalizeRetainedSchoolYear(legacyData.migratedToSchoolYear) === effectiveSy)
+      ) {
+        saoFundSnap = legacySnap;
+      }
+    }
+    const rawSaoAvailable = saoFundSnap.exists()
+      ? Math.max(0, Number((saoFundSnap.data() as any)?.availableBalance) || 0)
+      : 0;
+
+    let retainedLedgerEntries: Array<{ eventId?: string; type?: string; amount?: number }> = [];
+    if (data?.eventId) {
+      const lSnap = await getDocs(
+        query(collection(db, RETAINED_FUND_LEDGER_COLLECTION), where('eventId', '==', data.eventId))
+      );
+      retainedLedgerEntries = lSnap.docs.map((d) => d.data() as any);
+    }
+
+    liveAvailable = computeLiveStudentCollectionReimbursementCapacity({
+      isSasOwned: true,
+      eventId: data?.eventId || null,
+      liquidationId,
+      allocatedBudget,
+      saoAvailableBalance: rawSaoAvailable,
+      retainedLedgerEntries,
+    });
+  } else {
+    const orgLedgerSnap = await getDocs(
+      query(collection(db, 'organization_ledger'), where('organizationId', '==', meta.organizationId))
+    );
+    const orgDocs = orgLedgerSnap.docs.map((d) => d.data() as any);
+    liveAvailable = computeLiveStudentCollectionReimbursementCapacity({
+      isSasOwned: false,
+      eventId: data?.eventId || null,
+      liquidationId,
+      allocatedBudget,
+      orgLedgerEntries: orgDocs,
+    });
   }
 
-  // Notify organization that cancellation + liquidation are approved and Cashier proof can now be uploaded if needed
-  try {
-    const amountToReturn = Number(liqData?.amountToReturn ?? Math.max(0, Number(liqData?.surplusOrDeficit || 0)));
-    await createNotification({
-      recipientRole: 'officer',
-      targetOrgId: liqData?.organizationId || '',
-      targetOrgName: liqData?.organizationName || 'Student Organization',
-      type: 'document_approved',
-      category: 'financial_liquidation',
-      title: `Cancellation & Liquidation Approved: ${liqData?.eventTitle || 'Activity'}`,
-      message:
-        amountToReturn > 0
-          ? `Your activity cancellation and financial liquidation were approved. Please return ₱${amountToReturn.toLocaleString()} to the Cashier and upload the Cashier receipt proof.`
-          : `Your activity cancellation and financial liquidation were approved. The activity is now officially cancelled.`,
-      resourceId: eventId,
-      resourceType: 'event',
-      actionRoute: '/officer/liquidation',
-      senderName: 'Signatory Pipeline',
-    });
-  } catch (notifErr) {
-    console.warn('[finalizeCancelledEventFromLiquidation] Notification warning:', notifErr);
+  if (liveAvailable + 0.009 < deficitAmount) {
+    const shortfall = Math.max(0, Math.round((deficitAmount - liveAvailable) * 100) / 100);
+    const fmt = (n: number) =>
+      `₱${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    throw new Error(
+      `Insufficient Student Collections funds to reimburse ${fmt(deficitAmount)} overspend (Available: ${fmt(liveAvailable)}, Shortfall: ${fmt(shortfall)}). Collect remaining student contributions first before proceeding with reimbursement.`
+    );
   }
+
+  return { isStudentCollection: true, isSasOwner, liveAvailable, meta };
 }
 
 /**
@@ -2330,19 +2458,30 @@ export async function attachCashierSettlementProofs(
     Number(data.surplusOrDeficit ?? ((data.allocatedBudget ?? 0) - (data.totalActualSpending ?? 0))) || 0;
 
   let validatedDeficitRows: DeficitDeductionAllocation[] | undefined;
-  if (netVariance < -0.009 && Array.isArray(options?.deficitDeductionAllocations)) {
-    const defCheck = validateDeficitDeductionAllocations({
-      totalDeficit: Math.abs(netVariance),
-      rows: options.deficitDeductionAllocations,
-    });
-    if (!defCheck.isValid) {
-      const firstErr =
-        Object.values(defCheck.perBucketErrors)[0] ||
-        defCheck.summaryError ||
-        'Invalid overspend bucket coverage.';
-      throw new Error(firstErr);
+  if (netVariance < -0.009) {
+    const totalDeficit = Math.abs(netVariance);
+    const scCheck = await assertStudentCollectionReimbursementSufficient(
+      liquidationId,
+      data,
+      totalDeficit,
+      options?.deficitDeductionAllocations,
+      actor.name
+    );
+    if (Array.isArray(options?.deficitDeductionAllocations)) {
+      const defCheck = validateDeficitDeductionAllocations({
+        totalDeficit,
+        rows: options.deficitDeductionAllocations,
+        mode: scCheck.isStudentCollection ? 'student_collections' : 'misc_or_mixed',
+      });
+      if (!defCheck.isValid) {
+        const firstErr =
+          Object.values(defCheck.perBucketErrors)[0] ||
+          defCheck.summaryError ||
+          'Invalid overspend bucket coverage.';
+        throw new Error(firstErr);
+      }
+      validatedDeficitRows = options.deficitDeductionAllocations;
     }
-    validatedDeficitRows = options.deficitDeductionAllocations;
   }
 
   let validatedSurplusRows: SurplusReturnAllocation[] | undefined;
@@ -2635,12 +2774,36 @@ export async function verifyCashierSettlementProofs(
       );
     }
 
-    const candidateDeficits =
+    let candidateDeficits =
       Array.isArray(options?.deficitDeductionAllocations) && options.deficitDeductionAllocations.length > 0
         ? options.deficitDeductionAllocations
         : Array.isArray(data.deficitDeductionAllocations) && data.deficitDeductionAllocations.length > 0
           ? data.deficitDeductionAllocations
           : [];
+
+    const scCheck = await assertStudentCollectionReimbursementSufficient(
+      liquidationId,
+      data,
+      totalDeficit,
+      candidateDeficits,
+      actor.name
+    );
+
+    if (scCheck.isStudentCollection && candidateDeficits.length === 0) {
+      candidateDeficits = [
+        {
+          bucketId: scCheck.isSasOwner ? 'SAO_CAMPUS' : `ORG_${meta.organizationId}`,
+          bucketName: scCheck.isSasOwner
+            ? 'SAS Student Contribution & Retained Funds'
+            : `${meta.organizationName || 'Organization'} Student Collections Fund`,
+          fundType: 'student_contribution_retained',
+          originalAllocatedAmount: Number(data.allocatedBudget ?? 0),
+          availableBalance: scCheck.liveAvailable,
+          deductAmount: totalDeficit,
+          isSupplementalSource: false,
+        },
+      ];
+    }
 
     if (candidateDeficits.length === 0) {
       throw new Error(
@@ -2651,6 +2814,7 @@ export async function verifyCashierSettlementProofs(
     const defCheck = validateDeficitDeductionAllocations({
       totalDeficit,
       rows: candidateDeficits,
+      mode: scCheck.isStudentCollection ? 'student_collections' : 'misc_or_mixed',
     });
     if (!defCheck.isValid) {
       const firstErr =

@@ -388,10 +388,12 @@ export async function syncProposalToEventsCollection(
         studentContributionFilter:
           (proposal as any).studentContributionFilter ?? existingData.studentContributionFilter ?? null,
         studentPayablesEnabled:
-          (proposal as any).studentPayablesEnabled !== undefined
-            ? Boolean((proposal as any).studentPayablesEnabled)
-            : (proposal.fundingSource === 'student_contributions' && Number((proposal as any).studentContributionRate || 0) > 0) ||
-              Boolean(existingData.studentPayablesEnabled),
+          proposal.fundingSource === 'student_contributions'
+            ? ((proposal as any).studentPayablesEnabled !== undefined
+                ? Boolean((proposal as any).studentPayablesEnabled)
+                : Number((proposal as any).studentContributionRate || 0) > 0 ||
+                  Boolean(existingData.studentPayablesEnabled))
+            : false,
         suggestedFeePerStudent:
           (proposal as any).suggestedFeePerStudent ??
           (proposal as any).studentContributionRate ??
@@ -1557,9 +1559,9 @@ export async function endorseProposal(
       Number((data as any).suggestedFeePerStudent) ||
       Number((data as any).feeAmount) ||
       0;
+    const isStudentContribFunded = effectiveFunding === 'student_contributions' && contribRate > 0;
     const shouldGeneratePayables =
-      (effectiveFunding === 'student_contributions' && contribRate > 0) ||
-      Boolean((data as any).studentPayablesEnabled && contribRate > 0) ||
+      isStudentContribFunded ||
       Boolean((data as any).enableQRTickets === true || (data as any).enableQR === true);
 
     if (shouldGeneratePayables) {
@@ -1572,9 +1574,7 @@ export async function endorseProposal(
             proposalStatus: 'approved',
             isApproved: true,
             fundingSource: effectiveFunding,
-            studentPayablesEnabled:
-              Boolean((data as any).studentPayablesEnabled) ||
-              (effectiveFunding === 'student_contributions' && contribRate > 0),
+            studentPayablesEnabled: isStudentContribFunded,
             feeAmount: contribRate,
           },
           proposalId,

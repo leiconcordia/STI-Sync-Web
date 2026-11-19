@@ -195,9 +195,10 @@ export default function PublishStudentFeedModal({
           studentContributionTargetCount: (activity as any).studentContributionTargetCount ?? null,
           studentContributionFilter: (activity as any).studentContributionFilter ?? null,
           studentPayablesEnabled:
-            Boolean((activity as any).studentPayablesEnabled) ||
-            ((activity as any).fundingSource === 'student_contributions' &&
-              Number((activity as any).studentContributionRate || 0) > 0),
+            (activity as any).fundingSource === 'student_contributions'
+              ? Number((activity as any).studentContributionRate || 0) > 0 ||
+                Boolean((activity as any).studentPayablesEnabled)
+              : !(activity as any).fundingSource && Boolean((activity as any).studentPayablesEnabled),
           suggestedFeePerStudent:
             (activity as any).suggestedFeePerStudent ??
             (activity as any).studentContributionRate ??
@@ -213,15 +214,16 @@ export default function PublishStudentFeedModal({
         console.warn('[PublishStudentFeedModal] Failed to mirror to events collection:', evtErr);
       }
 
-      // Ensure student payables exist in /payables for Student Contribution or fee-enabled events when published to mobile
+      // Ensure student payables exist in /payables for Student Contribution events (or legacy fee events without explicit fundingSource)
       const feeRate =
         Number((activity as any).studentContributionRate) ||
         Number((activity as any).suggestedFeePerStudent) ||
         Number((activity as any).feeAmount) ||
         0;
+      const isContribFunded = (activity as any).fundingSource === 'student_contributions';
       if (
-        ((activity as any).fundingSource === 'student_contributions' && feeRate > 0) ||
-        Boolean((activity as any).studentPayablesEnabled && feeRate > 0)
+        (isContribFunded && feeRate > 0) ||
+        (!(activity as any).fundingSource && Boolean((activity as any).studentPayablesEnabled && feeRate > 0))
       ) {
         try {
           await generatePayablesForEvent(

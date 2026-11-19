@@ -134,8 +134,8 @@ export function StudentRegistry() {
           <button
             onClick={() => handleNavigate('active')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'active'
-                ? 'bg-[#001A4D] text-white shadow-sm'
-                : 'text-gray-700 hover:bg-gray-100'
+              ? 'bg-[#001A4D] text-white shadow-sm'
+              : 'text-gray-700 hover:bg-gray-100'
               }`}
           >
             <UserCheck className="w-4 h-4 text-emerald-400" />
@@ -149,8 +149,8 @@ export function StudentRegistry() {
           <button
             onClick={() => handleNavigate('inactive')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'inactive'
-                ? 'bg-[#001A4D] text-white shadow-sm'
-                : 'text-gray-700 hover:bg-gray-100'
+              ? 'bg-[#001A4D] text-white shadow-sm'
+              : 'text-gray-700 hover:bg-gray-100'
               }`}
           >
             <UserX className="w-4 h-4 text-amber-400" />
@@ -166,8 +166,8 @@ export function StudentRegistry() {
           <button
             onClick={() => handleNavigate('archived')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all cursor-pointer ${activeView === 'archived'
-                ? 'bg-[#001A4D] text-white shadow-sm'
-                : 'text-gray-700 hover:bg-gray-100'
+              ? 'bg-[#001A4D] text-white shadow-sm'
+              : 'text-gray-700 hover:bg-gray-100'
               }`}
           >
             <Archive className="w-4 h-4 text-purple-400" />
@@ -181,16 +181,7 @@ export function StudentRegistry() {
           </button>
         </div>
 
-        <button
-          onClick={() => handleNavigate('dashboard')}
-          className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all cursor-pointer ${activeView === 'dashboard'
-              ? 'bg-blue-50 text-[#001A4D] font-bold border border-blue-200'
-              : 'text-gray-500 hover:bg-gray-50'
-            }`}
-        >
-          <LayoutDashboard className="w-4 h-4" />
-          <span>Analytics Overview</span>
-        </button>
+
       </div>
 
       {/* Main Content Area */}

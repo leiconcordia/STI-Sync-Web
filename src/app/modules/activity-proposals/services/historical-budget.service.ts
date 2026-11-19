@@ -6,7 +6,7 @@
  * activities and auto-populate the "Last Year's Actual (PHP)" financial column.
  */
 
-import { collection, getDocs, query, limit } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, limit } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { FinancialProjections, FinancialLineItem } from '../types/proposal.types';
 import { calculateFinancialTotals } from '../utils/proposal-calculations';
@@ -164,6 +164,73 @@ export async function searchHistoricalActivities(
 }
 
 /**
+ * Hydrate a historical activity match with full proposal financialProjections / budgetItems
+ * from `activity_proposals/{id}` when the summary event document lacks them.
+ */
+export async function hydrateHistoricalMatch(
+  historical: HistoricalActivityMatch,
+  preFetchedProposal?: any
+): Promise<HistoricalActivityMatch> {
+  const hasExistingProjections =
+    Boolean(
+      (historical.financialProjections?.expenses &&
+        historical.financialProjections.expenses.length > 0) ||
+        (historical.financialProjections?.revenues &&
+          historical.financialProjections.revenues.length > 0)
+    );
+
+  let proposalDoc = preFetchedProposal;
+  if (!proposalDoc && !hasExistingProjections && historical.id) {
+    try {
+      const snap = await getDoc(doc(db, 'activity_proposals', historical.id));
+      if (snap.exists()) {
+        proposalDoc = { id: snap.id, ...snap.data() };
+      }
+    } catch (err) {
+      console.warn('[hydrateHistoricalMatch] Failed to fetch activity proposal financials:', err);
+    }
+  }
+
+  if (!proposalDoc) {
+    return historical;
+  }
+
+  const hydratedFinProj =
+    proposalDoc.financialProjections || historical.financialProjections || null;
+  const hydratedBudgetItems =
+    Array.isArray(proposalDoc.budgetItems) && proposalDoc.budgetItems.length > 0
+      ? proposalDoc.budgetItems
+      : historical.budgetItems || [];
+  const hydratedTotal =
+    Number(hydratedFinProj?.totalExpenses || 0) ||
+    Number(
+      proposalDoc.totalApprovedBudget ||
+        proposalDoc.budget ||
+        proposalDoc.totalBudget ||
+        0
+    ) ||
+    (Array.isArray(hydratedBudgetItems)
+      ? hydratedBudgetItems.reduce(
+          (acc: number, item: any) =>
+            acc +
+            (Number(item.approvedAmount || item.totalCost || item.unitCost || item.amount || 0) ||
+              0),
+          0
+        )
+      : 0) ||
+    historical.totalApprovedBudget;
+
+  return {
+    ...historical,
+    schoolYear: proposalDoc.schoolYear || historical.schoolYear,
+    financialProjections: hydratedFinProj,
+    budgetItems: hydratedBudgetItems,
+    totalApprovedBudget: hydratedTotal,
+    rawProposal: { ...(historical.rawProposal || {}), ...proposalDoc },
+  };
+}
+
+/**
  * Smart mapping of historical line items into current financial projections
  */
 export function mapHistoricalLineItems(
@@ -173,26 +240,57 @@ export function mapHistoricalLineItems(
   recalculatedProjections: FinancialProjections;
   originalHistoricalTotal: number;
 } {
-  const pastRevenues = historical.financialProjections?.revenues || [];
-  const pastExpenses = historical.financialProjections?.expenses || [];
+  const rawProj = historical.rawProposal?.financialProjections;
+  const pastRevenues =
+    (historical.financialProjections?.revenues &&
+    historical.financialProjections.revenues.length > 0
+      ? historical.financialProjections.revenues
+      : rawProj?.revenues) || [];
+  const pastExpenses =
+    (historical.financialProjections?.expenses &&
+    historical.financialProjections.expenses.length > 0
+      ? historical.financialProjections.expenses
+      : rawProj?.expenses) || [];
 
   // Fallback if past event only had budgetItems array
   let derivedPastExpenses = pastExpenses;
-  if (derivedPastExpenses.length === 0 && historical.budgetItems && historical.budgetItems.length > 0) {
-    derivedPastExpenses = historical.budgetItems.map((b: any, idx: number) => ({
-      id: `past-exp-${idx}`,
-      description: b.item || b.description || 'General Expense',
-      lastYearActual: 0,
-      thisYearProposed: Number(b.approvedAmount || b.unitCost || b.amount || 0),
-      totalAmount: Number(b.approvedAmount || b.unitCost || b.amount || 0),
-      adjustment: 0,
-      remarks: '',
-    }));
+  const fallbackBudgetItems =
+    (historical.budgetItems && historical.budgetItems.length > 0
+      ? historical.budgetItems
+      : historical.rawProposal?.budgetItems) || [];
+  if (derivedPastExpenses.length === 0 && fallbackBudgetItems.length > 0) {
+    derivedPastExpenses = fallbackBudgetItems.map((b: any, idx: number) => {
+      const amt = Number(
+        b.approvedAmount ||
+          b.totalCost ||
+          (Number(b.quantity || 1) * Number(b.unitCost || 0)) ||
+          b.unitCost ||
+          b.amount ||
+          0
+      );
+      return {
+        id: `past-exp-${idx}`,
+        description: b.item || b.description || 'General Expense',
+        lastYearActual: 0,
+        thisYearProposed: amt,
+        totalAmount: amt,
+        adjustment: 0,
+        remarks: b.remarks || '',
+      };
+    });
   }
 
   // Calculate past total
   const pastExpenseTotal = derivedPastExpenses.reduce(
-    (sum, item) => sum + (Number(item.totalAmount || item.thisYearProposed || 0)),
+    (sum, item) =>
+      sum +
+      Number(
+        item.totalAmount ||
+          item.thisYearProposed ||
+          (item as any).amount ||
+          (item as any).approvedAmount ||
+          0
+      ),
     0
   );
   const originalHistoricalTotal = pastExpenseTotal || historical.totalApprovedBudget || 0;
@@ -204,14 +302,20 @@ export function mapHistoricalLineItems(
     !currentProjections.expenses ||
     currentProjections.expenses.length === 0 ||
     (currentProjections.expenses.length === 1 &&
-      !currentProjections.expenses[0].description &&
-      currentProjections.expenses[0].thisYearProposed === 0);
+      !(currentProjections.expenses[0].description || '').trim() &&
+      (Number(currentProjections.expenses[0].thisYearProposed) || 0) === 0);
 
   if (isCurrentEmpty && derivedPastExpenses.length > 0) {
     // Clone item labels and populate ONLY Last Year's Actual; leave This Year's Proposed at ₱0
     // so the proposer configures this year's budget strictly from selected funds.
     updatedExpenses = derivedPastExpenses.map((past, idx) => {
-      const pastAmt = Number(past.totalAmount || past.thisYearProposed || 0);
+      const pastAmt = Number(
+        past.totalAmount ||
+          past.thisYearProposed ||
+          (past as any).amount ||
+          (past as any).approvedAmount ||
+          0
+      );
       return {
         id: `exp-${Date.now()}-${idx + 1}`,
         description: past.description || 'Expense Item',
@@ -234,7 +338,13 @@ export function mapHistoricalLineItems(
       });
 
       if (matchedPast) {
-        const pastAmt = Number(matchedPast.totalAmount || matchedPast.thisYearProposed || 0);
+        const pastAmt = Number(
+          matchedPast.totalAmount ||
+            matchedPast.thisYearProposed ||
+            (matchedPast as any).amount ||
+            (matchedPast as any).approvedAmount ||
+            0
+        );
         return {
           ...curr,
           lastYearActual: pastAmt,
@@ -252,8 +362,8 @@ export function mapHistoricalLineItems(
     !currentProjections.revenues ||
     currentProjections.revenues.length === 0 ||
     (currentProjections.revenues.length === 1 &&
-      !currentProjections.revenues[0].description &&
-      currentProjections.revenues[0].thisYearProposed === 0);
+      !(currentProjections.revenues[0].description || '').trim() &&
+      (Number(currentProjections.revenues[0].thisYearProposed) || 0) === 0);
 
   const extractParticularSignal = (row?: Partial<FinancialLineItem>): string => {
     if (!row) return '';

@@ -29,6 +29,7 @@ import {
   getCachedWorkflowSettings,
   getDefaultWorkflowSettings,
   getBuiltinDefaultWorkflow,
+  filterTemplateStepsBySignatoryScope,
 } from '../../workflow/services/approval-workflow.service';
 import { createNotification } from '../../notifications';
 import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
@@ -234,21 +235,19 @@ export async function generateDefaultPARSignatoryChain(
   providedSignatories?: InstitutionalSignatory[],
   isSasCreator = false
 ): Promise<PARApprovalStep[]> {
-  let activeSignatories = providedSignatories;
+  let allSignatories = providedSignatories;
 
-  if (!activeSignatories || activeSignatories.length === 0) {
+  if (!allSignatories || allSignatories.length === 0) {
     try {
-      const snap = await getDocs(
-        query(collection(db, SIGNATORIES_COLLECTION), where('isActive', '!=', false))
-      );
-      activeSignatories = snap.docs.map((d) => ({ id: d.id, ...d.data() } as InstitutionalSignatory));
+      const snap = await getDocs(collection(db, SIGNATORIES_COLLECTION));
+      allSignatories = snap.docs.map((d) => ({ id: d.id, ...d.data() } as InstitutionalSignatory));
     } catch (e) {
       console.warn('[generateDefaultPARSignatoryChain] Could not fetch signatories:', e);
-      activeSignatories = [];
+      allSignatories = [];
     }
   }
 
-  activeSignatories = (activeSignatories || []).filter(
+  const activeSignatories = (allSignatories || []).filter(
     (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'par')
   );
 
@@ -267,19 +266,35 @@ export async function generateDefaultPARSignatoryChain(
 
   let configuredTemplate = workflowSettings ? workflowSettings[pipelineKey] : undefined;
 
-  // Fallback: If target role's PAR has no assigned signers, check if the other role's PAR was configured
+  // Fallback: If target role's PAR has no assigned eligible signers, check if the other role's PAR was configured
   const hasAssignedSigners = (steps?: any[]) =>
     Array.isArray(steps) && steps.some((s) => Boolean(s.signatoryUid || s.signatoryName));
 
-  if (!hasAssignedSigners(configuredTemplate)) {
+  const rawPrimaryFiltered = Array.isArray(configuredTemplate)
+    ? filterTemplateStepsBySignatoryScope(configuredTemplate, allSignatories, 'par', {
+        normalize: true,
+      })
+    : [];
+
+  if (hasAssignedSigners(rawPrimaryFiltered)) {
+    configuredTemplate = rawPrimaryFiltered;
+  } else {
     const alternateKey = isSasCreator ? 'adviser_par' : 'admin_par';
-    if (hasAssignedSigners(workflowSettings?.[alternateKey])) {
-      configuredTemplate = workflowSettings?.[alternateKey];
-    }
+    const altFiltered = Array.isArray(workflowSettings?.[alternateKey])
+      ? filterTemplateStepsBySignatoryScope(workflowSettings[alternateKey], allSignatories, 'par', {
+          normalize: true,
+        })
+      : [];
+    configuredTemplate = hasAssignedSigners(altFiltered) ? altFiltered : rawPrimaryFiltered;
   }
 
   if (!configuredTemplate || configuredTemplate.length === 0) {
-    configuredTemplate = getBuiltinDefaultWorkflow(pipelineKey);
+    configuredTemplate = filterTemplateStepsBySignatoryScope(
+      getBuiltinDefaultWorkflow(pipelineKey),
+      allSignatories,
+      'par',
+      { normalize: true }
+    );
   }
 
   if (configuredTemplate && configuredTemplate.length > 0) {
@@ -287,15 +302,20 @@ export async function generateDefaultPARSignatoryChain(
     const usedIds = new Set<string>();
 
     configuredTemplate.forEach((tpl: any, idx: number) => {
-      // 1. Try to find live matched signatory from maintenance by UID or email
+      const hasExplicitSigner = Boolean(
+        (tpl.signatoryUid && String(tpl.signatoryUid).trim()) ||
+        (tpl.signatoryEmail && String(tpl.signatoryEmail).trim())
+      );
+
+      // 1. Try to find live matched signatory from eligible maintenance roster by UID or email
       let matched = activeSignatories.find(
         (s) =>
-          (tpl.signatoryUid && s.id === tpl.signatoryUid) ||
+          (tpl.signatoryUid && (s.id === tpl.signatoryUid || s.uid === tpl.signatoryUid)) ||
           (tpl.signatoryEmail && s.email && s.email.toLowerCase() === tpl.signatoryEmail.toLowerCase())
       );
 
-      // 2. Fallback to role matching if no UID match and template only had role
-      if (!matched && tpl.role) {
+      // 2. Fallback to role matching ONLY if template had no explicit signatory assigned
+      if (!matched && !hasExplicitSigner && tpl.role) {
         matched = activeSignatories.find(
           (s) => !usedIds.has(s.id) && (s.role === tpl.role || s.roleTitle?.toLowerCase() === tpl.roleTitle?.toLowerCase())
         );
@@ -318,11 +338,15 @@ export async function generateDefaultPARSignatoryChain(
         };
       }
 
+      // Strictly skip template steps pinned to a disallowed/inactive/missing explicit signatory
+      if (hasExplicitSigner && !matched) {
+        return;
+      }
+
       if (matched) {
         usedIds.add(matched.id);
       }
 
-      // Preserve step properties from template saved in settings if live matching is absent
       const resolvedUid = matched?.id || tpl.signatoryUid || `par_step_${Date.now()}_${idx + 1}`;
       const resolvedName = matched?.name || tpl.signatoryName || tpl.roleTitle || 'Institutional Signatory';
       const resolvedEmail = matched?.email || tpl.signatoryEmail || '';

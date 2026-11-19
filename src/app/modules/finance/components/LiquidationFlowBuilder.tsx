@@ -46,7 +46,11 @@ import {
   isStepConfiguredPermanent,
   type DefaultWorkflowSettings,
 } from '../../workflow/services/approval-workflow.service';
-import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
+import {
+  formatStageTitle,
+  normalizeApprovalStages,
+  findMatchedSignatoryForStep,
+} from '../../workflow/utils/stage-normalization.utils';
 import { AddCustomLabelModal } from '../../signatories';
 
 interface LiquidationFlowBuilderProps {
@@ -131,14 +135,10 @@ export default function LiquidationFlowBuilder({
     }
 
     if (activeSignatories.length > 0) {
-      // 2. Purge signatories that are proposal-only
+      // 2. Purge signatories that are inactive or not eligible for Financial Liquidations
       filteredSteps = filteredSteps.filter((step) => {
-        const matched = activeSignatories.find(
-          (s) =>
-            s.id === step.signatoryUid ||
-            (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
-        );
-        if (matched && !isSignatoryApplicableTo(matched, 'liquidation')) {
+        const matched = findMatchedSignatoryForStep(step, activeSignatories);
+        if (matched && (matched.isActive === false || !isSignatoryApplicableTo(matched, 'liquidation'))) {
           modified = true;
           return false;
         }
@@ -147,11 +147,7 @@ export default function LiquidationFlowBuilder({
 
       // 3. Synchronize edited names, titles, and departments from database
       filteredSteps = filteredSteps.map((step) => {
-        const matched = activeSignatories.find(
-          (s) =>
-            s.id === step.signatoryUid ||
-            (s.email && s.email.toLowerCase() === (step.signatoryEmail || '').toLowerCase())
-        );
+        const matched = findMatchedSignatoryForStep(step, activeSignatories);
         if (matched) {
           if (
             (matched.name && matched.name !== step.signatoryName) ||

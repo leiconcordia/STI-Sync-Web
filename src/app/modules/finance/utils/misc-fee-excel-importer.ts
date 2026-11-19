@@ -20,7 +20,7 @@ export function getMiscFeeUploadCounts(
     | 'uploadedImportFingerprints'
     | 'buckets'
   > | null
-): { collegeCount: number; shsCount: number } {
+): { collegeCount: number; shsCount: number; hasBothSemCollegeRates: boolean } {
   const fps = Array.isArray(config?.uploadedImportFingerprints)
     ? config!.uploadedImportFingerprints!
     : [];
@@ -41,6 +41,7 @@ export function getMiscFeeUploadCounts(
     config?.college2ndSemUploaded ||
       buckets.some((b) => (Number(b.college2ndSemRateTY) || 0) > 0)
   );
+  const hasBothSemCollegeRates = hasLegacyCol1 && hasLegacyCol2;
   const hasLegacyShs = Boolean(
     config?.shsUploadedForSY ||
       buckets.some(
@@ -51,7 +52,7 @@ export function getMiscFeeUploadCounts(
   const explicitCollege =
     typeof config?.collegeUploadCount === 'number'
       ? config.collegeUploadCount
-      : hasLegacyCol1 && hasLegacyCol2
+      : hasBothSemCollegeRates
       ? 2
       : hasLegacyCol1 || hasLegacyCol2
       ? 1
@@ -64,8 +65,12 @@ export function getMiscFeeUploadCounts(
       : 0;
 
   return {
-    collegeCount: Math.max(explicitCollege, fpCollege),
+    // When a single Tertiary sheet already includes both 1st & 2nd Sem rates, treat Tertiary as complete.
+    collegeCount: hasBothSemCollegeRates
+      ? MAX_TERTIARY_UPLOADS_PER_SY
+      : Math.max(explicitCollege, fpCollege),
     shsCount: Math.max(explicitShs, fpShs),
+    hasBothSemCollegeRates,
   };
 }
 

@@ -43,6 +43,7 @@ import {
 import {
   checkSignatoryDeactivationEligibility,
   checkDocumentAuthorityChangeEligibility,
+  pruneSignatoryFromDisallowedTemplates,
   type AssignedPipelineInfo,
   type PendingDocumentInfo,
 } from '../../../modules/signatories/services/signatory-validation.service';
@@ -795,7 +796,17 @@ export default function InstitutionalSignatoryManagement() {
         canApproveLiquidation: canApproveLiq,
         canApprovePar: canApprovePar,
       });
-      toast.success('Signatory details updated successfully.');
+      const prunedCount = await pruneSignatoryFromDisallowedTemplates(
+        editingSignatory.id,
+        editingSignatory.email,
+        finalWorkflows,
+        profile?.email || 'admin@ormoc.sti.edu.ph'
+      );
+      toast.success(
+        prunedCount > 0
+          ? `Signatory updated and removed from ${prunedCount} ineligible default workflow step(s).`
+          : 'Signatory details updated successfully.'
+      );
       setEditingSignatory(null);
     } catch (err: any) {
       toast.error('Failed to update signatory: ' + err.message);
@@ -866,12 +877,10 @@ export default function InstitutionalSignatoryManagement() {
       (s.department && s.department.toLowerCase().includes(searchQuery.toLowerCase())) ||
       (s.employeeId && s.employeeId.toLowerCase().includes(searchQuery.toLowerCase()));
 
-    const cap = s.actionType || (s.role === 'school_president' ? 'approver' : 'endorser');
+    const authorizedWorkflows = getSignatoryAuthorizedWorkflows(s);
     const matchesRole =
       selectedRoleFilter === 'all' ||
-      (selectedRoleFilter === 'approver' && (cap === 'approver' || cap === 'approve')) ||
-      (selectedRoleFilter === 'endorser' && (cap === 'endorser' || cap === 'endorse')) ||
-      (selectedRoleFilter === 'both' && cap === 'both');
+      authorizedWorkflows.includes(selectedRoleFilter as WorkflowDocumentType);
 
     const matchesDept =
       selectedDeptFilter === 'all' ||
@@ -1020,28 +1029,30 @@ export default function InstitutionalSignatoryManagement() {
           </select>
         </div>
 
-        {/* Authority Capability Filters */}
+        {/* Workflow Scope Filters */}
         <div className="flex flex-wrap gap-2">
           {[
             { id: 'all', label: 'All', count: signatories.length },
             {
-              id: 'approver',
-              label: 'Approver Only',
-              count: signatories.filter(
-                (s) => s.actionType === 'approver' || s.actionType === 'approve' || s.role === 'school_president'
+              id: 'proposal',
+              label: 'AP Eligible',
+              count: signatories.filter((s) =>
+                getSignatoryAuthorizedWorkflows(s).includes('proposal')
               ).length,
             },
             {
-              id: 'endorser',
-              label: 'Endorser Only',
-              count: signatories.filter(
-                (s) => s.actionType === 'endorser' || s.actionType === 'endorse' || (!s.actionType && s.role !== 'school_president')
+              id: 'liquidation',
+              label: 'FL Eligible',
+              count: signatories.filter((s) =>
+                getSignatoryAuthorizedWorkflows(s).includes('liquidation')
               ).length,
             },
             {
-              id: 'both',
-              label: 'Both (Endorser & Approver)',
-              count: signatories.filter((s) => s.actionType === 'both').length,
+              id: 'par',
+              label: 'PAR Eligible',
+              count: signatories.filter((s) =>
+                getSignatoryAuthorizedWorkflows(s).includes('par')
+              ).length,
             },
           ].map((tab) => (
             <button
@@ -1084,7 +1095,6 @@ export default function InstitutionalSignatoryManagement() {
                   <th className="py-3 px-4">Signatory & Official Email</th>
                   <th className="py-3 px-4">Signatory Role / Position Title</th>
                   <th className="py-3 px-4">Department / Scope</th>
-                  <th className="py-3 px-4">Authority Capability</th>
                   <th className="py-3 px-4">Workflow Scope</th>
                   <th className="py-3 px-4">Digital Signature</th>
                   <th className="py-3 px-4">Status</th>
@@ -1134,64 +1144,6 @@ export default function InstitutionalSignatoryManagement() {
                         <span className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-gray-100 text-gray-600 text-xs font-medium rounded-md">
                           Institutional / Campus-Wide
                         </span>
-                      )}
-                    </td>
-
-                    {/* Authority Capability */}
-                    <td className="py-3.5 px-4">
-                      <div className="flex flex-col gap-1">
-                        {DOCUMENT_WORKFLOW_CONFIGS.map((doc) => {
-                          const level = getDocAuthority(
-                            sig.applicableWorkflows,
-                            doc.key === 'proposal'
-                              ? sig.canApproveProposal
-                              : doc.key === 'liquidation'
-                              ? sig.canApproveLiquidation
-                              : sig.canApprovePar,
-                            doc.key
-                          );
-
-                          if (level === 'cannot_sign') {
-                            return (
-                              <span
-                                key={doc.key}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-400 w-fit line-through"
-                              >
-                                {doc.code}: Cannot Sign
-                              </span>
-                            );
-                          }
-
-                          if (level === 'approver') {
-                            return (
-                              <span
-                                key={doc.key}
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 w-fit shadow-2xs"
-                              >
-                                <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                                {doc.code}: Approver
-                              </span>
-                            );
-                          }
-
-                          return (
-                            <span
-                              key={doc.key}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-sky-50 text-sky-800 border border-sky-200 w-fit"
-                            >
-                              <FileSignature className="w-3 h-3 text-sky-600" />
-                              {doc.code}: Endorser
-                            </span>
-                          );
-                        })}
-                      </div>
-
-                      {sig.defaultSignatoryLabel && (
-                        <div className="mt-1.5">
-                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
-                            🏷️ {sig.defaultSignatoryLabel}
-                          </span>
-                        </div>
                       )}
                     </td>
 

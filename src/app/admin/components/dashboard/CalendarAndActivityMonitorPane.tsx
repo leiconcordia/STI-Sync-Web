@@ -563,7 +563,7 @@ export function CalendarAndActivityMonitorPane({
                         </div>
 
                         {/* Remind Button: Only for ORGS */}
-                        {item.needsAction ? (
+                        {item.needsAction && (
                           <button
                             type="button"
                             onClick={() =>
@@ -580,11 +580,6 @@ export function CalendarAndActivityMonitorPane({
                             <Bell className="w-3 h-3 text-[#001A4D]" />
                             <span>Remind</span>
                           </button>
-                        ) : (
-                          <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-0.5">
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>Cleared</span>
-                          </span>
                         )}
                       </div>
                     </div>

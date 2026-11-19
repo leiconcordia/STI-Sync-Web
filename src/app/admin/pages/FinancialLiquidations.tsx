@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { useSearchParams } from 'react-router';
+import { useNavigate, useSearchParams } from 'react-router';
 import {
   Receipt,
   CheckCircle2,
@@ -31,7 +31,8 @@ import { useAllEvents } from '../../modules/events/hooks/useEventStream';
 import {
   buildAvailableSchoolYears,
   compareLiquidations,
-  matchesSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+  resolveDefaultSchoolYearFilter,
   resolveUnifiedActiveAcademicTerm,
 } from '../../modules/workflow/utils/table-priority-sort.utils';
 import {
@@ -39,7 +40,6 @@ import {
   returnLiquidationReport,
   deleteLiquidationReport,
   withdrawLiquidationReport,
-  attachCashierSettlementProofs,
   verifyCashierSettlementProofs,
   absorbRemainingCollectionDeficit,
   resolveLiquidationSourceAllocations,
@@ -63,6 +63,10 @@ import {
 import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream';
 import { useRetainedActivityFunds } from '../../modules/finance/hooks/useRetainedFundStream';
 import { useOrgLedger } from '../../modules/finance/hooks/useFinanceStream';
+import {
+  computeLiveStudentCollectionReimbursementCapacity,
+  isStudentCollectionFunding,
+} from '../../modules/finance/utils/liquidation-settlement.utils';
 import type { ReceiptAttachment } from '../../modules/finance/types/liquidation.types';
 import ReceiptLightboxModal from '../../modules/finance/components/ReceiptLightboxModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
@@ -84,7 +88,7 @@ import {
   liquidationSubmissionDeadline,
   calendarDaysRemaining,
 } from '../../modules/events/utils/activity-compliance.utils';
-import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
+import { isEventLiquidationExempt, isSasCreatedEvent } from '../../modules/events/utils/organization-display.utils';
 import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
@@ -157,7 +161,11 @@ export function FinancialLiquidations() {
   const [isAbsorbingDeficit, setIsAbsorbingDeficit] = useState(false);
 
   const { activeConfig, computedBuckets, saoEligibleBuckets } = useMiscFeeConfigs();
-  const { saoRetainedFund, orgRetainedFunds } = useRetainedActivityFunds(
+  const {
+    saoRetainedFund,
+    orgRetainedFunds,
+    ledgerEntries: retainedLedgerEntries,
+  } = useRetainedActivityFunds(
     selectedReport?.organizationId || null,
     (selectedReport as any)?.schoolYear || activeConfig?.schoolYear
   );
@@ -173,6 +181,45 @@ export function FinancialLiquidations() {
       .reduce((s, t) => s + (Number(t.amount) || 0), 0);
     return Math.max(0, inc - exp);
   }, [selectedOrgLedger]);
+
+  const isSasSelectedLiquidation = useMemo(() => {
+    if (!selectedReport) return false;
+    if (selectedReport.fundingSource === 'organization_funds') return false;
+    const orgLower = String(selectedReport.organizationId || '').trim().toLowerCase();
+    return (
+      !orgLower ||
+      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgLower) ||
+      (selectedReport as any)?.createdByRole === 'admin'
+    );
+  }, [selectedReport]);
+
+  const isSelectedStudentCollection = useMemo(() => {
+    if (!selectedReport) return false;
+    return isStudentCollectionFunding({
+      fundingSource: selectedReport.fundingSource,
+      allocations: sourceAllocations.length > 0 ? sourceAllocations : (selectedReport as any).allocations,
+    });
+  }, [selectedReport, sourceAllocations]);
+
+  const selectedStudentCollectionCapacity = useMemo(() => {
+    if (!selectedReport || !isSelectedStudentCollection) return 0;
+    return computeLiveStudentCollectionReimbursementCapacity({
+      isSasOwned: isSasSelectedLiquidation,
+      eventId: selectedReport.eventId || null,
+      liquidationId: selectedReport.id || null,
+      allocatedBudget: Number(selectedReport.allocatedBudget ?? selectedReport.amountAdvanced ?? 0) || 0,
+      saoAvailableBalance: Number(saoRetainedFund?.availableBalance) || 0,
+      retainedLedgerEntries,
+      orgLedgerEntries: selectedOrgLedger,
+    });
+  }, [
+    selectedReport,
+    isSelectedStudentCollection,
+    isSasSelectedLiquidation,
+    saoRetainedFund?.availableBalance,
+    retainedLedgerEntries,
+    selectedOrgLedger,
+  ]);
 
   const selectedReportRawVariance = useMemo(() => {
     if (!selectedReport) return 0;
@@ -272,8 +319,19 @@ export function FinancialLiquidations() {
 
           if (deficit > 0.009) {
             const savedRows = selectedReport.deficitDeductionAllocations || [];
+            const repIsStudentCollection = isStudentCollectionFunding({
+              fundingSource: selectedReport.fundingSource,
+              allocations: allocs.length > 0 ? allocs : (selectedReport as any).allocations,
+            });
+            const repOrgLower = String(selectedReport.organizationId || '').trim().toLowerCase();
+            const repIsSas =
+              selectedReport.fundingSource !== 'organization_funds' &&
+              (!repOrgLower ||
+                ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(repOrgLower) ||
+                (selectedReport as any)?.createdByRole === 'admin');
             const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
               totalDeficit: deficit,
+              fundingSource: selectedReport.fundingSource,
               sourceAllocations: allocs,
               savedDeficitRows: savedRows,
               computedBuckets,
@@ -283,9 +341,21 @@ export function FinancialLiquidations() {
               targetOrgId: selectedReport.organizationId,
               targetOrgName: selectedReport.organizationName,
               orgLedgerBalance: selectedOrgLedgerBalance,
+              studentCollectionAvailableOverride: repIsStudentCollection
+                ? computeLiveStudentCollectionReimbursementCapacity({
+                    isSasOwned: repIsSas,
+                    eventId: selectedReport.eventId || null,
+                    liquidationId: selectedReport.id || null,
+                    allocatedBudget:
+                      Number(selectedReport.allocatedBudget ?? selectedReport.amountAdvanced ?? 0) || 0,
+                    saoAvailableBalance: Number(saoRetainedFund?.availableBalance) || 0,
+                    retainedLedgerEntries,
+                    orgLedgerEntries: selectedOrgLedger,
+                  })
+                : undefined,
             });
             const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
-            seededAdminDeficitKeyRef.current = `${selectedReport.id}::${deficit}::${savedSig}`;
+            seededAdminDeficitKeyRef.current = `${selectedReport.id}::${deficit}::${savedSig}::${repIsStudentCollection ? 'sc' : 'std'}`;
             setDeficitAllocationRows(initialRows);
             setDeficitSupplementalOptions(supplementalOptions);
           } else {
@@ -324,6 +394,7 @@ export function FinancialLiquidations() {
     const savedRows = selectedReport.deficitDeductionAllocations || [];
     const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
       totalDeficit: selectedReportDeficit,
+      fundingSource: selectedReport.fundingSource,
       sourceAllocations,
       savedDeficitRows: savedRows,
       computedBuckets,
@@ -333,10 +404,13 @@ export function FinancialLiquidations() {
       targetOrgId: selectedReport.organizationId,
       targetOrgName: selectedReport.organizationName,
       orgLedgerBalance: selectedOrgLedgerBalance,
+      studentCollectionAvailableOverride: isSelectedStudentCollection
+        ? selectedStudentCollectionCapacity
+        : undefined,
     });
     setDeficitSupplementalOptions(supplementalOptions);
     const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
-    const targetSeedKey = `${selectedReport.id}::${selectedReportDeficit}::${savedSig}`;
+    const targetSeedKey = `${selectedReport.id}::${selectedReportDeficit}::${savedSig}::${isSelectedStudentCollection ? 'sc' : 'std'}`;
     setDeficitAllocationRows((prev) => {
       if (seededAdminDeficitKeyRef.current !== targetSeedKey) {
         if (initialRows.length > 0 || savedRows.length > 0) {
@@ -346,6 +420,9 @@ export function FinancialLiquidations() {
         return prev;
       }
       if (prev.length === 0) return initialRows;
+      if (isSelectedStudentCollection) {
+        return initialRows;
+      }
       const availMap = new Map<string, number>();
       initialRows.forEach((r) => availMap.set(r.bucketId, r.availableBalance));
       supplementalOptions.forEach((o) => availMap.set(o.bucketId, o.availableBalance));
@@ -356,8 +433,11 @@ export function FinancialLiquidations() {
     });
   }, [
     selectedReport?.id,
+    selectedReport?.fundingSource,
     selectedReport?.deficitDeductionAllocations,
     selectedReportDeficit,
+    isSelectedStudentCollection,
+    selectedStudentCollectionCapacity,
     sourceAllocations,
     computedBuckets,
     saoEligibleBuckets,
@@ -365,17 +445,6 @@ export function FinancialLiquidations() {
     orgRetainedFunds,
     selectedOrgLedgerBalance,
   ]);
-
-  const isSasSelectedLiquidation = useMemo(() => {
-    if (!selectedReport) return false;
-    if (selectedReport.fundingSource === 'organization_funds') return false;
-    const orgLower = String(selectedReport.organizationId || '').trim().toLowerCase();
-    return (
-      !orgLower ||
-      ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgLower) ||
-      (selectedReport as any)?.createdByRole === 'admin'
-    );
-  }, [selectedReport]);
 
   const surplusReturnValidation = useMemo(() => {
     return validateSurplusReturnAllocations({
@@ -389,8 +458,9 @@ export function FinancialLiquidations() {
     return validateDeficitDeductionAllocations({
       totalDeficit: selectedReportDeficit,
       rows: deficitAllocationRows,
+      mode: isSelectedStudentCollection ? 'student_collections' : 'misc_or_mixed',
     });
-  }, [selectedReportDeficit, deficitAllocationRows]);
+  }, [selectedReportDeficit, deficitAllocationRows, isSelectedStudentCollection]);
 
   useEffect(() => {
     if (!selectedReport || !isRecoveringStudentContribution) {
@@ -476,27 +546,6 @@ export function FinancialLiquidations() {
       }),
     [activeConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
   );
-  const lastAutoPeriodRef = useRef<string>('');
-  const eventsById = useMemo(() => {
-    const map = new Map<string, any>();
-    events.forEach((ev) => map.set(ev.id, ev));
-    return map;
-  }, [events]);
-
-  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
-  useEffect(() => {
-    if (!unifiedActiveTerm.schoolYear) return;
-    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
-    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
-      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
-      setFilterSemester(unifiedActiveTerm.semester || 'all');
-      setHasInitializedPeriod(true);
-      lastAutoPeriodRef.current = periodKey;
-    } else if (!lastAutoPeriodRef.current) {
-      lastAutoPeriodRef.current = periodKey;
-    }
-  }, [unifiedActiveTerm, hasInitializedPeriod]);
-
   // Derived available school years and semesters
   const availableSchoolYears = useMemo(
     () =>
@@ -508,6 +557,29 @@ export function FinancialLiquidations() {
       }),
     [miscConfigs, semesters, liquidations, events, unifiedActiveTerm.schoolYear]
   );
+
+  const defaultSchoolYear = useMemo(
+    () =>
+      resolveDefaultSchoolYearFilter({
+        unifiedSchoolYear: unifiedActiveTerm.schoolYear,
+        availableSchoolYears,
+      }),
+    [unifiedActiveTerm.schoolYear, availableSchoolYears]
+  );
+  const lastAutoPeriodRef = useRef<string>('');
+
+  // Sync default filter to active/current School Year (showing all semesters in Current SY by default)
+  useEffect(() => {
+    if (!defaultSchoolYear) return;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== defaultSchoolYear)) {
+      setFilterSchoolYear(defaultSchoolYear);
+      setFilterSemester('all');
+      setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    }
+  }, [defaultSchoolYear, hasInitializedPeriod]);
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -534,8 +606,10 @@ export function FinancialLiquidations() {
   const { profile: adviserProfile } = useAdviserProfile();
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [showReturnModal, setShowReturnModal] = useState(false);
+  const navigate = useNavigate();
   const [showAdminCreateModal, setShowAdminCreateModal] = useState(false);
   const [editingReport, setEditingReport] = useState<LiquidationDocument | null>(null);
+  const [selectedDueEvent, setSelectedDueEvent] = useState<any>(null);
 
   const currentUser = useMemo(() => ({
     uid: adviserProfile?.uid || 'sao_admin_user',
@@ -551,8 +625,33 @@ export function FinancialLiquidations() {
 
   const handleOpenEditDraft = (report: LiquidationDocument) => {
     setSelectedReport(null);
+    setSelectedDueEvent(null);
     setEditingReport(report);
     setShowAdminCreateModal(true);
+  };
+
+  const handleOpenPendingDue = (due: {
+    event: any;
+    liq?: LiquidationDocument;
+  }) => {
+    if (due.liq) {
+      if (['draft', 'returned'].includes(due.liq.status) && isSasCreatedEvent(due.event)) {
+        handleOpenEditDraft(due.liq);
+      } else {
+        setSelectedReport(due.liq);
+      }
+      return;
+    }
+
+    if (isSasCreatedEvent(due.event)) {
+      setSelectedReport(null);
+      setEditingReport(null);
+      setSelectedDueEvent(due.event);
+      setShowAdminCreateModal(true);
+      return;
+    }
+
+    navigate(`/home/event-approvals?id=${due.event.id}`);
   };
 
   const handleWithdraw = async () => {
@@ -600,9 +699,44 @@ export function FinancialLiquidations() {
     return Array.from(set);
   }, [liquidations]);
 
+  const eventsById = useMemo(() => {
+    const map = new Map<string, any>();
+    events.forEach((ev) => map.set(ev.id, ev));
+    return map;
+  }, [events]);
+
+  // Academic Period scoped liquidations & events (KPI cards, tab counts, dues, and table share this slice)
+  const periodLiquidations = useMemo(() => {
+    return liquidations.filter((liq) => {
+      const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
+      return matchesRecordAcademicPeriod({
+        record: liq,
+        parentEvent,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: parentEvent?.sessions?.[0]?.date,
+      });
+    });
+  }, [liquidations, eventsById, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
+  const periodEvents = useMemo(() => {
+    return events.filter((ev) =>
+      matchesRecordAcademicPeriod({
+        record: ev,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: ev.sessions?.[0]?.date,
+      })
+    );
+  }, [events, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
   // Filtered & Sorted Liquidations (LATEST FIRST by default)
   const filteredLiquidations = useMemo(() => {
-    return liquidations
+    return periodLiquidations
       .filter((liq) => {
         if (activeTab === 'pending') {
           if (liq.status !== 'pending' && liq.status !== 'under_review') return false;
@@ -610,24 +744,6 @@ export function FinancialLiquidations() {
           return false;
         }
         if (filterOrg !== 'all' && liq.organizationName !== filterOrg) return false;
-
-        // School Year Filter (strict: untagged legacy records stay in baseline SY only)
-        if (filterSchoolYear !== 'all') {
-          const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
-          const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
-          const sy = liq.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
-          if (!matchesSchoolYearFilter({ recordSchoolYear: sy, filterSchoolYear, availableSchoolYears })) {
-            return false;
-          }
-        }
-
-        // Semester Filter
-        if (filterSemester !== 'all') {
-          const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
-          const sem = (liq.semesterId || parentEvent?.semesterId) ? semesters.find((s) => s.id === (liq.semesterId || parentEvent?.semesterId)) : null;
-          const term = liq.semester || parentEvent?.semester || (parentEvent as any)?.term || sem?.semester || (sem as any)?.term;
-          if (term && term !== filterSemester) return false;
-        }
 
         const q = searchQuery.toLowerCase().trim();
         if (q) {
@@ -641,16 +757,16 @@ export function FinancialLiquidations() {
         return true;
       })
       .sort((a, b) => compareLiquidations(a, b, eventsById));
-  }, [liquidations, activeTab, filterOrg, filterSchoolYear, filterSemester, searchQuery, eventsById, availableSchoolYears, semesters]);
+  }, [periodLiquidations, activeTab, filterOrg, searchQuery, eventsById]);
 
-  // KPI calculations
+  // KPI calculations (scoped to active School Year / Semester filter)
   const pendingItems = useMemo(
-    () => liquidations.filter((l) => l.status === 'pending' || l.status === 'under_review'),
-    [liquidations]
+    () => periodLiquidations.filter((l) => l.status === 'pending' || l.status === 'under_review'),
+    [periodLiquidations]
   );
-  const approvedItems = useMemo(() => liquidations.filter((l) => l.status === 'approved'), [liquidations]);
-  const returnedItems = useMemo(() => liquidations.filter((l) => l.status === 'returned'), [liquidations]);
-  const draftItems = useMemo(() => liquidations.filter((l) => l.status === 'draft'), [liquidations]);
+  const approvedItems = useMemo(() => periodLiquidations.filter((l) => l.status === 'approved'), [periodLiquidations]);
+  const returnedItems = useMemo(() => periodLiquidations.filter((l) => l.status === 'returned'), [periodLiquidations]);
+  const draftItems = useMemo(() => periodLiquidations.filter((l) => l.status === 'draft'), [periodLiquidations]);
 
   const pendingAmount = useMemo(() => {
     return pendingItems.reduce((sum, item) => sum + (item.totalActualSpending || item.allocatedBudget || 0), 0);
@@ -661,12 +777,13 @@ export function FinancialLiquidations() {
   }, [approvedItems]);
 
   const pendingFlDues = useMemo(() => {
-    return events
-      .filter((e) => !e.isDeleted && isActivityConcluded(e) && !isEventLiquidationExempt(e))
+    return periodEvents
+      .filter((e) => !e.isDeleted && !isEventLiquidationExempt(e))
       .map((e) => {
-        const liq = liquidations.find(
+        const liq = periodLiquidations.find(
           (l) => !l.isDeleted && l.status !== 'voided' && l.eventId === e.id
         );
+        if (!isActivityConcluded(e)) return null;
         if (liq && !['draft', 'returned'].includes(liq.status)) return null;
         const deadline = liquidationSubmissionDeadline(e, liq);
         const daysRemaining = deadline ? calendarDaysRemaining(deadline) : null;
@@ -680,13 +797,13 @@ export function FinancialLiquidations() {
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .sort((a, b) => (a.daysRemaining ?? 999) - (b.daysRemaining ?? 999));
-  }, [events, liquidations]);
+  }, [periodEvents, periodLiquidations]);
 
   const pendingCount = pendingItems.length;
   const approvedCount = approvedItems.length;
   const returnedCount = returnedItems.length;
   const draftCount = draftItems.length;
-  const allCount = liquidations.length;
+  const allCount = periodLiquidations.length;
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredLiquidations.length / ITEMS_PER_PAGE));
@@ -1174,9 +1291,18 @@ export function FinancialLiquidations() {
           </div>
           <div className="flex flex-wrap gap-2">
             {pendingFlDues.slice(0, 8).map((due) => (
-              <div
+              <button
                 key={due.event.id}
-                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white ${
+                type="button"
+                onClick={() => handleOpenPendingDue(due)}
+                title={
+                  due.liq
+                    ? `Open liquidation report for ${due.event.title}`
+                    : isSasCreatedEvent(due.event)
+                    ? `File SAS liquidation report for ${due.event.title}`
+                    : `Open ${due.event.title} details`
+                }
+                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white cursor-pointer transition-all hover:shadow-sm hover:border-[#0E4EBD] text-left ${
                   due.isOverdue ? 'border-rose-300' : 'border-amber-200'
                 }`}
               >
@@ -1199,7 +1325,7 @@ export function FinancialLiquidations() {
                       : `(${due.daysRemaining}d left)`
                     : ''}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -1260,7 +1386,7 @@ export function FinancialLiquidations() {
             {/* Filter Toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all' || filterSchoolYear !== (activeCollegePeriod?.academicYear || 'all') || filterSemester !== (activeCollegePeriod?.semester || 'all')
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all' || filterSchoolYear !== (defaultSchoolYear || 'all') || filterSemester !== 'all'
                   ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
                   : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
                 }`}
@@ -1334,17 +1460,17 @@ export function FinancialLiquidations() {
               </select>
             </div>
 
-            {(filterOrg !== 'all' || filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all')) && (
+            {(filterOrg !== 'all' || filterSchoolYear !== (defaultSchoolYear || 'all') || filterSemester !== 'all') && (
               <button
                 onClick={() => {
                   setFilterOrg('all');
-                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
-                  setFilterSemester(unifiedActiveTerm.semester || 'all');
+                  setFilterSchoolYear(defaultSchoolYear || 'all');
+                  setFilterSemester('all');
                 }}
                 className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 cursor-pointer"
               >
                 <RotateCcw className="w-3 h-3" />
-                Reset to Current Semester
+                Reset to Current SY
               </button>
             )}
           </div>
@@ -2019,6 +2145,7 @@ export function FinancialLiquidations() {
                             rows={deficitAllocationRows}
                             onChange={setDeficitAllocationRows}
                             supplementalOptions={deficitSupplementalOptions}
+                            isStudentCollection={isSelectedStudentCollection}
                             disabled={savingCashierProof}
                             readOnly={isVerified}
                           />
@@ -2030,57 +2157,22 @@ export function FinancialLiquidations() {
                             folderKey={selectedReport.id}
                             disabled={savingCashierProof}
                             readOnly={isVerified}
-                            title={`Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`}
-                            description="Attach signed Reimbursement Voucher / Supplemental Disbursement Proof before deducting from the bucket(s) above."
+                            title={
+                              isSelectedStudentCollection
+                                ? `Required Student Collections Reimbursement Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
+                                : `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
+                            }
+                            description={
+                              isSelectedStudentCollection
+                                ? 'Attach signed Reimbursement Proof before reimbursing from Student Collections.'
+                                : 'Attach signed Reimbursement Voucher / Supplemental Disbursement Proof before deducting from the bucket(s) above.'
+                            }
                           />
                         </div>
                       ) : null}
 
                       {!isVerified && (
                         <div className="flex flex-wrap items-center justify-end gap-2">
-                          {cashierProofDrafts.length > 0 && (
-                            <Button
-                              type="button"
-                              disabled={savingCashierProof || (isDeficitReport && !deficitCoverageValidation.isValid)}
-                              onClick={async () => {
-                                setSavingCashierProof(true);
-                                try {
-                                  await attachCashierSettlementProofs(
-                                    selectedReport.id,
-                                    cashierProofDrafts,
-                                    cashierRefDraft,
-                                    {
-                                      uid: adviserProfile?.uid || currentUser.uid,
-                                      name: currentUser.name,
-                                      role: 'admin',
-                                    },
-                                    isDeficitReport
-                                      ? { deficitDeductionAllocations: deficitAllocationRows }
-                                      : { surplusReturnAllocations: returnAllocationRows }
-                                  );
-                                  setSelectedReport({
-                                    ...selectedReport,
-                                    cashierSettlementProofs: cashierProofDrafts,
-                                    cashierReferenceNo: cashierRefDraft,
-                                    cashierSettlementStatus: 'proof_uploaded',
-                                    ...(isDeficitReport
-                                      ? { deficitDeductionAllocations: deficitAllocationRows }
-                                      : { surplusReturnAllocations: returnAllocationRows }),
-                                  });
-                                  toast.success('Settlement proof & bucket allocation saved.');
-                                } catch (err: any) {
-                                  toast.error(err?.message || 'Failed to save settlement proof.');
-                                } finally {
-                                  setSavingCashierProof(false);
-                                }
-                              }}
-                              className="bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold cursor-pointer"
-                            >
-                              {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
-                              Save Draft Proof &amp; Split
-                            </Button>
-                          )}
-
                           <Button
                             type="button"
                             disabled={savingCashierProof || settlementInvalid}
@@ -2115,7 +2207,9 @@ export function FinancialLiquidations() {
                                 });
                                 toast.success(
                                   isDeficitReport
-                                    ? 'Overspend proof verified & deducted from bucket(s)!'
+                                    ? isSelectedStudentCollection
+                                      ? 'Overspend reimbursement verified & posted from Student Collections!'
+                                      : 'Overspend proof verified & deducted from bucket(s)!'
                                     : 'Surplus return verified & posted to bucket(s)!'
                                 );
                               } catch (err: any) {
@@ -2131,7 +2225,9 @@ export function FinancialLiquidations() {
                             {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
                             <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
                             {isDeficitReport
-                              ? 'Verify Proof & Deduct from Bucket(s)'
+                              ? isSelectedStudentCollection
+                                ? 'Verify Proof & Reimburse from Student Collections'
+                                : 'Verify Proof & Deduct from Bucket(s)'
                               : requiresProofForSettlement
                                 ? 'Verify Proof & Return to Bucket(s)'
                                 : 'Confirm & Return to Bucket(s)'}
@@ -2537,9 +2633,14 @@ export function FinancialLiquidations() {
           onClose={() => {
             setShowAdminCreateModal(false);
             setEditingReport(null);
+            setSelectedDueEvent(null);
           }}
-          orgId={editingReport?.organizationId || 'sao_admin'}
-          orgName={editingReport?.organizationName || 'Student Affairs Services (SAS)'}
+          orgId={editingReport?.organizationId || selectedDueEvent?.organizationId || 'sao_admin'}
+          orgName={
+            editingReport?.organizationName ||
+            selectedDueEvent?.organizationName ||
+            'Student Affairs Services (SAS)'
+          }
           userUid={currentUser.uid}
           userName={currentUser.name}
           userRole="admin"
@@ -2551,9 +2652,11 @@ export function FinancialLiquidations() {
           isAdviser={true}
           editingReport={editingReport}
           existingLiquidations={liquidations}
-          initialEventId={editingReport?.eventId}
+          initialEventId={editingReport?.eventId || selectedDueEvent?.id}
           initialEvent={
-            editingReport?.eventId ? eventsById.get(editingReport.eventId) : undefined
+            editingReport?.eventId
+              ? eventsById.get(editingReport.eventId)
+              : selectedDueEvent || undefined
           }
         />
       )}

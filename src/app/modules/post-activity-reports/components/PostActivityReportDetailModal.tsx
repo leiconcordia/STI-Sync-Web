@@ -34,6 +34,7 @@ import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewe
 import { diffPostActivityReport } from '../../workflow/utils/document-diff-engine';
 import StepReturnRevisionModal from '../../workflow/components/StepReturnRevisionModal';
 import { PAR_SECTIONS_FOR_REVISION } from '../types/par.types';
+import { resolvePARRemarksDescription } from '../utils/par-remarks.utils';
 import { usePARActivityFinancials } from '../hooks/usePARActivityFinancials';
 import { PARFinancialTransactionsSection } from './PARFinancialTransactionsSection';
 import PARFinancialReportModal from '../../../signatory/components/PARFinancialReportModal';
@@ -507,22 +508,6 @@ export default function PostActivityReportDetailModal({
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
                 Evaluation of Objectives & Learning Outcomes
               </h4>
-              <div className="flex items-center gap-2">
-                {report.results?.compositeSuccessScore !== undefined && (
-                  <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
-                    {report.results.compositeSuccessScore}% Success Rating
-                  </span>
-                )}
-                {diffByPath.get('results.objectiveStatus') && (
-                  <InlineRevisionBadge diff={diffByPath.get('results.objectiveStatus')} />
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-slate-500 font-semibold">Status:</span>
-              <span className="font-bold text-blue-700 uppercase bg-blue-50 px-2 py-0.5 rounded">
-                {(report.results?.objectiveStatus || 'fully_achieved').replace('_', ' ')}
-              </span>
             </div>
             {report.results?.achievementNarrative && (
               <div className="space-y-1">
@@ -583,67 +568,17 @@ export default function PostActivityReportDetailModal({
           </div>
 
           {/* Remarks (For Future Activity Improvements) */}
-          <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
-            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
-              Remarks (For Future Activity Improvements)
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between mb-1">
-                  <strong className="text-slate-900 block">1. Program Flow</strong>
-                  {diffByPath.get('recommendations.programFlow') && (
-                    <InlineRevisionBadge diff={diffByPath.get('recommendations.programFlow')} />
-                  )}
-                </div>
-                <p className="text-slate-600">
-                  • <em>Obs:</em> {report.recommendations?.programFlow?.observations || '—'}
-                </p>
-                <p className="text-slate-700 mt-1">
-                  • <em>Rec:</em> {report.recommendations?.programFlow?.recommendations || '—'}
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between mb-1">
-                  <strong className="text-slate-900 block">2. Participant Engagement</strong>
-                  {diffByPath.get('recommendations.participantEngagement') && (
-                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantEngagement')} />
-                  )}
-                </div>
-                <p className="text-slate-600">
-                  • <em>Obs:</em> {report.recommendations?.participantEngagement?.observations || '—'}
-                </p>
-                <p className="text-slate-700 mt-1">
-                  • <em>Rec:</em> {report.recommendations?.participantEngagement?.recommendations || '—'}
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between mb-1">
-                  <strong className="text-slate-900 block">3. Technical Setup</strong>
-                  {diffByPath.get('recommendations.technicalSetup') && (
-                    <InlineRevisionBadge diff={diffByPath.get('recommendations.technicalSetup')} />
-                  )}
-                </div>
-                <p className="text-slate-600">
-                  • <em>Obs:</em> {report.recommendations?.technicalSetup?.observations || '—'}
-                </p>
-                <p className="text-slate-700 mt-1">
-                  • <em>Rec:</em> {report.recommendations?.technicalSetup?.recommendations || '—'}
-                </p>
-              </div>
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
-                <div className="flex items-center justify-between mb-1">
-                  <strong className="text-slate-900 block">4. Participant Preparedness</strong>
-                  {diffByPath.get('recommendations.participantPreparedness') && (
-                    <InlineRevisionBadge diff={diffByPath.get('recommendations.participantPreparedness')} />
-                  )}
-                </div>
-                <p className="text-slate-600">
-                  • <em>Obs:</em> {report.recommendations?.participantPreparedness?.observations || '—'}
-                </p>
-                <p className="text-slate-700 mt-1">
-                  • <em>Rec:</em> {report.recommendations?.participantPreparedness?.recommendations || '—'}
-                </p>
-              </div>
+          <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-800">
+                Remarks (For Future Activity Improvements)
+              </h4>
+              {(diffByPath.get('remarks') || diffByPath.get('recommendations')) && (
+                <InlineRevisionBadge diff={diffByPath.get('remarks') || diffByPath.get('recommendations')} />
+              )}
+            </div>
+            <div className="bg-slate-50 p-3.5 rounded-lg border border-slate-200 text-xs text-slate-700 leading-relaxed whitespace-pre-line">
+              {resolvePARRemarksDescription(report) || '—'}
             </div>
           </div>
 

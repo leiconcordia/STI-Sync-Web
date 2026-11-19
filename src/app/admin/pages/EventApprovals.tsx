@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import {
   Calendar, Plus, Eye, Search, ChevronLeft, ChevronRight,
   Filter, ChevronDown, RotateCcw, MapPin, Download,
-  Clock, FileEdit, CheckCircle2, XCircle, FolderArchive, Trash2,
+  Clock, FileEdit, CheckCircle2, XCircle, Trash2,
   FileText, SlidersHorizontal, Lock, Edit, AlertTriangle, ArrowRight
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
@@ -22,14 +22,12 @@ import { useMiscFeeConfigs } from "../../modules/finance/hooks/useMiscFeeStream"
 import {
   buildAvailableSchoolYears,
   compareActivityProposals,
-  matchesSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+  resolveDefaultSchoolYearFilter,
   resolveUnifiedActiveAcademicTerm,
 } from "../../modules/workflow/utils/table-priority-sort.utils";
 import {
-  CancelEventModal,
-  canCancelEvent,
   ConcludeEventModal,
-  ArchiveEventModal,
   DeleteArchivedEventModal,
   restoreArchivedEvent,
   isProposalFullySigned,
@@ -39,8 +37,6 @@ import {
   isOfficerProposal,
   withdrawProposal,
   deleteEvent,
-  isEventCancelled,
-  isEventCancellationPending,
 } from "../../modules/events";
 import { useAdviserProfile } from "../../modules/auth/hooks/useAdviserProfile";
 import {
@@ -57,7 +53,7 @@ import { TrashRepositoryViewer } from "../../modules/workflow/components/TrashRe
 
 const ITEMS_PER_PAGE = 8;
 
-type TabValue = "all" | "urgent" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "cancelled" | "trash";
+type TabValue = "all" | "urgent" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "trash";
 type DateRangeOption = "all" | "this_week" | "this_month" | "custom";
 
 function isWithinDateRange(
@@ -169,7 +165,6 @@ export function EventApprovals() {
   const [isProposalModalOpen, setIsProposalModalOpen] = useState(false);
   const [resumeDraft, setResumeDraft] = useState<EventDocument | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventDocument | null>(null);
-  const [cancellingEvent, setCancellingEvent] = useState<EventDocument | null>(null);
   const { profile: adviserProfile } = useAdviserProfile();
 
   const { globalSearch } = useOutletContext<{ globalSearch: string }>() || { globalSearch: "" };
@@ -212,22 +207,6 @@ export function EventApprovals() {
       }),
     [activeMiscConfig, miscConfigs, activeCollegePeriod, activeShsPeriod]
   );
-  const lastAutoPeriodRef = useRef<string>("");
-
-  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
-  useEffect(() => {
-    if (!unifiedActiveTerm.schoolYear) return;
-    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
-    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
-      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
-      setFilterSemester(unifiedActiveTerm.semester || "all");
-      setHasInitializedPeriod(true);
-      lastAutoPeriodRef.current = periodKey;
-    } else if (!lastAutoPeriodRef.current) {
-      lastAutoPeriodRef.current = periodKey;
-    }
-  }, [unifiedActiveTerm, hasInitializedPeriod]);
-
   // Derived available school years and semesters
   const availableSchoolYears = useMemo(
     () =>
@@ -239,6 +218,29 @@ export function EventApprovals() {
       }),
     [miscConfigs, semesters, events, unifiedActiveTerm.schoolYear]
   );
+
+  const defaultSchoolYear = useMemo(
+    () =>
+      resolveDefaultSchoolYearFilter({
+        unifiedSchoolYear: unifiedActiveTerm.schoolYear,
+        availableSchoolYears,
+      }),
+    [unifiedActiveTerm.schoolYear, availableSchoolYears]
+  );
+  const lastAutoPeriodRef = useRef<string>("");
+
+  // Sync default filter to active/current School Year (showing all semesters in Current SY by default)
+  useEffect(() => {
+    if (!defaultSchoolYear) return;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== defaultSchoolYear)) {
+      setFilterSchoolYear(defaultSchoolYear);
+      setFilterSemester("all");
+      setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    }
+  }, [defaultSchoolYear, hasInitializedPeriod]);
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -288,12 +290,11 @@ export function EventApprovals() {
   // Modal states for lifecycle actions
   const [configuringEvent, setConfiguringEvent] = useState<EventDocument | null>(null);
   const [concludingEvent, setConcludingEvent] = useState<EventDocument | null>(null);
-  const [archivingEvent, setArchivingEvent] = useState<EventDocument | null>(null);
   const [deletingArchivedEvent, setDeletingArchivedEvent] = useState<EventDocument | null>(null);
 
   useEffect(() => {
     const tabParam = searchParams.get("tab");
-    if (tabParam && ["all", "urgent", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "cancelled", "trash"].includes(tabParam)) {
+    if (tabParam && ["all", "urgent", "pending", "approved", "returned", "completed", "archived", "rejected", "drafts", "trash"].includes(tabParam)) {
       setActiveTab(tabParam as TabValue);
       setCurrentPage(1);
     }
@@ -382,9 +383,68 @@ export function EventApprovals() {
     return refs;
   }, [events]);
 
+  const resolveApStatusFlags = (event: EventDocument) => {
+    const isDraft =
+      event.proposalStatus === "draft" ||
+      event.status === "draft" ||
+      (event as any).lifecycleStatus === "draft";
+    const isCancelled =
+      event.status === "cancelled" ||
+      event.proposalStatus === "cancelled" ||
+      Boolean((event as any).isCancelled);
+    const isRet =
+      event.proposalStatus === "returned" ||
+      event.proposalStatus === "returned_for_revision" ||
+      event.status === "returned" ||
+      (event as any).lifecycleStatus === "returned" ||
+      Boolean((event as any).isReturned) ||
+      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
+    const chain = (event as any).approvalChain || [];
+    const hasChain = Array.isArray(chain) && chain.length > 0;
+    const fullySigned = isProposalFullySigned(chain);
+    const isApprovedStatus =
+      !isCancelled &&
+      ((hasChain && fullySigned) ||
+        (!isRet &&
+          (event.proposalStatus === "approved" ||
+            event.status === "approved" ||
+            (event as any).status === "approved_president" ||
+            (event as any).isApproved === true)));
+    const effectiveIsRet = !isApprovedStatus && !isCancelled && isRet;
+    const isDone =
+      !isCancelled &&
+      (event.status === "completed" ||
+        event.proposalStatus === "completed" ||
+        (isApprovedStatus && isEventPast(event)));
+    const isPending =
+      !isCancelled &&
+      !isApprovedStatus &&
+      !effectiveIsRet &&
+      (event.proposalStatus === "pending" ||
+        event.proposalStatus === "pending_review" ||
+        event.proposalStatus === "under_review");
+    return { isDraft, isCancelled, isApprovedStatus, effectiveIsRet, isDone, isPending };
+  };
+
+  // Academic Period scoped events & drafts (KPI cards, tab counts, and table share this base slice)
+  const periodEvents = useMemo(
+    () =>
+      events.filter((event) =>
+        matchesRecordAcademicPeriod({
+          record: event,
+          semesters,
+          filterSchoolYear,
+          filterSemester,
+          availableSchoolYears,
+          fallbackDate: getFirstSessionDate(event),
+        })
+      ),
+    [events, semesters, filterSchoolYear, filterSemester, availableSchoolYears]
+  );
+
   // Filtered event list (Sorted LATEST FIRST by default)
   const filteredEvents = useMemo(() => {
-    return events
+    return periodEvents
       .filter((event) => {
         // 1. Soft-deleted events are sent to Archive Center Trash and hidden from standard tables
         if (event.isDeleted) return false;
@@ -397,76 +457,21 @@ export function EventApprovals() {
           if (event.isArchived) return false;
         }
 
+        const { isDraft, isCancelled, isApprovedStatus, effectiveIsRet, isDone, isPending } = resolveApStatusFlags(event);
+
         // Draft isolation: Drafts do not appear in active approval tables
-        if (event.proposalStatus === "draft" || event.status === "draft" || (event as any).lifecycleStatus === "draft") return false;
-
-        const isRet =
-          event.proposalStatus === "returned" ||
-          event.proposalStatus === "returned_for_revision" ||
-          event.status === "returned" ||
-          (event as any).lifecycleStatus === "returned" ||
-          Boolean((event as any).isReturned) ||
-          Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
-
-        // Tab filter
-        const isCancelled = event.status === "cancelled" || event.proposalStatus === "cancelled";
-        if (activeTab === "cancelled") {
-          if (!isCancelled) return false;
-        } else if (isCancelled && activeTab !== "all" && activeTab !== "archived") {
-          return false;
-        }
-
-        const chain = (event as any).approvalChain || [];
-        const hasChain = Array.isArray(chain) && chain.length > 0;
-        const fullySigned = isProposalFullySigned(chain);
-        const isCancellationPending = isEventCancellationPending(event);
-        const isApprovedStatus = !isCancelled && !isCancellationPending && ((hasChain && fullySigned) || (!isRet && (event.proposalStatus === "approved" || event.status === "approved" || (event as any).status === "approved_president" || (event as any).isApproved === true)));
-        const effectiveIsRet = !isApprovedStatus && !isCancelled && isRet;
+        if (isDraft) return false;
 
         if (activeTab === "urgent") {
-          if (
-            !Boolean((event as any).isUrgent) ||
-            isApprovedStatus ||
-            effectiveIsRet ||
-            (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review" && event.proposalStatus !== "under_review")
-          ) {
+          if (!Boolean((event as any).isUrgent) || !isPending || (event as any).isApproved) {
             return false;
           }
         }
-        if (activeTab === "pending" && (isApprovedStatus || effectiveIsRet || (event.proposalStatus !== "pending" && event.proposalStatus !== "pending_review" && event.proposalStatus !== "under_review"))) return false;
-        if (activeTab === "returned") {
-          if (!effectiveIsRet) return false;
-        }
-        if (activeTab === "approved") {
-          const isDone = event.status === "completed" || event.proposalStatus === "completed" || isEventPast(event);
-          if (!isApprovedStatus || isDone || effectiveIsRet) return false;
-        }
-        if (activeTab === "completed") {
-          const isDone = event.status === "completed" || event.proposalStatus === "completed" || (isApprovedStatus && isEventPast(event));
-          if (!isDone) return false;
-        }
-        if (activeTab === "rejected" && event.proposalStatus !== "rejected") return false;
-
-        // School Year filter (strict: untagged legacy records stay in baseline SY only)
-        if (filterSchoolYear !== "all") {
-          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
-          const evSy = event.schoolYear || sem?.academicYear;
-          if (!matchesSchoolYearFilter({ recordSchoolYear: evSy, filterSchoolYear, availableSchoolYears })) {
-            return false;
-          }
-        }
-
-        // Semester filter
-        if (filterSemester !== "all") {
-          const sem = event.semesterId ? semesters.find((s) => s.id === event.semesterId) : null;
-          const evTerm = event.semester || (event as any).term || sem?.semester || (sem as any)?.term;
-          if (evTerm) {
-            if (evTerm !== filterSemester) return false;
-          } else if (sem && sem.startDate && sem.endDate) {
-            const d = getFirstSessionDate(event);
-            if (!d || d < sem.startDate || d > sem.endDate) return false;
-          }
-        }
+        if (activeTab === "pending" && !isPending) return false;
+        if (activeTab === "returned" && !effectiveIsRet) return false;
+        if (activeTab === "approved" && (!isApprovedStatus || isDone || effectiveIsRet)) return false;
+        if (activeTab === "completed" && !isDone) return false;
+        if (activeTab === "rejected" && (event.proposalStatus !== "rejected" || isCancelled)) return false;
 
         // Organization / Origin filter (All vs Club Proposals vs SAS Authored vs Specific Org)
         if (filterOrg === "club_proposals") {
@@ -499,40 +504,31 @@ export function EventApprovals() {
         return true;
       })
       .sort(compareActivityProposals);
-  }, [events, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo, semesters, availableSchoolYears, orgMap]);
+  }, [periodEvents, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, customFrom, customTo, orgMap]);
+
+  const periodDrafts = useMemo(() => {
+    return drafts.filter((draft) => {
+      // Admin only manages SAS / institutional drafts; student org drafts belong to officers
+      if (isOfficerProposal(draft)) return false;
+      if (draft.id && nonDraftRefs.has(draft.id)) return false;
+      if (draft.referenceId && nonDraftRefs.has(draft.referenceId)) return false;
+      if (draft.title && nonDraftRefs.has(draft.title.trim().toLowerCase())) return false;
+
+      return matchesRecordAcademicPeriod({
+        record: draft,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: getFirstSessionDate(draft),
+      });
+    });
+  }, [drafts, nonDraftRefs, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
 
   // Filtered drafts list (Urgents first, then latest submissions)
   const filteredDrafts = useMemo(() => {
-    return drafts
+    return periodDrafts
       .filter((draft) => {
-        // Admin only manages SAS / institutional drafts; student org drafts belong to officers
-        if (isOfficerProposal(draft)) return false;
-
-        if (draft.id && nonDraftRefs.has(draft.id)) return false;
-        if (draft.referenceId && nonDraftRefs.has(draft.referenceId)) return false;
-        if (draft.title && nonDraftRefs.has(draft.title.trim().toLowerCase())) return false;
-
-        // School Year filter
-        if (filterSchoolYear !== "all") {
-          const sem = draft.semesterId ? semesters.find((s) => s.id === draft.semesterId) : null;
-          const draftSy = draft.schoolYear || sem?.academicYear;
-          if (!matchesSchoolYearFilter({ recordSchoolYear: draftSy, filterSchoolYear, availableSchoolYears })) {
-            return false;
-          }
-        }
-
-        // Semester filter
-        if (filterSemester !== "all") {
-          const sem = draft.semesterId ? semesters.find((s) => s.id === draft.semesterId) : null;
-          const draftTerm = draft.semester || (draft as any).term || sem?.semester || (sem as any)?.term;
-          if (draftTerm) {
-            if (draftTerm !== filterSemester) return false;
-          } else if (sem && sem.startDate && sem.endDate) {
-            const d = getFirstSessionDate(draft);
-            if (!d || d < sem.startDate || d > sem.endDate) return false;
-          }
-        }
-
         if (filterOrg === "club_proposals") {
           if (isSasOrg(draft.hostingOrgId) || isSasCreatedEvent(draft, orgMap)) return false;
         } else if (filterOrg === "sas") {
@@ -546,51 +542,55 @@ export function EventApprovals() {
         return true;
       })
       .sort(compareActivityProposals);
-  }, [drafts, nonDraftRefs, filterOrg, filterCategory, filterSchoolYear, filterSemester, searchQuery, semesters, availableSchoolYears]);
+  }, [periodDrafts, filterOrg, filterCategory, searchQuery, orgMap]);
 
-  // Counts (excluding archived & soft-deleted from active tallies)
-  const allCount = events.filter((e) => !e.isArchived && !e.isDeleted && e.proposalStatus !== "draft" && !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))).length;
+  // Counts scoped to active School Year / Semester filter (excluding archived & soft-deleted from active tallies)
+  const allCount = periodEvents.filter((e) => !e.isArchived && !e.isDeleted && !resolveApStatusFlags(e).isDraft).length;
   const urgentPendingEvents = useMemo(
     () =>
-      events.filter(
-        (e) =>
+      periodEvents.filter((e) => {
+        const { isDraft, isPending } = resolveApStatusFlags(e);
+        return (
           Boolean((e as any).isUrgent) &&
-          (e.proposalStatus === "pending" || e.proposalStatus === "pending_review" || e.proposalStatus === "under_review") &&
-          e.status !== "cancelled" &&
           !e.isArchived &&
           !e.isDeleted &&
-          e.proposalStatus !== "approved" &&
+          !isDraft &&
+          isPending &&
           !(e as any).isApproved
-      ),
-    [events]
+        );
+      }),
+    [periodEvents]
   );
   const urgentCount = urgentPendingEvents.length;
-  const pendingCount = events.filter((e) => (e.proposalStatus === "pending" || e.proposalStatus === "pending_review" || e.proposalStatus === "under_review") && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const approvedCount = events.filter((e) => e.proposalStatus === "approved" && e.status !== "completed" && !isEventPast(e) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const returnedCount = events.filter((e) => !isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const completedCount = events.filter((e) => (e.status === "completed" || e.proposalStatus === "completed" || (e.proposalStatus === "approved" && isEventPast(e))) && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const archivedCount = events.filter((e) => e.isArchived === true && !e.isDeleted).length;
-  const rejectedCount = events.filter((e) => e.proposalStatus === "rejected" && e.status !== "cancelled" && !e.isArchived && !e.isDeleted).length;
-  const cancelledCount = events.filter((e) => (e.status === "cancelled" || e.proposalStatus === "cancelled") && !e.isArchived && !e.isDeleted).length;
-  const proposalsCount = events.filter(
-    (e) =>
-      !isSasOrg(e.hostingOrgId) &&
-      !isSasCreatedEvent(e, orgMap) &&
-      !e.isArchived &&
-      !e.isDeleted &&
-      e.proposalStatus !== "draft" &&
-      (e as any).lifecycleStatus !== "draft" &&
-      !(isOfficerProposal(e) && (e.proposalStatus === "returned" || (e as any).isReturned))
+  const pendingCount = periodEvents.filter((e) => {
+    const { isDraft, isPending } = resolveApStatusFlags(e);
+    return !e.isArchived && !e.isDeleted && !isDraft && isPending;
+  }).length;
+  const approvedCount = periodEvents.filter((e) => {
+    const { isDraft, isApprovedStatus, isDone, effectiveIsRet } = resolveApStatusFlags(e);
+    return !e.isArchived && !e.isDeleted && !isDraft && isApprovedStatus && !isDone && !effectiveIsRet;
+  }).length;
+  const returnedCount = periodEvents.filter((e) => {
+    const { isDraft, effectiveIsRet } = resolveApStatusFlags(e);
+    return !e.isArchived && !e.isDeleted && !isDraft && effectiveIsRet;
+  }).length;
+  const completedCount = periodEvents.filter((e) => {
+    const { isDraft, isDone } = resolveApStatusFlags(e);
+    return !e.isArchived && !e.isDeleted && !isDraft && isDone;
+  }).length;
+  const archivedCount = periodEvents.filter((e) => e.isArchived === true && !e.isDeleted).length;
+  const rejectedCount = periodEvents.filter(
+    (e) => e.proposalStatus === "rejected" && e.status !== "cancelled" && !e.isArchived && !e.isDeleted
   ).length;
-  const saoMadeCount = events.filter(
-    (e) =>
-      (isSasOrg(e.hostingOrgId) || isSasCreatedEvent(e, orgMap)) &&
-      !e.isArchived &&
-      !e.isDeleted &&
-      e.proposalStatus !== "draft" &&
-      (e as any).lifecycleStatus !== "draft"
-  ).length;
-  const draftsCount = filteredDrafts.length;
+  const proposalsCount = periodEvents.filter((e) => {
+    const { isDraft } = resolveApStatusFlags(e);
+    return !isSasOrg(e.hostingOrgId) && !isSasCreatedEvent(e, orgMap) && !e.isArchived && !e.isDeleted && !isDraft;
+  }).length;
+  const saoMadeCount = periodEvents.filter((e) => {
+    const { isDraft } = resolveApStatusFlags(e);
+    return (isSasOrg(e.hostingOrgId) || isSasCreatedEvent(e, orgMap)) && !e.isArchived && !e.isDeleted && !isDraft;
+  }).length;
+  const draftsCount = periodDrafts.length;
 
   // Active list & Pagination
   const activeList = activeTab === "drafts" ? filteredDrafts : filteredEvents;
@@ -729,8 +729,8 @@ export function EventApprovals() {
   };
 
   const resetFilters = () => {
-    setFilterSchoolYear(unifiedActiveTerm.schoolYear || "all");
-    setFilterSemester(unifiedActiveTerm.semester || "all");
+    setFilterSchoolYear(defaultSchoolYear || "all");
+    setFilterSemester("all");
     setFilterOrg("all");
     setFilterDateRange("all");
     setFilterCategory("all");
@@ -740,8 +740,8 @@ export function EventApprovals() {
   };
 
   const hasActiveFilters =
-    filterSchoolYear !== (unifiedActiveTerm.schoolYear || "all") ||
-    filterSemester !== (unifiedActiveTerm.semester || "all") ||
+    filterSchoolYear !== (defaultSchoolYear || "all") ||
+    filterSemester !== "all" ||
     filterOrg !== "all" ||
     filterDateRange !== "all" ||
     filterCategory !== "all" ||
@@ -822,18 +822,6 @@ export function EventApprovals() {
         <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
           Approved
-        </span>
-      );
-    }
-
-    if (status === "cancelled" || event?.status === "cancelled" || event?.proposalStatus === "cancelled") {
-      return (
-        <span 
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 cursor-help"
-          title={event?.cancellationReason ? `Cancelled: ${event.cancellationReason}` : 'Event Cancelled'}
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-          Cancelled
         </span>
       );
     }
@@ -1054,7 +1042,6 @@ export function EventApprovals() {
               { key: "returned", label: "Returned", count: returnedCount },
               { key: "completed", label: "Completed", count: completedCount },
               { key: "archived", label: "Archived", count: archivedCount },
-              { key: "cancelled", label: "Cancelled", count: cancelledCount },
               { key: "rejected", label: "Rejected", count: rejectedCount },
               { key: "drafts", label: "Drafts", count: draftsCount },
               { key: "trash", label: "Trash", count: undefined },
@@ -1367,30 +1354,25 @@ export function EventApprovals() {
                   (paginatedItems as EventDocument[]).map((event) => {
                     const orgAcronym = getOrgAcronym(event);
                     const orgLogo = getOrgLogo(event);
-                    const isCancelled = isEventCancelled(event);
-                    const isCancellationPending = isEventCancellationPending(event);
-                    const isRejected = !isCancelled && event.proposalStatus === "rejected";
+                    const isRejected = event.proposalStatus === "rejected";
                     const isReturned =
-                      !isCancelled &&
-                      (event.proposalStatus === "returned" ||
+                      event.proposalStatus === "returned" ||
                       event.proposalStatus === "returned_for_revision" ||
                       (event as any).status === "returned" ||
                       (event as any).lifecycleStatus === "returned" ||
                       Boolean((event as any).isReturned) ||
-                      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0));
+                      Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
                     const chain = (event as any).approvalChain || [];
                     const hasChain = Array.isArray(chain) && chain.length > 0;
                     const fullySigned = isProposalFullySigned(chain);
                     const isApproved =
-                      !isCancelled &&
-                      !isCancellationPending &&
-                      ((hasChain && fullySigned) ||
+                      (hasChain && fullySigned) ||
                       (!isReturned &&
                         (event.proposalStatus === "approved" ||
                           event.status === "approved" ||
                           (event as any).status === "approved_president" ||
-                          (event as any).isApproved === true)));
-                    const effectiveIsReturned = !isApproved && !isCancelled && isReturned;
+                          (event as any).isApproved === true));
+                    const effectiveIsReturned = !isApproved && isReturned;
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
                     const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
@@ -1500,17 +1482,7 @@ export function EventApprovals() {
 
                         {/* Signatory Stage */}
                         <td className="py-3.5 px-4 whitespace-nowrap">
-                          {isCancelled ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                              <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                              Cancelled
-                            </span>
-                          ) : isCancellationPending ? (
-                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                              Cancellation Pending
-                            </span>
-                          ) : isRejected ? (
+                          {isRejected ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
                               <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
                               Rejected
@@ -1657,7 +1629,7 @@ export function EventApprovals() {
                               </>
                             ) : (
                               <>
-                                {!isCancelled && !isCancellationPending && isApproved && event.status !== 'completed' && isSasCreatedEvent(event, orgMap) && (
+                                {isApproved && event.status !== 'completed' && isSasCreatedEvent(event, orgMap) && (
                                   <button
                                     onClick={() => setConcludingEvent(event)}
                                     className="px-2.5 py-1.5 bg-teal-50 hover:bg-teal-100 text-teal-700 border border-teal-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1665,17 +1637,6 @@ export function EventApprovals() {
                                   >
                                     <CheckCircle2 className="w-3.5 h-3.5" />
                                     <span>Conclude</span>
-                                  </button>
-                                )}
-
-                                {!isCancelled && !isCancellationPending && (event.status === 'completed' || event.proposalStatus === 'completed' || isEventPast(event)) && isSasCreatedEvent(event, orgMap) && (
-                                  <button
-                                    onClick={() => setArchivingEvent(event)}
-                                    className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title="Archive Completed Event"
-                                  >
-                                    <FolderArchive className="w-3.5 h-3.5" />
-                                    <span>Archive</span>
                                   </button>
                                 )}
                               </>
@@ -1720,35 +1681,12 @@ export function EventApprovals() {
         />
       )}
 
-      {/* Cancel Event Modal */}
-      {cancellingEvent && (
-        <CancelEventModal
-          isOpen={!!cancellingEvent}
-          onClose={() => setCancellingEvent(null)}
-          event={cancellingEvent}
-          userRole="admin"
-          userId={adviserProfile?.uid || 'admin-user'}
-          userName={adviserProfile?.displayName || 'SAS Admin'}
-        />
-      )}
-
       {/* Conclude Event Modal */}
       {concludingEvent && (
         <ConcludeEventModal
           isOpen={!!concludingEvent}
           onClose={() => setConcludingEvent(null)}
           event={concludingEvent}
-          adminUid={adviserProfile?.uid || 'admin-user'}
-          adminName={adviserProfile?.displayName || 'SAS Admin'}
-        />
-      )}
-
-      {/* Archive Event Modal */}
-      {archivingEvent && (
-        <ArchiveEventModal
-          isOpen={!!archivingEvent}
-          onClose={() => setArchivingEvent(null)}
-          event={archivingEvent}
           adminUid={adviserProfile?.uid || 'admin-user'}
           adminName={adviserProfile?.displayName || 'SAS Admin'}
         />

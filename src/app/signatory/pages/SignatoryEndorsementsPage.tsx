@@ -948,7 +948,7 @@ export default function SignatoryEndorsementsPage() {
                 <p className="text-xs text-gray-500 max-w-md mx-auto mt-1 leading-relaxed">
                   {searchQuery
                     ? 'No Post-Activity Reports match your search query.'
-                    : 'When concluded events submit their Post-Activity Report with attendance audits and categorized recommendations, they will appear here for your endorsement.'}
+                    : 'When concluded events submit their Post-Activity Report with attendance audits and remarks, they will appear here for your endorsement.'}
                 </p>
               </div>
             )}

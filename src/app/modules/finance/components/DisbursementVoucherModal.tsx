@@ -28,6 +28,23 @@ import { isSasCreatedEvent } from '../../events/utils/organization-display.utils
 import { useMiscFeeConfigs } from '../hooks/useMiscFeeStream';
 import { useEventPayablesStream } from '../hooks/usePayableStream';
 import { useRetainedActivityFunds } from '../hooks/useRetainedFundStream';
+import {
+  getCachedSasSignatoryConfig,
+  getSasSignatoryConfig,
+} from '../../signatories/services/sas-signatory.service';
+
+const GENERIC_ADMIN_PLACEHOLDERS = new Set([
+  'sas administrator',
+  'sao administrator',
+  'sao admin',
+  'sas admin',
+  'admin',
+  'system',
+]);
+
+function isGenericAdminPlaceholder(name?: string | null): boolean {
+  return !name || GENERIC_ADMIN_PLACEHOLDERS.has(name.trim().toLowerCase());
+}
 
 interface DisbursementVoucherModalProps {
   isOpen: boolean;
@@ -109,6 +126,24 @@ export default function DisbursementVoucherModal({
   );
   const [proposalFallbackData, setProposalFallbackData] = useState<Record<string, any> | null>(null);
   const [legacyFallbackBucketId, setLegacyFallbackBucketId] = useState<string>('');
+  const [sasAdminDisplayName, setSasAdminDisplayName] = useState<string>(
+    () => getCachedSasSignatoryConfig()?.name || ''
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    getSasSignatoryConfig()
+      .then((cfg) => {
+        if (!cancelled && cfg?.name && !isGenericAdminPlaceholder(cfg.name)) {
+          setSasAdminDisplayName(cfg.name.trim());
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
@@ -456,11 +491,26 @@ export default function DisbursementVoucherModal({
 
     setIsSaving(true);
     try {
-      const uploaderName =
+      const rawUploaderName =
         userProfile?.fullName ||
         userProfile?.displayName ||
         userProfile?.name ||
-        (userRole === 'admin' ? 'SAS Administrator' : 'Club Adviser');
+        '';
+      let uploaderName = rawUploaderName.trim();
+      if (userRole === 'admin' && isGenericAdminPlaceholder(uploaderName)) {
+        let resolvedName = sasAdminDisplayName;
+        if (!resolvedName || isGenericAdminPlaceholder(resolvedName)) {
+          try {
+            const cfg = await getSasSignatoryConfig();
+            if (cfg?.name && !isGenericAdminPlaceholder(cfg.name)) {
+              resolvedName = cfg.name.trim();
+            }
+          } catch {}
+        }
+        uploaderName = resolvedName || 'SAS Administrator';
+      } else if (!uploaderName) {
+        uploaderName = userRole === 'admin' ? 'SAS Administrator' : 'Club Adviser';
+      }
 
       const uploaderRole: 'adviser' | 'admin' = userRole === 'admin' ? 'admin' : 'adviser';
       const effectiveDisbursedAmount = approvedCeiling;
@@ -643,7 +693,15 @@ export default function DisbursementVoucherModal({
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
                 <span>
-                  Uploaded by <strong>{existingVoucher.uploadedByName}</strong> ({existingVoucher.uploadedByRole.toUpperCase()}) on{' '}
+                  Uploaded by{' '}
+                  <strong>
+                    {existingVoucher.uploadedByRole === 'admin' &&
+                    isGenericAdminPlaceholder(existingVoucher.uploadedByName) &&
+                    sasAdminDisplayName
+                      ? sasAdminDisplayName
+                      : existingVoucher.uploadedByName}
+                  </strong>{' '}
+                  ({existingVoucher.uploadedByRole.toUpperCase()}) on{' '}
                   {new Date(existingVoucher.uploadedAt).toLocaleDateString()}
                 </span>
               </div>

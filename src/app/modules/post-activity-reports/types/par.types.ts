@@ -165,12 +165,14 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
     issuesEncountered: string; // "No major issues encountered" if none
   };
 
-  // ─── Section 5: Categorized Recommendations (Exact 4 STI Areas) ───
-  recommendations: {
-    programFlow: { observations: string; recommendations: string };
-    participantEngagement: { observations: string; recommendations: string };
-    technicalSetup: { observations: string; recommendations: string };
-    participantPreparedness: { observations: string; recommendations: string };
+  // ─── Section 5: Remarks (Single Description — For Future Activity Improvements) ───
+  remarks?: string;
+  recommendations?: {
+    description?: string;
+    programFlow?: { observations: string; recommendations: string };
+    participantEngagement?: { observations: string; recommendations: string };
+    technicalSetup?: { observations: string; recommendations: string };
+    participantPreparedness?: { observations: string; recommendations: string };
   };
 
   // ─── Section 6: Photos & Official Attachments Checklist (VIII. Attachments) ───

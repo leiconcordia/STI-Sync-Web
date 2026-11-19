@@ -26,6 +26,7 @@ import { stripSasPhrases } from '../../../events/utils/organization-display.util
 import { useAllEvents } from '../../../events/hooks/useEventStream';
 import {
   filterHistoricalMatches,
+  hydrateHistoricalMatch,
   mapHistoricalLineItems,
   type HistoricalActivityMatch,
 } from '../../services/historical-budget.service';
@@ -251,8 +252,13 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
   const handleUseAsTemplate = async (match: HistoricalActivityMatch) => {
     try {
       // 1. Retrieve full proposal doc from match or fetch fresh from Firestore
+      // Always fetch activity_proposals when objectives OR financialProjections are absent on the event doc
       let templateDoc: any = match.rawProposal;
-      if (!templateDoc || !templateDoc.objectives) {
+      const lacksFinancials =
+        !templateDoc?.financialProjections ||
+        (!(templateDoc.financialProjections.expenses?.length) &&
+          !(templateDoc.financialProjections.revenues?.length));
+      if (!templateDoc || !templateDoc.objectives || lacksFinancials) {
         const fetched = await getProposalById(match.id);
         if (fetched) {
           templateDoc = { ...(templateDoc || {}), ...fetched };
@@ -263,7 +269,8 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
         templateDoc = match;
       }
 
-      // 2. Map financial projections for Step 6 with Last Year's Actual populated
+      // 2. Hydrate financial baseline with full proposal financials & map Last Year's Actual
+      const hydratedMatch = await hydrateHistoricalMatch(match, templateDoc);
       const currentProjections = formData.financialProjections || {
         revenues: [],
         expenses: [],
@@ -273,7 +280,7 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
       };
 
       const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
-        match,
+        hydratedMatch,
         currentProjections
       );
 
@@ -316,9 +323,9 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
         // Step 6: Financials
         financialProjections: recalculatedProjections,
         historicalReference: {
-          eventId: match.id,
-          eventTitle: match.title,
-          schoolYear: match.schoolYear,
+          eventId: hydratedMatch.id,
+          eventTitle: hydratedMatch.title,
+          schoolYear: hydratedMatch.schoolYear,
           originalTotalAmount: originalHistoricalTotal,
           isManuallyEdited: false,
           isLocked: true,
@@ -526,33 +533,39 @@ export default function Step1GeneralInfo({ formData, onChange, errors = {}, curr
                       ) : (
                         <button
                           type="button"
-                          onClick={() => {
-                            const currentProjections = formData.financialProjections || {
-                              revenues: [],
-                              expenses: [],
-                              totalRevenue: 0,
-                              totalExpenses: 0,
-                              balance: 0,
-                            };
-                            const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
-                              m,
-                              currentProjections
-                            );
-                            onChange({
-                              financialProjections: recalculatedProjections,
-                              historicalReference: {
-                                eventId: m.id,
-                                eventTitle: m.title,
-                                schoolYear: m.schoolYear,
-                                originalTotalAmount: originalHistoricalTotal,
-                                isManuallyEdited: false,
-                                isLocked: true,
-                                linkedAt: new Date().toISOString(),
-                              },
-                            });
-                            toast.success(`Linked "${m.title}" historical reference to Step 6 Financials!`, {
-                              description: 'Last Year\'s Actual column populated for reference — configure This Year\'s budget via your selected funds.',
-                            });
+                          onClick={async () => {
+                            try {
+                              const hydratedMatch = await hydrateHistoricalMatch(m);
+                              const currentProjections = formData.financialProjections || {
+                                revenues: [],
+                                expenses: [],
+                                totalRevenue: 0,
+                                totalExpenses: 0,
+                                balance: 0,
+                              };
+                              const { recalculatedProjections, originalHistoricalTotal } = mapHistoricalLineItems(
+                                hydratedMatch,
+                                currentProjections
+                              );
+                              onChange({
+                                financialProjections: recalculatedProjections,
+                                historicalReference: {
+                                  eventId: hydratedMatch.id,
+                                  eventTitle: hydratedMatch.title,
+                                  schoolYear: hydratedMatch.schoolYear,
+                                  originalTotalAmount: originalHistoricalTotal,
+                                  isManuallyEdited: false,
+                                  isLocked: true,
+                                  linkedAt: new Date().toISOString(),
+                                },
+                              });
+                              toast.success(`Linked "${m.title}" historical reference to Step 6 Financials!`, {
+                                description: 'Last Year\'s Actual column populated for reference — configure This Year\'s budget via your selected funds.',
+                              });
+                            } catch (err) {
+                              console.error('Failed to link historical budget:', err);
+                              toast.error('Failed to load historical budget details.');
+                            }
                           }}
                           className="px-2.5 py-1 text-[11px] font-bold bg-[#001A4D] hover:bg-[#0E4EBD] text-white rounded-md transition-colors shadow-2xs flex items-center gap-1 cursor-pointer"
                           title="Auto-fill Last Year's Actual column in Step 6"

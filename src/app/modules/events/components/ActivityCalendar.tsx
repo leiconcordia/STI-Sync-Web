@@ -19,6 +19,7 @@ import {
   Sparkles,
   Users,
   CheckCircle2,
+  XCircle,
   Calendar as CalendarIcon,
   Layers,
   Building,
@@ -520,7 +521,7 @@ export default function ActivityCalendar({
                     return (
                       <div
                         key={act.id}
-                        className="bg-white border border-gray-200/90 rounded-xl p-3.5 shadow-2xs hover:border-blue-300 hover:shadow-xs transition-all space-y-2.5"
+                        className="bg-white border border-gray-200/90 hover:border-blue-300 rounded-xl p-3.5 shadow-2xs hover:shadow-xs transition-all space-y-2.5"
                       >
                         <div className="flex items-center justify-between gap-2 flex-wrap">
                           <div className="flex items-center gap-2">

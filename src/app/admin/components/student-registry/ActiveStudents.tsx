@@ -11,7 +11,6 @@ import { formatTimestampDate } from '../../../modules/students/utils/date.utils'
 import { useCourses, useSections } from '../../../modules/academic/hooks/useAcademicStream';
 import { useOrganizationStream } from '../../../modules/organizations/hooks/useOrganizationStream';
 import { useAllActiveMemberships } from '../../../modules/organizations/hooks/useOrgMemberCountsStream';
-import { useAllPayables } from '../../../modules/finance/hooks/usePayableStream';
 import { TablePagination } from '../../../components/common/TablePagination';
 import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile';
 
@@ -57,10 +56,9 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
   const { user, profile } = useAdviserProfile();
   const adminUid = user?.uid || profile?.uid || 'admin';
 
-  // Shared singleton streams for Organization Memberships, Organizations & Payables enrichment
+  // Shared singleton streams for Organization Memberships & Organizations enrichment
   const { data: allMemberships = [] } = useAllActiveMemberships();
   const { data: allOrgs = [] } = useOrganizationStream();
-  const { data: allPayables = [] } = useAllPayables();
 
   // Map student club memberships
   const studentOrgsMap = useMemo(() => {
@@ -99,33 +97,6 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
     const list3 = s.email ? (studentOrgsMap.get(s.email.trim().toLowerCase()) || []) : [];
     return Array.from(new Set([...list1, ...list2, ...list3]));
   };
-
-  // Map student payables
-  const studentPayablesMap = useMemo(() => {
-    const map = new Map<string, { totalAssigned: number; totalPaid: number; hasUnpaid: boolean }>();
-    allPayables.forEach((p) => {
-      const assigned = Number(p.assignedAmount || 0);
-      const paid = Number(p.paidAmount || 0);
-      const isUnpaid = p.status !== 'paid' && p.status !== 'waived' && (assigned - paid) > 0;
-
-      const keys: string[] = [];
-      if (p.studentId) keys.push(p.studentId);
-      if (p.studentSchoolId) keys.push(p.studentSchoolId);
-
-      keys.forEach((key) => {
-        if (!map.has(key)) {
-          map.set(key, { totalAssigned: 0, totalPaid: 0, hasUnpaid: false });
-        }
-        const record = map.get(key)!;
-        record.totalAssigned += assigned;
-        record.totalPaid += paid;
-        if (isUnpaid) {
-          record.hasUnpaid = true;
-        }
-      });
-    });
-    return map;
-  }, [allPayables]);
 
   // Connected Filter Change Handlers
   const handleCourseChange = (courseCode: string) => {
@@ -270,30 +241,10 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
 
   // Live Summary Statistics
   const summaryStats = useMemo(() => {
-    const totalActive = activeStudents.length;
-
-    // Students with unpaid payables
-    let totalWithOutstanding = 0;
-    activeStudents.forEach((s) => {
-      const pInfo = studentPayablesMap.get(s.id) || (s.studentId ? studentPayablesMap.get(s.studentId) : null);
-      if (pInfo?.hasUnpaid) {
-        totalWithOutstanding += 1;
-      }
-    });
-
-    // New this semester (students added in current school year / semester or recent)
-    const newThisSemester = activeStudents.filter((s) => {
-      const ms = s.createdAt?.toMillis ? s.createdAt.toMillis() : 0;
-      const daysOld = ms ? (Date.now() - ms) / (1000 * 60 * 60 * 24) : 999;
-      return daysOld <= 120; // registered within 120 days
-    }).length;
-
     return {
-      totalActive,
-      newThisSemester,
-      totalWithOutstanding,
+      totalActive: activeStudents.length,
     };
-  }, [activeStudents, studentPayablesMap]);
+  }, [activeStudents]);
 
   const handleExport = () => {
     setShowExportModal(true);
@@ -334,20 +285,10 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
 
       {/* Summary Bar */}
       <div className="bg-white border border-[#E0E0E0] rounded-xl p-6 shadow-sm">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
-          <div className="flex items-center gap-4">
-            <div>
-              <div className="text-3xl font-bold text-[#001A4D]">{summaryStats.totalActive}</div>
-              <div className="text-sm text-gray-500 font-medium">Total Active Students</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-4 sm:pl-6 pt-4 sm:pt-0">
-            <div>
-              <div className={`text-3xl font-bold ${summaryStats.totalWithOutstanding > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {summaryStats.totalWithOutstanding}
-              </div>
-              <div className="text-sm text-gray-500 font-medium">Students with Unpaid Payables</div>
-            </div>
+        <div className="flex items-center gap-4">
+          <div>
+            <div className="text-3xl font-bold text-[#001A4D]">{summaryStats.totalActive}</div>
+            <div className="text-sm text-gray-500 font-medium">Total Active Students</div>
           </div>
         </div>
       </div>
@@ -431,7 +372,6 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
                 <th className="px-6 py-3.5">Course & Year</th>
                 <th className="px-6 py-3.5">Section</th>
                 <th className="px-6 py-3.5">Clubs</th>
-                <th className="px-6 py-3.5">Payment Status</th>
                 <th className="px-6 py-3.5">Last Record Update</th>
                 <th className="px-6 py-3.5 text-center">Actions</th>
               </tr>
@@ -439,14 +379,13 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
             <tbody className="divide-y divide-gray-200 text-sm">
               {filteredStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-12 text-center text-gray-400">
+                  <td colSpan={6} className="px-6 py-12 text-center text-gray-400">
                     No active students match your search or filter criteria.
                   </td>
                 </tr>
               ) : (
                 paginatedStudents.map((student) => {
                   const orgs = getStudentClubs(student);
-                  const pInfo = studentPayablesMap.get(student.id) || (student.studentId ? studentPayablesMap.get(student.studentId) : null);
                   const isMenuOpen = activeMenuStudentId === student.id;
 
                   return (
@@ -499,17 +438,6 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
                               </span>
                             )}
                           </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {pInfo?.hasUnpaid ? (
-                          <span className="px-2.5 py-1 bg-red-100 text-red-700 rounded-full text-xs font-semibold">
-                            Unpaid Dues
-                          </span>
-                        ) : (
-                          <span className="px-2.5 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">
-                            Cleared / Paid
-                          </span>
                         )}
                       </td>
                       <td className="px-6 py-4 text-xs text-gray-500 font-medium">

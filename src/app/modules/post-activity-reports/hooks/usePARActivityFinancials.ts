@@ -10,6 +10,19 @@ import { peekCachedProposalById } from '../../activity-proposals/services/propos
 import { peekCachedLiquidationByEventId, peekCachedLiquidationById } from '../../finance/hooks/useLiquidationStream';
 import { MISC_FEE_LEDGER_COLLECTION } from '../../finance/services/misc-fee.service';
 import { RETAINED_FUND_LEDGER_COLLECTION } from '../../finance/services/retained-fund.service';
+import {
+  getCachedSasSignatoryConfig,
+  getSasSignatoryConfig,
+} from '../../signatories/services/sas-signatory.service';
+
+const GENERIC_ADMIN_PERFORMER_LABELS = new Set([
+  'sas administrator',
+  'sao administrator',
+  'sao admin',
+  'sas admin',
+  'admin',
+  'system',
+]);
 
 export interface PARNormalizedReceiptProof {
   id: string;
@@ -278,8 +291,27 @@ export function usePARActivityFinancials(params: {
         // 4. Persisted Activity Ledger Transactions (Misc Fee, Retained Fund, SAO & Org Ledgers)
         const txRows: PARActivityLedgerTransaction[] = [];
         const seenTxKeys = new Set<string>();
+        const miscCategoriesSeen = new Set<PARActivityLedgerTransaction['category']>();
+        const retainedCategoriesSeen = new Set<PARActivityLedgerTransaction['category']>();
         const targetEventId = report.eventId;
         const targetLiqId = liqDoc?.id || report.liquidationId;
+
+        let resolvedSasAdminName = getCachedSasSignatoryConfig()?.name || '';
+        try {
+          const cfg = await getSasSignatoryConfig();
+          if (cfg?.name && !GENERIC_ADMIN_PERFORMER_LABELS.has(cfg.name.trim().toLowerCase())) {
+            resolvedSasAdminName = cfg.name.trim();
+          }
+        } catch {}
+
+        const resolvePerformerName = (raw?: string) => {
+          const trimmed = (raw || '').trim();
+          if (!trimmed) return '';
+          if (GENERIC_ADMIN_PERFORMER_LABELS.has(trimmed.toLowerCase()) && resolvedSasAdminName) {
+            return resolvedSasAdminName;
+          }
+          return trimmed;
+        };
 
         const addTx = (tx: PARActivityLedgerTransaction) => {
           const dedupKey = `${tx.source}:${tx.id}`;
@@ -288,46 +320,60 @@ export function usePARActivityFinancials(params: {
           txRows.push(tx);
         };
 
+        const recordMiscFeeDoc = (d: any) => {
+          const m = d.data() as any;
+          const type = String(m.type || '');
+          const isIn = type === 'liquidation_surplus_return' || type === 'disbursement_reversal';
+          const category: PARActivityLedgerTransaction['category'] =
+            type === 'disbursement_deduction'
+              ? 'disbursement'
+              : type === 'liquidation_surplus_return'
+                ? 'surplus_return'
+                : type === 'liquidation_deficit_deduction'
+                  ? 'deficit_coverage'
+                  : 'other';
+          miscCategoriesSeen.add(category);
+          addTx({
+            id: d.id,
+            source: 'misc_fee_ledger',
+            dateLabel: formatShortTxDate(m.createdAt),
+            timestampMs: toTimestampMs(m.createdAt),
+            category,
+            bucketName: m.bucketName || 'Miscellaneous Fee',
+            description:
+              type === 'disbursement_deduction'
+                ? `Disbursement Voucher Pull (${m.bucketName || 'Misc Fee'})`
+                : type === 'liquidation_surplus_return'
+                  ? `Unspent Surplus Returned to ${m.bucketName || 'Misc Fee'}`
+                  : type === 'liquidation_deficit_deduction'
+                    ? `Overspend Covered by ${m.bucketName || 'Misc Fee'}${m.isSupplementalSource ? ' (Supplemental)' : ''}`
+                    : m.eventTitle || type,
+            amount: Number(m.amount) || 0,
+            direction: isIn ? 'in' : 'out',
+            referenceNo: m.chequeNumber || '',
+            performedBy: resolvePerformerName(m.performedBy),
+            isSupplemental: Boolean(m.isSupplementalSource),
+          });
+        };
+
         if (targetEventId) {
           try {
             const miscQ = query(collection(db, MISC_FEE_LEDGER_COLLECTION), where('eventId', '==', targetEventId));
             const miscSnap = await getDocs(miscQ);
-            miscSnap.forEach((d) => {
-              const m = d.data() as any;
-              const type = String(m.type || '');
-              const isIn = type === 'liquidation_surplus_return' || type === 'disbursement_reversal';
-              const category: PARActivityLedgerTransaction['category'] =
-                type === 'disbursement_deduction'
-                  ? 'disbursement'
-                  : type === 'liquidation_surplus_return'
-                    ? 'surplus_return'
-                    : type === 'liquidation_deficit_deduction'
-                      ? 'deficit_coverage'
-                      : 'other';
-              addTx({
-                id: d.id,
-                source: 'misc_fee_ledger',
-                dateLabel: formatShortTxDate(m.createdAt),
-                timestampMs: toTimestampMs(m.createdAt),
-                category,
-                bucketName: m.bucketName || 'Miscellaneous Fee',
-                description:
-                  type === 'disbursement_deduction'
-                    ? `Disbursement Voucher Pull (${m.bucketName || 'Misc Fee'})`
-                    : type === 'liquidation_surplus_return'
-                      ? `Unspent Surplus Returned to ${m.bucketName || 'Misc Fee'}`
-                      : type === 'liquidation_deficit_deduction'
-                        ? `Overspend Covered by ${m.bucketName || 'Misc Fee'}${m.isSupplementalSource ? ' (Supplemental)' : ''}`
-                        : m.eventTitle || type,
-                amount: Number(m.amount) || 0,
-                direction: isIn ? 'in' : 'out',
-                referenceNo: m.chequeNumber || '',
-                performedBy: m.performedBy || '',
-                isSupplemental: Boolean(m.isSupplementalSource),
-              });
-            });
+            miscSnap.forEach(recordMiscFeeDoc);
           } catch {}
+        }
 
+        // Also check liquidationId queries in case misc/retained entries lack eventId
+        if (targetLiqId) {
+          try {
+            const miscLiqQ = query(collection(db, MISC_FEE_LEDGER_COLLECTION), where('liquidationId', '==', targetLiqId));
+            const snap = await getDocs(miscLiqQ);
+            snap.forEach(recordMiscFeeDoc);
+          } catch {}
+        }
+
+        if (targetEventId) {
           try {
             const retQ = query(collection(db, RETAINED_FUND_LEDGER_COLLECTION), where('eventId', '==', targetEventId));
             const retSnap = await getDocs(retQ);
@@ -343,6 +389,7 @@ export function usePARActivityFinancials(params: {
                     : type === 'liquidation_deficit_deduction'
                       ? 'deficit_coverage'
                       : 'other';
+              retainedCategoriesSeen.add(category);
               addTx({
                 id: d.id,
                 source: 'retained_fund_ledger',
@@ -353,7 +400,7 @@ export function usePARActivityFinancials(params: {
                 description: r.description || type,
                 amount: Number(r.amount) || 0,
                 direction: isIn ? 'in' : 'out',
-                performedBy: r.performedBy || '',
+                performedBy: resolvePerformerName(r.performedBy),
               });
             });
           } catch {}
@@ -369,6 +416,7 @@ export function usePARActivityFinancials(params: {
                 const l = d.data() as any;
                 const lType = String(l.type || '').toLowerCase();
                 const src = String(l.source || '');
+                const fundCat = String(l.fundCategory || '');
                 const category: PARActivityLedgerTransaction['category'] =
                   src === 'liquidation_surplus'
                     ? 'surplus_return'
@@ -377,51 +425,43 @@ export function usePARActivityFinancials(params: {
                       : src.includes('disbursement')
                         ? 'disbursement'
                         : 'other';
+
+                // Avoid showing duplicate summary/mirror rows when the authoritative bucket ledger
+                // (misc_fee_ledger / retained_fund_ledger) already recorded this settlement step.
+                const isSettlementOrDisbursementSrc =
+                  src === 'liquidation_surplus' ||
+                  src === 'liquidation_deficit' ||
+                  src.includes('disbursement');
+                if (
+                  isSettlementOrDisbursementSrc &&
+                  fundCat === 'misc_fee_pool' &&
+                  miscCategoriesSeen.has(category)
+                ) {
+                  return;
+                }
+                if (
+                  isSettlementOrDisbursementSrc &&
+                  fundCat === 'retained_student_activity_fund' &&
+                  retainedCategoriesSeen.has(category)
+                ) {
+                  return;
+                }
+
                 addTx({
                   id: d.id,
                   source: sourceKey,
                   dateLabel: formatShortTxDate(l.date || l.createdAt),
                   timestampMs: toTimestampMs(l.date || l.createdAt),
                   category,
-                  bucketName: l.fundCategory === 'misc_fee_pool' ? 'SAO Misc Fee Pool' : (l.fundCategory === 'retained_student_activity_fund' ? 'Retained Fund' : 'Organization Ledger'),
+                  bucketName: fundCat === 'misc_fee_pool' ? 'SAO Misc Fee Pool' : (fundCat === 'retained_student_activity_fund' ? 'Retained Fund' : 'Organization Ledger'),
                   description: l.description || 'Ledger Transaction',
                   amount: Number(l.amount) || 0,
                   direction: lType === 'income' ? 'in' : 'out',
-                  performedBy: l.addedBy || '',
+                  performedBy: resolvePerformerName(l.addedBy),
                 });
               });
             } catch {}
           }
-        }
-
-        // Also check liquidationId queries in case misc/retained entries lack eventId
-        if (targetLiqId) {
-          try {
-            const miscLiqQ = query(collection(db, MISC_FEE_LEDGER_COLLECTION), where('liquidationId', '==', targetLiqId));
-            const snap = await getDocs(miscLiqQ);
-            snap.forEach((d) => {
-              const m = d.data() as any;
-              const type = String(m.type || '');
-              const isIn = type === 'liquidation_surplus_return' || type === 'disbursement_reversal';
-              addTx({
-                id: d.id,
-                source: 'misc_fee_ledger',
-                dateLabel: formatShortTxDate(m.createdAt),
-                timestampMs: toTimestampMs(m.createdAt),
-                category: type === 'liquidation_surplus_return' ? 'surplus_return' : 'deficit_coverage',
-                bucketName: m.bucketName || 'Miscellaneous Fee',
-                description:
-                  type === 'liquidation_surplus_return'
-                    ? `Unspent Surplus Returned to ${m.bucketName || 'Misc Fee'}`
-                    : `Overspend Covered by ${m.bucketName || 'Misc Fee'}${m.isSupplementalSource ? ' (Supplemental)' : ''}`,
-                amount: Number(m.amount) || 0,
-                direction: isIn ? 'in' : 'out',
-                referenceNo: m.chequeNumber || '',
-                performedBy: m.performedBy || '',
-                isSupplemental: Boolean(m.isSupplementalSource),
-              });
-            });
-          } catch {}
         }
 
         txRows.sort((a, b) => a.timestampMs - b.timestampMs);

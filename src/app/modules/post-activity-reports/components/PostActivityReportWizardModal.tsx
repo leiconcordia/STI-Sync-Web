@@ -57,6 +57,7 @@ import {
   syncUserSignatureAcrossProfiles,
 } from '../../signatories';
 import { computeEventAttendanceSummary } from '../services/par-attendance-bridge.service';
+import { resolvePARRemarksDescription } from '../utils/par-remarks.utils';
 import PARProposalGuidanceDrawer from './PARProposalGuidanceDrawer';
 import type {
   PostActivityReportDocument,
@@ -101,127 +102,6 @@ interface PostActivityReportWizardModalProps {
 }
 
 type WizardTab = 'overview' | 'objectives' | 'recommendations' | 'photos_signatories';
-
-interface DynamicRemarkCategoryProps {
-  number: string;
-  title: string;
-  obsList: string[];
-  recList: string[];
-  onUpdateObs: (idx: number, val: string) => void;
-  onAddObs: () => void;
-  onRemoveObs: (idx: number) => void;
-  onUpdateRec: (idx: number, val: string) => void;
-  onAddRec: () => void;
-  onRemoveRec: (idx: number) => void;
-  errorObs?: boolean;
-  errorRec?: boolean;
-}
-
-function DynamicRemarkCategory({
-  number,
-  title,
-  obsList,
-  recList,
-  onUpdateObs,
-  onAddObs,
-  onRemoveObs,
-  onUpdateRec,
-  onAddRec,
-  onRemoveRec,
-  errorObs,
-  errorRec,
-}: DynamicRemarkCategoryProps) {
-  return (
-    <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-100 pb-2">
-        <h5 className="text-xs font-black uppercase text-[#001A4D]">
-          {number}. {title} *
-        </h5>
-        <span className="text-[11px] font-medium text-slate-500">
-          {obsList.filter(Boolean).length} observation(s) • {recList.filter(Boolean).length} recommendation(s)
-        </span>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Observations Column */}
-        <div className={`p-3 rounded-xl border bg-slate-50/70 space-y-2.5 ${errorObs ? 'border-red-400 ring-1 ring-red-400' : 'border-slate-200'}`}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">Observations:</span>
-            <button
-              type="button"
-              onClick={onAddObs}
-              className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-md transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" /> Add Observation
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            {obsList.map((obs, idx) => (
-              <div key={idx} className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-400 shrink-0">•</span>
-                <input
-                  type="text"
-                  value={obs}
-                  onChange={(e) => onUpdateObs(idx, e.target.value)}
-                  placeholder={`Observation #${idx + 1}...`}
-                  className="flex-1 text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => onRemoveObs(idx)}
-                  disabled={obsList.length <= 1}
-                  className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                  title="Remove observation"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Recommendations Column */}
-        <div className={`p-3 rounded-xl border bg-slate-50/70 space-y-2.5 ${errorRec ? 'border-red-400 ring-1 ring-red-400' : 'border-slate-200'}`}>
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wide">Recommendations:</span>
-            <button
-              type="button"
-              onClick={onAddRec}
-              className="text-[11px] font-bold text-blue-700 hover:text-blue-900 flex items-center gap-1 cursor-pointer bg-blue-50 hover:bg-blue-100 px-2 py-0.5 rounded-md transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" /> Add Recommendation
-            </button>
-          </div>
-
-          <div className="space-y-2">
-            {recList.map((rec, idx) => (
-              <div key={idx} className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-slate-400 shrink-0">•</span>
-                <input
-                  type="text"
-                  value={rec}
-                  onChange={(e) => onUpdateRec(idx, e.target.value)}
-                  placeholder={`Recommendation #${idx + 1}...`}
-                  className="flex-1 text-xs bg-white border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => onRemoveRec(idx)}
-                  disabled={recList.length <= 1}
-                  className="p-1.5 text-slate-400 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                  title="Remove recommendation"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export default function PostActivityReportWizardModal({
   isOpen,
@@ -397,50 +277,8 @@ export default function PostActivityReportWizardModal({
   const [scheduleCompliance, setScheduleCompliance] = useState('');
   const [issuesEncountered, setIssuesEncountered] = useState('');
 
-  // Step 3: Remarks (Dynamic Observation and Recommendation Lists)
-  const [progFlowObsList, setProgFlowObsList] = useState<string[]>(['']);
-  const [progFlowRecList, setProgFlowRecList] = useState<string[]>(['']);
-  const [engagementObsList, setEngagementObsList] = useState<string[]>(['']);
-  const [engagementRecList, setEngagementRecList] = useState<string[]>(['']);
-  const [techSetupObsList, setTechSetupObsList] = useState<string[]>(['']);
-  const [techSetupRecList, setTechSetupRecList] = useState<string[]>(['']);
-  const [prepObsList, setPrepObsList] = useState<string[]>(['']);
-  const [prepRecList, setPrepRecList] = useState<string[]>(['']);
-
-  const handleUpdateRemarkItem = (
-    setter: React.Dispatch<React.SetStateAction<string[]>>,
-    index: number,
-    value: string
-  ) => {
-    setter((prev) => {
-      const next = [...prev];
-      next[index] = value;
-      return next;
-    });
-  };
-
-  const handleAddRemarkItem = (setter: React.Dispatch<React.SetStateAction<string[]>>) => {
-    setter((prev) => [...prev, '']);
-  };
-
-  const handleRemoveRemarkItem = (
-    setter: React.Dispatch<React.SetStateAction<string[]>>,
-    index: number
-  ) => {
-    setter((prev) => {
-      if (prev.length <= 1) return [''];
-      return prev.filter((_, i) => i !== index);
-    });
-  };
-
-  const parseRemarkList = (raw: any): string[] => {
-    if (Array.isArray(raw) && raw.length > 0) return raw.map((s) => String(s).replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
-    if (typeof raw === 'string' && raw.trim()) {
-      const lines = raw.split('\n').map((s) => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
-      if (lines.length > 0) return lines;
-    }
-    return [''];
-  };
+  // Step 3: Single Remarks Description (For Future Activity Improvements)
+  const [remarksDescription, setRemarksDescription] = useState('');
 
   // Section 5: Photos, Attachments Checklist & Pipeline
   const [photos, setPhotos] = useState<PARPhotoAttachment[]>([]);
@@ -565,14 +403,7 @@ export default function PostActivityReportWizardModal({
       setScheduleCompliance(initialReport.results?.scheduleCompliance || '');
       setIssuesEncountered(initialReport.results?.issuesEncountered || '');
 
-      setProgFlowObsList(parseRemarkList((initialReport.recommendations?.programFlow as any)?.observationsList || initialReport.recommendations?.programFlow?.observations));
-      setProgFlowRecList(parseRemarkList((initialReport.recommendations?.programFlow as any)?.recommendationsList || initialReport.recommendations?.programFlow?.recommendations));
-      setEngagementObsList(parseRemarkList((initialReport.recommendations?.participantEngagement as any)?.observationsList || initialReport.recommendations?.participantEngagement?.observations));
-      setEngagementRecList(parseRemarkList((initialReport.recommendations?.participantEngagement as any)?.recommendationsList || initialReport.recommendations?.participantEngagement?.recommendations));
-      setTechSetupObsList(parseRemarkList((initialReport.recommendations?.technicalSetup as any)?.observationsList || initialReport.recommendations?.technicalSetup?.observations));
-      setTechSetupRecList(parseRemarkList((initialReport.recommendations?.technicalSetup as any)?.recommendationsList || initialReport.recommendations?.technicalSetup?.recommendations));
-      setPrepObsList(parseRemarkList((initialReport.recommendations?.participantPreparedness as any)?.observationsList || initialReport.recommendations?.participantPreparedness?.observations));
-      setPrepRecList(parseRemarkList((initialReport.recommendations?.participantPreparedness as any)?.recommendationsList || initialReport.recommendations?.participantPreparedness?.recommendations));
+      setRemarksDescription(resolvePARRemarksDescription(initialReport));
 
       setPhotos(initialReport.photos || []);
       setSupportingDocuments(initialReport.supportingDocuments || []);
@@ -1084,39 +915,10 @@ export default function PostActivityReportWizardModal({
     }
 
     if (step === 'recommendations') {
-      const hasProgFlowObs = progFlowObsList.some((s) => s.trim().length > 0);
-      const hasProgFlowRec = progFlowRecList.some((s) => s.trim().length > 0);
-      if (!hasProgFlowObs || !hasProgFlowRec) {
-        errors.progFlow = true;
+      if (!remarksDescription.trim()) {
+        errors.remarksDescription = true;
         setValidationErrors(errors);
-        toast.error('Please provide both Observations and Recommendations for 1. Program Flow and Content.');
-        return false;
-      }
-
-      const hasEngagementObs = engagementObsList.some((s) => s.trim().length > 0);
-      const hasEngagementRec = engagementRecList.some((s) => s.trim().length > 0);
-      if (!hasEngagementObs || !hasEngagementRec) {
-        errors.engagement = true;
-        setValidationErrors(errors);
-        toast.error('Please provide both Observations and Recommendations for 2. Participant Engagement.');
-        return false;
-      }
-
-      const hasTechSetupObs = techSetupObsList.some((s) => s.trim().length > 0);
-      const hasTechSetupRec = techSetupRecList.some((s) => s.trim().length > 0);
-      if (!hasTechSetupObs || !hasTechSetupRec) {
-        errors.techSetup = true;
-        setValidationErrors(errors);
-        toast.error('Please provide both Observations and Recommendations for 3. Technical Setup.');
-        return false;
-      }
-
-      const hasPrepObs = prepObsList.some((s) => s.trim().length > 0);
-      const hasPrepRec = prepRecList.some((s) => s.trim().length > 0);
-      if (!hasPrepObs || !hasPrepRec) {
-        errors.prep = true;
-        setValidationErrors(errors);
-        toast.error('Please provide both Observations and Recommendations for 4. Participant Preparedness and Expectations.');
+        toast.error('Please provide Remarks (For Future Activity Improvements).');
         return false;
       }
       setValidationErrors({});
@@ -1335,31 +1137,9 @@ export default function PostActivityReportWizardModal({
           issuesEncountered: issuesEncountered || '',
         },
 
+        remarks: remarksDescription.trim(),
         recommendations: {
-          programFlow: {
-            observations: progFlowObsList.filter(Boolean).join('\n'),
-            recommendations: progFlowRecList.filter(Boolean).join('\n'),
-            observationsList: progFlowObsList.filter(Boolean),
-            recommendationsList: progFlowRecList.filter(Boolean),
-          } as any,
-          participantEngagement: {
-            observations: engagementObsList.filter(Boolean).join('\n'),
-            recommendations: engagementRecList.filter(Boolean).join('\n'),
-            observationsList: engagementObsList.filter(Boolean),
-            recommendationsList: engagementRecList.filter(Boolean),
-          } as any,
-          technicalSetup: {
-            observations: techSetupObsList.filter(Boolean).join('\n'),
-            recommendations: techSetupRecList.filter(Boolean).join('\n'),
-            observationsList: techSetupObsList.filter(Boolean),
-            recommendationsList: techSetupRecList.filter(Boolean),
-          } as any,
-          participantPreparedness: {
-            observations: prepObsList.filter(Boolean).join('\n'),
-            recommendations: prepRecList.filter(Boolean).join('\n'),
-            observationsList: prepObsList.filter(Boolean),
-            recommendationsList: prepRecList.filter(Boolean),
-          } as any,
+          description: remarksDescription.trim(),
         },
 
         photos,
@@ -2305,7 +2085,7 @@ export default function PostActivityReportWizardModal({
                     <p className="text-amber-800 leading-relaxed font-medium">
                       {initialReport?.stepRevisionRemarks?.['recommendations'] ||
                         initialReport?.returnRemarks ||
-                        'Please refine your observations and recommendations across the four key STI institutional areas.'}
+                        'Please refine your remarks and recommendations for future activity improvements.'}
                     </p>
                   </div>
                 </div>
@@ -2317,74 +2097,35 @@ export default function PostActivityReportWizardModal({
                     3. Remarks (For Future Activity Improvements)
                   </h4>
                   <p className="text-xs text-slate-600 mt-1">
-                    Add itemized observations and actionable recommendations across the four standard STI institutional areas. You can add as many items as needed for each.
+                    Provide a single comprehensive description highlighting key observations and recommendations for future activity improvements.
                   </p>
                 </div>
               </div>
 
-              {/* 1. Program Flow and Time Management */}
-              <DynamicRemarkCategory
-                number="1"
-                title="Program Flow and Time Management"
-                obsList={progFlowObsList}
-                recList={progFlowRecList}
-                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setProgFlowObsList, idx, val)}
-                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setProgFlowRecList, idx, val)}
-                onAddObs={() => handleAddRemarkItem(setProgFlowObsList)}
-                onAddRec={() => handleAddRemarkItem(setProgFlowRecList)}
-                onRemoveObs={(idx) => handleRemoveRemarkItem(setProgFlowObsList, idx)}
-                onRemoveRec={(idx) => handleRemoveRemarkItem(setProgFlowRecList, idx)}
-                errorObs={validationErrors.progFlow}
-                errorRec={validationErrors.progFlow}
-              />
-
-              {/* 2. Participant Engagement and Interaction */}
-              <DynamicRemarkCategory
-                number="2"
-                title="Participant Engagement and Interaction"
-                obsList={engagementObsList}
-                recList={engagementRecList}
-                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setEngagementObsList, idx, val)}
-                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setEngagementRecList, idx, val)}
-                onAddObs={() => handleAddRemarkItem(setEngagementObsList)}
-                onAddRec={() => handleAddRemarkItem(setEngagementRecList)}
-                onRemoveObs={(idx) => handleRemoveRemarkItem(setEngagementObsList, idx)}
-                onRemoveRec={(idx) => handleRemoveRemarkItem(setEngagementRecList, idx)}
-                errorObs={validationErrors.engagement}
-                errorRec={validationErrors.engagement}
-              />
-
-              {/* 3. Technical Setup and Venue Preparation */}
-              <DynamicRemarkCategory
-                number="3"
-                title="Technical Setup and Venue Preparation"
-                obsList={techSetupObsList}
-                recList={techSetupRecList}
-                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setTechSetupObsList, idx, val)}
-                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setTechSetupRecList, idx, val)}
-                onAddObs={() => handleAddRemarkItem(setTechSetupObsList)}
-                onAddRec={() => handleAddRemarkItem(setTechSetupRecList)}
-                onRemoveObs={(idx) => handleRemoveRemarkItem(setTechSetupObsList, idx)}
-                onRemoveRec={(idx) => handleRemoveRemarkItem(setTechSetupRecList, idx)}
-                errorObs={validationErrors.techSetup}
-                errorRec={validationErrors.techSetup}
-              />
-
-              {/* 4. Participant Preparedness and Expectations */}
-              <DynamicRemarkCategory
-                number="4"
-                title="Participant Preparedness and Expectations"
-                obsList={prepObsList}
-                recList={prepRecList}
-                onUpdateObs={(idx, val) => handleUpdateRemarkItem(setPrepObsList, idx, val)}
-                onUpdateRec={(idx, val) => handleUpdateRemarkItem(setPrepRecList, idx, val)}
-                onAddObs={() => handleAddRemarkItem(setPrepObsList)}
-                onAddRec={() => handleAddRemarkItem(setPrepRecList)}
-                onRemoveObs={(idx) => handleRemoveRemarkItem(setPrepObsList, idx)}
-                onRemoveRec={(idx) => handleRemoveRemarkItem(setPrepRecList, idx)}
-                errorObs={validationErrors.prep}
-                errorRec={validationErrors.prep}
-              />
+              <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-2.5">
+                <label className="text-xs font-bold text-slate-700 uppercase tracking-wide block">
+                  Remarks Description *
+                </label>
+                <textarea
+                  rows={6}
+                  value={remarksDescription}
+                  onChange={(e) => {
+                    setRemarksDescription(e.target.value);
+                    if (validationErrors.remarksDescription && e.target.value.trim()) {
+                      setValidationErrors((prev) => ({ ...prev, remarksDescription: false }));
+                    }
+                  }}
+                  placeholder="Describe overall observations, participant feedback, and actionable recommendations for improving future activities..."
+                  className={`w-full text-xs bg-white border rounded-xl p-3 focus:ring-2 focus:ring-blue-500 focus:outline-none leading-relaxed ${
+                    validationErrors.remarksDescription ? 'border-red-500 ring-1 ring-red-500' : 'border-slate-300'
+                  }`}
+                />
+                {validationErrors.remarksDescription && (
+                  <p className="text-[11px] font-semibold text-red-600">
+                    Remarks description is required.
+                  </p>
+                )}
+              </div>
 
               {/* VIII. Attachments (if applicable) */}
               <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-2xs space-y-3">
@@ -2679,7 +2420,7 @@ export default function PostActivityReportWizardModal({
                   <textarea
                     value={resubmissionNote}
                     onChange={(e) => setResubmissionNote(e.target.value)}
-                    placeholder="e.g. Added 4 high-resolution event photos; refined Section 3 recommendations per SAS feedback."
+                    placeholder="e.g. Added 4 high-resolution event photos; refined Section 3 remarks per SAS feedback."
                     rows={3}
                     className="w-full text-xs p-3 border border-amber-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-amber-500 font-medium"
                   />

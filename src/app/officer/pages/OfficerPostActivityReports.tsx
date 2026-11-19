@@ -47,7 +47,8 @@ import { useMiscFeeConfigs } from '../../modules/finance/hooks/useMiscFeeStream'
 import {
   buildAvailableSchoolYears,
   comparePostActivityReports,
-  matchesSchoolYearFilter,
+  matchesRecordAcademicPeriod,
+  resolveDefaultSchoolYearFilter,
   resolveUnifiedActiveAcademicTerm,
 } from '../../modules/workflow/utils/table-priority-sort.utils';
 import { toast } from 'sonner';
@@ -108,20 +109,6 @@ export default function OfficerPostActivityReports() {
     return map;
   }, [orgEvents]);
 
-  // Sync default filter to active academic period (and auto-advance when a new SY or Term is created)
-  useEffect(() => {
-    if (!unifiedActiveTerm.schoolYear) return;
-    const periodKey = `${unifiedActiveTerm.schoolYear}::${unifiedActiveTerm.semester}`;
-    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== periodKey)) {
-      setFilterSchoolYear(unifiedActiveTerm.schoolYear);
-      setFilterSemester(unifiedActiveTerm.semester || 'all');
-      setHasInitializedPeriod(true);
-      lastAutoPeriodRef.current = periodKey;
-    } else if (!lastAutoPeriodRef.current) {
-      lastAutoPeriodRef.current = periodKey;
-    }
-  }, [unifiedActiveTerm, hasInitializedPeriod]);
-
   // Derived available school years and semesters
   const availableSchoolYears = useMemo(
     () =>
@@ -133,6 +120,28 @@ export default function OfficerPostActivityReports() {
       }),
     [miscConfigs, semesters, pars, unifiedActiveTerm.schoolYear]
   );
+
+  const defaultSchoolYear = useMemo(
+    () =>
+      resolveDefaultSchoolYearFilter({
+        unifiedSchoolYear: unifiedActiveTerm.schoolYear,
+        availableSchoolYears,
+      }),
+    [unifiedActiveTerm.schoolYear, availableSchoolYears]
+  );
+
+  // Sync default filter to active/current School Year (showing all semesters in Current SY by default)
+  useEffect(() => {
+    if (!defaultSchoolYear) return;
+    if (!hasInitializedPeriod || (lastAutoPeriodRef.current && lastAutoPeriodRef.current !== defaultSchoolYear)) {
+      setFilterSchoolYear(defaultSchoolYear);
+      setFilterSemester('all');
+      setHasInitializedPeriod(true);
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    } else if (!lastAutoPeriodRef.current) {
+      lastAutoPeriodRef.current = defaultSchoolYear;
+    }
+  }, [defaultSchoolYear, hasInitializedPeriod]);
 
   const availableSemesters = useMemo(() => {
     const set = new Set<string>();
@@ -170,41 +179,53 @@ export default function OfficerPostActivityReports() {
   const [deletingReport, setDeletingReport] = useState<PostActivityReportDocument | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Counts
+  // Academic Period scoped PARs & due events (KPI cards, tab counts, and table share this slice)
+  const periodPars = useMemo(() => {
+    return pars.filter((p) => {
+      const parentEvent = p.eventId ? eventsById.get(p.eventId) : null;
+      return matchesRecordAcademicPeriod({
+        record: p,
+        parentEvent,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: parentEvent?.sessions?.[0]?.date,
+      });
+    });
+  }, [pars, eventsById, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
+  const periodEligibleEvents = useMemo(() => {
+    return eligibleEvents.filter((ev) =>
+      matchesRecordAcademicPeriod({
+        record: ev,
+        semesters,
+        filterSchoolYear,
+        filterSemester,
+        availableSchoolYears,
+        fallbackDate: ev.sessions?.[0]?.date,
+      })
+    );
+  }, [eligibleEvents, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
+
+  // Counts (scoped to active School Year / Semester filter)
   const counts = useMemo(() => {
     return {
-      all: pars.length,
-      pending: pars.filter((p) => p.status === 'under_review').length,
-      approved: pars.filter((p) => p.status === 'approved').length,
-      returned: pars.filter((p) => p.status === 'returned').length,
-      draft: pars.filter((p) => p.status === 'draft').length,
+      all: periodPars.length,
+      pending: periodPars.filter((p) => p.status === 'under_review').length,
+      approved: periodPars.filter((p) => p.status === 'approved').length,
+      returned: periodPars.filter((p) => p.status === 'returned').length,
+      draft: periodPars.filter((p) => p.status === 'draft').length,
     };
-  }, [pars]);
+  }, [periodPars]);
 
   // Filtered List
   const filteredPars = useMemo(() => {
-    return pars.filter((p) => {
+    return periodPars.filter((p) => {
       if (activeTab === 'pending' && p.status !== 'under_review') return false;
       if (activeTab === 'approved' && p.status !== 'approved') return false;
       if (activeTab === 'returned' && p.status !== 'returned') return false;
       if (activeTab === 'draft' && p.status !== 'draft') return false;
-
-      // School Year filter (strict: untagged legacy records stay in baseline SY only)
-      if (filterSchoolYear !== 'all') {
-        const parentEvent = p.eventId ? eventsById.get(p.eventId) : null;
-        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
-        const pSy = p.schoolYear || parentEvent?.schoolYear || sem?.academicYear;
-        if (!matchesSchoolYearFilter({ recordSchoolYear: pSy, filterSchoolYear, availableSchoolYears })) {
-          return false;
-        }
-      }
-
-      // Semester filter
-      if (filterSemester !== 'all') {
-        const sem = p.semesterId ? semesters.find((s) => s.id === p.semesterId) : null;
-        const pTerm = p.semester || sem?.semester || (sem as any)?.term;
-        if (pTerm && pTerm !== filterSemester) return false;
-      }
 
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
@@ -215,7 +236,7 @@ export default function OfficerPostActivityReports() {
       }
       return true;
     }).sort((a, b) => comparePostActivityReports(a, b, eventsById));
-  }, [pars, activeTab, searchQuery, filterSchoolYear, filterSemester, semesters, availableSchoolYears, eventsById]);
+  }, [periodPars, activeTab, searchQuery, eventsById]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredPars.length / ITEMS_PER_PAGE));
@@ -330,12 +351,12 @@ export default function OfficerPostActivityReports() {
         <button
           onClick={() => {
             setEditingReport(null);
-            setWizardEventId(eligibleEvents.length === 1 ? eligibleEvents[0].id : '');
+            setWizardEventId(periodEligibleEvents.length === 1 ? periodEligibleEvents[0].id : '');
             setShowWizardModal(true);
           }}
-          disabled={eligibleEvents.length === 0}
+          disabled={periodEligibleEvents.length === 0}
           title={
-            eligibleEvents.length === 0
+            periodEligibleEvents.length === 0
               ? 'No concluded activities are awaiting a Post-Activity Report.'
               : 'Create Post-Activity Report for concluded activity'
           }
@@ -343,9 +364,9 @@ export default function OfficerPostActivityReports() {
         >
           <Plus className="w-4 h-4 text-[#FFD41C]" />
           New Post-Activity Report
-          {eligibleEvents.length > 0 && (
+          {periodEligibleEvents.length > 0 && (
             <span className="ml-1 px-1.5 py-0.2 rounded-full text-xs font-bold bg-[#FFD41C] text-[#001A4D]">
-              {eligibleEvents.length}
+              {periodEligibleEvents.length}
             </span>
           )}
         </button>
@@ -379,9 +400,7 @@ export default function OfficerPostActivityReports() {
             <div className="text-xl font-bold text-gray-900 mt-0.5 tracking-tight">
               {counts.approved} {counts.approved === 1 ? 'report' : 'reports'}
             </div>
-            <div className="text-[11px] text-emerald-700 font-medium">
-              Auto-archived into EDMS
-            </div>
+
           </div>
         </div>
 
@@ -403,19 +422,19 @@ export default function OfficerPostActivityReports() {
       </div>
 
       {/* ── 15-Day Post-Conclusion PAR Dues Tracker ── */}
-      {eligibleEvents.length > 0 && (
+      {periodEligibleEvents.length > 0 && (
         <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-4 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs font-bold text-amber-950">
               <Clock className="w-4 h-4 text-amber-600" />
-              <span>15-Day Post-Activity Report Dues ({eligibleEvents.length})</span>
+              <span>15-Day Post-Activity Report Dues ({periodEligibleEvents.length})</span>
             </div>
             <span className="text-[11px] text-amber-800 font-medium">
               Counted 15 calendar days after event conclusion
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {eligibleEvents.map((ev) => {
+            {periodEligibleEvents.map((ev) => {
               const deadline = parSubmissionDeadline(ev);
               const rem = deadline ? calendarDaysRemaining(deadline) : null;
               const isOverdue = rem !== null && rem < 0;
@@ -424,21 +443,19 @@ export default function OfficerPostActivityReports() {
                   key={ev.id}
                   type="button"
                   onClick={() => handleCreateForEvent(ev.id)}
-                  className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white hover:bg-blue-50/40 transition-colors cursor-pointer ${
-                    isOverdue ? 'border-rose-300' : 'border-amber-200'
-                  }`}
+                  className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white hover:bg-blue-50/40 transition-colors cursor-pointer ${isOverdue ? 'border-rose-300' : 'border-amber-200'
+                    }`}
                 >
                   <span className="font-bold text-[#001A4D] truncate max-w-[200px]">
                     {ev.title}
                   </span>
                   <span
-                    className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                      isOverdue
+                    className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${isOverdue
                         ? 'bg-rose-100 text-rose-800'
                         : rem !== null && rem <= 3
-                        ? 'bg-amber-100 text-amber-900'
-                        : 'bg-blue-50 text-[#001A4D]'
-                    }`}
+                          ? 'bg-amber-100 text-amber-900'
+                          : 'bg-blue-50 text-[#001A4D]'
+                      }`}
                   >
                     {deadline ? `Due ${formatAppDate(deadline)}` : 'Due'}{' '}
                     {rem !== null
@@ -473,18 +490,16 @@ export default function OfficerPostActivityReports() {
                 <button
                   key={tab.key}
                   onClick={() => handleTabChange(tab.key as FilterTab)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-                    isActive
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
                       ? 'bg-[#001A4D] text-white shadow-xs'
                       : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
-                  }`}
+                    }`}
                 >
                   <span>{tab.label}</span>
                   {tab.count !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
-                      }`}
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                        }`}
                     >
                       {tab.count}
                     </span>
@@ -530,18 +545,18 @@ export default function OfficerPostActivityReports() {
               ))}
             </select>
 
-            {(filterSchoolYear !== (unifiedActiveTerm.schoolYear || 'all') || filterSemester !== (unifiedActiveTerm.semester || 'all')) && (
+            {(filterSchoolYear !== (defaultSchoolYear || 'all') || filterSemester !== 'all') && (
               <button
                 type="button"
                 onClick={() => {
-                  setFilterSchoolYear(unifiedActiveTerm.schoolYear || 'all');
-                  setFilterSemester(unifiedActiveTerm.semester || 'all');
+                  setFilterSchoolYear(defaultSchoolYear || 'all');
+                  setFilterSemester('all');
                   setCurrentPage(1);
                 }}
                 className="text-xs text-blue-700 hover:text-blue-900 font-bold px-1.5 py-1 cursor-pointer"
-                title="Reset filters to current active academic semester"
+                title="Reset filters to current school year"
               >
-                Reset to Current
+                Reset to Current SY
               </button>
             )}
 
@@ -576,139 +591,139 @@ export default function OfficerPostActivityReports() {
             {/* Table */}
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs text-gray-600">
-            <thead className="bg-gray-50/75 border-b border-gray-100 font-bold text-gray-700 text-[11px] uppercase tracking-wider">
-              <tr>
-                <th className="py-3 px-4">Ref Number</th>
-                <th className="py-3 px-4">Event Title</th>
-                <th className="py-3 px-4">Conducted</th>
-                <th className="py-3 px-4 text-center">Verified Attendance</th>
-                <th className="py-3 px-4 text-right">Liquidation Balance</th>
-                <th className="py-3 px-4 text-center">Status</th>
-                <th className="py-3 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {parsLoading ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-10 text-gray-400 font-medium">
-                    Loading Post-Activity Reports...
-                  </td>
-                </tr>
-              ) : paginatedItems.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-12 text-gray-400">
-                    <FileCheck2 className="w-8 h-8 mx-auto mb-2 text-gray-300" />
-                    <p className="font-semibold text-gray-600">No Post-Activity Reports found.</p>
-                    <p className="text-[11px] text-gray-400 mt-0.5">
-                      Reports filed by your organization will appear here.
-                    </p>
-                  </td>
-                </tr>
-              ) : (
-                paginatedItems.map((r) => {
-                  const net =
-                    (r.financialSummary?.totalRevenue || 0) -
-                    (r.financialSummary?.totalDisbursed || 0);
-
-                  return (
-                    <tr
-                      key={r.id}
-                      onClick={() => setViewingReport(r)}
-                      className="hover:bg-blue-50/40 cursor-pointer transition-colors"
-                    >
-                      <td className="py-3 px-4 font-mono font-bold text-[#001A4D]">
-                        {r.referenceNo}
-                      </td>
-                      <td className="py-3 px-4">
-                        <strong className="text-gray-900 block font-bold">{r.eventTitle}</strong>
-                        <span className="text-[11px] text-gray-400">{r.eventVenue}</span>
-                      </td>
-                      <td className="py-3 px-4 text-gray-600">
-                        {r.eventDateFormatted}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <span className="font-bold text-gray-900">
-                          {r.attendanceSummary?.attendedCount || 0}
-                        </span>
-                        <span className="text-gray-400 text-[10px] block">
-                          / {r.attendanceSummary?.estimatedAttendance || r.attendanceSummary?.registeredCount || 0} est.
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-right font-bold text-gray-800">
-                        {formatVariance(net)}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <div className="flex flex-col items-center gap-1">
-                          {renderStatusBadge(r.status)}
-                          {(r.status === 'draft' || r.status === 'returned') && (() => {
-                            const dead = (r as any).submissionDeadline;
-                            if (!dead) return null;
-                            const rem = calendarDaysRemaining(dead);
-                            const ov = rem !== null && rem < 0;
-                            return (
-                              <span className={`text-[10px] font-bold ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
-                                Due {formatAppDate(dead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
-                              </span>
-                            );
-                          })()}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div
-                          className="flex items-center justify-end gap-1.5"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => setViewingReport(r)}
-                            title="View Report Details"
-                            className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 transition-colors"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={(e) => handleDownload(e, r)}
-                            disabled={downloadingId === r.id}
-                            title="Export PDF"
-                            className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 disabled:opacity-40 transition-colors"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
-                          {(r.status === 'draft' || r.status === 'returned') && (
-                            <button
-                              onClick={() => handleEditReport(r)}
-                              title={r.status === 'returned' ? 'Revise Returned Report Draft' : 'Edit Draft Report'}
-                              className="p-1.5 rounded-lg text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
-                            >
-                              <Edit3 className="w-4 h-4" />
-                            </button>
-                          )}
-                          {r.status === 'draft' && (
-                            <button
-                              onClick={() => setDeletingReport(r)}
-                              title="Discard Draft Report"
-                              className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
+                <thead className="bg-gray-50/75 border-b border-gray-100 font-bold text-gray-700 text-[11px] uppercase tracking-wider">
+                  <tr>
+                    <th className="py-3 px-4">Ref Number</th>
+                    <th className="py-3 px-4">Event Title</th>
+                    <th className="py-3 px-4">Conducted</th>
+                    <th className="py-3 px-4 text-center">Verified Attendance</th>
+                    <th className="py-3 px-4 text-right">Liquidation Balance</th>
+                    <th className="py-3 px-4 text-center">Status</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {parsLoading ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-10 text-gray-400 font-medium">
+                        Loading Post-Activity Reports...
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ) : paginatedItems.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="text-center py-12 text-gray-400">
+                        <FileCheck2 className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                        <p className="font-semibold text-gray-600">No Post-Activity Reports found.</p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          Reports filed by your organization will appear here.
+                        </p>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedItems.map((r) => {
+                      const net =
+                        (r.financialSummary?.totalRevenue || 0) -
+                        (r.financialSummary?.totalDisbursed || 0);
 
-        {/* Pagination */}
-        <TablePagination
-          currentPage={currentPage}
-          totalPages={totalPages}
-          onPageChange={setCurrentPage}
-          totalItems={filteredPars.length}
-          itemsPerPage={ITEMS_PER_PAGE}
-        />
+                      return (
+                        <tr
+                          key={r.id}
+                          onClick={() => setViewingReport(r)}
+                          className="hover:bg-blue-50/40 cursor-pointer transition-colors"
+                        >
+                          <td className="py-3 px-4 font-mono font-bold text-[#001A4D]">
+                            {r.referenceNo}
+                          </td>
+                          <td className="py-3 px-4">
+                            <strong className="text-gray-900 block font-bold">{r.eventTitle}</strong>
+                            <span className="text-[11px] text-gray-400">{r.eventVenue}</span>
+                          </td>
+                          <td className="py-3 px-4 text-gray-600">
+                            {r.eventDateFormatted}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <span className="font-bold text-gray-900">
+                              {r.attendanceSummary?.attendedCount || 0}
+                            </span>
+                            <span className="text-gray-400 text-[10px] block">
+                              / {r.attendanceSummary?.estimatedAttendance || r.attendanceSummary?.registeredCount || 0} est.
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-right font-bold text-gray-800">
+                            {formatVariance(net)}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <div className="flex flex-col items-center gap-1">
+                              {renderStatusBadge(r.status)}
+                              {(r.status === 'draft' || r.status === 'returned') && (() => {
+                                const dead = (r as any).submissionDeadline;
+                                if (!dead) return null;
+                                const rem = calendarDaysRemaining(dead);
+                                const ov = rem !== null && rem < 0;
+                                return (
+                                  <span className={`text-[10px] font-bold ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
+                                    Due {formatAppDate(dead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
+                                  </span>
+                                );
+                              })()}
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div
+                              className="flex items-center justify-end gap-1.5"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <button
+                                onClick={() => setViewingReport(r)}
+                                title="View Report Details"
+                                className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 transition-colors"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={(e) => handleDownload(e, r)}
+                                disabled={downloadingId === r.id}
+                                title="Export PDF"
+                                className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 disabled:opacity-40 transition-colors"
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                              {(r.status === 'draft' || r.status === 'returned') && (
+                                <button
+                                  onClick={() => handleEditReport(r)}
+                                  title={r.status === 'returned' ? 'Revise Returned Report Draft' : 'Edit Draft Report'}
+                                  className="p-1.5 rounded-lg text-blue-600 hover:text-blue-800 hover:bg-blue-50 transition-colors"
+                                >
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                              )}
+                              {r.status === 'draft' && (
+                                <button
+                                  onClick={() => setDeletingReport(r)}
+                                  title="Discard Draft Report"
+                                  className="p-1.5 rounded-lg text-rose-500 hover:text-rose-700 hover:bg-rose-50 transition-colors"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            <TablePagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              onPageChange={setCurrentPage}
+              totalItems={filteredPars.length}
+              itemsPerPage={ITEMS_PER_PAGE}
+            />
           </>
         )}
       </div>

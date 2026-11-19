@@ -1,5 +1,4 @@
 export type LiquidationSettlementKind =
-  | 'cancellation_return'
   | 'surplus_return'
   | 'deficit_reimbursement'
   | 'exact_settled';
@@ -17,7 +16,6 @@ export interface LiquidationSettlementState {
   deficitAmount: number;
   amountToReturn: number;
   isExactZero: boolean;
-  isCancellation: boolean;
   isSasOwned: boolean;
   isClubDirect: boolean;
   settlementKind: LiquidationSettlementKind;
@@ -57,6 +55,83 @@ export function isSasOwnedLiquidation(liq: any): boolean {
 }
 
 /**
+ * Returns true when an activity or liquidation is funded purely by Student Collections / Retained Fund
+ * (excluding Miscellaneous Fee activities).
+ */
+export function isStudentCollectionFunding(liqOrEvent: any): boolean {
+  const src = String(liqOrEvent?.fundingSource || '').trim().toLowerCase();
+  const allocs = Array.isArray(liqOrEvent?.allocations) ? liqOrEvent.allocations : [];
+  if (allocs.some((a: any) => a?.fundType === 'misc_fee')) {
+    return false;
+  }
+  if (src === 'student_contributions' || src === 'retained_sao_fund') {
+    return true;
+  }
+  if (allocs.length > 0) {
+    return allocs.every(
+      (a: any) =>
+        a?.fundType === 'student_contributions' ||
+        a?.fundType === 'student_contribution_retained'
+    );
+  }
+  return false;
+}
+
+/**
+ * Computes net live Student Collections balance available to reimburse an overspend deficit,
+ * ensuring initial collected budget not yet debited from the ledger/fund is never double-counted.
+ */
+export function computeLiveStudentCollectionReimbursementCapacity(params: {
+  isSasOwned: boolean;
+  eventId?: string | null;
+  liquidationId?: string | null;
+  allocatedBudget: number;
+  saoAvailableBalance?: number;
+  retainedLedgerEntries?: Array<{
+    eventId?: string;
+    type?: string;
+    amount?: number;
+  }>;
+  orgLedgerEntries?: Array<{
+    collectionId?: string;
+    type?: string;
+    amount?: number;
+  }>;
+}): number {
+  const allocated = Math.max(0, roundPeso(Number(params.allocatedBudget) || 0));
+
+  if (params.isSasOwned) {
+    const raw = Math.max(0, roundPeso(Number(params.saoAvailableBalance) || 0));
+    if (params.eventId && Array.isArray(params.retainedLedgerEntries)) {
+      const credited = params.retainedLedgerEntries
+        .filter((e) => e.eventId === params.eventId && e.type === 'collection_income')
+        .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+      const debited = params.retainedLedgerEntries
+        .filter((e) => e.eventId === params.eventId && e.type === 'event_expense_deduction')
+        .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+      const unDebitedEventCash = Math.max(0, Math.min(allocated, roundPeso(credited - debited)));
+      return Math.max(0, roundPeso(raw - unDebitedEventCash));
+    }
+    return raw;
+  }
+
+  const entries = Array.isArray(params.orgLedgerEntries) ? params.orgLedgerEntries : [];
+  const skipCollId = params.liquidationId ? `${params.liquidationId}_org_contrib_expense` : '';
+  const inc = entries
+    .filter((t) => String(t.type || '').toLowerCase() === 'income')
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+  const exp = entries
+    .filter(
+      (t) =>
+        String(t.type || '').toLowerCase() === 'expense' &&
+        (!skipCollId || t.collectionId !== skipCollId)
+    )
+    .reduce((s, t) => s + (Number(t.amount) || 0), 0);
+  const netOrgBalance = roundPeso(inc - exp);
+  return Math.max(0, roundPeso(netOrgBalance - allocated));
+}
+
+/**
  * Computes canonical post-approval settlement state (surplus return / deficit reimbursement)
  * for any Financial Liquidation document.
  */
@@ -73,10 +148,7 @@ export function getLiquidationSettlementState(liq: any): LiquidationSettlementSt
   const isExactZero = Math.abs(variance) < 0.01;
   const surplusAmount = variance > 0.009 ? roundPeso(variance) : 0;
   const deficitAmount = variance < -0.009 ? roundPeso(Math.abs(variance)) : 0;
-  const isCancellation = Boolean(liq?.isCancellationLiquidation);
-  const amountToReturn = isCancellation
-    ? roundPeso(Math.max(0, Number(liq?.amountToReturn ?? surplusAmount) || 0))
-    : surplusAmount;
+  const amountToReturn = surplusAmount;
 
   const isSasOwned = isSasOwnedLiquidation(liq);
   const fundingSource = String(liq?.fundingSource || '').trim().toLowerCase();
@@ -85,17 +157,13 @@ export function getLiquidationSettlementState(liq: any): LiquidationSettlementSt
     (fundingSource === 'organization_funds' || fundingSource === 'student_contributions');
 
   let settlementKind: LiquidationSettlementKind = 'exact_settled';
-  if (isCancellation) {
-    settlementKind = 'cancellation_return';
-  } else if (surplusAmount > 0) {
+  if (surplusAmount > 0) {
     settlementKind = 'surplus_return';
   } else if (deficitAmount > 0) {
     settlementKind = 'deficit_reimbursement';
   }
 
-  const needsCashierSettlement = isCancellation
-    ? amountToReturn > 0.009 || !isExactZero
-    : !isExactZero;
+  const needsCashierSettlement = !isExactZero;
 
   const rawSettlementStatus = String(liq?.cashierSettlementStatus || '').toLowerCase().trim();
   const hasProofs = Array.isArray(liq?.cashierSettlementProofs) && liq.cashierSettlementProofs.length > 0;
@@ -110,7 +178,9 @@ export function getLiquidationSettlementState(liq: any): LiquidationSettlementSt
   } else if (rawSettlementStatus === 'not_required') {
     settlementStatus = 'not_required';
   } else if (needsCashierSettlement) {
-    if (isClubDirect) {
+    const isClubStudentContribOverspent =
+      isClubDirect && fundingSource === 'student_contributions' && deficitAmount > 0.009;
+    if (isClubDirect && !isClubStudentContribOverspent) {
       settlementStatus = 'verified';
     } else {
       settlementStatus = hasProofs ? 'proof_uploaded' : 'pending_proof';
@@ -125,7 +195,6 @@ export function getLiquidationSettlementState(liq: any): LiquidationSettlementSt
     deficitAmount,
     amountToReturn,
     isExactZero,
-    isCancellation,
     isSasOwned,
     isClubDirect,
     settlementKind,
@@ -194,13 +263,24 @@ export function buildLiquidationApprovalNotificationPayload(
   }
 
   if (state.deficitAmount > 0.009) {
-    if (state.isClubDirect) {
+    const isStudentCol = isStudentCollectionFunding(liq);
+    if (state.isClubDirect && !isStudentCol) {
       return {
         recipientRole,
         targetOrgId,
         targetOrgName,
         title: `FL Approved (Reimburse Officer ${formatPesoPlain(state.deficitAmount)}): ${eventTitle}`,
         message: `Your Financial Liquidation for "${eventTitle}" was approved with an out-of-pocket deficit of ${formatPesoPlain(state.deficitAmount)}. Reimburse the advance holder/officer from Club Funds (recorded in Finance Center).`,
+        actionRoute,
+      };
+    }
+    if (isStudentCol) {
+      return {
+        recipientRole,
+        targetOrgId,
+        targetOrgName,
+        title: `FL Approved — Student Collections Reimbursement Required (${formatPesoPlain(state.deficitAmount)})`,
+        message: `Your Financial Liquidation for "${eventTitle}" was approved with an overspend deficit of ${formatPesoPlain(state.deficitAmount)}. Collect remaining student contributions first if available Student Collections funds cannot cover the overspend before uploading reimbursement proof.`,
         actionRoute,
       };
     }

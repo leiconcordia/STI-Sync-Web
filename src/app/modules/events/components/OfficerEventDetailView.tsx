@@ -5,7 +5,7 @@ import {
   Receipt, FileText, FileCheck, History, Clock, CheckCircle2, AlertCircle,
   AlertTriangle, Download, Eye, Tag, Building2, Check, RotateCcw,
   XCircle, FileImage, Lock, Unlock, UserCheck, ChevronRight,
-  FolderArchive, Trash2, FileSignature, Target, Wrench,
+  Trash2, FileSignature, Target, Wrench,
   Megaphone, ListChecks, Coins, TrendingUp, Smartphone, QrCode, DollarSign, SlidersHorizontal, ChevronDown, GitCompare
 } from 'lucide-react';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -30,10 +30,8 @@ import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewe
 import WithdrawConfirmModal from '../../workflow/components/WithdrawConfirmModal';
 import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
-import { canWithdrawProposal, canEditProposal, canCancelEvent, isEventEditable, getEventTimingStatus, isProposalFullySigned, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
-import { CancelEventModal } from './CancelEventModal';
+import { canWithdrawProposal, canEditProposal, isEventEditable, getEventTimingStatus, isProposalFullySigned, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { ConcludeEventModal } from './ConcludeEventModal';
-import { ArchiveEventModal } from './ArchiveEventModal';
 import { DeleteArchivedEventModal } from './DeleteArchivedEventModal';
 import { withdrawProposal } from '../services/event.service';
 import { toast } from 'sonner';
@@ -338,14 +336,10 @@ export default function OfficerEventDetailView({
 
   const [exportingPdf, setExportingPdf] = useState(false);
   const [withdrawing, setWithdrawing] = useState(false);
-  const [showCancelModal, setShowCancelModal] = useState(false);
   const [showConcludeModal, setShowConcludeModal] = useState(false);
-  const [showArchiveModal, setShowArchiveModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   const withdrawCheck = canWithdrawProposal(event, 'officer', profile?.uid, profile?.activeOrganizationId);
-  const isCancelled = event.isCancelled || event.lifecycleStatus === 'cancelled' || event.status === 'cancelled' || event.proposalStatus === 'cancelled';
-  const cancelCheck = canCancelEvent(event, 'officer', profile?.activeOrganizationId || undefined);
 
   // Financial projections hydration
   const financialProjections = useMemo(() => {
@@ -397,9 +391,7 @@ export default function OfficerEventDetailView({
   const isSchoolBudget = effectiveFundingSource === 'school_budget';
   const isStudentContributionEvent = effectiveFundingSource === 'student_contributions';
   const isRetainedFund = effectiveFundingSource === 'retained_sao_fund';
-  const hasPayablesCollection =
-    isStudentContributionEvent ||
-    Boolean((activeEvent as any)?.studentPayablesEnabled || fullProposal?.studentPayablesEnabled);
+  const hasPayablesCollection = isStudentContributionEvent;
 
   const { data: eventPayables = [] } = useEventPayablesStream(
     hasPayablesCollection ? event.id : null
@@ -602,7 +594,6 @@ export default function OfficerEventDetailView({
     (activeEvent as any).isArchived === true;
 
   const isApproved = useMemo(() => {
-    if (isCancelled) return false;
     if (isCompleted) return true;
 
     const chain: any[] =
@@ -683,7 +674,6 @@ export default function OfficerEventDetailView({
 
     return false;
   }, [
-    isCancelled,
     isCompleted,
     activeEvent,
     liveEvent,
@@ -711,12 +701,9 @@ export default function OfficerEventDetailView({
     completed: { bg: 'bg-blue-50 text-blue-800 border-blue-300', text: 'text-blue-700', label: 'Completed Activity', icon: CheckCircle2 },
     returned: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Returned for Revision', icon: RotateCcw },
     rejected: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Rejected Proposal', icon: XCircle },
-    cancelled: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Cancelled Activity', icon: XCircle },
   };
 
-  const currentStatusKey = isCancelled
-    ? 'cancelled'
-    : isCompleted
+  const currentStatusKey = isCompleted
     ? 'completed'
     : isApproved
     ? 'approved'
@@ -1221,14 +1208,16 @@ export default function OfficerEventDetailView({
                     )}
 
                     {/* 4. Financial Liquidation */}
-                    <button
-                      type="button"
-                      disabled={
+                    {(() => {
+                      const isFlDisabled =
                         !isApproved ||
                         (!isLiquidationExempt &&
                           ((isVoucherRequired && !hasDisbursementVoucher) ||
-                            isLiquidationLockedByCollectionGap))
-                      }
+                            isLiquidationLockedByCollectionGap));
+                      return (
+                    <button
+                      type="button"
+                      disabled={isFlDisabled}
                       onClick={() => {
                         if (isLiquidationExempt) {
                           toast.info('Non-monetary activity (₱0 budget). Financial liquidation is exempt and not required.');
@@ -1252,27 +1241,18 @@ export default function OfficerEventDetailView({
                         setIsLiquidationModalOpen(true);
                       }}
                       className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                        !isApproved ||
-                        (!isLiquidationExempt &&
-                          ((isVoucherRequired && !hasDisbursementVoucher) ||
-                            isLiquidationLockedByCollectionGap))
+                        isFlDisabled
                           ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                           : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                          !isApproved ||
-                          (!isLiquidationExempt &&
-                            ((isVoucherRequired && !hasDisbursementVoucher) ||
-                              isLiquidationLockedByCollectionGap))
+                          isFlDisabled
                             ? 'bg-amber-50 text-amber-600 border border-amber-200'
                             : 'bg-emerald-50 text-emerald-600 border border-emerald-200'
                         }`}>
-                          {!isApproved ||
-                          (!isLiquidationExempt &&
-                            ((isVoucherRequired && !hasDisbursementVoucher) ||
-                              isLiquidationLockedByCollectionGap)) ? (
+                          {isFlDisabled ? (
                             <Lock className="w-4 h-4" />
                           ) : isLiquidationExempt ? (
                             <CheckCircle2 className="w-4 h-4" />
@@ -1321,6 +1301,8 @@ export default function OfficerEventDetailView({
                         )}
                       </div>
                     </button>
+                      );
+                    })()}
                   </div>
 
                   {/* Section 3: Proposal Management */}
@@ -1422,7 +1404,6 @@ export default function OfficerEventDetailView({
                   {/* Section 5: Lifecycle & Actions */}
                   {((event.proposalStatus === 'approved' && event.status !== 'completed' && !event.isArchived && !isSasCreated) ||
                     ((event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isSasCreated) ||
-                    (!isCancelled && cancelCheck.canCancel) ||
                     event.isArchived) && (
                     <div className="space-y-1 pt-2">
                       <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -1454,56 +1435,6 @@ export default function OfficerEventDetailView({
                           </div>
                           <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
                             Finish
-                          </span>
-                        </button>
-                      )}
-
-                      {/* Archive Action */}
-                      {(event.status === 'completed' || event.proposalStatus === 'completed' || timing === 'completed') && !event.isArchived && !isSasCreated && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsUtilsOpen(false);
-                            setShowArchiveModal(true);
-                          }}
-                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-indigo-50 text-indigo-900 border border-transparent hover:border-indigo-200 transition-colors cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200 flex items-center justify-center shrink-0">
-                              <FolderArchive className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold truncate">Archive Activity</div>
-                              <div className="text-[11px] text-indigo-600 truncate">Move to historical archives</div>
-                            </div>
-                          </div>
-                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
-                            Archive
-                          </span>
-                        </button>
-                      )}
-
-                      {/* Cancel Action */}
-                      {!isCancelled && cancelCheck.canCancel && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setIsUtilsOpen(false);
-                            setShowCancelModal(true);
-                          }}
-                          className="w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 hover:bg-rose-50 text-rose-900 border border-transparent hover:border-rose-200 transition-colors cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 border border-rose-200 flex items-center justify-center shrink-0">
-                              <AlertTriangle className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold truncate">Cancel Activity</div>
-                              <div className="text-[11px] text-rose-600 truncate">Cancel event with justification</div>
-                            </div>
-                          </div>
-                          <span className="shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200">
-                            Cancel
                           </span>
                         </button>
                       )}
@@ -1653,24 +1584,6 @@ export default function OfficerEventDetailView({
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>{withdrawing ? 'Withdrawing...' : 'Withdraw Proposal to Edit'}</span>
               </button>
-            </div>
-          )}
-
-          {isCancelled && (
-            <div className="p-5 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 rounded-2xl shadow-xs space-y-3">
-              <div className="flex items-center gap-2 text-red-800 font-bold text-base">
-                <XCircle className="w-5 h-5 text-red-600" />
-                <span>This Activity Has Been Cancelled</span>
-              </div>
-              {event.cancellationReason && (
-                <div className="bg-white p-3.5 rounded-xl border border-red-100 text-xs text-red-900 leading-relaxed shadow-2xs">
-                  <strong className="text-red-950">Cancellation Reason:</strong> {event.cancellationReason}
-                </div>
-              )}
-              <div className="text-xs text-red-600 flex flex-wrap items-center gap-3">
-                <span>Cancelled by: <strong className="text-red-700">{event.cancelledBy || 'Administrator / Officer'}</strong></span>
-                {event.cancelledAt && <span>• {formatAppDateTime(event.cancelledAt)}</span>}
-              </div>
             </div>
           )}
 
@@ -2639,24 +2552,6 @@ export default function OfficerEventDetailView({
     </main>
       </div>
 
-      {/* CANCEL EVENT MODAL */}
-      {showCancelModal && (
-        <CancelEventModal
-          event={event}
-          role="officer"
-          userRole="officer"
-          userId={profile?.studentId || 'officer-user'}
-          userName={profile?.studentName || 'Student Officer'}
-          currentOrgId={profile?.activeOrganizationId || undefined}
-          isOpen={showCancelModal}
-          onClose={() => setShowCancelModal(false)}
-          onSuccess={() => {
-            setShowCancelModal(false);
-            onClose();
-          }}
-        />
-      )}
-
       {/* CONCLUDE EVENT MODAL */}
       {showConcludeModal && (
         <ConcludeEventModal
@@ -2671,25 +2566,6 @@ export default function OfficerEventDetailView({
           adminName={profile?.studentName || 'Student Officer'}
           onSuccess={() => {
             setShowConcludeModal(false);
-            onClose();
-          }}
-        />
-      )}
-
-      {/* ARCHIVE EVENT MODAL */}
-      {showArchiveModal && (
-        <ArchiveEventModal
-          event={{
-            ...event,
-            ...(activeEvent || {}),
-            totalApprovedBudget,
-          }}
-          isOpen={showArchiveModal}
-          onClose={() => setShowArchiveModal(false)}
-          adminUid={profile?.uid || 'officer-user'}
-          adminName={profile?.studentName || 'Student Officer'}
-          onSuccess={() => {
-            setShowArchiveModal(false);
             onClose();
           }}
         />
@@ -2784,7 +2660,6 @@ export default function OfficerEventDetailView({
                   event.hostingOrgName || (event as any).organizationName || profile?.activeOrgName || undefined
                 }
                 readOnly={isSasCreated}
-                isCancelled={isCancelled}
                 isQREnabled={Boolean(
                   (activeEvent as any)?.enableQRTickets || (activeEvent as any)?.enableQR
                 )}

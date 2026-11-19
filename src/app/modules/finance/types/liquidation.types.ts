@@ -169,9 +169,9 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   voidedBy?: string;
   voidedReason?: string;
   revisionCount?: number;
-  // Post-Approval Cashier Settlement Proof (Surplus Return / Deficit Reimbursement / Cancellation Return)
+  // Post-Approval Cashier Settlement Proof (Surplus Return / Deficit Reimbursement)
   cashierSettlementProofs?: ReceiptAttachment[];
-  cashierSettlementType?: 'surplus_return' | 'deficit_reimbursement' | 'cancellation_return';
+  cashierSettlementType?: 'surplus_return' | 'deficit_reimbursement';
   cashierSettlementStatus?: 'not_required' | 'pending_proof' | 'proof_uploaded' | 'verified';
   cashierReferenceNo?: string;
   cashierSettledAt?: string;
@@ -180,8 +180,6 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   cashierVerifiedByName?: string;
   cashierVerifiedAt?: string;
   amountToReturn?: number;
-  isCancellationLiquidation?: boolean;
-  cancellationReason?: string;
   // Student Contribution Two-Axis Collection Recovery Fields
   fundingSource?: string;
   totalProjectedCollection?: number;

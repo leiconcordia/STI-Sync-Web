@@ -48,6 +48,7 @@ import {
   saveDefaultWorkflowSettings,
   resetWorkflowPipeline,
   getBuiltinDefaultWorkflow,
+  filterTemplateStepsBySignatoryScope,
 } from '../../../modules/workflow/services/approval-workflow.service';
 import { formatStageTitle, normalizeApprovalStages } from '../../../modules/workflow/utils/stage-normalization.utils';
 import {
@@ -116,11 +117,39 @@ export default function ApprovalWorkflowSettings() {
     return signatories.filter((s) => s.isActive !== false && isSignatoryApplicableTo(s, activeDoc));
   }, [signatories, activeDoc]);
 
-  // Current working steps for active pipeline
+  // Automatically strip ineligible/out-of-scope signatories from loaded workflow templates
+  const sanitizedSettings = useMemo(() => {
+    if (!settings) return null;
+    if (loadingSignatories || signatories.length === 0) return settings;
+    return {
+      ...settings,
+      adviser_ap: filterTemplateStepsBySignatoryScope(settings.adviser_ap || [], signatories, 'proposal', {
+        preserveBuiltinSasGate: true,
+        normalize: true,
+      }),
+      adviser_fl: filterTemplateStepsBySignatoryScope(settings.adviser_fl || [], signatories, 'liquidation', {
+        normalize: true,
+      }),
+      adviser_par: filterTemplateStepsBySignatoryScope(settings.adviser_par || [], signatories, 'par', {
+        normalize: true,
+      }),
+      admin_ap: filterTemplateStepsBySignatoryScope(settings.admin_ap || [], signatories, 'proposal', {
+        normalize: true,
+      }),
+      admin_fl: filterTemplateStepsBySignatoryScope(settings.admin_fl || [], signatories, 'liquidation', {
+        normalize: true,
+      }),
+      admin_par: filterTemplateStepsBySignatoryScope(settings.admin_par || [], signatories, 'par', {
+        normalize: true,
+      }),
+    };
+  }, [settings, signatories, loadingSignatories]);
+
+  // Current working steps for active pipeline (strictly filtered by activeDoc scope)
   const currentSteps: WorkflowStepTemplate[] = useMemo(() => {
-    if (!settings) return [];
-    return settings[activePipelineKey] || [];
-  }, [settings, activePipelineKey]);
+    if (!sanitizedSettings) return [];
+    return sanitizedSettings[activePipelineKey] || [];
+  }, [sanitizedSettings, activePipelineKey]);
 
   // Update working steps in local state
   const handleUpdateSteps = (newSteps: WorkflowStepTemplate[]) => {
@@ -272,20 +301,26 @@ export default function ApprovalWorkflowSettings() {
       currentSteps.map((s) => s.signatoryUid).filter(Boolean)
     );
     const availableSigner = eligibleSignatories.find((s) => !usedIds.has(s.id));
+    if (!availableSigner) {
+      toast.error(
+        `No remaining eligible signatories for ${activeDoc === 'proposal' ? 'AP' : activeDoc === 'liquidation' ? 'FL' : 'PAR'} workflow scope.`
+      );
+      return;
+    }
 
     const newStep: WorkflowStepTemplate = {
       id: `step_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       step: currentSteps.length + 1,
       stageIndex,
       stageName,
-      signatoryUid: availableSigner?.id,
-      signatoryName: availableSigner?.name,
-      signatoryEmail: availableSigner?.email,
-      role: availableSigner?.role || 'program_head',
-      roleTitle: availableSigner?.roleTitle || 'Program Head',
-      actionType: availableSigner?.actionType === 'approver' ? 'approve' : 'endorse',
-      department: availableSigner?.department || 'Academic Department',
-      departmentId: availableSigner?.departmentId,
+      signatoryUid: availableSigner.id,
+      signatoryName: availableSigner.name,
+      signatoryEmail: availableSigner.email,
+      role: availableSigner.role || 'program_head',
+      roleTitle: availableSigner.roleTitle || 'Program Head',
+      actionType: availableSigner.actionType === 'approver' ? 'approve' : 'endorse',
+      department: availableSigner.department || 'Academic Department',
+      departmentId: availableSigner.departmentId,
       isMandatory: true,
     };
 
@@ -362,8 +397,12 @@ export default function ApprovalWorkflowSettings() {
   // ── Save & Reset Handlers ──
 
   const handleSave = async () => {
-    if (!settings) return;
-    const approverCount = currentSteps.filter((s) => s.actionType === 'approve').length;
+    if (!sanitizedSettings) return;
+    const stepsToSave = filterTemplateStepsBySignatoryScope(currentSteps, signatories, activeDoc, {
+      preserveBuiltinSasGate: activePipelineKey === 'adviser_ap',
+      normalize: true,
+    });
+    const approverCount = stepsToSave.filter((s) => s.actionType === 'approve').length;
     if (approverCount === 0) {
       toast.error(
         `Validation Error: Cannot save ${activeMeta.label}. Every workflow MUST include exactly one executive Approver ("Approve" action). Please designate an approver first.`
@@ -379,11 +418,12 @@ export default function ApprovalWorkflowSettings() {
 
     setIsSaving(true);
     try {
-      // Save strictly per active pipeline key (AP, FL, or PAR)
+      // Save strictly per active pipeline key (AP, FL, or PAR) with ineligible signers removed
       await saveDefaultWorkflowSettings(
-        { [activePipelineKey]: currentSteps },
+        { [activePipelineKey]: stepsToSave },
         profile?.email || 'admin@ormoc.sti.edu.ph'
       );
+      setSettings((prev) => (prev ? { ...prev, [activePipelineKey]: stepsToSave } : prev));
       toast.success(`${activeMeta.label} saved successfully!`);
     } catch (err: any) {
       toast.error('Failed to save workflow settings: ' + (err?.message || 'Unexpected error'));
@@ -670,34 +710,12 @@ export default function ApprovalWorkflowSettings() {
                                   className="text-xs font-semibold text-gray-900 border border-gray-300 rounded-lg px-2.5 py-1.5 bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none max-w-sm"
                                 >
                                   <option value="">— Select Institutional Signer —</option>
-                                  {availableSignatoriesForStep.map((sig) => {
-                                    const canSigApprove = Boolean(
-                                      activeDoc === 'proposal'
-                                        ? sig.canApproveProposal
-                                        : activeDoc === 'liquidation'
-                                          ? sig.canApproveLiquidation
-                                          : sig.canApprovePar
-                                    ) || sig.role === 'school_president' || sig.role === 'school_administrator';
-                                    return (
-                                      <option key={sig.id} value={sig.id}>
-                                        {sig.name} ({sig.roleTitle} — {sig.department || 'Campus'}) [{canSigApprove ? 'Approver' : 'Endorser'}]
-                                      </option>
-                                    );
-                                  })}
+                                  {availableSignatoriesForStep.map((sig) => (
+                                    <option key={sig.id} value={sig.id}>
+                                      {sig.name} ({sig.roleTitle} — {sig.department || 'Campus'})
+                                    </option>
+                                  ))}
                                 </select>
-
-                                {/* Authority Capability Badge */}
-                                {selectedSig && (
-                                  <span
-                                    className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold flex-shrink-0 ${canSignerApprove
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : 'bg-sky-100 text-sky-800'
-                                      }`}
-                                  >
-                                    <ShieldCheck className="w-3 h-3" />
-                                    {canSignerApprove ? 'Approver' : 'Endorser Only'}
-                                  </span>
-                                )}
                               </div>
 
                               <div className="text-[11px] text-gray-500 mt-1 flex items-center gap-2">

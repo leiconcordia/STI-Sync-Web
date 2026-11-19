@@ -714,9 +714,11 @@ export function rebalanceDeficitDeductionAllocations(params: {
 export function validateDeficitDeductionAllocations(params: {
   totalDeficit: number;
   rows: DeficitDeductionAllocation[];
+  mode?: 'misc_or_mixed' | 'student_collections';
 }): DeficitDeductionValidationResult {
   const totalDeficit = Math.max(0, Math.round((Number(params.totalDeficit) || 0) * 100) / 100);
   const rows = Array.isArray(params.rows) ? params.rows : [];
+  const isStudentCollectionsMode = params.mode === 'student_collections';
   const perBucketErrors: Record<string, string> = {};
 
   if (totalDeficit <= 0) {
@@ -733,16 +735,27 @@ export function validateDeficitDeductionAllocations(params: {
 
   let totalDeducted = 0;
   let totalCapacityAvailable = 0;
+  let hasDisallowedBucket = false;
 
   for (const r of rows) {
     const deduct = Number(r.deductAmount);
     const avail = Math.max(0, Math.round((Number(r.availableBalance) || 0) * 100) / 100);
+
+    if (isStudentCollectionsMode && (r.fundType === 'misc_fee' || r.isSupplementalSource === true)) {
+      hasDisallowedBucket = true;
+      perBucketErrors[r.bucketId] =
+        'Miscellaneous Fee / supplemental buckets cannot be used for Student Collections reimbursement.';
+      continue;
+    }
+
     totalCapacityAvailable += avail;
 
     if (Number.isNaN(deduct) || deduct < 0) {
       perBucketErrors[r.bucketId] = 'Deduction amount cannot be negative.';
     } else if (deduct > avail + 0.009) {
-      perBucketErrors[r.bucketId] = `Exceeds available bucket balance (${formatPHP(avail)}). Waterfall remainder to another bucket.`;
+      perBucketErrors[r.bucketId] = isStudentCollectionsMode
+        ? `Exceeds available Student Collections balance (${formatPHP(avail)}). Collect remaining student contributions first.`
+        : `Exceeds available bucket balance (${formatPHP(avail)}). Waterfall remainder to another bucket.`;
     }
 
     totalDeducted += Math.max(0, Number.isNaN(deduct) ? 0 : deduct);
@@ -752,16 +765,24 @@ export function validateDeficitDeductionAllocations(params: {
   totalCapacityAvailable = Math.round(totalCapacityAvailable * 100) / 100;
   const remainingDeficitToAssign = Math.round((totalDeficit - totalDeducted) * 100) / 100;
   const needsAdditionalBucket = totalCapacityAvailable + 0.009 < totalDeficit;
+  const shortfall = Math.max(0, Math.round((totalDeficit - totalCapacityAvailable) * 100) / 100);
 
   let summaryError: string | undefined;
-  if (rows.length === 0) {
-    summaryError = `Select at least one fund bucket to cover the ${formatPHP(totalDeficit)} overspend.`;
+  if (hasDisallowedBucket) {
+    summaryError =
+      'Student Collections overspend can only be reimbursed from Student Collections funds (Miscellaneous Fee and supplemental buckets are not allowed).';
+  } else if (rows.length === 0) {
+    summaryError = isStudentCollectionsMode
+      ? `Insufficient Student Collections funds to reimburse ${formatPHP(totalDeficit)} overspend (Available: ${formatPHP(0)}, Shortfall: ${formatPHP(totalDeficit)}). Collect remaining student contributions first before proceeding with reimbursement.`
+      : `Select at least one fund bucket to cover the ${formatPHP(totalDeficit)} overspend.`;
   } else if (needsAdditionalBucket) {
-    summaryError = `Selected bucket balances (${formatPHP(totalCapacityAvailable)}) cannot cover full overspend (${formatPHP(totalDeficit)}). Add another bucket with at least ${formatPHP(Math.max(0, totalDeficit - totalCapacityAvailable))}.`;
+    summaryError = isStudentCollectionsMode
+      ? `Insufficient Student Collections funds to reimburse ${formatPHP(totalDeficit)} overspend (Available: ${formatPHP(totalCapacityAvailable)}, Shortfall: ${formatPHP(shortfall)}). Collect remaining student contributions first before proceeding with reimbursement.`
+      : `Selected bucket balances (${formatPHP(totalCapacityAvailable)}) cannot cover full overspend (${formatPHP(totalDeficit)}). Add another bucket with at least ${formatPHP(shortfall)}.`;
   } else if (Math.abs(remainingDeficitToAssign) >= 0.01) {
     summaryError =
       remainingDeficitToAssign > 0
-        ? `Assign ${formatPHP(remainingDeficitToAssign)} more across buckets so total deductions strictly equal Total Overspend (${formatPHP(totalDeficit)}).`
+        ? `Assign ${formatPHP(remainingDeficitToAssign)} more so total reimbursement deductions strictly equal Total Overspend (${formatPHP(totalDeficit)}).`
         : `Assigned deductions exceed Total Overspend by ${formatPHP(Math.abs(remainingDeficitToAssign))}. Adjust so total strictly equals ${formatPHP(totalDeficit)}.`;
   }
 
@@ -770,7 +791,7 @@ export function validateDeficitDeductionAllocations(params: {
     totalDeducted,
     remainingDeficitToAssign,
     totalCapacityAvailable,
-    needsAdditionalBucket,
+    needsAdditionalBucket: isStudentCollectionsMode ? false : needsAdditionalBucket,
     requiresReimbursementProof: totalDeficit > 0.009,
     perBucketErrors,
     summaryError,

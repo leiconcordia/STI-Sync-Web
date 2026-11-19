@@ -7,6 +7,7 @@
  */
 
 import type { FieldDiffEntry } from '../types/approval.types';
+import { resolvePARRemarksDescription } from '../../post-activity-reports/utils/par-remarks.utils';
 
 // Format currency in PHP
 export function formatMoney(amount: any): string {
@@ -1130,32 +1131,20 @@ export function diffPostActivityReport(
     });
   }
 
-  // 3. Categorized Recommendations (Exact 4 STI Areas)
-  const areas = [
-    { key: 'programFlow', label: 'Program Flow & Execution' },
-    { key: 'participantEngagement', label: 'Participant Engagement' },
-    { key: 'technicalSetup', label: 'Technical & Equipment Setup' },
-    { key: 'participantPreparedness', label: 'Participant Preparedness' },
-  ];
-
-  areas.forEach(({ key, label }) => {
-    const oldObs = clean(oldDoc.recommendations?.[key]?.observations);
-    const newObs = clean(newDoc.recommendations?.[key]?.observations);
-    const oldRec = clean(oldDoc.recommendations?.[key]?.recommendations);
-    const newRec = clean(newDoc.recommendations?.[key]?.recommendations);
-
-    if (oldObs !== newObs || oldRec !== newRec) {
-      diffs.push({
-        fieldPath: `recommendations.${key}`,
-        label: `Recommendations: ${label}`,
-        section: 'Results & Recommendations',
-        changeType: 'modified',
-        oldValue: `Obs: ${oldObs || 'None'} • Rec: ${oldRec || 'None'}`,
-        newValue: `Obs: ${newObs || 'None'} • Rec: ${newRec || 'None'}`,
-        diffSummary: `Area "${label}" observations and recommendations were revised.`,
-      });
-    }
-  });
+  // 3. Remarks (For Future Activity Improvements)
+  const oldRemarks = clean(resolvePARRemarksDescription(oldDoc));
+  const newRemarks = clean(resolvePARRemarksDescription(newDoc));
+  if (oldRemarks !== newRemarks) {
+    diffs.push({
+      fieldPath: 'remarks',
+      label: 'Remarks (For Future Activity Improvements)',
+      section: 'Results & Recommendations',
+      changeType: !oldRemarks ? 'added' : !newRemarks ? 'removed' : 'modified',
+      oldValue: oldRemarks || '(None recorded)',
+      newValue: newRemarks || '(None recorded)',
+      diffSummary: 'Remarks description for future activity improvements was revised.',
+    });
+  }
 
   // Photo Documentation Gallery
   const oldPhotos: any[] = oldDoc.photos || [];

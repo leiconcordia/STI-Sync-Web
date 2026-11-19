@@ -9,11 +9,6 @@ export interface EventEditabilityCheck {
   allowedFieldTypes?: 'all' | 'minor_only' | 'none';
 }
 
-export interface EventCancellationCheck {
-  canCancel: boolean;
-  reason?: string;
-}
-
 export interface ProposalWithdrawalCheck {
   canWithdraw: boolean;
   reason?: string;
@@ -204,38 +199,6 @@ export const MAJOR_EVENT_FIELDS: ReadonlyArray<string> = [
   'gracePeriodMinutes',
   'lateThresholdMinutes',
 ];
-
-/**
- * Checks if an event is permanently cancelled.
- */
-export function isEventCancelled(event?: Partial<EventDocument> | any | null): boolean {
-  if (!event) return false;
-  const p = String(event.proposalStatus || '').toLowerCase();
-  const s = String(event.status || '').toLowerCase();
-  const l = String(event.lifecycleStatus || '').toLowerCase();
-  return Boolean(
-    event.isCancelled === true ||
-      p === 'cancelled' ||
-      s === 'cancelled' ||
-      l === 'cancelled'
-  );
-}
-
-/**
- * Checks if an event has a pending cancellation waiting on Financial Liquidation signatory approval.
- */
-export function isEventCancellationPending(event?: Partial<EventDocument> | any | null): boolean {
-  if (!event || isEventCancelled(event)) return false;
-  const p = String(event.proposalStatus || '').toLowerCase();
-  const s = String(event.status || '').toLowerCase();
-  const l = String(event.lifecycleStatus || '').toLowerCase();
-  return Boolean(
-    event.cancellationStatus === 'pending_approval' ||
-      p === 'cancellation_pending' ||
-      s === 'cancellation_pending' ||
-      l === 'cancellation_pending'
-  );
-}
 
 /**
  * Checks if an event is currently marked as soft-deleted.
@@ -741,145 +704,6 @@ export function canConcludeEvent(
   }
 
   return { canConclude: true };
-}
-
-/**
- * Checks whether a user can initiate cancellation of an event.
- * Rules:
- * 1. ONLY approved and upcoming events can be cancelled (for both Admin and Officer).
- * 2. Unapproved proposals (pending, pending_review, returned, draft, rejected) cannot be cancelled.
- * 3. Completed, ongoing, cancelled, archived, and deleted events cannot be cancelled.
- * 4. SAO Admin can cancel ANY approved upcoming event (institutional or student organization).
- * 5. Student Officers can cancel their own organization's approved upcoming events (cannot cancel SAS institutional events).
- */
-export function canCancelEvent(
-  event?: Partial<EventDocument> | null,
-  userRole: 'admin' | 'officer' | string = 'officer',
-  userOrgId?: string
-): EventCancellationCheck {
-  if (!event) {
-    return { canCancel: false, reason: 'Event not found.' };
-  }
-
-  if (event.isArchived) {
-    return { canCancel: false, reason: 'Archived events cannot be cancelled.' };
-  }
-
-  if (
-    event.isDeleted ||
-    isEventCancelled(event)
-  ) {
-    return { canCancel: false, reason: 'Event is already cancelled.' };
-  }
-
-  if (isEventCancellationPending(event)) {
-    return {
-      canCancel: false,
-      reason: 'A cancellation request with Financial Liquidation is already pending signatory approval.',
-    };
-  }
-
-  const pStatus = (event.proposalStatus || '').toLowerCase();
-  const eStatus = (event.status || '').toLowerCase();
-  const lStatus = ((event as any).lifecycleStatus || '').toLowerCase();
-
-  if (pStatus === 'rejected' || eStatus === 'rejected') {
-    return { canCancel: false, reason: 'Rejected events cannot be cancelled.' };
-  }
-
-  // 1. Unapproved proposals (draft, pending, pending_review, returned) CANNOT be cancelled
-  if (
-    pStatus === 'pending' ||
-    pStatus === 'pending_review' ||
-    pStatus === 'returned' ||
-    pStatus === 'draft' ||
-    eStatus === 'pending' ||
-    eStatus === 'draft' ||
-    eStatus === 'returned'
-  ) {
-    return {
-      canCancel: false,
-      reason: 'Only approved events can be cancelled. Unapproved proposals cannot be cancelled.',
-    };
-  }
-
-  // 2. Must be approved
-  const isApproved =
-    pStatus === 'approved' ||
-    eStatus === 'approved' ||
-    lStatus === 'approved' ||
-    lStatus === 'published' ||
-    Boolean((event as any).isApproved) ||
-    Boolean((event as any).isDirectPublished);
-
-  if (!isApproved) {
-    return {
-      canCancel: false,
-      reason: 'Only approved events can be cancelled.',
-    };
-  }
-
-  // 3. Must be upcoming (not completed, not ongoing)
-  if (
-    pStatus === 'completed' ||
-    eStatus === 'completed' ||
-    lStatus === 'completed' ||
-    lStatus === 'concluded' ||
-    Boolean((event as any).isConcluded)
-  ) {
-    return {
-      canCancel: false,
-      reason: 'Completed events cannot be cancelled.',
-    };
-  }
-
-  if (eStatus === 'ongoing' || lStatus === 'ongoing') {
-    return {
-      canCancel: false,
-      reason: 'Ongoing events cannot be cancelled while in progress.',
-    };
-  }
-
-  const timing = getEventTimingStatus(event);
-  if (timing !== 'upcoming' || hasEventStarted(event)) {
-    return {
-      canCancel: false,
-      reason:
-        timing === 'completed'
-          ? 'Completed events cannot be cancelled.'
-          : 'Cannot cancel: This event has already started or is currently in progress.',
-    };
-  }
-
-  // 4. Role authority checks
-  if (userRole === 'admin') {
-    // Admin can cancel any approved upcoming event, even if not their own event
-    return { canCancel: true };
-  }
-
-  if (userRole === 'officer') {
-    // Institutional SAO events cannot be cancelled by officers
-    const isInstitutional = isInstitutionalProposal(event);
-
-    if (isInstitutional) {
-      return {
-        canCancel: false,
-        reason: 'Institutional SAO events can only be cancelled by SAO administration.',
-      };
-    }
-
-    const eventOrg = (event.hostingOrgId || event.organizationId || (event as any).createdByOrgId || '').toString();
-    if (userOrgId && eventOrg && !isMatchingOrganization(userOrgId, eventOrg)) {
-      return {
-        canCancel: false,
-        reason: "Officers can only cancel their own organization's events.",
-      };
-    }
-
-    return { canCancel: true };
-  }
-
-  return { canCancel: false, reason: 'This event cannot be cancelled in its current state.' };
 }
 
 /**

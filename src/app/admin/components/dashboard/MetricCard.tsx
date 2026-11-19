@@ -35,7 +35,7 @@ export function MetricCard({
   return (
     <div
       onClick={onClick}
-      className={`relative bg-gradient-to-br ${gradients[gradient]} rounded-2xl p-6 text-white overflow-hidden shadow-sm ${
+      className={`relative bg-gradient-to-br ${gradients[gradient]} rounded-2xl p-5 sm:p-6 text-white overflow-hidden shadow-sm flex flex-col justify-between min-h-[148px] ${
         onClick ? "cursor-pointer hover:shadow-lg hover:scale-[1.01] transition-all group" : ""
       }`}
     >
@@ -43,13 +43,11 @@ export function MetricCard({
       <div className="absolute -top-6 -right-6 w-24 h-24 rounded-full bg-white/10 pointer-events-none" />
       <div className="absolute -bottom-6 -left-6 w-20 h-20 rounded-full bg-white/5 pointer-events-none" />
 
-      {/* Icon Container */}
-      <div className="absolute top-6 left-6 w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm group-hover:bg-white/30 transition-colors">
-        <Icon className="w-6 h-6" />
-      </div>
-
-      {/* Badge or Trending Arrow */}
-      <div className="absolute top-6 right-6">
+      {/* Top row: Icon container & optional badge/trending arrow */}
+      <div className="relative z-10 flex items-start justify-between gap-3">
+        <div className="w-11 h-11 bg-white/20 rounded-xl flex items-center justify-center backdrop-blur-sm group-hover:bg-white/30 transition-colors flex-shrink-0">
+          <Icon className="w-5 h-5" />
+        </div>
         {badge ? (
           badge
         ) : trending === "up" ? (
@@ -64,10 +62,10 @@ export function MetricCard({
       </div>
 
       {/* Content */}
-      <div className="mt-16">
-        <div className="text-4xl sm:text-5xl font-bold mb-2 font-mono tracking-tight">{value}</div>
-        <div className="text-white/90 text-sm font-semibold mb-2">{title}</div>
-        {change && <div className="text-white/80 text-xs font-medium">{change}</div>}
+      <div className="mt-4 relative z-10">
+        <div className="text-4xl sm:text-5xl font-bold mb-2 font-mono tracking-tight leading-none">{value}</div>
+        <div className="text-white text-base sm:text-lg font-bold leading-snug tracking-tight">{title}</div>
+        {change && <div className="text-white/80 text-xs font-medium mt-1">{change}</div>}
       </div>
     </div>
   );

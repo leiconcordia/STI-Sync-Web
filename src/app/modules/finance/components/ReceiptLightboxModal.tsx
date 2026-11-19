@@ -42,7 +42,7 @@ export default function ReceiptLightboxModal({
   const handleRotate = () => setRotation((prev) => (prev + 90) % 360);
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden border border-gray-100">
         
         {/* Header */}
