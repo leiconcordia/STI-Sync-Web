@@ -24,6 +24,27 @@ export interface UserContext {
 }
 
 /**
+ * Checks whether at least one signatory (or SAS direct approval) has already signed the document.
+ */
+export function hasAnySignatorySigned(doc: Partial<ApprovableDocument> | any): boolean {
+  if (!doc) return false;
+  const chain: any[] = Array.isArray(doc.approvalChain) ? doc.approvalChain : [];
+  const chainSigned = chain.some(
+    (s: any) =>
+      s &&
+      (s.status === 'endorsed' ||
+        s.status === 'approved' ||
+        Boolean(s.signedAt) ||
+        Boolean(s.signatureUrl))
+  );
+  if (chainSigned) return true;
+  if (Boolean(doc.sasSignedAt) || doc.isApproved === true || Boolean(doc.approvedBy)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Checks whether an approvable document was created directly by SAS / SAO Admin internally.
  */
 export function isDocumentSasCreated(doc: Partial<ApprovableDocument>): boolean {
@@ -200,8 +221,8 @@ export function resolveApprovalPermissions(
   }
 
   // 3. Withdrawal Permission:
-  // ONLY the Owner can withdraw when in pending/under_review
-  const canWithdraw = isOwner && isPending;
+  // ONLY the Owner can withdraw when in pending/under_review AND no signatory has signed yet
+  const canWithdraw = isOwner && isPending && !hasAnySignatorySigned(doc);
 
   // 4. Edit Permission:
   // ONLY the Owner can edit, and only when in draft or returned

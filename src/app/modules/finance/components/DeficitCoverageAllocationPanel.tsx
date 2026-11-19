@@ -19,6 +19,7 @@ import {
   rebalanceDeficitDeductionAllocations,
   validateDeficitDeductionAllocations,
 } from '../../activity-proposals/utils/proposal-calculations';
+import { shouldAllowSupplementalDeficitBuckets } from '../utils/liquidation-settlement.utils';
 
 export interface SupplementalBucketOption {
   bucketId: string;
@@ -87,6 +88,7 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
   targetOrgName?: string | null;
   orgLedgerBalance?: number;
   studentCollectionAvailableOverride?: number;
+  allowSupplementalBuckets?: boolean;
 }): {
   initialRows: DeficitDeductionAllocation[];
   supplementalOptions: SupplementalBucketOption[];
@@ -104,6 +106,7 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
     targetOrgName,
     orgLedgerBalance,
     studentCollectionAvailableOverride,
+    allowSupplementalBuckets,
   } = params;
 
   const getLiveAvail = (bucketId: string, bucketName: string, fundType: FundAllocationFundType) =>
@@ -217,32 +220,40 @@ export function buildDeficitSeedAndSupplementalOptions(params: {
     });
   }
 
+  const canAddSupplementalBuckets = shouldAllowSupplementalDeficitBuckets({
+    fundingSource,
+    sourceAllocations,
+    allowSupplementalBuckets,
+  });
+
   const supplementalOptions: SupplementalBucketOption[] = [];
-  for (const cb of saoEligibleBuckets) {
-    supplementalOptions.push({
-      bucketId: cb.bucket.id,
-      bucketName: cb.bucket.particular,
-      fundType: 'misc_fee',
-      availableBalance: Math.max(0, Number(cb.currentAvailable) || 0),
-    });
-  }
-  if (saoRetainedFund && (Number(saoRetainedFund.availableBalance) || 0) > 0) {
-    supplementalOptions.push({
-      bucketId: saoRetainedFund.id,
-      bucketName: saoRetainedFund.organizationName || 'Campus Student Contribution Retained Bucket',
-      fundType: 'student_contribution_retained',
-      availableBalance: Math.max(0, Number(saoRetainedFund.availableBalance) || 0),
-    });
-  }
-  if (cleanOrgId && !isSasSentinel) {
-    const orgAvail = getLiveAvail(`ORG_${cleanOrgId}`, targetOrgName || 'Organization Treasury', 'org_treasury');
-    if (orgAvail > 0) {
+  if (canAddSupplementalBuckets) {
+    for (const cb of saoEligibleBuckets) {
       supplementalOptions.push({
-        bucketId: `ORG_${cleanOrgId}`,
-        bucketName: `${targetOrgName || 'Organization'} Treasury`,
-        fundType: 'org_treasury',
-        availableBalance: orgAvail,
+        bucketId: cb.bucket.id,
+        bucketName: cb.bucket.particular,
+        fundType: 'misc_fee',
+        availableBalance: Math.max(0, Number(cb.currentAvailable) || 0),
       });
+    }
+    if (saoRetainedFund && (Number(saoRetainedFund.availableBalance) || 0) > 0) {
+      supplementalOptions.push({
+        bucketId: saoRetainedFund.id,
+        bucketName: saoRetainedFund.organizationName || 'Campus Student Contribution Retained Bucket',
+        fundType: 'student_contribution_retained',
+        availableBalance: Math.max(0, Number(saoRetainedFund.availableBalance) || 0),
+      });
+    }
+    if (cleanOrgId && !isSasSentinel) {
+      const orgAvail = getLiveAvail(`ORG_${cleanOrgId}`, targetOrgName || 'Organization Treasury', 'org_treasury');
+      if (orgAvail > 0) {
+        supplementalOptions.push({
+          bucketId: `ORG_${cleanOrgId}`,
+          bucketName: `${targetOrgName || 'Organization'} Treasury`,
+          fundType: 'org_treasury',
+          availableBalance: orgAvail,
+        });
+      }
     }
   }
 
@@ -277,11 +288,18 @@ export function DeficitCoverageAllocationPanel({
   title,
 }: DeficitCoverageAllocationPanelProps) {
   const [selectedSuppId, setSelectedSuppId] = useState('');
+  const isOrgTreasuryOnly =
+    !isStudentCollection &&
+    supplementalOptions.length === 0 &&
+    rows.length > 0 &&
+    rows.every((r) => r.fundType === 'org_treasury');
   const resolvedTitle =
     title ||
     (isStudentCollection
       ? 'Student Collections Reimbursement Coverage Check'
-      : 'Overspend Coverage Routing (Bucket Waterfall & Supplemental Selection)');
+      : isOrgTreasuryOnly
+        ? 'Org Treasury Overspend Coverage'
+        : 'Overspend Coverage Routing (Bucket Waterfall & Supplemental Selection)');
 
   const validation = useMemo(
     () =>
@@ -365,7 +383,7 @@ export function DeficitCoverageAllocationPanel({
           </p>
         </div>
 
-        {!readOnly && !isStudentCollection && rows.length > 0 && (
+        {!readOnly && !isStudentCollection && (rows.length > 1 || unusedSupplementalOptions.length > 0) && (
           <button
             type="button"
             disabled={disabled}

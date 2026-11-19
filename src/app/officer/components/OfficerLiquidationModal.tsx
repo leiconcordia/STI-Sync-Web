@@ -58,6 +58,7 @@ import {
   updateLiquidationReport,
   withdrawLiquidationReport,
 } from '../../modules/finance/services/liquidation.service';
+import { hasAnySignatorySigned } from '../../modules/workflow/utils/approval-permissions.utils';
 import { CashierProofUploader } from '../../modules/finance/components/CashierProofUploader';
 import {
   DeficitCoverageAllocationPanel,
@@ -3778,7 +3779,9 @@ export default function OfficerLiquidationModal({
                   <span>Export Report</span>
                 </button>
 
-                {effectiveReport && (currentStatus === 'under_review' || currentStatus === 'pending') && (
+                {effectiveReport &&
+                  (currentStatus === 'under_review' || currentStatus === 'pending') &&
+                  !hasAnySignatorySigned(effectiveReport) && (
                   <button
                     type="button"
                     onClick={() => setShowWithdrawModal(true)}

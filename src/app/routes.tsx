@@ -17,6 +17,7 @@ import { AdminDocuments } from "./admin/pages/AdminDocuments";
 import { AdminDocumentReview } from "./admin/pages/AdminDocumentReview";
 import { AuditLogs } from "./admin/pages/AuditLogs";
 import AdminPostActivityReports from "./admin/pages/AdminPostActivityReports";
+import { WorkflowAndSignatories } from "./admin/pages/WorkflowAndSignatories";
 
 // Auth Pages
 import SASAdminLogin from "./auth/SASAdminLogin";
@@ -114,6 +115,7 @@ export const router = createBrowserRouter([
       { path: "certificates", Component: Certificates },
       { path: "announcements", Component: Announcements },
       { path: "settings", Component: SystemSettings },
+      { path: "workflows-signatories", Component: WorkflowAndSignatories },
       { path: "account-management", Component: AccountManagement },
       { path: "academic-semester", Component: AcademicSemesterSettings },
       { path: "misc-fees", Component: MiscFeeMaintenance },

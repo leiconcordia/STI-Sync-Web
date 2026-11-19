@@ -139,6 +139,14 @@ export function canSignatoryApproveDocument(
 ): boolean {
   if (!signatory) return false;
 
+  // 0. Per-pipeline step role takes strict precedence:
+  // If this step was configured as Endorse / Check / Note only in this pipeline,
+  // the signatory cannot unilaterally approve or bypass downstream stages even if their profile supports it.
+  const stepAction = String(step?.actionType || '').toLowerCase().trim();
+  if (stepAction === 'endorse' || stepAction === 'check' || stepAction === 'note') {
+    return false;
+  }
+
   // 1. Explicit capability flags configured in Institutional Signatory Management
   if (docType === 'proposal' && typeof signatory.canApproveProposal === 'boolean') {
     return signatory.canApproveProposal;

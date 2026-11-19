@@ -5,6 +5,8 @@ import {
   buildLiquidationApprovalNotificationPayload,
   evaluatePARLiquidationGate,
   computeLiveStudentCollectionReimbursementCapacity,
+  shouldAllowSupplementalDeficitBuckets,
+  computeLiveSasRetainedBalance,
 } from '../liquidation-settlement.utils.ts';
 import { validateDeficitDeductionAllocations } from '../../../activity-proposals/utils/proposal-calculations.ts';
 
@@ -207,5 +209,83 @@ describe('Financial Liquidation Settlement Visibility & PAR Gate', () => {
       ],
     });
     assert.equal(capFunded, 500);
+  });
+
+  test('allows supplemental additional buckets only for Miscellaneous Fee activities unless explicitly overridden', () => {
+    assert.equal(
+      shouldAllowSupplementalDeficitBuckets({
+        fundingSource: 'organization_funds',
+        sourceAllocations: [{ fundType: 'org_treasury' }],
+      }),
+      false
+    );
+    assert.equal(
+      shouldAllowSupplementalDeficitBuckets({
+        fundingSource: 'student_contributions',
+        sourceAllocations: [{ fundType: 'student_contributions' }],
+      }),
+      false
+    );
+    assert.equal(
+      shouldAllowSupplementalDeficitBuckets({
+        fundingSource: 'school_budget',
+        sourceAllocations: [{ fundType: 'misc_fee' }],
+      }),
+      true
+    );
+    assert.equal(
+      shouldAllowSupplementalDeficitBuckets({
+        fundingSource: '',
+        sourceAllocations: [{ fundType: 'misc_fee' }],
+      }),
+      true
+    );
+    assert.equal(
+      shouldAllowSupplementalDeficitBuckets({
+        fundingSource: 'student_contributions',
+        allowSupplementalBuckets: true,
+      }),
+      true
+    );
+  });
+
+  test('computes live SAS retained balance across unsynced activities without double-counting ledger entries', () => {
+    const unsyncedTotal = computeLiveSasRetainedBalance({
+      storedAvailableBalance: 0,
+      activities: [
+        {
+          uncreditedCollected: 66860,
+          disbursedUnposted: true,
+          disbursedAmount: 65000,
+          surplusReturned: 16900,
+          reimbursedAmount: 0,
+          ledgerEntries: [],
+        },
+        {
+          uncreditedCollected: 300,
+          disbursedUnposted: true,
+          disbursedAmount: 300,
+          surplusReturned: 200,
+          reimbursedAmount: 0,
+          ledgerEntries: [],
+        },
+      ],
+    });
+    assert.equal(unsyncedTotal, 18960);
+
+    const alreadySyncedTotal = computeLiveSasRetainedBalance({
+      storedAvailableBalance: 18960,
+      activities: [
+        {
+          uncreditedCollected: 0,
+          disbursedUnposted: false,
+          disbursedAmount: 65000,
+          surplusReturned: 16900,
+          reimbursedAmount: 0,
+          ledgerEntries: [{ type: 'liquidation_surplus_retained', amount: 16900 }],
+        },
+      ],
+    });
+    assert.equal(alreadySyncedTotal, 18960);
   });
 });

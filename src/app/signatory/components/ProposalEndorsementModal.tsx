@@ -253,8 +253,14 @@ export default function ProposalEndorsementModal({
   const isReadOnlyLocked = !canSignNow;
   const canReturnOrRejectNow = canSignNow && !isProposalApproved;
 
-  // Dynamic approval authority permission check
-  const canApprove = canSignatoryApproveDocument(signatorySession, 'proposal', myStep);
+  // Dynamic approval authority permission check (respect per-step Endorse/Check role)
+  const isStepEndorseOrCheck =
+    myStep?.actionType === 'endorse' ||
+    myStep?.actionType === 'check' ||
+    (myStep?.actionType as string) === 'note';
+  const canApprove =
+    !isStepEndorseOrCheck &&
+    canSignatoryApproveDocument(signatorySession, 'proposal', myStep);
 
   // Subsequent approvers after my step in the pipeline
   const subsequentApproversCount = chain.filter((s, idx) => {
@@ -262,7 +268,10 @@ export default function ProposalEndorsementModal({
   }).length;
 
   const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
-  const isFinalApprover = Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0));
+  const isFinalApprover =
+    !isStepEndorseOrCheck &&
+    (Boolean(signatorySession?.isFinalApprover) ||
+      (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0)));
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (isReadOnlyLocked) {

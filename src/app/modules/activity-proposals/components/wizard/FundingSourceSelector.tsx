@@ -40,7 +40,6 @@ import {
   computeStudentDemographics,
   filterMatchingStudents,
   filterVisibleCourses,
-  filterVisibleSections,
 } from '../../utils/student-reach.utils';
 import {
   formatMiscFeeFundDescription,
@@ -146,10 +145,6 @@ export default function FundingSourceSelector({
   const [selectedCourses, setSelectedCourses] = useState<string[]>(
     studentContributionFilter?.selectedCourses || []
   );
-  const [selectedSections, setSelectedSections] = useState<string[]>(
-    studentContributionFilter?.selectedSections || []
-  );
-  const [sectionSearch, setSectionSearch] = useState<string>('');
   const [manualCountEnabled, setManualCountEnabled] = useState<boolean>(
     Boolean(studentContributionFilter?.manualCountEnabled)
   );
@@ -238,28 +233,17 @@ export default function FundingSourceSelector({
     [allPrograms, shsPrograms, collegePrograms, activeSections, contribMode, selectedYears]
   );
 
-  const visibleSections = useMemo(
-    () =>
-      filterVisibleSections(activeSections, activeCourses, shsCourseCodes, {
-        mode: contribMode,
-        courseCodes: selectedCourses,
-        years: selectedYears,
-        search: sectionSearch,
-      }),
-    [activeSections, activeCourses, shsCourseCodes, contribMode, selectedCourses, selectedYears, sectionSearch]
-  );
-
   const matchingStudents = useMemo(
     () =>
       filterMatchingStudents(activeStudents, {
         mode: contribMode,
         years: selectedYears,
         courseCodes: selectedCourses,
-        sections: selectedSections,
+        sections: [],
         shsCourseCodes,
         activeCourses,
       }),
-    [activeStudents, contribMode, selectedYears, selectedCourses, selectedSections, shsCourseCodes, activeCourses]
+    [activeStudents, contribMode, selectedYears, selectedCourses, shsCourseCodes, activeCourses]
   );
 
   const filteredDemographics = useMemo(
@@ -280,11 +264,11 @@ export default function FundingSourceSelector({
 
   const audienceSummary = useMemo(() => {
     const scopeParts: string[] = [];
-    if (contribMode === 'all' && !selectedYears.length && !selectedCourses.length && !selectedSections.length) {
+    if (contribMode === 'all' && !selectedYears.length && !selectedCourses.length) {
       scopeParts.push('All Enrolled Students');
-    } else if (contribMode === 'shs' && !selectedYears.length && !selectedCourses.length && !selectedSections.length) {
+    } else if (contribMode === 'shs' && !selectedYears.length && !selectedCourses.length) {
       scopeParts.push('All SHS Students');
-    } else if (contribMode === 'college' && !selectedYears.length && !selectedCourses.length && !selectedSections.length) {
+    } else if (contribMode === 'college' && !selectedYears.length && !selectedCourses.length) {
       scopeParts.push('All College Students');
     } else {
       const detail: string[] = [];
@@ -292,7 +276,6 @@ export default function FundingSourceSelector({
       if (contribMode === 'college') detail.push('College');
       if (selectedCourses.length > 0) detail.push(selectedCourses.join(', '));
       if (selectedYears.length > 0) detail.push(selectedYears.join(', '));
-      if (selectedSections.length > 0) detail.push(`${selectedSections.length} section(s)`);
       scopeParts.push(detail.join(' • ') || 'Filtered Students');
     }
 
@@ -308,7 +291,6 @@ export default function FundingSourceSelector({
     contribMode,
     selectedYears,
     selectedCourses,
-    selectedSections,
     manualCountEnabled,
     effectiveContribStudentCount,
     filteredDemographics.shs,
@@ -377,7 +359,7 @@ export default function FundingSourceSelector({
         mode: contribMode,
         selectedYears,
         selectedCourses,
-        selectedSections,
+        selectedSections: [],
         manualCountEnabled,
         manualStudentCount: count,
         audienceSummary: summary,
@@ -1226,18 +1208,9 @@ export default function FundingSourceSelector({
                     onClick={() => {
                       setContribMode(opt.key);
                       setManualCountEnabled(false);
-                      if (opt.key === 'all') {
+                      if (opt.key === 'all' || opt.key === 'shs' || opt.key === 'college') {
                         setSelectedYears([]);
                         setSelectedCourses([]);
-                        setSelectedSections([]);
-                      } else if (opt.key === 'shs') {
-                        setSelectedYears([]);
-                        setSelectedCourses([]);
-                        setSelectedSections([]);
-                      } else if (opt.key === 'college') {
-                        setSelectedYears([]);
-                        setSelectedCourses([]);
-                        setSelectedSections([]);
                       }
                     }}
                     className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
@@ -1251,15 +1224,13 @@ export default function FundingSourceSelector({
                 ))}
               </div>
 
-              {(selectedYears.length > 0 || selectedCourses.length > 0 || selectedSections.length > 0 || contribMode !== 'all') && (
+              {(selectedYears.length > 0 || selectedCourses.length > 0 || contribMode !== 'all') && (
                 <button
                   type="button"
                   onClick={() => {
                     setContribMode('all');
                     setSelectedYears([]);
                     setSelectedCourses([]);
-                    setSelectedSections([]);
-                    setSectionSearch('');
                     setManualCountEnabled(false);
                   }}
                   className="text-[11px] font-semibold text-blue-700 hover:underline flex items-center gap-1 cursor-pointer"
@@ -1270,9 +1241,9 @@ export default function FundingSourceSelector({
               )}
             </div>
 
-            {/* Granular Year Level / Program / Section Filters */}
+            {/* Granular Year Level & Program Filters */}
             {(contribMode !== 'all' || availableYears.length > 0) && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
                 {/* Year Levels */}
                 <div className="bg-white border border-gray-200 rounded-lg p-2.5 max-h-40 overflow-y-auto">
                   <span className="block text-[10px] font-bold uppercase text-gray-500 mb-1.5">
@@ -1324,48 +1295,6 @@ export default function FundingSourceSelector({
                         </button>
                       );
                     })}
-                  </div>
-                </div>
-
-                {/* Sections */}
-                <div className="bg-white border border-gray-200 rounded-lg p-2.5 max-h-40 flex flex-col">
-                  <div className="flex items-center justify-between gap-1 mb-1.5">
-                    <span className="text-[10px] font-bold uppercase text-gray-500">
-                      Sections ({selectedSections.length || 'All'})
-                    </span>
-                    <div className="relative">
-                      <Search className="w-2.5 h-2.5 text-gray-400 absolute left-1.5 top-1/2 -translate-y-1/2" />
-                      <input
-                        type="text"
-                        value={sectionSearch}
-                        onChange={(e) => setSectionSearch(e.target.value)}
-                        placeholder="Search section"
-                        className="pl-5 pr-1.5 py-0.5 text-[10px] border border-gray-200 rounded bg-slate-50 w-24 outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-1 overflow-y-auto">
-                    {visibleSections.length === 0 ? (
-                      <span className="text-[10px] text-gray-400">No sections matched</span>
-                    ) : (
-                      visibleSections.slice(0, 60).map((sec) => {
-                        const active = selectedSections.includes(sec.name);
-                        return (
-                          <button
-                            key={sec.id}
-                            type="button"
-                            onClick={() => toggleSelection(selectedSections, setSelectedSections, sec.name)}
-                            className={`px-2 py-0.5 rounded text-[10px] font-semibold border cursor-pointer ${
-                              active
-                                ? 'bg-emerald-600 text-white border-emerald-600'
-                                : 'bg-slate-50 text-gray-700 border-gray-200 hover:bg-slate-100'
-                            }`}
-                          >
-                            {sec.name}
-                          </button>
-                        );
-                      })
-                    )}
                   </div>
                 </div>
               </div>

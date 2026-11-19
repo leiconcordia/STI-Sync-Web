@@ -7,6 +7,7 @@ import {
   query,
   where,
   getDocs,
+  limit,
   deleteField,
   writeBatch,
 } from 'firebase/firestore';
@@ -17,11 +18,11 @@ import { sendAdviserWelcomeCredentialsEmail } from '../../../../services/email.s
 import type { CreateOrganizationPayload, OrgAdviserData, OrgAutoPayableRule } from '../types/organization.types';
 import { structuredNameFields } from '../../../utils/name.utils';
 import {
-  ADVISER_NAME_REVIEW_REQUIRED, adviserNameVerification, collectAdviserIdentities,
-  inspectAdviserIdentity, isAdviserNameVerified, type AdviserIdentity, type AdviserNameVerification,
-} from '../utils/adviser-identity.utils';
-import { readAdviserIdentities } from './adviser-identity.service';
-import { checkAdviserAccount } from './adviser-account.service';
+  normalizeAdviserEmail,
+  validateAdviserRecordsConflict,
+  type OrganizationAdviserRecord,
+  type SignatoryEmailRecord,
+} from '../utils/adviser-validation.utils';
 
 const COLLECTION = 'organizations';
 
@@ -38,27 +39,63 @@ export interface AdviserUpdateOptions {
     employeeId?: string;
     departmentId?: string;
     temporaryPassword?: string;
-    nameVerification?: AdviserNameVerification;
-    existingAccountUid?: string;
   };
   adminUser?: string;
   sendEmailNotice?: boolean;
 }
 
-/** Recheck before provisioning credentials or revoking the currently assigned adviser. */
-async function verifyNewAdviser(candidate: AdviserIdentity & { nameVerification?: AdviserNameVerification }, reviewer: string, excludeOrgId?: string) {
-  const fresh = await readAdviserIdentities();
-  const existing = collectAdviserIdentities(fresh.records, fresh.organizations, excludeOrgId);
-  const result = inspectAdviserIdentity(candidate, existing);
-  if (result.emailError || result.employeeIdError) throw new Error(result.emailError || result.employeeIdError);
-  const account = await checkAdviserAccount(candidate.email || '');
-  if (candidate.existingAccountUid) {
-    if (!account.exists || !account.eligible || account.uid !== candidate.existingAccountUid) throw new Error(account.reason || 'The selected account no longer matches this person. Check the adviser details again.');
-    return { account, nameVerification: undefined };
+export class AdviserValidationError extends Error {
+  field: 'email' | 'employeeId';
+  constructor(field: 'email' | 'employeeId', message: string) {
+    super(message);
+    this.name = 'AdviserValidationError';
+    this.field = field;
   }
-  if (account.exists) throw new Error(account.reason || 'This email already has an account. Use this person instead of creating another account.');
-  if (!isAdviserNameVerified(candidate, result.matches, candidate.nameVerification)) throw new Error(ADVISER_NAME_REVIEW_REQUIRED);
-  return { account, nameVerification: result.matches.length ? { ...adviserNameVerification(candidate, result.matches), verifiedBy: reviewer, verifiedAt: serverTimestamp() } : undefined };
+}
+
+/**
+ * Lightweight Signatory-style adviser uniqueness check using indexed single-field
+ * queries (`limit(5)`) instead of full-collection scans or `/api/accounts/check-adviser`.
+ */
+export async function validateAdviserUniqueness(params: {
+  email: string;
+  employeeId?: string;
+  excludeOrgId?: string;
+}): Promise<void> {
+  const cleanEmail = normalizeAdviserEmail(params.email);
+  const cleanEmpId = String(params.employeeId || '').trim();
+
+  const queries: Promise<any>[] = [
+    getDocs(query(collection(db, 'organization_advisers'), where('email', '==', cleanEmail), limit(5))),
+    getDocs(query(collection(db, 'institutional_signatories'), where('email', '==', cleanEmail), limit(5))),
+  ];
+  if (cleanEmpId) {
+    queries.push(
+      getDocs(query(collection(db, 'organization_advisers'), where('employeeId', '==', cleanEmpId), limit(5)))
+    );
+  }
+
+  const [adviserEmailSnap, signatoryEmailSnap, empIdSnap] = await Promise.all(queries);
+
+  const adviserRecords: OrganizationAdviserRecord[] = [
+    ...adviserEmailSnap.docs.map((d: any) => d.data() as OrganizationAdviserRecord),
+    ...(empIdSnap ? empIdSnap.docs.map((d: any) => d.data() as OrganizationAdviserRecord) : []),
+  ];
+  const signatoryRecords: SignatoryEmailRecord[] = signatoryEmailSnap.docs.map(
+    (d: any) => d.data() as SignatoryEmailRecord
+  );
+
+  const conflict = validateAdviserRecordsConflict({
+    email: cleanEmail,
+    employeeId: cleanEmpId,
+    adviserRecords,
+    signatoryRecords,
+    excludeOrgId: params.excludeOrgId,
+  });
+
+  if (conflict) {
+    throw new AdviserValidationError(conflict.field, conflict.message);
+  }
 }
 
 /**
@@ -94,16 +131,25 @@ export const assignOrRevokeOrganizationAdviser = async (
     // Provision before revoking the current adviser. A duplicate/failed account
     // creation must leave the existing adviser able to use the organization.
     if (action === 'assign' && newAdviser) {
-      const { account, nameVerification } = await verifyNewAdviser(newAdviser, adminUser, orgId);
-      authUid = account.exists ? account.uid! : await createSecondaryAuthUser(cleanEmail, tempPassword);
-      if (!account.exists) createdAuthUid = authUid;
+      await validateAdviserUniqueness({
+        email: cleanEmail,
+        employeeId: newAdviser.employeeId,
+        excludeOrgId: orgId,
+      });
+      authUid = await createSecondaryAuthUser(cleanEmail, tempPassword);
+      createdAuthUid = authUid;
       adviser = {
-        authUid, ...structuredNameFields(newAdviser),
-        ...(nameVerification ? { nameVerification } : {}),
-        email: cleanEmail, employeeId: newAdviser.employeeId?.trim() || '',
-        departmentId: newAdviser.departmentId || '', title: 'Club Adviser',
-        ...(account.exists ? { tempPass: null, requiresPasswordChange: false } : { temporaryPassword: tempPassword, tempPass: tempPassword, requiresPasswordChange: true }),
-        accountProvisioning: account.exists ? 'reused' : 'created', resetInProgress: false,
+        authUid,
+        ...structuredNameFields(newAdviser),
+        email: cleanEmail,
+        employeeId: newAdviser.employeeId?.trim() || '',
+        departmentId: newAdviser.departmentId || '',
+        title: 'Club Adviser',
+        temporaryPassword: tempPassword,
+        tempPass: tempPassword,
+        requiresPasswordChange: true,
+        accountProvisioning: 'created',
+        resetInProgress: false,
       };
     }
     const current = await getDocs(query(collection(db, 'organization_advisers'), where('organizationId', '==', orgId)));
@@ -131,8 +177,12 @@ export const assignOrRevokeOrganizationAdviser = async (
   }
   if (adviser && sendEmailNotice) {
     void sendAdviserWelcomeCredentialsEmail({
-      to: cleanEmail, adviserName: adviser.name, orgName,
-      employeeId: adviser.employeeId || '', temporaryPassword: adviser.accountProvisioning === 'reused' ? undefined : tempPassword, existingAccount: adviser.accountProvisioning === 'reused',
+      to: cleanEmail,
+      adviserName: adviser.name,
+      orgName,
+      employeeId: adviser.employeeId || '',
+      temporaryPassword: tempPassword,
+      existingAccount: false,
     }).catch(() => console.warn('Adviser created, but welcome email delivery failed.'));
   }
   return adviser;
@@ -144,14 +194,14 @@ export const createOrganization = async (
   logoFile?: File | null
 ): Promise<string> => {
   const adviserProfile = payload.adviser ? { ...payload.adviser, ...structuredNameFields(payload.adviser) } : undefined;
-  let existingAuthUid = '';
   if (adviserProfile?.name && adviserProfile.email) {
-    const { account, nameVerification } = await verifyNewAdviser(adviserProfile, createdBy);
-    existingAuthUid = account.exists ? account.uid! : '';
+    await validateAdviserUniqueness({
+      email: adviserProfile.email,
+      employeeId: adviserProfile.employeeId,
+    });
     delete adviserProfile.existingAccountUid;
-    adviserProfile.accountProvisioning = account.exists ? 'reused' : 'created';
     delete adviserProfile.nameVerification;
-    if (nameVerification) adviserProfile.nameVerification = nameVerification;
+    adviserProfile.accountProvisioning = 'created';
   }
   // ── Logo upload → Cloudinary (app-wide upload standard; see services/cloudinary.ts) ──
   let logoUrl: string | null = null;
@@ -186,13 +236,26 @@ export const createOrganization = async (
   const adviserPassword = payload.adviser?.temporaryPassword || generateTemporaryPassword();
   try {
     if (adviserProfile?.name && adviserProfile.email) {
-      if (!existingAuthUid) createdAdviserUid = await createSecondaryAuthUser(adviserProfile.email, adviserPassword);
+      createdAdviserUid = await createSecondaryAuthUser(adviserProfile.email, adviserPassword);
     }
     const docRef = doc(collection(db, COLLECTION));
     const batch = writeBatch(db);
     batch.set(docRef, {
       ...normalizedPayload,
-      ...(adviserProfile?.email ? { adviser: { ...adviserProfile, email: adviserProfile.email.trim().toLowerCase(), authUid: existingAuthUid || createdAdviserUid, ...(existingAuthUid ? { tempPass: null, requiresPasswordChange: false, temporaryPassword: '' } : { tempPass: adviserPassword, requiresPasswordChange: true }), resetInProgress: false } } : {}),
+      ...(adviserProfile?.email
+        ? {
+            adviser: {
+              ...adviserProfile,
+              email: adviserProfile.email.trim().toLowerCase(),
+              authUid: createdAdviserUid,
+              temporaryPassword: adviserPassword,
+              tempPass: adviserPassword,
+              requiresPasswordChange: true,
+              accountProvisioning: 'created',
+              resetInProgress: false,
+            },
+          }
+        : {}),
       logoUrl,
       status: 'active',
       memberCount: 0,
@@ -212,27 +275,25 @@ export const createOrganization = async (
 
     // ── Create Real Firebase Auth Account & Document for Club Adviser ──
     if (payload.adviser && payload.adviser.name && payload.adviser.email) {
-      const authUid = existingAuthUid || createdAdviserUid;
-
-        batch.set(doc(collection(db, 'organization_advisers')), {
-          authUid,
-          organizationId: orgId,
-          organizationName: payload.name,
-          ...structuredNameFields(payload.adviser),
-          ...(adviserProfile?.nameVerification ? { nameVerification: adviserProfile.nameVerification } : {}),
-          email: payload.adviser.email.trim().toLowerCase(),
-          employeeId: (payload.adviser.employeeId || '').trim(),
-          departmentId: payload.adviser.departmentId || '',
-          title: payload.adviser.title || 'Club Adviser',
-          ...(existingAuthUid ? { tempPass: null } : { temporaryPassword: adviserPassword, tempPass: adviserPassword }),
-          accountProvisioning: existingAuthUid ? 'reused' : 'created',
-          resetInProgress: false,
-          requiresPasswordChange: !existingAuthUid,
-          isActive: true,
-          createdBy,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
+      batch.set(doc(collection(db, 'organization_advisers')), {
+        authUid: createdAdviserUid,
+        organizationId: orgId,
+        organizationName: payload.name,
+        ...structuredNameFields(payload.adviser),
+        email: payload.adviser.email.trim().toLowerCase(),
+        employeeId: (payload.adviser.employeeId || '').trim(),
+        departmentId: payload.adviser.departmentId || '',
+        title: payload.adviser.title || 'Club Adviser',
+        temporaryPassword: adviserPassword,
+        tempPass: adviserPassword,
+        accountProvisioning: 'created',
+        resetInProgress: false,
+        requiresPasswordChange: true,
+        isActive: true,
+        createdBy,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
     }
 
     await batch.commit();

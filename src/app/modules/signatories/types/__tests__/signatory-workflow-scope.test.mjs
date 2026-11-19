@@ -5,6 +5,7 @@ import {
   getSignatoryAuthorizedWorkflows,
 } from '../../utils/signatory-scope.utils.ts';
 import { filterTemplateStepsBySignatoryScope } from '../../../workflow/utils/stage-normalization.utils.ts';
+import { canSignatoryApproveDocument } from '../../utils/signatory-label.utils.ts';
 
 describe('Signatory Workflow Scope Eligibility & Default Pipeline Filtering', () => {
   const person1ApOnly = {
@@ -138,5 +139,37 @@ describe('Signatory Workflow Scope Eligibility & Default Pipeline Filtering', ()
     });
     assert.equal(apFiltered.length, 3);
     assert.equal(apFiltered.some((s) => s.signatoryUid === 'sig_person1'), true);
+  });
+
+  test('dual-role signatory assigned as endorser-only in a pipeline cannot approve prematurely', () => {
+    const dualRoleSigner = {
+      id: 'sig_shs_ap',
+      name: 'Cybele Nudalo',
+      role: 'shs_asst_principal',
+      actionType: 'approver',
+      canApproveProposal: true,
+      canApproveLiquidation: true,
+      canApprovePar: true,
+    };
+
+    // Assigned as Endorser only on Stage 1 (with Stage 2 Final Approver remaining)
+    assert.equal(
+      canSignatoryApproveDocument(dualRoleSigner, 'proposal', { actionType: 'endorse' }),
+      false
+    );
+    assert.equal(
+      canSignatoryApproveDocument(dualRoleSigner, 'liquidation', { actionType: 'check' }),
+      false
+    );
+    assert.equal(
+      canSignatoryApproveDocument(dualRoleSigner, 'par', { actionType: 'endorse' }),
+      false
+    );
+
+    // Assigned as Final Approver in a pipeline
+    assert.equal(
+      canSignatoryApproveDocument(dualRoleSigner, 'proposal', { actionType: 'approve' }),
+      true
+    );
   });
 });

@@ -8,10 +8,8 @@ import OrganizationSettings from '../components/settings/OrganizationSettings';
 import OfficerManagement from '../components/settings/OfficerManagement';
 import EventConfiguration from '../components/settings/EventConfiguration';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
-import InstitutionalSignatoryManagement from '../components/settings/InstitutionalSignatoryManagement';
-import ApprovalWorkflowSettings from '../components/settings/ApprovalWorkflowSettings';
 import SasSignatoryMaintenance from '../components/settings/SasSignatoryMaintenance';
-import { useSearchParams } from 'react-router';
+import { Navigate, useSearchParams } from 'react-router';
 
 export function SystemSettings() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -54,9 +52,9 @@ export function SystemSettings() {
       case 'document-management':
         return <DocumentManagementSettings />;
       case 'approval-workflows':
-        return <ApprovalWorkflowSettings />;
+        return <Navigate to="/home/workflows-signatories?tab=workflows" replace />;
       case 'institutional-signatories':
-        return <InstitutionalSignatoryManagement />;
+        return <Navigate to="/home/workflows-signatories?tab=signatories" replace />;
       case 'sas-signatory':
         return <SasSignatoryMaintenance />;
       default:

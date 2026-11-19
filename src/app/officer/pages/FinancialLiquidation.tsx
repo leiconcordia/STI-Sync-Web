@@ -56,6 +56,7 @@ import {
   resolveDefaultSchoolYearFilter,
   resolveUnifiedActiveAcademicTerm,
 } from '../../modules/workflow/utils/table-priority-sort.utils';
+import { hasAnySignatorySigned } from '../../modules/workflow/utils/approval-permissions.utils';
 
 type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -938,7 +939,7 @@ export default function FinancialLiquidation() {
                             <span>View</span>
                           </button>
 
-                          {isPending && (
+                          {isPending && !hasAnySignatorySigned(report) && (
                             <button
                               onClick={() => setWithdrawingReport(report)}
                               className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1476,7 +1477,8 @@ export default function FinancialLiquidation() {
                   </button>
                 )}
 
-                {(viewingDetailReport.status === 'pending' || viewingDetailReport.status === 'under_review') && (
+                {(viewingDetailReport.status === 'pending' || viewingDetailReport.status === 'under_review') &&
+                  !hasAnySignatorySigned(viewingDetailReport) && (
                   <button
                     onClick={() => {
                       setWithdrawingReport(viewingDetailReport);

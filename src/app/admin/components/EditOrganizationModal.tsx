@@ -10,8 +10,6 @@ import {
   UserCheck,
   UserX,
   UserPlus,
-  RefreshCw,
-  AlertTriangle,
   Mail,
   KeyRound,
 } from 'lucide-react';
@@ -21,15 +19,14 @@ import { useDepartments } from '../../modules/academic';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useAdviserProfile } from '../../modules/auth';
 import {
+  AdviserValidationError,
   updateOrganization,
+  validateAdviserUniqueness,
   type AdviserUpdateOptions,
 } from '../../modules/organizations/services/organization.service';
-import { formatStructuredFullName, structuredNameFields, parseFullNameToParts } from '../../utils/name.utils';
+import { findAdviserConflictInOrganizations } from '../../modules/organizations/utils/adviser-validation.utils';
+import { formatStructuredFullName } from '../../utils/name.utils';
 import { toast } from 'sonner';
-import { useAdviserIdentityCheck } from '../../modules/organizations/hooks/useAdviserIdentityCheck';
-import { AdviserIdentityNotice } from '../../modules/organizations/components/AdviserIdentityNotice';
-import { checkAdviserAccount } from '../../modules/organizations/services/adviser-account.service';
-import type { AdviserIdentity } from '../../modules/organizations/utils/adviser-identity.utils';
 
 interface EditOrganizationModalProps {
   organization: OrganizationDocument | null;
@@ -74,16 +71,14 @@ export function EditOrganizationModal({
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [isSelectingPerson, setIsSelectingPerson] = useState(false);
 
   // ─── Adviser Management State ───
-  const [adviserMode, setAdviserMode] = useState<'keep' | 'replace' | 'unassign'>('keep');
+  const [adviserMode, setAdviserMode] = useState<'keep' | 'assign'>('keep');
   const [newAdviserData, setNewAdviserData] = useState({
     name: '',
     firstName: '',
     lastName: '',
     middleName: '',
-    existingAccountUid: '',
     email: '',
     employeeId: '',
     temporaryPassword: 'Adv-2026!#',
@@ -118,7 +113,6 @@ export function EditOrganizationModal({
         firstName: '',
         lastName: '',
         middleName: '',
-        existingAccountUid: '',
         email: '',
         employeeId: '',
         temporaryPassword: 'Adv-2026!#',
@@ -128,8 +122,6 @@ export function EditOrganizationModal({
     }
   }, [organization]);
 
-  const adviserIdentity = useAdviserIdentityCheck(newAdviserData, allOrganizations, organization?.id, isOpen && adviserMode === 'replace');
-
   if (!isOpen || !organization) return null;
 
   const handleLogoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -138,19 +130,6 @@ export function EditOrganizationModal({
       setLogoFile(file);
       setLogoPreview(URL.createObjectURL(file));
     }
-  };
-
-  const useExistingPerson = async (person: AdviserIdentity) => {
-    setIsSelectingPerson(true);
-    try {
-      if (person.sourceType === 'student') throw new Error('Student accounts cannot be selected as a club adviser.');
-      const account = await checkAdviserAccount(person.email || '');
-      if (!account.exists || !account.eligible || !account.uid) throw new Error(account.reason || 'This person has no usable login account. Complete their account setup first.');
-      const fields = structuredNameFields(person.sourceType === 'account' && person.name === person.email ? newAdviserData : person);
-      setNewAdviserData({ ...newAdviserData, ...fields, email: account.email!, employeeId: person.employeeId || newAdviserData.employeeId, existingAccountUid: account.uid });
-      setAdviserErrors({});
-    } catch (error: any) { setAdviserErrors({ email: error.message || 'Unable to select this person.' }); }
-    finally { setIsSelectingPerson(false); }
   };
 
   // ─── Validation for New Adviser ───
@@ -172,10 +151,31 @@ export function EditOrganizationModal({
     }
 
     if (!Object.keys(errors).length) {
+      const inMemoryConflict = findAdviserConflictInOrganizations({
+        email,
+        employeeId: newAdviserData.employeeId,
+        organizations: allOrganizations,
+        excludeOrgId: organization.id,
+      });
+      if (inMemoryConflict) {
+        errors[inMemoryConflict.field] = inMemoryConflict.message;
+      }
+    }
+
+    if (!Object.keys(errors).length) {
       try {
-        const fresh = await adviserIdentity.validateBeforeNext();
-        Object.assign(errors, fresh.errors);
-      } catch (error: any) { errors.name = error.message || 'Unable to check existing adviser accounts.'; }
+        await validateAdviserUniqueness({
+          email,
+          employeeId: newAdviserData.employeeId,
+          excludeOrgId: organization.id,
+        });
+      } catch (error: any) {
+        if (error instanceof AdviserValidationError) {
+          errors[error.field] = error.message;
+        } else {
+          errors.email = error?.message || 'Unable to verify adviser email. Please try again.';
+        }
+      }
     }
 
     setAdviserErrors(errors);
@@ -198,8 +198,8 @@ export function EditOrganizationModal({
       return;
     }
 
-    // Validate new adviser if in 'replace' mode
-    if (adviserMode === 'replace') {
+    // Validate new adviser if assigning an adviser
+    if (adviserMode === 'assign') {
       const isValidAdviser = await validateNewAdviser();
       if (!isValidAdviser) {
         toast.error('Please fix the adviser details before saving.');
@@ -217,7 +217,7 @@ export function EditOrganizationModal({
       adminUser: adminName,
     };
 
-    if (adviserMode === 'replace') {
+    if (adviserMode === 'assign') {
       const firstName = (newAdviserData.firstName || '').trim();
       const lastName = (newAdviserData.lastName || '').trim();
       const middleName = (newAdviserData.middleName || '').trim();
@@ -231,21 +231,13 @@ export function EditOrganizationModal({
           firstName,
           lastName,
           middleName,
-          ...(newAdviserData.existingAccountUid ? { existingAccountUid: newAdviserData.existingAccountUid } : {}),
-          ...(adviserIdentity.verification ? { nameVerification: adviserIdentity.verification } : {}),
           email: newAdviserData.email.trim().toLowerCase(),
           employeeId: newAdviserData.employeeId.trim(),
           departmentId: isCross ? 'cross-departmental' : formData.department,
-          ...(newAdviserData.existingAccountUid ? {} : { temporaryPassword: newAdviserData.temporaryPassword || 'Adv-2026!#' }),
+          temporaryPassword: newAdviserData.temporaryPassword || 'Adv-2026!#',
         },
         adminUser: adminName,
         sendEmailNotice: newAdviserData.sendEmailNotice,
-      };
-    } else if (adviserMode === 'unassign') {
-      adviserUpdate = {
-        action: 'unassign',
-        currentAdviser: organization.adviser || null,
-        adminUser: adminName,
       };
     }
 
@@ -273,19 +265,9 @@ export function EditOrganizationModal({
         adviserUpdate
       );
 
-      if (adviserMode === 'replace') {
-        if (organization.adviser?.name) {
-          toast.success(
-            `Organization updated! Former adviser access revoked and new adviser "${newAdviserData.name}" assigned.`
-          );
-        } else {
-          toast.success(
-            `Organization updated! Club Adviser "${newAdviserData.name}" assigned successfully.`
-          );
-        }
-      } else if (adviserMode === 'unassign') {
+      if (adviserMode === 'assign') {
         toast.success(
-          `Organization updated! Adviser unassigned and portal access revoked.`
+          `Organization updated! Club Adviser "${newAdviserData.name}" assigned successfully.`
         );
       } else {
         toast.success('Organization updated successfully!', {
@@ -480,38 +462,6 @@ export function EditOrganizationModal({
                         </p>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center justify-end gap-2 pt-2.5 border-t border-gray-100">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAdviserMode('replace');
-                          setNewAdviserData({
-                            name: '',
-                            firstName: '',
-                            middleName: '',
-                            existingAccountUid: '',
-                            lastName: '',
-                            email: '',
-                            employeeId: '',
-                            temporaryPassword: 'Adv-2026!#',
-                            sendEmailNotice: true,
-                          });
-                          setAdviserErrors({});
-                        }}
-                        className="px-3 py-1.5 text-xs font-semibold text-[#0E4EBD] bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-200 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-                      >
-                        <RefreshCw className="w-3.5 h-3.5 shrink-0" />
-                        <span>Replace Adviser</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAdviserMode('unassign')}
-                        className="px-3 py-1.5 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 rounded-lg border border-red-200 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
-                      >
-                        <UserX className="w-3.5 h-3.5 shrink-0" />
-                        <span>Unassign</span>
-                      </button>
-                    </div>
                   </div>
                 ) : (
                   <div className="bg-white border border-dashed border-gray-300 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -522,7 +472,7 @@ export function EditOrganizationModal({
                     <button
                       type="button"
                       onClick={() => {
-                        setAdviserMode('replace');
+                        setAdviserMode('assign');
                         setNewAdviserData({
                           name: '',
                           firstName: '',
@@ -546,41 +496,12 @@ export function EditOrganizationModal({
               </div>
             )}
 
-            {/* State B: Unassign Confirmation */}
-            {adviserMode === 'unassign' && (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 space-y-2.5 animate-in fade-in duration-200">
-                <div className="flex items-start gap-2.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div className="flex-1 text-xs text-amber-900 leading-relaxed">
-                    <strong>Access Revocation Notice:</strong> Saving changes will remove{' '}
-                    <span className="font-bold underline">
-                      {organization.adviser?.name}
-                    </span>{' '}
-                    as Club Adviser and{' '}
-                    <strong>revoke their portal credentials and signing permissions</strong> for{' '}
-                    {organization.name}.
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setAdviserMode('keep')}
-                    className="px-2.5 py-1 text-xs font-semibold text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 cursor-pointer"
-                  >
-                    Cancel Unassign (Keep Adviser)
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* State C: Assign / Replace Adviser Form */}
-            {adviserMode === 'replace' && (
+            {/* State B: Assign Adviser Form */}
+            {adviserMode === 'assign' && (
               <div className="bg-white border border-[#0E4EBD]/30 rounded-xl p-4 space-y-3.5 shadow-xs animate-in fade-in duration-200">
                 <div className="flex items-center justify-between pb-2 border-b border-gray-100">
                   <span className="text-xs font-bold text-[#001A4D]">
-                    {organization.adviser?.name
-                      ? 'Replace with New Club Adviser'
-                      : 'Assign New Club Adviser'}
+                    Assign New Club Adviser
                   </span>
                   <button
                     type="button"
@@ -590,31 +511,16 @@ export function EditOrganizationModal({
                     }}
                     className="text-xs text-gray-500 hover:text-gray-800 underline cursor-pointer"
                   >
-                    Cancel & Keep Current
+                    Cancel
                   </button>
                 </div>
 
-                {organization.adviser?.name ? (
-                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2 text-xs text-amber-900 leading-relaxed">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <span>
-                      <strong>Automatic Revocation:</strong> Appointing a new adviser will
-                      automatically revoke portal access for current adviser{' '}
-                      <strong>{organization.adviser.name}</strong>.
-                    </span>
-                  </div>
-                ) : (
-                  <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
-                    <ShieldCheck className="w-4 h-4 text-[#0E4EBD] shrink-0 mt-0.5" />
-                    <span>
-                      {newAdviserData.existingAccountUid
-                        ? 'This person will keep their existing STI Sync password and receive an email notice that they have been assigned as Club Adviser.'
-                        : 'The appointed faculty adviser will receive login credentials via email to lead the club and approve event proposals.'}
-                    </span>
-                  </div>
-                )}
-
-                <AdviserIdentityNotice check={adviserIdentity} onUsePerson={useExistingPerson} busy={isSelectingPerson} onVerificationChange={() => setAdviserErrors((previous) => { const next = { ...previous }; delete next.name; return next; })} />
+                <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-2 text-xs text-blue-900 leading-relaxed">
+                  <ShieldCheck className="w-4 h-4 text-[#0E4EBD] shrink-0 mt-0.5" />
+                  <span>
+                    The appointed faculty adviser will receive login credentials via email to lead the club and approve event proposals.
+                  </span>
+                </div>
 
                 {/* Form fields for new adviser */}
                 <div className="space-y-3">
@@ -631,13 +537,12 @@ export function EditOrganizationModal({
                           onChange={(e) => {
                             const firstName = e.target.value;
                             const name = formatStructuredFullName(firstName, newAdviserData.lastName, newAdviserData.middleName);
-                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', firstName, name });
+                            setNewAdviserData({ ...newAdviserData, firstName, name });
                             if (adviserErrors.firstName) setAdviserErrors({ ...adviserErrors, firstName: undefined });
                           }}
                           placeholder="e.g. Maria"
-                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${
-                            adviserErrors.firstName ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                          }`}
+                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.firstName ? 'border-red-400 bg-red-50' : 'border-gray-300'
+                            }`}
                         />
                         {adviserErrors.firstName && (
                           <p className="text-[11px] text-red-600 mt-1">{adviserErrors.firstName}</p>
@@ -656,7 +561,7 @@ export function EditOrganizationModal({
                           onChange={(e) => {
                             const middleName = e.target.value;
                             const name = formatStructuredFullName(newAdviserData.firstName, newAdviserData.lastName, middleName);
-                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', middleName, name });
+                            setNewAdviserData({ ...newAdviserData, middleName, name });
                           }}
                           placeholder="e.g. Sigmund"
                           className="w-full px-2 py-2 border border-gray-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
@@ -673,13 +578,12 @@ export function EditOrganizationModal({
                           onChange={(e) => {
                             const lastName = e.target.value;
                             const name = formatStructuredFullName(newAdviserData.firstName, lastName, newAdviserData.middleName);
-                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', lastName, name });
+                            setNewAdviserData({ ...newAdviserData, lastName, name });
                             if (adviserErrors.lastName) setAdviserErrors({ ...adviserErrors, lastName: undefined });
                           }}
                           placeholder="e.g. Santos"
-                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${
-                            adviserErrors.lastName ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                          }`}
+                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.lastName ? 'border-red-400 bg-red-50' : 'border-gray-300'
+                            }`}
                         />
                         {adviserErrors.lastName && (
                           <p className="text-[11px] text-red-600 mt-1">{adviserErrors.lastName}</p>
@@ -709,11 +613,12 @@ export function EditOrganizationModal({
                         <input
                           type="email"
                           value={newAdviserData.email}
-                          onChange={(e) =>
-                            setNewAdviserData({ ...newAdviserData, existingAccountUid: '', email: e.target.value })
-                          }
+                          onChange={(e) => {
+                            setNewAdviserData({ ...newAdviserData, email: e.target.value });
+                            if (adviserErrors.email) setAdviserErrors({ ...adviserErrors, email: undefined });
+                          }}
                           placeholder="faculty@ormoc.sti.edu.ph"
-                          className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
+                          className={`w-full pl-9 pr-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
                         />
                       </div>
                       {adviserErrors.email && (
@@ -729,14 +634,15 @@ export function EditOrganizationModal({
                       <input
                         type="text"
                         value={newAdviserData.employeeId}
-                        onChange={(e) =>
+                        onChange={(e) => {
                           setNewAdviserData({
                             ...newAdviserData,
-                            employeeId: e.target.value, existingAccountUid: '',
-                          })
-                        }
+                            employeeId: e.target.value,
+                          });
+                          if (adviserErrors.employeeId) setAdviserErrors({ ...adviserErrors, employeeId: undefined });
+                        }}
                         placeholder="e.g. FAC-2026-042"
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
+                        className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.employeeId ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
                       />
                       {adviserErrors.employeeId && (
                         <p className="text-[11px] text-red-600 mt-1">
@@ -749,9 +655,9 @@ export function EditOrganizationModal({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                     <div>
                       <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                        {newAdviserData.existingAccountUid ? 'Account access' : 'Initial Temporary Password'}
+                        Initial Temporary Password
                       </label>
-                      {newAdviserData.existingAccountUid ? <p className="rounded-lg bg-blue-50 p-3 text-xs text-blue-900">Using this person's existing account and password. They can choose the Club Adviser workspace after login.</p> : <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2">
                         <input
                           type="text"
                           value={newAdviserData.temporaryPassword}
@@ -778,7 +684,7 @@ export function EditOrganizationModal({
                         >
                           <KeyRound className="w-3.5 h-3.5" />
                         </button>
-                      </div>}
+                      </div>
                     </div>
 
                     <div className="flex items-center pt-5">
@@ -794,7 +700,7 @@ export function EditOrganizationModal({
                           }
                           className="w-4 h-4 rounded text-[#0E4EBD] focus:ring-[#0E4EBD] cursor-pointer"
                         />
-                        <span>{newAdviserData.existingAccountUid ? 'Send role assignment email' : 'Send login credentials via email'}</span>
+                        <span>Send login credentials via email</span>
                       </label>
                     </div>
                   </div>

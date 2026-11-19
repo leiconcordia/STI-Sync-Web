@@ -279,8 +279,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
     });
   };
 
-  const getCustomRevenueRows = (rows: FinancialLineItem[]) =>
-    rows.filter((r) => !isManagedFundRow(r));
+  // Section A revenue rows are strictly system-synced from FundingSourceSelector / HistoricalBudgetPicker.
 
   // Self-heal any already-duplicated template/bucket revenue rows on existing drafts
   useEffect(() => {
@@ -501,8 +500,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             }
           }}
           onSelectBuckets={(selectedList) => {
-            const customRows = getCustomRevenueRows(currentProjections.revenues);
-
             // Generate a separate Revenue Projection row for EACH selected bucket (preserving template lastYearActual)
             const bucketRows: FinancialLineItem[] = selectedList.map((selected) => {
               const single = formatSingleBucketDescription(selected, activeConfig.activeSemester);
@@ -525,20 +522,26 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               };
             });
 
+            const histRefRows = currentProjections.revenues.filter(
+              (r) => String(r.id || '').startsWith('rev-hist-') && Number(r.thisYearProposed || 0) === 0
+            );
+
             const nextRevs =
-              bucketRows.length > 0 || customRows.length > 0
-                ? [...bucketRows, ...customRows]
-                : [
-                    {
-                      id: 'rev-1',
-                      description: '',
-                      lastYearActual: 0,
-                      thisYearProposed: 0,
-                      totalAmount: 0,
-                      adjustment: 0,
-                      remarks: '',
-                    },
-                  ];
+              bucketRows.length > 0
+                ? bucketRows
+                : histRefRows.length > 0
+                  ? histRefRows
+                  : [
+                      {
+                        id: 'rev-1',
+                        description: '',
+                        lastYearActual: 0,
+                        thisYearProposed: 0,
+                        totalAmount: 0,
+                        adjustment: 0,
+                        remarks: '',
+                      },
+                    ];
 
             const combined = formatMiscFeeFundDescription(
               selectedList,
@@ -576,8 +579,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             });
           }}
           onStudentContributionChange={(params) => {
-            const customRows = getCustomRevenueRows(currentProjections.revenues);
-
             const prevNew =
               currentProjections.revenues.find((r) => r.id === 'rev-contrib-new') ||
               currentProjections.revenues.find((r) =>
@@ -652,7 +653,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             }
 
             const recalculated = calculateFinancialTotals(
-              [...nextRevs, ...customRows],
+              nextRevs,
               currentProjections.expenses
             );
             onChange({
@@ -671,7 +672,6 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               fundingSource: source,
               ...(source !== 'student_contributions' ? { studentPayablesEnabled: false } : {}),
             };
-            const customRows = getCustomRevenueRows(currentProjections.revenues);
             const existingManagedHist = currentProjections.revenues.find((r) =>
               isManagedFundRow(r) && Number(r.lastYearActual || 0) > 0
             );
@@ -717,9 +717,10 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                     ...defaultRow,
                     description: retained.description,
                     thisYearProposed: orgTreasuryBalance,
+                    totalAmount: orgTreasuryBalance,
+                    adjustment: orgTreasuryBalance - preservedLastYear,
                     remarks: retained.remarks,
                   },
-                  ...customRows,
                 ],
                 currentProjections.expenses
               );
@@ -758,20 +759,24 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                     adjustment: contrib.totalProjected - preservedLastYear,
                     remarks: contrib.remarks,
                   },
-                  ...customRows,
                 ],
                 currentProjections.expenses
               );
             } else if (source === 'school_budget') {
-              const hasExistingBucketRows = currentProjections.revenues.some((r) =>
+              const existingBucketRows = currentProjections.revenues.filter((r) =>
                 String(r.id).startsWith('rev-bucket-')
               );
               const histRefRows = currentProjections.revenues.filter(
                 (r) => String(r.id || '').startsWith('rev-hist-') && Number(r.thisYearProposed || 0) === 0
               );
-              if (!hasExistingBucketRows) {
+              if (existingBucketRows.length > 0) {
                 updates.financialProjections = calculateFinancialTotals(
-                  [...(histRefRows.length > 0 ? histRefRows : [{ ...defaultRow }]), ...customRows],
+                  existingBucketRows,
+                  currentProjections.expenses
+                );
+              } else {
+                updates.financialProjections = calculateFinancialTotals(
+                  histRefRows.length > 0 ? histRefRows : [{ ...defaultRow }],
                   currentProjections.expenses
                 );
               }
@@ -808,6 +813,13 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
             </div>
           ) : null
         )}
+
+        {errors.fundingSource && (
+          <div className="mt-3 p-3 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-2.5 text-xs text-rose-900 shadow-2xs">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <span>{errors.fundingSource}</span>
+          </div>
+        )}
       </div>
 
       {/* Historical Budget Reference & Auto-Populate (Hidden if Non-Monetary) */}
@@ -823,7 +835,7 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
         />
       )}
 
-      {/* ── SECTION A: REVENUES (Hidden if Non-Monetary) ── */}
+      {/* ── SECTION A: REVENUES (Read-only, strictly auto-synced from Fund Source above) ── */}
       {!isNonMonetary && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -832,142 +844,85 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               <h3 className="text-sm font-bold text-slate-800">
                 A. Sources of Funds / Projected Revenues
               </h3>
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[10px] font-semibold text-slate-600">
+                <Lock className="w-2.5 h-2.5 text-slate-500" />
+                Auto-synced from Fund Source • Read-only
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={() => handleAddLineItem('revenues')}
-              className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Add Revenue Item</span>
-            </button>
           </div>
 
-          {/* Desktop Table Header */}
+          {/* Read-Only System-Derived Revenues Table */}
           <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-xs">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold">
-                  <th className="py-2.5 px-3 min-w-[200px]">Description</th>
-                  <th className="py-2.5 px-3 w-32 text-right">Last Year Actual Budget</th>
-                  <th className="py-2.5 px-3 w-36 text-right">This Year Proposed Budget</th>
-                  <th className="py-2.5 px-3 w-28 text-right">Adjustment</th>
-                  <th className="py-2.5 px-3 w-32 text-right">Total Amount</th>
-                  <th className="py-2.5 px-3 min-w-[150px]">Remarks</th>
-                  <th className="py-2.5 px-2 w-10 text-center"></th>
+                  <th className="py-2.5 px-3 min-w-[220px]">Description</th>
+                  <th className="py-2.5 px-3 w-36 text-right">Last Year Actual Budget</th>
+                  <th className="py-2.5 px-3 w-40 text-right">This Year Proposed Budget</th>
+                  <th className="py-2.5 px-3 w-32 text-right">Adjustment</th>
+                  <th className="py-2.5 px-3 w-36 text-right">Total Amount</th>
+                  <th className="py-2.5 px-3 min-w-[160px]">Remarks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {currentProjections.revenues.map((item, idx) => (
-                  <tr key={item.id || idx} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="p-2.5 align-top">
-                      <textarea
-                        rows={Math.max(2, Math.min(10, String(item.description || '').split('\n').length))}
-                        value={item.description}
-                        onChange={(e) =>
-                          handleUpdateLineItem('revenues', idx, 'description', e.target.value)
-                        }
-                        placeholder="e.g. (TERTIARY) ATHLETIC FEE 50.00 x 750 students = 37,500.00"
-                        className="w-full px-2.5 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs focus:ring-1 focus:ring-emerald-500 font-medium leading-relaxed whitespace-pre-wrap resize-y"
-                      />
-                    </td>
-                    <td className="p-2.5">
-                      {isHistoricalLocked ? (
-                        <div className="relative">
-                          <input
-                            type="number"
-                            value={item.lastYearActual || 0}
-                            readOnly
-                            disabled
-                            className="w-full pl-6 pr-2 py-1.5 bg-gray-100 border border-gray-200 rounded-lg text-xs text-right text-gray-700 cursor-not-allowed select-none font-mono font-medium"
-                            title="Locked to historical baseline. Click 'Unlock to Edit' in the reference card above to modify."
-                          />
-                          <Lock className="w-3 h-3 text-gray-400 absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                        </div>
-                      ) : (
-                        <input
-                          type="number"
-                          min="0"
-                          value={item.lastYearActual || 0}
-                          onChange={(e) =>
-                            handleUpdateLineItem(
-                              'revenues',
-                              idx,
-                              'lastYearActual',
-                              parseFloat(e.target.value) || 0
-                            )
-                          }
-                          className={`w-full px-2 py-1.5 border rounded-lg text-xs text-right ${item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
-                            ? 'bg-amber-50/70 border-amber-400 font-semibold text-amber-950 ring-1 ring-amber-400/30'
-                            : 'bg-slate-50/60 border-slate-200'
-                            }`}
-                          title={
-                            item.originalLastYearActual !== undefined && item.lastYearActual !== item.originalLastYearActual
-                              ? `Manually adjusted from original baseline (${item.originalLastYearActual})`
-                              : undefined
-                          }
-                        />
-                      )}
-                    </td>
-                    <td className="p-2.5">
-                      <input
-                        type="number"
-                        min="0"
-                        value={item.thisYearProposed || 0}
-                        onChange={(e) =>
-                          handleUpdateLineItem(
-                            'revenues',
-                            idx,
-                            'thisYearProposed',
-                            parseFloat(e.target.value) || 0
-                          )
-                        }
-                        className="w-full px-2 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs text-right font-semibold text-emerald-700"
-                      />
-                    </td>
-                    <td className="p-2.5">
-                      <input
-                        type="text"
-                        readOnly
-                        disabled
-                        value={
-                          item.adjustment === 0
-                            ? '0'
-                            : item.adjustment > 0
-                              ? `+${item.adjustment}`
-                              : `${item.adjustment}`
-                        }
-                        className="w-full px-2 py-1.5 bg-slate-100/90 border border-slate-200 rounded-lg text-xs text-right font-bold text-slate-700 cursor-not-allowed select-none"
-                        title="Auto-calculated: This Year Proposed Budget minus Last Year Actual Budget (Read-only)"
-                      />
-                    </td>
-                    <td className="p-2.5 text-right font-bold text-slate-800">
-                      {formatPHP(item.totalAmount)}
-                    </td>
-                    <td className="p-2.5">
-                      <input
-                        type="text"
-                        value={item.remarks}
-                        onChange={(e) =>
-                          handleUpdateLineItem('revenues', idx, 'remarks', e.target.value)
-                        }
-                        placeholder="Optional notes"
-                        className="w-full px-2 py-1.5 bg-slate-50/60 border border-slate-200 rounded-lg text-xs text-slate-600"
-                      />
-                    </td>
-                    <td className="p-2.5 text-center">
-                      {currentProjections.revenues.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveLineItem('revenues', idx)}
-                          className="text-slate-400 hover:text-red-500 p-1 rounded transition-colors"
+                {(() => {
+                  const hasConfiguredRevenue = currentProjections.revenues.some(
+                    (r) =>
+                      Boolean(String(r.description || '').trim()) ||
+                      (Number(r.thisYearProposed) || 0) > 0 ||
+                      (Number(r.lastYearActual) || 0) > 0 ||
+                      Boolean(String(r.remarks || '').trim())
+                  );
+                  if (!hasConfiguredRevenue) {
+                    return (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="py-6 px-4 text-center text-xs text-slate-500 bg-slate-50/40"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                          {formData.fundingSource === 'school_budget'
+                            ? 'Select one or more Miscellaneous Fee buckets above to populate Sources of Funds.'
+                            : formData.fundingSource === 'student_contributions'
+                            ? 'Configure Contribution Rate and Target Students above to populate Sources of Funds.'
+                            : formData.fundingSource === 'organization_funds'
+                            ? 'Organization Treasury balance will appear here automatically once loaded.'
+                            : 'Select a Funding Source above to populate Sources of Funds.'}
+                        </td>
+                      </tr>
+                    );
+                  }
+                  return currentProjections.revenues.map((item, idx) => (
+                    <tr
+                      key={item.id || idx}
+                      className="bg-slate-50/30 hover:bg-slate-50/70 transition-colors"
+                    >
+                      <td className="p-3 align-top">
+                        <div className="text-xs font-medium text-slate-800 leading-relaxed whitespace-pre-wrap">
+                          {item.description || '—'}
+                        </div>
+                      </td>
+                      <td className="p-3 align-top text-right font-mono text-slate-600">
+                        {formatPHP(Number(item.lastYearActual) || 0)}
+                      </td>
+                      <td className="p-3 align-top text-right font-mono font-semibold text-emerald-700">
+                        {formatPHP(Number(item.thisYearProposed) || 0)}
+                      </td>
+                      <td className="p-3 align-top text-right font-mono font-semibold text-slate-700">
+                        {item.adjustment === 0
+                          ? formatPHP(0)
+                          : item.adjustment > 0
+                          ? `+${formatPHP(item.adjustment)}`
+                          : `-${formatPHP(Math.abs(item.adjustment))}`}
+                      </td>
+                      <td className="p-3 align-top text-right font-bold text-slate-900">
+                        {formatPHP(Number(item.totalAmount) || 0)}
+                      </td>
+                      <td className="p-3 align-top text-xs text-slate-600">
+                        {item.remarks || '—'}
+                      </td>
+                    </tr>
+                  ));
+                })()}
               </tbody>
               <tfoot>
                 <tr className="bg-emerald-50/50 border-t border-emerald-100 font-bold text-emerald-950">
@@ -977,11 +932,17 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
                   <td className="py-2.5 px-3 text-right text-emerald-800 text-sm">
                     {formatPHP(currentProjections.totalRevenue)}
                   </td>
-                  <td colSpan={2}></td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>
           </div>
+          {errors.revenues && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-2.5 text-xs text-rose-900 shadow-2xs">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <span>{errors.revenues}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -1160,6 +1121,12 @@ export default function Step6FinancialProjections({ formData, onChange, errors =
               </tfoot>
             </table>
           </div>
+          {errors.expenditures && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-2.5 text-xs text-rose-900 shadow-2xs">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <span>{errors.expenditures}</span>
+            </div>
+          )}
         </div>
       )}
 

@@ -634,6 +634,15 @@ export default function InstitutionalSignatoryManagement() {
       return;
     }
 
+    const cleanEmail = formData.email.trim().toLowerCase();
+    const existingSignatory = signatories.find(
+      (s) => s.isActive !== false && s.email?.trim().toLowerCase() === cleanEmail
+    );
+    if (existingSignatory) {
+      toast.error(`A signatory with email "${cleanEmail}" is already registered (${existingSignatory.name || 'Active'}).`);
+      return;
+    }
+
     const cleanTitle = formData.roleTitle.trim();
     const cleanRole = cleanTitle.toLowerCase().replace(/[^a-z0-9_]/g, '_');
     const isAccountantRole = cleanRole.includes('accountant') || cleanRole.includes('auditor');

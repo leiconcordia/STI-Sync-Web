@@ -15,38 +15,40 @@ import {
   FileCheck2,
   UserCog,
   Landmark,
+  GitBranch,
 } from "lucide-react";
 
 const navGroups = [
   {
-    title: "Main",
+    title: "Overview & Activity Lifecycle",
     items: [
       { icon: LayoutDashboard, label: "Dashboard", path: "/home" },
+      { icon: CalendarCheck, label: "Activities", path: "/home/event-approvals" },
+      { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations" },
+      { icon: FileCheck2, label: "Post-Activity Reports", path: "/home/post-activity-reports" },
+    ]
+  },
+  {
+    title: "Organizations, Funds & Students",
+    items: [
+      { icon: Building2, label: "Organization Management", path: "/home/organizations" },
+      { icon: Landmark, label: "Miscellaneous Fees", path: "/home/misc-fees" },
       { icon: Users, label: "Student Registry", path: "/home/students" },
     ]
   },
   {
-    title: "Organizations & Activities",
+    title: "Campus Operations & Records",
     items: [
-      { icon: Building2, label: "Organization Management", path: "/home/organizations" },
-      { icon: CalendarCheck, label: "Activities", path: "/home/event-approvals" },
       { icon: QrCode, label: "Attendance Monitoring", path: "/home/attendance" },
-    ]
-  },
-  {
-    title: "Finance & Documents",
-    items: [
-      { icon: Landmark, label: "Miscellaneous Fees", path: "/home/misc-fees" },
-      { icon: Receipt, label: "Financial Liquidations", path: "/home/liquidations" },
-      { icon: FileCheck2, label: "Post-Activity Reports", path: "/home/post-activity-reports" },
-      { icon: Files, label: "Document Management", path: "/home/documents" },
       { icon: Award, label: "Certificates", path: "/home/certificates" },
+      { icon: Files, label: "Document Management", path: "/home/documents" },
+      { icon: Bell, label: "Announcements", path: "/home/announcements" },
     ]
   },
   {
-    title: "System & Reports",
+    title: "Governance, Reports & System",
     items: [
-      { icon: Bell, label: "Announcements", path: "/home/announcements" },
+      { icon: GitBranch, label: "Workflows & Signatories", path: "/home/workflows-signatories" },
       { icon: BarChart3, label: "Reports & Analytics", path: "/home/reports" },
       { icon: UserCog, label: "Account Management", path: "/home/account-management" },
       { icon: Settings, label: "System Settings", path: "/home/settings" },

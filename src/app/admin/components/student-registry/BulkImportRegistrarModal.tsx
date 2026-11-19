@@ -37,6 +37,7 @@ import {
   PlusCircle,
   UserMinus,
   Search,
+  Sparkles,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDepartments, useCourses, useSections } from '../../../modules/academic';

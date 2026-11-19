@@ -9,11 +9,12 @@ import { useOrganizationMutations } from '../hooks/useOrganizationMutations';
 import { useOrganizationStream } from '../hooks/useOrganizationStream';
 import { useSemesters, useActiveAcademicPeriods, useDepartments } from '../../academic';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
-import { formatStructuredFullName, structuredNameFields } from '../../../utils/name.utils';
-import { useAdviserIdentityCheck } from '../hooks/useAdviserIdentityCheck';
-import { AdviserIdentityNotice } from './AdviserIdentityNotice';
-import { checkAdviserAccount } from '../services/adviser-account.service';
-import type { AdviserIdentity } from '../utils/adviser-identity.utils';
+import { formatStructuredFullName } from '../../../utils/name.utils';
+import {
+  AdviserValidationError,
+  validateAdviserUniqueness,
+} from '../services/organization.service';
+import { findAdviserConflictInOrganizations } from '../utils/adviser-validation.utils';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 interface CreateClubModalProps {
@@ -222,8 +223,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     requiresPasswordChange: true,
   });
 
-  const adviserIdentity = useAdviserIdentityCheck(adviserData, allOrganizations, undefined, isOpen);
-
   if (!isOpen) return null;
 
   // ─── Step Navigation Handlers ──────────────────────────────────────────────
@@ -239,38 +238,43 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
   const handleNextFromStep2 = async () => {
     const errors = validateStep2(adviserData);
-    if (Object.keys(errors).length) { setStep2Errors(errors); return; }
-    setIsCheckingAdviser(true);
-    try {
-      const result = await adviserIdentity.validateBeforeNext();
-      setStep2Errors(result.errors);
-      if (result.valid) setCurrentStep(3);
-    } catch (error: any) {
-      setStep2Errors({ name: error?.message || 'Unable to check adviser identities. Try again before continuing.' });
-    } finally { setIsCheckingAdviser(false); }
-  };
+    if (Object.keys(errors).length) {
+      setStep2Errors(errors);
+      return;
+    }
 
-  const useExistingPerson = async (person: AdviserIdentity) => {
+    const inMemoryConflict = findAdviserConflictInOrganizations({
+      email: adviserData.email,
+      employeeId: adviserData.employeeId,
+      organizations: allOrganizations,
+    });
+    if (inMemoryConflict) {
+      setStep2Errors({ [inMemoryConflict.field]: inMemoryConflict.message });
+      return;
+    }
+
     setIsCheckingAdviser(true);
     try {
-      if (person.sourceType === 'student') throw new Error('Student accounts cannot be selected as a club adviser.');
-      const account = await checkAdviserAccount(person.email || '');
-      if (!account.exists || !account.eligible || !account.uid) throw new Error(account.reason || 'This person has no usable login account. SAS must complete their account setup first.');
-      const fields = structuredNameFields(person.sourceType === 'account' && person.name === person.email ? adviserData : person);
-      setAdviserData({ ...adviserData, ...fields, email: account.email!, employeeId: person.employeeId || adviserData.employeeId || '', existingAccountUid: account.uid });
+      await validateAdviserUniqueness({
+        email: adviserData.email,
+        employeeId: adviserData.employeeId,
+      });
       setStep2Errors({});
-    } catch (error: any) { setStep2Errors({ email: error?.message || 'Unable to select the existing person.' }); }
-    finally { setIsCheckingAdviser(false); }
+      setCurrentStep(3);
+    } catch (error: any) {
+      if (error instanceof AdviserValidationError) {
+        setStep2Errors({ [error.field]: error.message });
+      } else {
+        setStep2Errors({ email: error?.message || 'Unable to verify adviser email. Please try again.' });
+      }
+    } finally {
+      setIsCheckingAdviser(false);
+    }
   };
 
   // ─── Final Creation Handler ────────────────────────────────────────────────
   const handleCreate = async () => {
     setSubmitError(null);
-    if (adviserIdentity.validationError) {
-      setStep2Errors({ name: adviserIdentity.validationError });
-      setCurrentStep(2);
-      return;
-    }
     const activePeriod = activeCollegePeriod || activeShsPeriod || activeSemester;
     const isCross = !formData.department || formData.department === 'cross-departmental';
     const selectedDept = departments.find(d => d.id === formData.department);
@@ -291,11 +295,9 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       logoUrl: null,
       adviser: {
         ...adviserData,
-        temporaryPassword: adviserData.existingAccountUid ? undefined : adviserData.temporaryPassword,
-        ...(adviserIdentity.verification ? { nameVerification: adviserIdentity.verification } : {}),
         departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : formData.department),
         title: 'Club Adviser',
-        requiresPasswordChange: !adviserData.existingAccountUid,
+        requiresPasswordChange: true,
       },
     };
 
@@ -533,7 +535,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       </div>
 
       <div className="space-y-4">
-        {adviserData.existingAccountUid && <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">Using the existing account for {adviserData.email}. Their current password stays the same. <button type="button" onClick={() => setAdviserData({ ...adviserData, existingAccountUid: '' })} className="ml-1 font-bold underline">Use a different person</button></div>}
         {/* Structured Name Inputs: First Name, Middle Name, Last Name */}
         <div className="space-y-1.5">
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
@@ -547,7 +548,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                 onChange={(e) => {
                   const firstName = e.target.value;
                   const name = formatStructuredFullName(firstName, adviserData.lastName, adviserData.middleName);
-                  setAdviserData({ ...adviserData, existingAccountUid: '', firstName, name });
+                  setAdviserData({ ...adviserData, firstName, name });
                   setStep2Errors(prev => { const n = { ...prev }; delete n.firstName; delete n.name; return n; });
                 }}
                 placeholder="e.g. Maria Santos"
@@ -570,7 +571,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                 onChange={(e) => {
                   const middleName = e.target.value;
                   const name = formatStructuredFullName(adviserData.firstName, adviserData.lastName, middleName);
-                  setAdviserData({ ...adviserData, existingAccountUid: '', middleName, name });
+                  setAdviserData({ ...adviserData, middleName, name });
                 }}
                 placeholder="e.g. Sigmund"
                 className="w-full px-2 py-2.5 border border-[#E0E0E0] rounded-xl text-sm font-medium focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent"
@@ -587,7 +588,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                 onChange={(e) => {
                   const lastName = e.target.value;
                   const name = formatStructuredFullName(adviserData.firstName, lastName, adviserData.middleName);
-                  setAdviserData({ ...adviserData, existingAccountUid: '', lastName, name });
+                  setAdviserData({ ...adviserData, lastName, name });
                   setStep2Errors(prev => { const n = { ...prev }; delete n.lastName; delete n.name; return n; });
                 }}
                 placeholder="e.g. Dela Cruz"
@@ -621,7 +622,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                 type="email"
                 value={adviserData.email}
                 onChange={(e) => {
-                  setAdviserData({ ...adviserData, existingAccountUid: '', email: e.target.value });
+                  setAdviserData({ ...adviserData, email: e.target.value });
                   setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
                 }}
                 placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
@@ -641,7 +642,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
               type="text"
               value={adviserData.employeeId || ''}
               onChange={(e) => {
-                setAdviserData({ ...adviserData, existingAccountUid: '', employeeId: e.target.value });
+                setAdviserData({ ...adviserData, employeeId: e.target.value });
                 setStep2Errors(prev => { const n = { ...prev }; delete n.employeeId; return n; });
               }}
               placeholder="e.g. FAC-2024-001"
@@ -652,8 +653,6 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             <FieldError msg={step2Errors.employeeId} />
           </div>
         </div>
-
-        <AdviserIdentityNotice check={adviserIdentity} onUsePerson={useExistingPerson} busy={isCheckingAdviser} onVerificationChange={() => setStep2Errors((previous) => { const next = { ...previous }; delete next.name; return next; })} />
 
         {/* Designation / Title (Fixed) + Generated Temporary Password Preview */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
@@ -669,11 +668,11 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
           <div>
             <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-              {adviserData.existingAccountUid ? 'Account access' : 'Initial Temporary Password'}
+              Initial Temporary Password
             </label>
             <div className="px-4 py-2.5 bg-amber-50/80 border border-amber-200 rounded-xl font-mono text-sm font-bold text-amber-900 flex items-center justify-between">
-              <span>{adviserData.existingAccountUid ? 'Use existing password' : adviserData.temporaryPassword}</span>
-              <span className="text-[10px] text-amber-700 font-sans font-semibold">{adviserData.existingAccountUid ? 'Existing Account' : 'Auto-Generated'}</span>
+              <span>{adviserData.temporaryPassword}</span>
+              <span className="text-[10px] text-amber-700 font-sans font-semibold">Auto-Generated</span>
             </div>
           </div>
         </div>

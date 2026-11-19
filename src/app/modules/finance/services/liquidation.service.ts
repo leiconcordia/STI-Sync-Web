@@ -16,6 +16,7 @@ import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { EVENTS_COLLECTION } from '../../events/services/event.service';
 import { removeLedgerTransactionsForLiquidation } from './finance.service';
 import { getActiveMiscFeeAcademicContext } from './misc-fee.service';
+import { hasAnySignatorySigned } from '../../workflow/utils/approval-permissions.utils';
 import type { 
   LiquidationDocument, 
   LiquidationRemark, 
@@ -933,6 +934,11 @@ export async function withdrawLiquidationReport(
   if (currentStatus !== 'under_review' && currentStatus !== 'pending') {
     throw new Error('Only liquidation reports currently under review can be withdrawn.');
   }
+  if (hasAnySignatorySigned(data)) {
+    throw new Error(
+      'Cannot withdraw: At least one signatory has already digitally signed this liquidation report.'
+    );
+  }
 
   // Reset chain steps
   const chain = (data.approvalChain || []).map((step, idx) => ({
@@ -1403,20 +1409,27 @@ export async function endorseLiquidationStep(
   }
 
   const targetStep = chain[targetStepIdx];
+  const stepAction = String(targetStep.actionType || '').toLowerCase().trim();
+  const isStepEndorseOrCheck =
+    stepAction === 'endorse' || stepAction === 'check' || stepAction === 'note';
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
-  const canApprove = canSignatoryApproveDocument(signatory as any, 'liquidation', targetStep);
+  const canApprove =
+    !isStepEndorseOrCheck && canSignatoryApproveDocument(signatory as any, 'liquidation', targetStep);
   const decision = approvalDecision || signatory.approvalDecision;
 
   const isExecutiveApprover =
-    isPresident ||
-    isSchoolAdmin ||
-    canApprove ||
-    targetStep.actionType === 'approve' ||
-    signatory.actionType === 'approve';
+    !isStepEndorseOrCheck &&
+    (isPresident ||
+      isSchoolAdmin ||
+      canApprove ||
+      targetStep.actionType === 'approve' ||
+      signatory.actionType === 'approve');
 
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (decision === 'approve') {
+  if (isStepEndorseOrCheck) {
+    newStatus = 'endorsed';
+  } else if (decision === 'approve') {
     newStatus = 'approved';
   } else if (decision === 'forward') {
     newStatus = 'endorsed';

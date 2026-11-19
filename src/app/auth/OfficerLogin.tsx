@@ -131,7 +131,7 @@ export default function OfficerLogin() {
             {/* Username/ID Field */}
             <div>
               <label className="block text-[#001A4D] text-[13px] font-bold mb-1.5">
-                Email, Employee ID, or Student ID
+                Email or Student ID
               </label>
               <div className="relative">
                 <IdCard className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />

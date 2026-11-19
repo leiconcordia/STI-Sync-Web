@@ -58,6 +58,7 @@ import {
 } from '../../signatories';
 import { computeEventAttendanceSummary } from '../services/par-attendance-bridge.service';
 import { resolvePARRemarksDescription } from '../utils/par-remarks.utils';
+import { normalizeFlatStringArray } from '../../workflow/utils/firestore-payload.utils';
 import PARProposalGuidanceDrawer from './PARProposalGuidanceDrawer';
 import type {
   PostActivityReportDocument,
@@ -453,61 +454,56 @@ export default function PostActivityReportWizardModal({
         const proposalDoc: any = await fetchLinkedActivityProposal(evData, selectedEventId);
         setLinkedProposal(proposalDoc);
 
-        // Auto-extract proposal fields
-        const orgs =
+        // Auto-extract proposal fields safely normalized to flat string[]
+        const rawOrgs =
           Array.isArray(proposalDoc?.organizers) && proposalDoc.organizers.length > 0
             ? proposalDoc.organizers
             : Array.isArray((evData as any).organizers) && (evData as any).organizers.length > 0
             ? (evData as any).organizers
             : [(evData as any).organizerName || evData.hostingOrgName || 'Student Affairs Services'];
+        const orgs = normalizeFlatStringArray(rawOrgs);
         setProposalOrganizers(orgs);
 
-        const mechs =
+        const mechs = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.mechanics) && proposalDoc.mechanics.length > 0
             ? proposalDoc.mechanics
-            : Array.isArray((evData as any).mechanics)
-            ? (evData as any).mechanics
-            : [];
+            : (evData as any).mechanics
+        );
         setProposedMechanics(mechs);
 
-        const mats =
+        const mats = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.materials) && proposalDoc.materials.length > 0
             ? proposalDoc.materials
-            : Array.isArray((evData as any).materials)
-            ? (evData as any).materials
-            : [];
+            : (evData as any).materials
+        );
         setProposalMaterials(mats);
 
-        const mkt =
+        const mkt = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.marketingPlan) && proposalDoc.marketingPlan.length > 0
             ? proposalDoc.marketingPlan
-            : Array.isArray((evData as any).marketingPlan)
-            ? (evData as any).marketingPlan
-            : [];
+            : (evData as any).marketingPlan
+        );
         setProposalMarketingPlan(mkt);
 
-        const docs =
+        const docs = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.documentationPlan) && proposalDoc.documentationPlan.length > 0
             ? proposalDoc.documentationPlan
-            : Array.isArray((evData as any).documentationPlan)
-            ? (evData as any).documentationPlan
-            : [];
+            : (evData as any).documentationPlan
+        );
         setProposalDocumentationPlan(docs);
 
-        const objs =
+        const objs = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.objectives) && proposalDoc.objectives.length > 0
             ? proposalDoc.objectives
-            : Array.isArray((evData as any).objectives)
-            ? (evData as any).objectives
-            : [];
+            : (evData as any).objectives
+        );
         setProposalObjectives(objs);
 
-        const ind =
+        const ind = normalizeFlatStringArray(
           Array.isArray(proposalDoc?.successIndicators) && proposalDoc.successIndicators.length > 0
             ? proposalDoc.successIndicators
-            : Array.isArray((evData as any).successIndicators)
-            ? (evData as any).successIndicators
-            : [];
+            : (evData as any).successIndicators
+        );
         setProposalSuccessIndicators(ind);
 
         // Initialize structured Objective & KPI Assessment items

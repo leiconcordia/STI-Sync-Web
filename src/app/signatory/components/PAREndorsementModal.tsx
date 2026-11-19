@@ -456,8 +456,14 @@ export default function PAREndorsementModal({
   const isReadOnlyLocked = !canSignNow;
   const canReturnNow = canSignNow && !isPARApproved;
 
-  // Dynamic approval authority permission check
-  const canApprove = canSignatoryApproveDocument(signatorySession, 'par', myStep);
+  // Dynamic approval authority permission check (respect per-step Endorse/Check role)
+  const isStepEndorseOrCheck =
+    myStep?.actionType === 'endorse' ||
+    myStep?.actionType === 'check' ||
+    (myStep?.actionType as string) === 'note';
+  const canApprove =
+    !isStepEndorseOrCheck &&
+    canSignatoryApproveDocument(signatorySession, 'par', myStep);
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (isReadOnlyLocked) {

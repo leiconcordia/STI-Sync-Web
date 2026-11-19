@@ -13,7 +13,6 @@ import {
   Search,
   History,
   ShieldCheck,
-  RefreshCw,
   X,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -27,7 +26,6 @@ import {
   type SasContributionActivitySummary,
 } from '../../../modules/finance/hooks/useRetainedFundStream';
 import { RetainedActivityDetailsModal } from '../../../modules/finance/components/RetainedActivityDetailsModal';
-import { reconcileSasContributionEventToRetainedFund } from '../../../modules/finance/services/payable.service';
 import {
   saveMiscFeeConfig,
   carryOver1stSemBalancesTo2ndSem,
@@ -57,7 +55,7 @@ import type {
   ComputedBucketBalance,
 } from '../../../modules/finance/types/misc-fee.types';
 import { formatCurrency } from '../../../utils/currency';
-import { formatAppDateTime } from '../../../utils/date';
+import { computeLiveSasRetainedBalance } from '../../../modules/finance/utils/liquidation-settlement.utils';
 
 interface PendingMiscImportPreview {
   fileNames: string[];
@@ -89,7 +87,6 @@ export default function MiscFeeMaintenance() {
   const {
     saoRetainedFund,
     ledgerEntries: retainedLedgerEntries,
-    loading: retainedLoading,
   } = useRetainedActivityFunds(null, viewedConfig.schoolYear);
   const saoOnlyLedgerEntries = useMemo(
     () => retainedLedgerEntries.filter((entry) => entry.ownerType === 'sao'),
@@ -98,13 +95,21 @@ export default function MiscFeeMaintenance() {
   const { activities: sasContributionActivities, loading: sasActivitiesLoading } =
     useSasContributionActivities(viewedConfig.schoolYear, saoOnlyLedgerEntries);
 
+  const liveSaoRetainedBalance = useMemo(
+    () =>
+      computeLiveSasRetainedBalance({
+        storedAvailableBalance: saoRetainedFund.availableBalance,
+        activities: sasContributionActivities,
+      }),
+    [saoRetainedFund.availableBalance, sasContributionActivities]
+  );
+
   const [activeTab, setActiveTab] = useState<'misc_pools' | 'retained_funds'>('misc_pools');
   const [particularSearch, setParticularSearch] = useState('');
   const [inspectedBucket, setInspectedBucket] = useState<ComputedBucketBalance | null>(null);
   const [retainedActivitySearch, setRetainedActivitySearch] = useState('');
   const [retainedSourceFilter, setRetainedSourceFilter] = useState<'all' | 'student_contributions' | 'retained_sao_fund'>('all');
   const [inspectedRetainedActivityId, setInspectedRetainedActivityId] = useState<string | null>(null);
-  const [syncingEventId, setSyncingEventId] = useState<string | null>(null);
   const [draftConfig, setDraftConfig] = useState<MiscFeeConfigDocument>(viewedConfig);
 
   const filteredSasActivities = useMemo(() => {
@@ -124,24 +129,6 @@ export default function MiscFeeMaintenance() {
     [sasContributionActivities, inspectedRetainedActivityId]
   );
 
-  const handleSyncRetainedActivity = async (e: React.MouseEvent, act: SasContributionActivitySummary) => {
-    e.stopPropagation();
-    setSyncingEventId(act.eventId);
-    try {
-      const res = await reconcileSasContributionEventToRetainedFund(act.eventId);
-      if (res.syncedCollectionAmount > 0 || res.syncedDisbursementAmount > 0) {
-        toast.success(
-          `Synced ${formatCurrency(res.syncedCollectionAmount)} collections and ${formatCurrency(res.syncedDisbursementAmount)} disbursement for "${act.eventTitle}".`
-        );
-      } else {
-        toast.info('Activity collections & disbursement are already up to date.');
-      }
-    } catch (err: any) {
-      toast.error(err?.message || 'Failed to sync activity records.');
-    } finally {
-      setSyncingEventId(null);
-    }
-  };
   const [isSaving, setIsSaving] = useState(false);
   const [newSchoolYearInput, setNewSchoolYearInput] = useState('');
   const [showNewSyModal, setShowNewSyModal] = useState(false);
@@ -688,7 +675,7 @@ export default function MiscFeeMaintenance() {
                 Viewing Closed Historical Record — SY {draftConfig.schoolYear} (Read-Only)
               </p>
               <p className="text-indigo-800 mt-0.5 leading-relaxed">
-                1st Sem Pool: <strong className="font-mono">{formatCurrency(totals.total1stSemPool)}</strong> • Carry-Over to 2nd Sem: <strong className="font-mono">{formatCurrency(totals.totalCarryOver)}</strong> • 2nd Sem Pool: <strong className="font-mono">{formatCurrency(totals.total2ndSemPool)}</strong> • Retained Funds: <strong className="font-mono">{formatCurrency(saoRetainedFund.availableBalance)}</strong>. Old funds are recorded for audit history only and were <strong>never added</strong> to Active SY {activeConfig.schoolYear}.
+                1st Sem Pool: <strong className="font-mono">{formatCurrency(totals.total1stSemPool)}</strong> • Carry-Over to 2nd Sem: <strong className="font-mono">{formatCurrency(totals.totalCarryOver)}</strong> • 2nd Sem Pool: <strong className="font-mono">{formatCurrency(totals.total2ndSemPool)}</strong> • Retained Funds: <strong className="font-mono">{formatCurrency(liveSaoRetainedBalance)}</strong>. Old funds are recorded for audit history only and were <strong>never added</strong> to Active SY {activeConfig.schoolYear}.
               </p>
             </div>
           </div>
@@ -735,7 +722,7 @@ export default function MiscFeeMaintenance() {
                 : 'bg-emerald-100 text-emerald-800'
             }`}
           >
-            {formatCurrency(saoRetainedFund.availableBalance)}
+            {formatCurrency(liveSaoRetainedBalance)}
           </span>
         </button>
       </div>
@@ -1135,57 +1122,6 @@ export default function MiscFeeMaintenance() {
             </div>
           </div>
 
-          {/* KPI Cards for Retained Activity Funds */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <div className="p-4 rounded-2xl bg-emerald-50/80 border border-emerald-300">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-emerald-800">
-                SAO Retained Activity Fund Balance
-              </p>
-              <p className="text-xl font-black text-emerald-950 mt-1 font-mono">
-                {retainedLoading ? '...' : formatCurrency(saoRetainedFund.availableBalance)}
-              </p>
-              <p className="text-[11px] text-emerald-700 mt-0.5">
-                Scoped to SY {draftConfig.schoolYear} • Resets to ₱0.00 on New SY
-              </p>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-blue-700">
-                Contribution Revenue Collected
-              </p>
-              <p className="text-xl font-black text-[#001A4D] mt-1 font-mono">
-                {formatCurrency(saoRetainedFund.totalContributionsCollected)}
-              </p>
-              <p className="text-[11px] text-blue-800/80 mt-0.5">
-                Direct student contribution collections (SAO/Admin)
-              </p>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-200">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-purple-800">
-                Retained Liquidation Surpluses
-              </p>
-              <p className="text-xl font-black text-purple-900 mt-1 font-mono">
-                {formatCurrency(saoRetainedFund.totalSurplusesRetained)}
-              </p>
-              <p className="text-[11px] text-purple-700 mt-0.5">
-                Unspent balances credited from approved liquidations
-              </p>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-amber-50/70 border border-amber-200">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
-                Disbursed &amp; Drawn for Activities
-              </p>
-              <p className="text-xl font-black text-amber-900 mt-1 font-mono">
-                {formatCurrency(saoRetainedFund.totalDisbursedOrSpent)}
-              </p>
-              <p className="text-[11px] text-amber-700 mt-0.5">
-                Deducted via SAS Disbursement &amp; Retained Draws
-              </p>
-            </div>
-          </div>
-
           {/* SAS Student Collection & Retained Fund Activities Breakdown */}
           <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-2xs">
             <div className="p-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
@@ -1335,106 +1271,18 @@ export default function MiscFeeMaintenance() {
                           </td>
                           <td className="p-2.5">{stageBadge}</td>
                           <td className="p-2.5 text-center">
-                            <div className="inline-flex items-center gap-1">
-                              {act.needsSync && (
-                                <button
-                                  type="button"
-                                  disabled={syncingEventId === act.eventId}
-                                  onClick={(e) => handleSyncRetainedActivity(e, act)}
-                                  className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer"
-                                  title="Sync unposted paid students or disbursement voucher into Retained Funds"
-                                >
-                                  <RefreshCw
-                                    className={`w-3 h-3 ${syncingEventId === act.eventId ? 'animate-spin' : ''}`}
-                                  />
-                                  Sync
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setInspectedRetainedActivityId(act.eventId);
-                                }}
-                                className="px-2.5 py-1 rounded-lg text-blue-700 hover:bg-blue-100 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
-                                title="Inspect Paid Students & Retained Fund Trail"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                View
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Retained Student Activity Fund Transaction Ledger (SAS / School Only) */}
-          <div className="bg-white border border-gray-200 rounded-2xl overflow-hidden shadow-2xs">
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <History className="w-4 h-4 text-[#0E4EBD]" />
-                <h3 className="text-sm font-bold text-[#001A4D]">
-                  SAS Retained Student Activity Fund Ledger (Audit Trail)
-                </h3>
-              </div>
-              <span className="text-[11px] font-semibold text-gray-500">
-                {saoOnlyLedgerEntries.length} Recorded Transaction(s)
-              </span>
-            </div>
-
-            {saoOnlyLedgerEntries.length === 0 ? (
-              <div className="p-8 text-center text-xs text-gray-500">
-                No School / SAS retained Student Contribution transactions recorded yet.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-gray-200 text-gray-600 font-bold">
-                      <th className="py-2.5 px-3">Date</th>
-                      <th className="py-2.5 px-3">Destination Bucket</th>
-                      <th className="py-2.5 px-3">Description / Event</th>
-                      <th className="py-2.5 px-3">Type</th>
-                      <th className="py-2.5 px-3 text-right">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {saoOnlyLedgerEntries.slice(0, 50).map((entry) => {
-                      const isCredit =
-                        entry.type === 'collection_income' ||
-                        entry.type === 'liquidation_surplus_retained';
-                      return (
-                        <tr key={entry.id} className="hover:bg-slate-50/60">
-                          <td className="p-2.5 text-gray-500 whitespace-nowrap">
-                            {entry.createdAt ? formatAppDateTime(entry.createdAt) : '—'}
-                          </td>
-                          <td className="p-2.5 font-semibold text-[#001A4D]">
-                            SAS Retained Activity Fund
-                          </td>
-                          <td className="p-2.5 text-gray-800">{entry.description}</td>
-                          <td className="p-2.5">
-                            <span
-                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                                isCredit
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : 'bg-rose-100 text-rose-800'
-                              }`}
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setInspectedRetainedActivityId(act.eventId);
+                              }}
+                              className="px-2.5 py-1 rounded-lg text-blue-700 hover:bg-blue-100 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors"
+                              title="Inspect Paid Students & Retained Fund Trail"
                             >
-                              {entry.type.replace(/_/g, ' ')}
-                            </span>
-                          </td>
-                          <td
-                            className={`p-2.5 text-right font-mono font-bold ${
-                              isCredit ? 'text-emerald-700' : 'text-rose-700'
-                            }`}
-                          >
-                            {isCredit ? '+' : '-'}
-                            {formatCurrency(entry.amount)}
+                              <Eye className="w-3.5 h-3.5" />
+                              View
+                            </button>
                           </td>
                         </tr>
                       );

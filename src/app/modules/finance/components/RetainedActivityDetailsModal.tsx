@@ -5,14 +5,11 @@ import {
   ExternalLink,
   FileCheck,
   History,
-  RefreshCw,
   Search,
   Users,
   X,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import type { SasContributionActivitySummary } from '../hooks/useRetainedFundStream';
-import { reconcileSasContributionEventToRetainedFund } from '../services/payable.service';
 import { formatCurrency } from '../../../utils/currency';
 import { formatAppDateTime } from '../../../utils/date';
 
@@ -35,7 +32,6 @@ export function RetainedActivityDetailsModal({
   activity,
 }: RetainedActivityDetailsModalProps) {
   const [studentSearch, setStudentSearch] = useState('');
-  const [syncing, setSyncing] = useState(false);
 
   const filteredStudents = useMemo(() => {
     if (!activity) return [];
@@ -51,24 +47,6 @@ export function RetainedActivityDetailsModal({
   }, [activity, studentSearch]);
 
   if (!isOpen || !activity) return null;
-
-  const handleSyncToRetained = async () => {
-    setSyncing(true);
-    try {
-      const res = await reconcileSasContributionEventToRetainedFund(activity.eventId);
-      if (res.syncedCollectionAmount > 0 || res.syncedDisbursementAmount > 0) {
-        toast.success(
-          `Synced ${formatCurrency(res.syncedCollectionAmount)} collections and ${formatCurrency(res.syncedDisbursementAmount)} disbursement into SAS Retained Funds.`
-        );
-      } else {
-        toast.info('All paid students and disbursement amounts are already synced.');
-      }
-    } catch (err: any) {
-      toast.error(err?.message || 'Failed to sync records.');
-    } finally {
-      setSyncing(false);
-    }
-  };
 
   return (
     <div
@@ -99,17 +77,6 @@ export function RetainedActivityDetailsModal({
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {activity.needsSync && (
-              <button
-                type="button"
-                disabled={syncing}
-                onClick={handleSyncToRetained}
-                className="px-3 py-1.5 rounded-lg bg-[#FFD41C] hover:bg-amber-300 text-[#001A4D] text-[11px] font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
-                <span>{syncing ? 'Syncing...' : 'Sync Unposted Records'}</span>
-              </button>
-            )}
             <button
               type="button"
               onClick={onClose}
@@ -236,22 +203,6 @@ export function RetainedActivityDetailsModal({
               </div>
             </div>
           </div>
-
-          {activity.needsSync && (
-            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-900">
-              <span>
-                Some paid student collections ({formatCurrency(activity.uncreditedCollected)}) or attached Disbursement Voucher have not yet posted to the Retained Fund bucket.
-              </span>
-              <button
-                type="button"
-                disabled={syncing}
-                onClick={handleSyncToRetained}
-                className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-[11px] font-bold cursor-pointer disabled:opacity-60"
-              >
-                {syncing ? 'Syncing...' : 'Sync Now'}
-              </button>
-            </div>
-          )}
 
           {/* Paid Students Table */}
           <div className="border border-gray-200 rounded-xl overflow-hidden">

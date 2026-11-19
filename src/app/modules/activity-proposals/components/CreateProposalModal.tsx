@@ -33,12 +33,11 @@ import DigitalSignatureModal from '../../../signatory/components/DigitalSignatur
 import { format, addDays, subDays, parseISO, isValid } from 'date-fns';
 import {
   formatDateLong,
-  formatPHP,
   checkProjectedBalance,
-  validateBucketAllocations,
   resolveTaskDateBounds,
   POST_EVENT_TASK_WINDOW_DAYS,
   PROJECTED_REVENUE_DEFICIT_WARNING,
+  validateStep6FinancialProjections,
 } from '../utils/proposal-calculations';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
 
@@ -881,64 +880,7 @@ export default function CreateProposalModal({
     }
 
     if (stepNumber === 6) {
-      if (!data.fundingSource) {
-        errs.fundingSource = 'Please select a funding source.';
-      }
-      if (data.fundingSource === 'organization_funds') {
-        const treasuryBalance = Number(data.organizationLedgerBalanceAtSubmission) || 0;
-        const totalExpenses = Number(data.financialProjections?.totalExpenses) || 0;
-        if (treasuryBalance <= 0) {
-          errs.fundingSource = 'Organization treasury has no available funds (₱0.00). You cannot allocate budget from an empty ledger.';
-        } else if (totalExpenses > treasuryBalance) {
-          errs.fundingSource = `Total asking budget (${formatPHP(totalExpenses)}) exceeds available organization treasury (${formatPHP(treasuryBalance)}).`;
-        }
-      }
-      if (data.fundingSource !== 'zero_budget' && data.financialProjections) {
-        const expenses = data.financialProjections.expenses || (data.financialProjections as any).expenditures || [];
-        const revenues = data.financialProjections.revenues || [];
-        for (let i = 0; i < expenses.length; i++) {
-          const exp = expenses[i];
-          if ((exp.totalAmount > 0 || exp.thisYearProposed > 0) && !exp.description?.trim()) {
-            errs.expenditures = `Expenditure #${i + 1} has an amount but is missing an item description.`;
-            break;
-          }
-        }
-        for (let i = 0; i < revenues.length; i++) {
-          const rev = revenues[i];
-          if ((rev.totalAmount > 0 || rev.thisYearProposed > 0) && !rev.description?.trim()) {
-            errs.revenues = `Revenue #${i + 1} has an amount but is missing an item description.`;
-            break;
-          }
-        }
-      }
-      if (checkProjectedBalance(data.financialProjections, data.fundingSource).isDeficit) {
-        errs.projectedBalance = PROJECTED_REVENUE_DEFICIT_WARNING;
-      }
-      if (data.fundingSource !== 'zero_budget') {
-        const expSum = Number(data.financialProjections?.totalExpenses || 0);
-        const allocs =
-          Array.isArray(data.allocations) && data.allocations.length > 0
-            ? data.allocations
-            : Array.isArray(data.miscFeeBucketAllocations) && data.miscFeeBucketAllocations.length > 0
-              ? data.miscFeeBucketAllocations.map((a) => ({
-                  bucketId: a.bucketId,
-                  bucketName: a.bucketName,
-                  fundType: 'misc_fee' as const,
-                  allocatedAmount:
-                    data.miscFeeBucketAllocations!.length === 1 ? expSum : 0,
-                  availableAmount: a.availableAmount,
-                  poolAmount: a.poolAmount,
-                }))
-              : [];
-        const allocCheck = validateBucketAllocations({
-          fundingSource: data.fundingSource,
-          totalExpenses: expSum,
-          allocations: allocs,
-        });
-        if (!allocCheck.isValid && allocCheck.summaryError) {
-          errs.bucketAllocations = allocCheck.summaryError;
-        }
-      }
+      Object.assign(errs, validateStep6FinancialProjections(data));
     }
 
     if (stepNumber === 7) {

@@ -409,3 +409,66 @@ export function evaluatePARLiquidationGate(params: {
     settlementState: state,
   };
 }
+
+/**
+ * Supplemental additional bucket selection during post-approval overspend coverage
+ * applies strictly to Miscellaneous Fee activities (or explicit closeout overrides).
+ * Organization Club Treasury and Student Contribution liquidations must not present
+ * "Select Additional Bucket".
+ */
+export function shouldAllowSupplementalDeficitBuckets(params: {
+  fundingSource?: string | null;
+  sourceAllocations?: Array<{ fundType?: string | null }> | null;
+  allowSupplementalBuckets?: boolean;
+}): boolean {
+  if (params.allowSupplementalBuckets !== undefined) {
+    return params.allowSupplementalBuckets;
+  }
+  const srcLower = String(params.fundingSource || '').trim().toLowerCase();
+  const hasMiscSource =
+    Array.isArray(params.sourceAllocations) &&
+    params.sourceAllocations.some((a) => a?.fundType === 'misc_fee');
+  return hasMiscSource || srcLower === 'school_budget';
+}
+
+/**
+ * Computes live SAS Student Contribution & Retained Fund balance for an academic
+ * period by combining stored retained bucket balances with any un-synced activity
+ * collections, disbursements, and verified liquidation surpluses/reimbursements
+ * without double-counting ledger entries that were already posted.
+ */
+export function computeLiveSasRetainedBalance(params: {
+  storedAvailableBalance?: number;
+  activities: Array<{
+    uncreditedCollected?: number;
+    disbursedUnposted?: boolean;
+    disbursedAmount?: number;
+    surplusReturned?: number;
+    reimbursedAmount?: number;
+    ledgerEntries?: Array<{ type?: string; amount?: number }>;
+  }>;
+}): number {
+  const stored = Number(params.storedAvailableBalance) || 0;
+  const unsyncedNet = (params.activities || []).reduce((sum, act) => {
+    const entries = Array.isArray(act.ledgerEntries) ? act.ledgerEntries : [];
+    const ledgerSurplus = entries
+      .filter((e) => e.type === 'liquidation_surplus_retained')
+      .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const ledgerReimbursed = entries
+      .filter((e) => e.type === 'liquidation_deficit_deduction')
+      .reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const unsyncedSurplus = Math.max(0, (Number(act.surplusReturned) || 0) - ledgerSurplus);
+    const unsyncedReimbursed = Math.max(0, (Number(act.reimbursedAmount) || 0) - ledgerReimbursed);
+    const unsyncedDisb = act.disbursedUnposted ? Number(act.disbursedAmount) || 0 : 0;
+
+    return (
+      sum +
+      (Number(act.uncreditedCollected) || 0) -
+      unsyncedDisb +
+      unsyncedSurplus -
+      unsyncedReimbursed
+    );
+  }, 0);
+
+  return Math.max(0, Math.round((stored + unsyncedNet) * 100) / 100);
+}

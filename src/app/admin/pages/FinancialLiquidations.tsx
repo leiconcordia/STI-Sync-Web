@@ -226,7 +226,7 @@ export function FinancialLiquidations() {
     return (
       Number(
         selectedReport.surplusOrDeficit ??
-          ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
+        ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
       ) || 0
     );
   }, [selectedReport]);
@@ -239,9 +239,9 @@ export function FinancialLiquidations() {
   );
   const isRecoveringStudentContribution = Boolean(
     selectedReport &&
-      (selectedReport as any).fundingSource === 'student_contributions' &&
-      (selectedReport as any).collectionSettlementStatus === 'deficit_recovering' &&
-      selectedCollectionDeficit > 0.009
+    (selectedReport as any).fundingSource === 'student_contributions' &&
+    (selectedReport as any).collectionSettlementStatus === 'deficit_recovering' &&
+    selectedCollectionDeficit > 0.009
   );
 
   useEffect(() => {
@@ -258,7 +258,7 @@ export function FinancialLiquidations() {
           const variance =
             Number(
               selectedReport.surplusOrDeficit ??
-                ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
+              ((selectedReport.allocatedBudget ?? 0) - (selectedReport.totalActualSpending ?? 0))
             ) || 0;
           const surplus = Math.max(0, variance);
           const deficit = Math.max(0, -variance);
@@ -343,15 +343,15 @@ export function FinancialLiquidations() {
               orgLedgerBalance: selectedOrgLedgerBalance,
               studentCollectionAvailableOverride: repIsStudentCollection
                 ? computeLiveStudentCollectionReimbursementCapacity({
-                    isSasOwned: repIsSas,
-                    eventId: selectedReport.eventId || null,
-                    liquidationId: selectedReport.id || null,
-                    allocatedBudget:
-                      Number(selectedReport.allocatedBudget ?? selectedReport.amountAdvanced ?? 0) || 0,
-                    saoAvailableBalance: Number(saoRetainedFund?.availableBalance) || 0,
-                    retainedLedgerEntries,
-                    orgLedgerEntries: selectedOrgLedger,
-                  })
+                  isSasOwned: repIsSas,
+                  eventId: selectedReport.eventId || null,
+                  liquidationId: selectedReport.id || null,
+                  allocatedBudget:
+                    Number(selectedReport.allocatedBudget ?? selectedReport.amountAdvanced ?? 0) || 0,
+                  saoAvailableBalance: Number(saoRetainedFund?.availableBalance) || 0,
+                  retainedLedgerEntries,
+                  orgLedgerEntries: selectedOrgLedger,
+                })
                 : undefined,
             });
             const savedSig = savedRows.map((r) => `${r.bucketId}:${r.deductAmount}`).join('|');
@@ -470,6 +470,7 @@ export function FinancialLiquidations() {
     }
     const { initialRows, supplementalOptions } = buildDeficitSeedAndSupplementalOptions({
       totalDeficit: selectedCollectionDeficit,
+      fundingSource: selectedReport.fundingSource,
       sourceAllocations,
       savedDeficitRows: [],
       computedBuckets,
@@ -479,6 +480,7 @@ export function FinancialLiquidations() {
       targetOrgId: selectedReport.organizationId,
       targetOrgName: selectedReport.organizationName,
       orgLedgerBalance: selectedOrgLedgerBalance,
+      allowSupplementalBuckets: true,
     });
     setCollectionAbsorbRows(initialRows);
     setCollectionAbsorbOptions(supplementalOptions);
@@ -1012,11 +1014,11 @@ export function FinancialLiquidations() {
             {isSasSelectedLiquidation &&
               (sourceAllocations[0].fundType === 'student_contributions' ||
                 sourceAllocations[0].fundType === 'student_contribution_retained') && (
-              <div className="p-3 rounded-xl bg-white/80 border border-emerald-200 text-xs text-emerald-900">
-                <strong>Destination: SAS Student Contribution &amp; Retained Funds</strong> — attach the return proof below to credit the{' '}
-                <strong className="font-mono">{formatCurrency(selectedReportSurplus)}</strong> unspent surplus into SAS Retained Funds.
-              </div>
-            )}
+                <div className="p-3 rounded-xl bg-white/80 border border-emerald-200 text-xs text-emerald-900">
+                  <strong>Destination: SAS Student Contribution &amp; Retained Funds</strong> — attach the return proof below to credit the{' '}
+                  <strong className="font-mono">{formatCurrency(selectedReportSurplus)}</strong> unspent surplus into SAS Retained Funds.
+                </div>
+              )}
           </div>
         ) : (
           <div className="p-4 rounded-2xl bg-blue-50/70 border border-blue-200 space-y-3">
@@ -1057,9 +1059,8 @@ export function FinancialLiquidations() {
                 return (
                   <div
                     key={row.bucketId}
-                    className={`p-3 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
-                      rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-gray-200'
-                    }`}
+                    className={`p-3 rounded-xl border bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${rowErr ? 'border-rose-400 ring-1 ring-rose-300' : 'border-gray-200'
+                      }`}
                   >
                     <div className="min-w-0 space-y-0.5">
                       <div className="flex items-center gap-2">
@@ -1109,11 +1110,10 @@ export function FinancialLiquidations() {
                               })
                             );
                           }}
-                          className={`w-36 px-2.5 py-1.5 border rounded-lg text-xs text-right font-mono font-bold outline-none ${
-                            rowErr
+                          className={`w-36 px-2.5 py-1.5 border rounded-lg text-xs text-right font-mono font-bold outline-none ${rowErr
                               ? 'border-rose-400 bg-rose-50 text-rose-900'
                               : 'border-blue-300 bg-white text-[#001A4D]'
-                          }`}
+                            }`}
                         />
                       )}
                     </div>
@@ -1123,11 +1123,10 @@ export function FinancialLiquidations() {
             </div>
 
             <div
-              className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${
-                surplusReturnValidation.isValid
+              className={`p-3 rounded-xl border flex flex-wrap items-center justify-between gap-2 text-xs ${surplusReturnValidation.isValid
                   ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
                   : 'bg-amber-50 border-amber-300 text-amber-950'
-              }`}
+                }`}
             >
               <div className="flex flex-wrap items-center gap-4 font-mono">
                 <span>
@@ -1141,11 +1140,10 @@ export function FinancialLiquidations() {
                 </span>
               </div>
               <span
-                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                  surplusReturnValidation.isValid
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${surplusReturnValidation.isValid
                     ? 'bg-emerald-600 text-white'
                     : 'bg-amber-600 text-white'
-                }`}
+                  }`}
               >
                 {surplusReturnValidation.isValid ? 'Exact Match' : 'Split Required'}
               </span>
@@ -1174,44 +1172,44 @@ export function FinancialLiquidations() {
                 a.fundType === 'student_contribution_retained'
             )) ||
           cashierProofDrafts.length > 0) && (
-          <div className="space-y-2">
-            <CashierProofUploader
-              proofs={cashierProofDrafts}
-              onChange={setCashierProofDrafts}
-              cashierReferenceNo={cashierRefDraft}
-              onReferenceNoChange={setCashierRefDraft}
-              folderKey={selectedReport.id}
-              disabled={isProcessing || savingCashierProof}
-              readOnly={readOnlyMode}
-              title={`Required Return Proof / Receipt (${formatCurrency(selectedReportSurplus)})`}
-              description={
-                isSasSelectedLiquidation &&
-                sourceAllocations.some(
-                  (a) =>
-                    a.fundType === 'student_contributions' ||
-                    a.fundType === 'student_contribution_retained'
-                )
-                  ? `Required before ${actionNoun} to prove the unspent money was returned into SAS Student Contribution & Retained Funds.`
-                  : `Required before ${actionNoun} because unspent surplus returns to Miscellaneous Fee bucket(s).`
-              }
-            />
-            {!readOnlyMode &&
-              (surplusReturnValidation.requiresCashierReceipt ||
-                (sourceAllocations.length === 1 && sourceAllocations[0].fundType === 'misc_fee')) &&
-              cashierProofDrafts.length === 0 && (
-                <p className="text-xs font-bold text-rose-700">
-                  {isSasSelectedLiquidation &&
-                  sourceAllocations.some(
-                    (a) =>
-                      a.fundType === 'student_contributions' ||
-                      a.fundType === 'student_contribution_retained'
-                  )
-                    ? `Return Proof / Receipt required before ${actionNoun} so the unspent surplus credits SAS Student Contribution & Retained Funds.`
-                    : `Cashier Return Receipt required before ${actionNoun} because a Miscellaneous Fee bucket receives a return amount > ₱0.00.`}
-                </p>
-              )}
-          </div>
-        )}
+            <div className="space-y-2">
+              <CashierProofUploader
+                proofs={cashierProofDrafts}
+                onChange={setCashierProofDrafts}
+                cashierReferenceNo={cashierRefDraft}
+                onReferenceNoChange={setCashierRefDraft}
+                folderKey={selectedReport.id}
+                disabled={isProcessing || savingCashierProof}
+                readOnly={readOnlyMode}
+                title={`Required Return Proof / Receipt (${formatCurrency(selectedReportSurplus)})`}
+                description={
+                  isSasSelectedLiquidation &&
+                    sourceAllocations.some(
+                      (a) =>
+                        a.fundType === 'student_contributions' ||
+                        a.fundType === 'student_contribution_retained'
+                    )
+                    ? `Required before ${actionNoun} to prove the unspent money was returned into SAS Student Contribution & Retained Funds.`
+                    : `Required before ${actionNoun} because unspent surplus returns to Miscellaneous Fee bucket(s).`
+                }
+              />
+              {!readOnlyMode &&
+                (surplusReturnValidation.requiresCashierReceipt ||
+                  (sourceAllocations.length === 1 && sourceAllocations[0].fundType === 'misc_fee')) &&
+                cashierProofDrafts.length === 0 && (
+                  <p className="text-xs font-bold text-rose-700">
+                    {isSasSelectedLiquidation &&
+                      sourceAllocations.some(
+                        (a) =>
+                          a.fundType === 'student_contributions' ||
+                          a.fundType === 'student_contribution_retained'
+                      )
+                      ? `Return Proof / Receipt required before ${actionNoun} so the unspent surplus credits SAS Student Contribution & Retained Funds.`
+                      : `Cashier Return Receipt required before ${actionNoun} because a Miscellaneous Fee bucket receives a return amount > ₱0.00.`}
+                  </p>
+                )}
+            </div>
+          )}
       </div>
     );
   };
@@ -1299,24 +1297,22 @@ export function FinancialLiquidations() {
                   due.liq
                     ? `Open liquidation report for ${due.event.title}`
                     : isSasCreatedEvent(due.event)
-                    ? `File SAS liquidation report for ${due.event.title}`
-                    : `Open ${due.event.title} details`
+                      ? `File SAS liquidation report for ${due.event.title}`
+                      : `Open ${due.event.title} details`
                 }
-                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white cursor-pointer transition-all hover:shadow-sm hover:border-[#0E4EBD] text-left ${
-                  due.isOverdue ? 'border-rose-300' : 'border-amber-200'
-                }`}
+                className={`px-3 py-1.5 rounded-xl border text-xs flex items-center gap-2 bg-white cursor-pointer transition-all hover:shadow-sm hover:border-[#0E4EBD] text-left ${due.isOverdue ? 'border-rose-300' : 'border-amber-200'
+                  }`}
               >
                 <span className="font-bold text-[#001A4D] truncate max-w-[200px]">
                   {due.event.title}
                 </span>
                 <span
-                  className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${
-                    due.isOverdue
+                  className={`font-mono text-[11px] font-bold px-2 py-0.5 rounded-full ${due.isOverdue
                       ? 'bg-rose-100 text-rose-800'
                       : due.daysRemaining !== null && due.daysRemaining <= 3
-                      ? 'bg-amber-100 text-amber-900'
-                      : 'bg-blue-50 text-[#001A4D]'
-                  }`}
+                        ? 'bg-amber-100 text-amber-900'
+                        : 'bg-blue-50 text-[#001A4D]'
+                    }`}
                 >
                   {due.deadline ? `Due ${formatAppDate(due.deadline)}` : 'Due'}{' '}
                   {due.daysRemaining !== null
@@ -1351,8 +1347,8 @@ export function FinancialLiquidations() {
                   key={tab.key}
                   onClick={() => handleTabChange(tab.key as TabValue)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
-                      ? 'bg-[#001A4D] text-white shadow-xs'
-                      : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
+                    ? 'bg-[#001A4D] text-white shadow-xs'
+                    : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
                     }`}
                 >
                   <span>{tab.label}</span>
@@ -1387,8 +1383,8 @@ export function FinancialLiquidations() {
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterOrg !== 'all' || filterSchoolYear !== (defaultSchoolYear || 'all') || filterSemester !== 'all'
-                  ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
-                  : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
+                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
                 }`}
             >
               <Filter className="w-3.5 h-3.5" />
@@ -1494,267 +1490,267 @@ export function FinancialLiquidations() {
             {/* ── Table Container (No inner vertical scroll) ── */}
             <div className="overflow-x-auto relative">
               {loading ? (
-            <div className="h-full flex items-center justify-center text-sm text-gray-500">
-              Loading liquidations...
-            </div>
-          ) : filteredLiquidations.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-2">
-              <Receipt className="w-12 h-12 text-gray-300 mx-auto" />
-              <div className="font-bold text-gray-700 text-sm">No liquidation reports found</div>
-              <p className="text-xs text-gray-400 max-w-sm">
-                No liquidation reports match the active filter or search query.
-              </p>
-            </div>
-          ) : (
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
-                <tr>
-                  <th className="py-3 px-4">Report / Organization</th>
-                  <th className="py-3 px-4">Event</th>
-                  <th className="py-3 px-4">Expenses</th>
-                  <th className="py-3 px-4">Allocated</th>
-                  <th className="py-3 px-4">Variance</th>
-                  <th className="py-3 px-4">Receipts</th>
-                  <th className="py-3 px-4">Submitted</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
-                {paginatedItems.map((liq) => {
-                  const isReturned = liq.status === 'returned';
-                  const isPending = liq.status === 'pending';
-                  const isApproved = liq.status === 'approved';
-
-                  const allocated = liq.allocatedBudget || 0;
-                  const spent = liq.totalActualSpending || 0;
-                  const variance = (liq.surplusOrDeficit !== undefined) ? liq.surplusOrDeficit : (allocated - spent);
-                  const isDeficit = variance < 0;
-
-                  // Utilization percentage
-                  const utilPct = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 100;
-                  const isOverBudget = spent > allocated && allocated > 0;
-
-                  const orgInitials = getOrgInitials(liq.organizationName);
-
-                  return (
-                    <tr key={liq.id} className="hover:bg-slate-50/80 transition-colors">
-                      {/* Report & Org */}
-                      <td className="py-3.5 px-4 max-w-[240px]">
-                        <div className="flex items-start gap-2.5">
-                          <div className="w-7 h-7 rounded-full bg-[#001A4D] text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">
-                            {orgInitials}
-                          </div>
-                          <div className="min-w-0">
-                            <div className="font-bold text-gray-900 text-sm leading-snug truncate">
-                              {liq.eventTitle || 'Liquidation Report'}
-                            </div>
-                            <div className="text-[11px] text-gray-500 font-medium truncate">
-                              {liq.organizationName || 'Student Org'}
-                            </div>
-                            {isReturned && liq.returnRemarks && (
-                              <div className="text-[11px] text-red-600 font-medium truncate mt-0.5">
-                                {liq.returnRemarks}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Event Title */}
-                      <td className="py-3.5 px-4 max-w-[180px]">
-                        <div className="font-medium text-gray-800 text-xs truncate">
-                          {liq.eventTitle}
-                        </div>
-                      </td>
-
-                      {/* Expenses + Progress Bar */}
-                      <td className="py-3.5 px-4 whitespace-nowrap min-w-[130px]">
-                        <div className="font-bold text-gray-900 text-sm">
-                          {formatCurrency(spent)}
-                        </div>
-                        <div className="w-24 bg-gray-200 rounded-full h-1.5 mt-1 overflow-hidden">
-                          <div
-                            className={`h-1.5 rounded-full transition-all ${isOverBudget ? 'bg-red-500' : 'bg-[#001A4D]'
-                              }`}
-                            style={{ width: `${utilPct}%` }}
-                          />
-                        </div>
-                        <div className="text-[10px] text-gray-400 font-medium mt-0.5">
-                          {utilPct}% utilized
-                        </div>
-                      </td>
-
-                      {/* Allocated */}
-                      <td className="py-3.5 px-4 whitespace-nowrap font-medium text-gray-700 text-xs">
-                        {formatCurrency(allocated)}
-                      </td>
-
-                      {/* Variance */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className={`inline-flex items-center gap-1 font-bold text-xs ${isDeficit ? 'text-red-600' : 'text-emerald-700'
-                          }`}>
-                          {isDeficit ? (
-                            <TrendingDown className="w-3.5 h-3.5" />
-                          ) : (
-                            <TrendingUp className="w-3.5 h-3.5" />
-                          )}
-                          <span>{formatVariance(variance)}</span>
-                        </div>
-                      </td>
-
-                      {/* Receipts */}
-                      <td className="py-3.5 px-4 whitespace-nowrap text-gray-600 font-medium">
-                        <div className="flex items-center gap-1.5">
-                          <Receipt className="w-3.5 h-3.5 text-gray-400" />
-                          <span>{liq.lineItems?.length || 0}</span>
-                        </div>
-                      </td>
-
-                      {/* Submitted Date */}
-                      <td className="py-3.5 px-4 whitespace-nowrap text-gray-500 text-xs">
-                        <div>{formatSubmittedDate(liq.createdAt)}</div>
-                        {(liq.status === 'draft' || isReturned) && (() => {
-                          const flDead = liquidationSubmissionDeadline(eventsById.get(liq.eventId), liq);
-                          if (!flDead) return null;
-                          const rem = calendarDaysRemaining(flDead);
-                          const ov = rem !== null && rem < 0;
-                          return (
-                            <div className={`text-[10px] font-bold mt-0.5 ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
-                              Due {formatAppDate(flDead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
-                            </div>
-                          );
-                        })()}
-                      </td>
-
-                      {/* Status */}
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        <div className="flex flex-col gap-1 items-start">
-                          {renderStatusBadge(liq.status)}
-                          {(liq as any).archivedRefNumber && (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-mono text-[#0E4EBD] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200" title="Archived into EDMS">
-                              <FileText className="w-2.5 h-2.5" />
-                              {(liq as any).archivedRefNumber}
-                            </span>
-                          )}
-                        </div>
-                      </td>
-
-                      {/* Inline Actions */}
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {(() => {
-                            const rowPerms = resolveApprovalPermissions(liq, currentUser);
-                            return (
-                              <>
-                                {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
-                                  <button
-                                    onClick={() => handleOpenEditDraft(liq)}
-                                    className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title={liq.status === 'returned' ? 'Revise & Resubmit Liquidation' : 'Edit Draft Liquidation'}
-                                  >
-                                    <Edit3 className="w-3 h-3" />
-                                    <span>{liq.status === 'returned' ? 'Revise' : 'Edit'}</span>
-                                  </button>
-                                )}
-
-                                {rowPerms.isOwner && isPending && (
-                                  <button
-                                    onClick={() => {
-                                      setSelectedReport(liq);
-                                      setShowWithdrawModal(true);
-                                    }}
-                                    className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title="Withdraw your liquidation submission"
-                                  >
-                                    <RotateCcw className="w-3 h-3 text-amber-600" />
-                                    <span>Withdraw</span>
-                                  </button>
-                                )}
-
-                                {!rowPerms.isOwner && isPending && (
-                                  <>
-                                    <button
-                                      onClick={() => {
-                                        setSelectedReport(liq);
-                                        setReviewRemarks('');
-                                        setActionError(null);
-                                      }}
-                                      className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                      title="Approve this liquidation"
-                                    >
-                                      <Check className="w-3 h-3" />
-                                      <span>Approve</span>
-                                    </button>
-
-                                    <button
-                                      onClick={() => {
-                                        setSelectedReport(liq);
-                                        setReviewRemarks(liq.returnRemarks || '');
-                                        setActionError(null);
-                                      }}
-                                      className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                      title="Return for revision"
-                                    >
-                                      <RotateCcw className="w-3 h-3" />
-                                      <span>Return</span>
-                                    </button>
-                                  </>
-                                )}
-
-                                {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
-                                  <button
-                                    onClick={() => setDeletingReport(liq)}
-                                    className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                    title="Delete draft report and purge ledger entries"
-                                  >
-                                    <Trash2 className="w-3 h-3" />
-                                    <span>Delete</span>
-                                  </button>
-                                )}
-                              </>
-                            );
-                          })()}
-
-                          <button
-                            onClick={() => setExportReport(liq)}
-                            className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="Export official STI liquidation report"
-                          >
-                            <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
-                            <span>Export</span>
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              setSelectedReport(liq);
-                              setReviewRemarks(liq.returnRemarks || '');
-                              setActionError(null);
-                            }}
-                            className="px-2.5 py-1 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="View Full Report"
-                          >
-                            <Eye className="w-3 h-3" />
-                            <span>View</span>
-                          </button>
-                        </div>
-                      </td>
+                <div className="h-full flex items-center justify-center text-sm text-gray-500">
+                  Loading liquidations...
+                </div>
+              ) : filteredLiquidations.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-2">
+                  <Receipt className="w-12 h-12 text-gray-300 mx-auto" />
+                  <div className="font-bold text-gray-700 text-sm">No liquidation reports found</div>
+                  <p className="text-xs text-gray-400 max-w-sm">
+                    No liquidation reports match the active filter or search query.
+                  </p>
+                </div>
+              ) : (
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
+                    <tr>
+                      <th className="py-3 px-4">Report / Organization</th>
+                      <th className="py-3 px-4">Event</th>
+                      <th className="py-3 px-4">Expenses</th>
+                      <th className="py-3 px-4">Allocated</th>
+                      <th className="py-3 px-4">Variance</th>
+                      <th className="py-3 px-4">Receipts</th>
+                      <th className="py-3 px-4">Submitted</th>
+                      <th className="py-3 px-4">Status</th>
+                      <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
+                    {paginatedItems.map((liq) => {
+                      const isReturned = liq.status === 'returned';
+                      const isPending = liq.status === 'pending';
+                      const isApproved = liq.status === 'approved';
 
-        <TablePagination
-          currentPage={currentPage}
-          totalPages={totalPages}
-          totalItems={filteredLiquidations.length}
-          itemsPerPage={ITEMS_PER_PAGE}
-          onPageChange={setCurrentPage}
-          itemName="reports"
-        />
+                      const allocated = liq.allocatedBudget || 0;
+                      const spent = liq.totalActualSpending || 0;
+                      const variance = (liq.surplusOrDeficit !== undefined) ? liq.surplusOrDeficit : (allocated - spent);
+                      const isDeficit = variance < 0;
+
+                      // Utilization percentage
+                      const utilPct = allocated > 0 ? Math.min(100, Math.round((spent / allocated) * 100)) : 100;
+                      const isOverBudget = spent > allocated && allocated > 0;
+
+                      const orgInitials = getOrgInitials(liq.organizationName);
+
+                      return (
+                        <tr key={liq.id} className="hover:bg-slate-50/80 transition-colors">
+                          {/* Report & Org */}
+                          <td className="py-3.5 px-4 max-w-[240px]">
+                            <div className="flex items-start gap-2.5">
+                              <div className="w-7 h-7 rounded-full bg-[#001A4D] text-white font-bold text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">
+                                {orgInitials}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-900 text-sm leading-snug truncate">
+                                  {liq.eventTitle || 'Liquidation Report'}
+                                </div>
+                                <div className="text-[11px] text-gray-500 font-medium truncate">
+                                  {liq.organizationName || 'Student Org'}
+                                </div>
+                                {isReturned && liq.returnRemarks && (
+                                  <div className="text-[11px] text-red-600 font-medium truncate mt-0.5">
+                                    {liq.returnRemarks}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Event Title */}
+                          <td className="py-3.5 px-4 max-w-[180px]">
+                            <div className="font-medium text-gray-800 text-xs truncate">
+                              {liq.eventTitle}
+                            </div>
+                          </td>
+
+                          {/* Expenses + Progress Bar */}
+                          <td className="py-3.5 px-4 whitespace-nowrap min-w-[130px]">
+                            <div className="font-bold text-gray-900 text-sm">
+                              {formatCurrency(spent)}
+                            </div>
+                            <div className="w-24 bg-gray-200 rounded-full h-1.5 mt-1 overflow-hidden">
+                              <div
+                                className={`h-1.5 rounded-full transition-all ${isOverBudget ? 'bg-red-500' : 'bg-[#001A4D]'
+                                  }`}
+                                style={{ width: `${utilPct}%` }}
+                              />
+                            </div>
+                            <div className="text-[10px] text-gray-400 font-medium mt-0.5">
+                              {utilPct}% utilized
+                            </div>
+                          </td>
+
+                          {/* Allocated */}
+                          <td className="py-3.5 px-4 whitespace-nowrap font-medium text-gray-700 text-xs">
+                            {formatCurrency(allocated)}
+                          </td>
+
+                          {/* Variance */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <div className={`inline-flex items-center gap-1 font-bold text-xs ${isDeficit ? 'text-red-600' : 'text-emerald-700'
+                              }`}>
+                              {isDeficit ? (
+                                <TrendingDown className="w-3.5 h-3.5" />
+                              ) : (
+                                <TrendingUp className="w-3.5 h-3.5" />
+                              )}
+                              <span>{formatVariance(variance)}</span>
+                            </div>
+                          </td>
+
+                          {/* Receipts */}
+                          <td className="py-3.5 px-4 whitespace-nowrap text-gray-600 font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <Receipt className="w-3.5 h-3.5 text-gray-400" />
+                              <span>{liq.lineItems?.length || 0}</span>
+                            </div>
+                          </td>
+
+                          {/* Submitted Date */}
+                          <td className="py-3.5 px-4 whitespace-nowrap text-gray-500 text-xs">
+                            <div>{formatSubmittedDate(liq.createdAt)}</div>
+                            {(liq.status === 'draft' || isReturned) && (() => {
+                              const flDead = liquidationSubmissionDeadline(eventsById.get(liq.eventId), liq);
+                              if (!flDead) return null;
+                              const rem = calendarDaysRemaining(flDead);
+                              const ov = rem !== null && rem < 0;
+                              return (
+                                <div className={`text-[10px] font-bold mt-0.5 ${ov ? 'text-rose-600' : 'text-amber-700'}`}>
+                                  Due {formatAppDate(flDead)}{rem !== null ? (ov ? ` (${Math.abs(rem)}d overdue)` : ` (${rem}d left)`) : ''}
+                                </div>
+                              );
+                            })()}
+                          </td>
+
+                          {/* Status */}
+                          <td className="py-3.5 px-4 whitespace-nowrap">
+                            <div className="flex flex-col gap-1 items-start">
+                              {renderStatusBadge(liq.status)}
+                              {(liq as any).archivedRefNumber && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-mono text-[#0E4EBD] bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200" title="Archived into EDMS">
+                                  <FileText className="w-2.5 h-2.5" />
+                                  {(liq as any).archivedRefNumber}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Inline Actions */}
+                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {(() => {
+                                const rowPerms = resolveApprovalPermissions(liq, currentUser);
+                                return (
+                                  <>
+                                    {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
+                                      <button
+                                        onClick={() => handleOpenEditDraft(liq)}
+                                        className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#001A4D] border border-blue-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                        title={liq.status === 'returned' ? 'Revise & Resubmit Liquidation' : 'Edit Draft Liquidation'}
+                                      >
+                                        <Edit3 className="w-3 h-3" />
+                                        <span>{liq.status === 'returned' ? 'Revise' : 'Edit'}</span>
+                                      </button>
+                                    )}
+
+                                    {rowPerms.canWithdraw && (
+                                      <button
+                                        onClick={() => {
+                                          setSelectedReport(liq);
+                                          setShowWithdrawModal(true);
+                                        }}
+                                        className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                        title="Withdraw your liquidation submission"
+                                      >
+                                        <RotateCcw className="w-3 h-3 text-amber-600" />
+                                        <span>Withdraw</span>
+                                      </button>
+                                    )}
+
+                                    {!rowPerms.isOwner && isPending && (
+                                      <>
+                                        <button
+                                          onClick={() => {
+                                            setSelectedReport(liq);
+                                            setReviewRemarks('');
+                                            setActionError(null);
+                                          }}
+                                          className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                          title="Approve this liquidation"
+                                        >
+                                          <Check className="w-3 h-3" />
+                                          <span>Approve</span>
+                                        </button>
+
+                                        <button
+                                          onClick={() => {
+                                            setSelectedReport(liq);
+                                            setReviewRemarks(liq.returnRemarks || '');
+                                            setActionError(null);
+                                          }}
+                                          className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                          title="Return for revision"
+                                        >
+                                          <RotateCcw className="w-3 h-3" />
+                                          <span>Return</span>
+                                        </button>
+                                      </>
+                                    )}
+
+                                    {rowPerms.isOwner && (liq.status === 'draft' || liq.status === 'returned') && (
+                                      <button
+                                        onClick={() => setDeletingReport(liq)}
+                                        className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                        title="Delete draft report and purge ledger entries"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                        <span>Delete</span>
+                                      </button>
+                                    )}
+                                  </>
+                                );
+                              })()}
+
+                              <button
+                                onClick={() => setExportReport(liq)}
+                                className="px-2.5 py-1 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title="Export official STI liquidation report"
+                              >
+                                <FileSpreadsheet className="w-3 h-3 text-emerald-600" />
+                                <span>Export</span>
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  setSelectedReport(liq);
+                                  setReviewRemarks(liq.returnRemarks || '');
+                                  setActionError(null);
+                                }}
+                                className="px-2.5 py-1 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                title="View Full Report"
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span>View</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <TablePagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              totalItems={filteredLiquidations.length}
+              itemsPerPage={ITEMS_PER_PAGE}
+              onPageChange={setCurrentPage}
+              itemName="reports"
+            />
           </>
         )}
       </div>
@@ -1978,13 +1974,12 @@ export function FinancialLiquidations() {
                       Student Contribution Two-Axis Collection Tracker
                     </h4>
                     <span
-                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
-                        (selectedReport as any).collectionSettlementStatus === 'fully_recovered'
+                      className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${(selectedReport as any).collectionSettlementStatus === 'fully_recovered'
                           ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                           : (selectedReport as any).collectionSettlementStatus === 'deficit_absorbed'
                             ? 'bg-slate-100 text-slate-700 border-slate-300'
                             : 'bg-amber-50 text-amber-800 border-amber-200'
-                      }`}
+                        }`}
                     >
                       {(selectedReport as any).collectionSettlementStatus === 'fully_recovered'
                         ? 'Fully Covered by Collections'
@@ -2087,156 +2082,155 @@ export function FinancialLiquidations() {
                 (Number(selectedReport.surplusOrDeficit || 0) !== 0 ||
                   Number(selectedReport.amountToReturn || 0) > 0 ||
                   (selectedReport.cashierSettlementProofs && selectedReport.cashierSettlementProofs.length > 0)) && (() => {
-                  const isVerified = selectedReport.cashierSettlementStatus === 'verified';
-                  const isDeficitReport = selectedReportDeficit > 0.009;
-                  const isSasStudentContribSettlement =
-                    isSasSelectedLiquidation &&
-                    sourceAllocations.some(
-                      (a) =>
-                        a.fundType === 'student_contributions' ||
-                        a.fundType === 'student_contribution_retained'
-                    );
-                  const requiresProofForSettlement =
-                    isDeficitReport ||
-                    surplusReturnValidation.requiresCashierReceipt ||
-                    isSasStudentContribSettlement ||
-                    (sourceAllocations.length === 1 && sourceAllocations[0]?.fundType === 'misc_fee');
-                  const settlementInvalid = isDeficitReport
-                    ? !deficitCoverageValidation.isValid || cashierProofDrafts.length === 0
-                    : !surplusReturnValidation.isValid || (requiresProofForSettlement && cashierProofDrafts.length === 0);
+                    const isVerified = selectedReport.cashierSettlementStatus === 'verified';
+                    const isDeficitReport = selectedReportDeficit > 0.009;
+                    const isSasStudentContribSettlement =
+                      isSasSelectedLiquidation &&
+                      sourceAllocations.some(
+                        (a) =>
+                          a.fundType === 'student_contributions' ||
+                          a.fundType === 'student_contribution_retained'
+                      );
+                    const requiresProofForSettlement =
+                      isDeficitReport ||
+                      surplusReturnValidation.requiresCashierReceipt ||
+                      isSasStudentContribSettlement ||
+                      (sourceAllocations.length === 1 && sourceAllocations[0]?.fundType === 'misc_fee');
+                    const settlementInvalid = isDeficitReport
+                      ? !deficitCoverageValidation.isValid || cashierProofDrafts.length === 0
+                      : !surplusReturnValidation.isValid || (requiresProofForSettlement && cashierProofDrafts.length === 0);
 
-                  return (
-                    <div className="space-y-3 pt-2 border-t border-gray-200">
-                      <div className="flex items-center justify-between gap-2">
-                        <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
-                          {isDeficitReport
-                            ? 'Post-Approval Overspend Coverage & Proof'
-                            : requiresProofForSettlement
-                              ? 'Post-Approval Cashier Return & Bucket Routing'
-                              : 'Post-Approval Non-Misc Surplus Bucket Return'}
-                        </h4>
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
-                            isVerified
-                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    return (
+                      <div className="space-y-3 pt-2 border-t border-gray-200">
+                        <div className="flex items-center justify-between gap-2">
+                          <h4 className="font-bold text-[#001A4D] text-xs uppercase tracking-wider">
+                            {isDeficitReport
+                              ? 'Post-Approval Overspend Coverage & Proof'
+                              : requiresProofForSettlement
+                                ? 'Post-Approval Cashier Return & Bucket Routing'
+                                : 'Post-Approval Non-Misc Surplus Bucket Return'}
+                          </h4>
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${isVerified
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : selectedReport.cashierSettlementStatus === 'proof_uploaded'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : 'bg-amber-50 text-amber-800 border-amber-200'
+                              }`}
+                          >
+                            {isVerified
+                              ? 'Verified & Posted to Buckets'
                               : selectedReport.cashierSettlementStatus === 'proof_uploaded'
-                                ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                : 'bg-amber-50 text-amber-800 border-amber-200'
-                          }`}
-                        >
-                          {isVerified
-                            ? 'Verified & Posted to Buckets'
-                            : selectedReport.cashierSettlementStatus === 'proof_uploaded'
-                              ? 'Proof Uploaded • Awaiting SAS Verification'
-                              : isDeficitReport
-                                ? 'Pending Coverage & Proof'
-                                : requiresProofForSettlement
-                                  ? 'Pending Cashier Return Receipt'
-                                  : 'Awaiting Bucket Return Confirmation'}
-                        </span>
-                      </div>
-
-                      {selectedReportSurplus > 0.009 ? (
-                        renderSurplusRoutingContent(isVerified, 'post_approval')
-                      ) : isDeficitReport ? (
-                        <div className="space-y-3">
-                          <DeficitCoverageAllocationPanel
-                            totalDeficit={selectedReportDeficit}
-                            rows={deficitAllocationRows}
-                            onChange={setDeficitAllocationRows}
-                            supplementalOptions={deficitSupplementalOptions}
-                            isStudentCollection={isSelectedStudentCollection}
-                            disabled={savingCashierProof}
-                            readOnly={isVerified}
-                          />
-                          <CashierProofUploader
-                            proofs={cashierProofDrafts}
-                            onChange={setCashierProofDrafts}
-                            cashierReferenceNo={cashierRefDraft}
-                            onReferenceNoChange={setCashierRefDraft}
-                            folderKey={selectedReport.id}
-                            disabled={savingCashierProof}
-                            readOnly={isVerified}
-                            title={
-                              isSelectedStudentCollection
-                                ? `Required Student Collections Reimbursement Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
-                                : `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
-                            }
-                            description={
-                              isSelectedStudentCollection
-                                ? 'Attach signed Reimbursement Proof before reimbursing from Student Collections.'
-                                : 'Attach signed Reimbursement Voucher / Supplemental Disbursement Proof before deducting from the bucket(s) above.'
-                            }
-                          />
+                                ? 'Proof Uploaded • Awaiting SAS Verification'
+                                : isDeficitReport
+                                  ? 'Pending Coverage & Proof'
+                                  : requiresProofForSettlement
+                                    ? 'Pending Cashier Return Receipt'
+                                    : 'Awaiting Bucket Return Confirmation'}
+                          </span>
                         </div>
-                      ) : null}
 
-                      {!isVerified && (
-                        <div className="flex flex-wrap items-center justify-end gap-2">
-                          <Button
-                            type="button"
-                            disabled={savingCashierProof || settlementInvalid}
-                            onClick={async () => {
-                              setSavingCashierProof(true);
-                              setActionError(null);
-                              try {
-                                await verifyCashierSettlementProofs(
-                                  selectedReport.id,
-                                  {
-                                    uid: adviserProfile?.uid || currentUser.uid,
-                                    name: currentUser.name,
-                                  },
-                                  {
-                                    surplusReturnAllocations: selectedReportSurplus > 0.009 ? returnAllocationRows : undefined,
-                                    deficitDeductionAllocations: isDeficitReport ? deficitAllocationRows : undefined,
+                        {selectedReportSurplus > 0.009 ? (
+                          renderSurplusRoutingContent(isVerified, 'post_approval')
+                        ) : isDeficitReport ? (
+                          <div className="space-y-3">
+                            <DeficitCoverageAllocationPanel
+                              totalDeficit={selectedReportDeficit}
+                              rows={deficitAllocationRows}
+                              onChange={setDeficitAllocationRows}
+                              supplementalOptions={deficitSupplementalOptions}
+                              isStudentCollection={isSelectedStudentCollection}
+                              disabled={savingCashierProof}
+                              readOnly={isVerified}
+                            />
+                            <CashierProofUploader
+                              proofs={cashierProofDrafts}
+                              onChange={setCashierProofDrafts}
+                              cashierReferenceNo={cashierRefDraft}
+                              onReferenceNoChange={setCashierRefDraft}
+                              folderKey={selectedReport.id}
+                              disabled={savingCashierProof}
+                              readOnly={isVerified}
+                              title={
+                                isSelectedStudentCollection
+                                  ? `Required Student Collections Reimbursement Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
+                                  : `Required Reimbursement / Supplemental Proof (Overspent: ${formatCurrency(selectedReportDeficit)})`
+                              }
+                              description={
+                                isSelectedStudentCollection
+                                  ? 'Attach signed Reimbursement Proof before reimbursing from Student Collections.'
+                                  : 'Attach signed Reimbursement Voucher / Supplemental Disbursement Proof before deducting from the bucket(s) above.'
+                              }
+                            />
+                          </div>
+                        ) : null}
+
+                        {!isVerified && (
+                          <div className="flex flex-wrap items-center justify-end gap-2">
+                            <Button
+                              type="button"
+                              disabled={savingCashierProof || settlementInvalid}
+                              onClick={async () => {
+                                setSavingCashierProof(true);
+                                setActionError(null);
+                                try {
+                                  await verifyCashierSettlementProofs(
+                                    selectedReport.id,
+                                    {
+                                      uid: adviserProfile?.uid || currentUser.uid,
+                                      name: currentUser.name,
+                                    },
+                                    {
+                                      surplusReturnAllocations: selectedReportSurplus > 0.009 ? returnAllocationRows : undefined,
+                                      deficitDeductionAllocations: isDeficitReport ? deficitAllocationRows : undefined,
+                                      cashierSettlementProofs: cashierProofDrafts,
+                                      cashierReferenceNo: cashierRefDraft,
+                                    }
+                                  );
+                                  setSelectedReport({
+                                    ...selectedReport,
                                     cashierSettlementProofs: cashierProofDrafts,
                                     cashierReferenceNo: cashierRefDraft,
-                                  }
-                                );
-                                setSelectedReport({
-                                  ...selectedReport,
-                                  cashierSettlementProofs: cashierProofDrafts,
-                                  cashierReferenceNo: cashierRefDraft,
-                                  cashierSettlementStatus: 'verified',
-                                  ...(selectedReportSurplus > 0.009
-                                    ? { surplusReturnAllocations: returnAllocationRows }
-                                    : {}),
-                                  ...(isDeficitReport
-                                    ? { deficitDeductionAllocations: deficitAllocationRows }
-                                    : {}),
-                                });
-                                toast.success(
-                                  isDeficitReport
-                                    ? isSelectedStudentCollection
-                                      ? 'Overspend reimbursement verified & posted from Student Collections!'
-                                      : 'Overspend proof verified & deducted from bucket(s)!'
-                                    : 'Surplus return verified & posted to bucket(s)!'
-                                );
-                              } catch (err: any) {
-                                const msg = err?.message || 'Failed to verify and settle liquidation.';
-                                setActionError(msg);
-                                toast.error(msg);
-                              } finally {
-                                setSavingCashierProof(false);
-                              }
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
-                          >
-                            {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
-                            <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                            {isDeficitReport
-                              ? isSelectedStudentCollection
-                                ? 'Verify Proof & Reimburse from Student Collections'
-                                : 'Verify Proof & Deduct from Bucket(s)'
-                              : requiresProofForSettlement
-                                ? 'Verify Proof & Return to Bucket(s)'
-                                : 'Confirm & Return to Bucket(s)'}
-                          </Button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
+                                    cashierSettlementStatus: 'verified',
+                                    ...(selectedReportSurplus > 0.009
+                                      ? { surplusReturnAllocations: returnAllocationRows }
+                                      : {}),
+                                    ...(isDeficitReport
+                                      ? { deficitDeductionAllocations: deficitAllocationRows }
+                                      : {}),
+                                  });
+                                  toast.success(
+                                    isDeficitReport
+                                      ? isSelectedStudentCollection
+                                        ? 'Overspend reimbursement verified & posted from Student Collections!'
+                                        : 'Overspend proof verified & deducted from bucket(s)!'
+                                      : 'Surplus return verified & posted to bucket(s)!'
+                                  );
+                                } catch (err: any) {
+                                  const msg = err?.message || 'Failed to verify and settle liquidation.';
+                                  setActionError(msg);
+                                  toast.error(msg);
+                                } finally {
+                                  setSavingCashierProof(false);
+                                }
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold cursor-pointer disabled:opacity-50"
+                            >
+                              {savingCashierProof && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}
+                              <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
+                              {isDeficitReport
+                                ? isSelectedStudentCollection
+                                  ? 'Verify Proof & Reimburse from Student Collections'
+                                  : 'Verify Proof & Deduct from Bucket(s)'
+                                : requiresProofForSettlement
+                                  ? 'Verify Proof & Return to Bucket(s)'
+                                  : 'Confirm & Return to Bucket(s)'}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
               {/* Multi-Stage Institutional Signatory Pipeline */}
               <div className="space-y-2 pt-2 border-t border-gray-200">
@@ -2323,7 +2317,7 @@ export function FinancialLiquidations() {
               <div className="flex items-center gap-3">
                 {selectedReport.status === 'approved' && (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                    <CheckCircle2 className="w-4 h-4" /> Approved by SAO Adviser
+                    <CheckCircle2 className="w-4 h-4" /> Approved
                   </span>
                 )}
                 <Button
@@ -2542,11 +2536,10 @@ export function FinancialLiquidations() {
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
             <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full overflow-hidden border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
-              <div className={`p-5 flex items-center gap-3.5 border-b text-white ${
-                isRelease
+              <div className={`p-5 flex items-center gap-3.5 border-b text-white ${isRelease
                   ? 'bg-gradient-to-r from-[#001A4D] via-[#002B7F] to-[#0E4EBD]'
                   : 'bg-gradient-to-r from-emerald-600 to-emerald-700'
-              }`}>
+                }`}>
                 <div className="p-2.5 rounded-2xl bg-white/10 text-white">
                   {isRelease ? <Send className="w-6 h-6 text-[#FFD41C]" /> : <CheckCircle2 className="w-6 h-6" />}
                 </div>
@@ -2602,11 +2595,10 @@ export function FinancialLiquidations() {
                     await handleApprove();
                   }}
                   disabled={isProcessing}
-                  className={`px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 text-white ${
-                    isRelease
+                  className={`px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer flex items-center gap-1.5 text-white ${isRelease
                       ? 'bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] hover:from-[#002B7F] hover:to-[#001A4D]'
                       : 'bg-emerald-600 hover:bg-emerald-700'
-                  }`}
+                    }`}
                 >
                   {isProcessing ? (
                     <>

@@ -8,13 +8,8 @@ import {
   Eye,
   Archive,
   ArchiveRestore,
-  Clock,
   Search,
-  CalendarCheck,
 } from "lucide-react";
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
-import { db } from '../../../services/firebase';
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { CreateClubModal, useOrgMemberCountsStream } from '../../modules/organizations';
@@ -53,32 +48,7 @@ export function Organizations() {
 
   const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
 
-  // Real-time Pending Member Applications Stream across all organizations
-  const [pendingApplicationsCount, setPendingApplicationsCount] = useState<number>(0);
-  const [loadingPendingApps, setLoadingPendingApps] = useState(true);
-
-  useEffect(() => {
-    const qPending = query(
-      collection(db, 'organization_members'),
-      where('status', '==', 'pending')
-    );
-
-    const unsubscribe = onSnapshot(
-      qPending,
-      (snapshot) => {
-        setPendingApplicationsCount(snapshot.size);
-        setLoadingPendingApps(false);
-      },
-      (err) => {
-        console.error('Error streaming pending applications count:', err);
-        setLoadingPendingApps(false);
-      }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  const loading = loadingOrgs || loadingCounts || loadingActivities || loadingPendingApps;
+  const loading = loadingOrgs || loadingCounts || loadingActivities;
 
   // Real Activity counts mapped per organization from Firestore
   const orgActivitiesStats = useMemo(() => {
@@ -120,21 +90,6 @@ export function Organizations() {
     () => organizations.filter((o) => o.status === 'archived').length,
     [organizations]
   );
-  
-  const totalMembersCount = useMemo(
-    () => organizations.reduce((acc, org) => acc + (Number(org.memberCount) || 0), 0),
-    [organizations]
-  );
-
-  const activeActivitiesCount = useMemo(() => {
-    return activities.filter(
-      (e) =>
-        e.proposalStatus === 'approved' ||
-        e.status === 'approved' ||
-        e.status === 'ongoing' ||
-        e.status === 'published'
-    ).length;
-  }, [activities]);
 
   // Filtered organizations list
   const filteredOrganizations = useMemo(() => {
@@ -250,71 +205,6 @@ export function Organizations() {
         isOpen={activeModal === 'status'}
         onClose={handleCloseModals}
       />
-
-      {/* Summary Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <Card className="border-[#E0E0E0] shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Total Organizations</span>
-              <Building2 className="w-4 h-4 text-[#001A4D]" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold font-mono text-[#001A4D]">{organizations.length}</div>
-            <p className="text-xs text-gray-500 mt-1">
-              <span className="text-green-600 font-semibold">{activeOrgsCount}</span> active / recognized
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-[#E0E0E0] shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Total Members</span>
-              <Users className="w-4 h-4 text-[#0E4EBD]" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold font-mono text-[#0E4EBD]">
-              {totalMembersCount.toLocaleString()}
-            </div>
-            <p className="text-xs text-gray-500 mt-1">Across all registered student bodies</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-[#E0E0E0] shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Active Activities</span>
-              <CalendarCheck className="w-4 h-4 text-[#0E4EBD]" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold font-mono text-[#0E4EBD]">{activeActivitiesCount}</div>
-            <p className="text-xs text-gray-500 mt-1">
-              Approved / scheduled campus activities
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-[#E0E0E0] shadow-xs">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Pending Applications</span>
-              <Clock className="w-4 h-4 text-amber-500" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold font-mono text-amber-600">
-              {pendingApplicationsCount}
-            </div>
-            <p className="text-xs text-gray-500 mt-1">
-              Student applicants awaiting club approval
-            </p>
-          </CardContent>
-        </Card>
-      </div>
 
       {/* Main Organizations Table Card */}
       <div className="bg-white border border-[#E0E0E0] rounded-2xl overflow-hidden shadow-xs">

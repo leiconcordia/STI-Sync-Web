@@ -44,17 +44,6 @@ interface Step3Props {
   errors?: Record<string, string>;
 }
 
-const COMMON_MATERIALS_PRESETS = [
-  'LCD Projector & Projection Screen',
-  'Sound System & 2 Wireless Microphones',
-  'Speaker Token & Plaque of Appreciation',
-  'Printed Certificates of Participation',
-  'Stage Backdrop / Tarpaulin (8x4 ft)',
-  'Extension Cords & HDMI Cables',
-  'Registration Logbook & Ballpens',
-  'QR Scanner Stands & Mobile Lanyards',
-];
-
 export default function Step3LogisticsMarketing({ formData, onChange, errors = {} }: Step3Props) {
   // Fetch real programs / strands, sections, and departments dynamically from Firestore database
   const audienceStructure = useTargetAudienceStructure();
@@ -615,25 +604,6 @@ export default function Step3LogisticsMarketing({ formData, onChange, errors = {
           >
             Add
           </button>
-        </div>
-
-        {/* Preset suggestions */}
-        <div>
-          <span className="text-[11px] font-semibold text-gray-400 block mb-1.5">
-            Quick Presets from Campus Inventory:
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {COMMON_MATERIALS_PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => addMaterial(preset)}
-                className="text-[11px] px-2.5 py-1 bg-gray-50 hover:bg-blue-50 text-gray-600 hover:text-[#001A4D] rounded-lg border border-gray-200 transition-all cursor-pointer"
-              >
-                + {preset}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 

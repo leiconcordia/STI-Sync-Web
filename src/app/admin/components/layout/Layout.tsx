@@ -20,6 +20,7 @@ const pageTitles: Record<string, string> = {
   "/home/misc-fees": "Miscellaneous Fees & Fund Pools",
   "/home/documents": "Document Management",
   "/home/certificates": "Certificates",
+  "/home/workflows-signatories": "Workflows & Signatories",
   "/home/audit-logs": "Audit Logs",
 };
 

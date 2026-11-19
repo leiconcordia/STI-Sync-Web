@@ -1228,21 +1228,28 @@ export async function endorseProposal(
   }
 
   const targetStep = chain[targetStepIdx];
+  const stepAction = String(targetStep.actionType || '').toLowerCase().trim();
+  const isStepEndorseOrCheck =
+    stepAction === 'endorse' || stepAction === 'check' || stepAction === 'note';
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
-  const canApprove = canSignatoryApproveDocument(signatory as any, 'proposal', targetStep);
+  const canApprove =
+    !isStepEndorseOrCheck && canSignatoryApproveDocument(signatory as any, 'proposal', targetStep);
   const decision = approvalDecision || signatory.approvalDecision;
 
   const isExecutiveApprover =
-    isPresident ||
-    isSchoolAdmin ||
-    canApprove ||
-    targetStep.actionType === 'approve' ||
-    signatory.actionType === 'approve';
+    !isStepEndorseOrCheck &&
+    (isPresident ||
+      isSchoolAdmin ||
+      canApprove ||
+      targetStep.actionType === 'approve' ||
+      signatory.actionType === 'approve');
 
   // Determine whether this action is an approval or an endorsement
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (decision === 'approve') {
+  if (isStepEndorseOrCheck) {
+    newStatus = 'endorsed';
+  } else if (decision === 'approve') {
     newStatus = 'approved';
   } else if (decision === 'forward') {
     newStatus = 'endorsed';

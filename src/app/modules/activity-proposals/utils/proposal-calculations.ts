@@ -334,14 +334,11 @@ export function validateBucketAllocations(params: {
 
   if (params.fundingSource === 'school_budget' && allocations.length === 0) {
     return {
-      isValid: totalExpenses === 0,
+      isValid: false,
       totalAllocated: 0,
       remainingToAllocate: totalExpenses,
       perBucketErrors: {},
-      summaryError:
-        totalExpenses > 0
-          ? 'Please select at least one Miscellaneous Fee Particular bucket.'
-          : undefined,
+      summaryError: 'Please select at least one Miscellaneous Fee Particular bucket.',
     };
   }
 
@@ -796,4 +793,144 @@ export function validateDeficitDeductionAllocations(params: {
     perBucketErrors,
     summaryError,
   };
+}
+
+/**
+ * Validates Step 6 (Financial Projections & Fund Source) before advancing to Step 7
+ * or submitting. Non-zero budgets and complete source inputs are strictly enforced
+ * for all funded activities (`fundingSource !== 'zero_budget'`).
+ */
+export function validateStep6FinancialProjections(data: {
+  fundingSource?: string;
+  organizationLedgerBalanceAtSubmission?: number;
+  studentContributionRate?: number;
+  studentContributionTargetCount?: number;
+  studentContributionFilter?: { manualStudentCount?: number } | null;
+  allocations?: ProposalBucketAllocation[];
+  miscFeeBucketId?: string;
+  miscFeeBucketIds?: string[];
+  miscFeeBucketAllocations?: Array<{
+    bucketId: string;
+    bucketName: string;
+    poolAmount: number;
+    availableAmount: number;
+  }>;
+  financialProjections?: Partial<FinancialProjections> | null;
+}): Record<string, string> {
+  const errs: Record<string, string> = {};
+
+  if (!data.fundingSource) {
+    errs.fundingSource = 'Please select a funding source.';
+    return errs;
+  }
+
+  if (data.fundingSource === 'zero_budget') {
+    return errs;
+  }
+
+  const balanceCheck = checkProjectedBalance(data.financialProjections, data.fundingSource);
+  const totalExpenses = balanceCheck.totalExpenses;
+  const totalRevenue = balanceCheck.totalRevenue;
+
+  const fp = data.financialProjections;
+  const expenses = Array.isArray(fp?.expenses)
+    ? fp!.expenses
+    : Array.isArray((fp as any)?.expenditures)
+      ? ((fp as any).expenditures as FinancialLineItem[])
+      : [];
+  const revenues = Array.isArray(fp?.revenues) ? fp!.revenues : [];
+
+  if (data.fundingSource === 'organization_funds') {
+    const treasuryBalance = Number(data.organizationLedgerBalanceAtSubmission) || 0;
+    if (treasuryBalance <= 0) {
+      errs.fundingSource =
+        'Organization treasury has no available funds (₱0.00). You cannot allocate budget from an empty ledger.';
+    } else if (totalExpenses > treasuryBalance) {
+      errs.fundingSource = `Total asking budget (${formatPHP(totalExpenses)}) exceeds available organization treasury (${formatPHP(treasuryBalance)}).`;
+    }
+  }
+
+  if (data.fundingSource === 'student_contributions') {
+    const rate = Number(data.studentContributionRate) || 0;
+    const targetCount =
+      Number(
+        data.studentContributionTargetCount ??
+          data.studentContributionFilter?.manualStudentCount ??
+          0
+      ) || 0;
+
+    if (rate <= 0) {
+      errs.fundingSource =
+        'Contribution Rate per Student must be greater than ₱0.00 (or select Non-Monetary if the activity has ₱0.00 budget).';
+    } else if (targetCount <= 0) {
+      errs.fundingSource =
+        'Contributing Students count must be greater than 0 for a Student Contribution activity.';
+    } else if (totalRevenue <= 0) {
+      errs.fundingSource =
+        'Projected Student Contribution revenue cannot be ₱0.00. Enter a valid rate and student count.';
+    }
+  }
+
+  let hasValidFundedBaselineItem = false;
+  for (let i = 0; i < expenses.length; i++) {
+    const exp = expenses[i];
+    const amt = Number(exp?.totalAmount || exp?.thisYearProposed || 0);
+    const hasDesc = Boolean(exp?.description?.trim());
+    if (amt > 0 && !hasDesc) {
+      errs.expenditures = `Expenditure #${i + 1} has an amount but is missing an item description.`;
+      break;
+    }
+    if (hasDesc && amt > 0) {
+      hasValidFundedBaselineItem = true;
+    }
+  }
+
+  if (!errs.expenditures && (totalExpenses <= 0 || !hasValidFundedBaselineItem)) {
+    errs.expenditures =
+      'Section B (Proposed Budget Baseline Categories) requires at least one item with a description and proposed amount greater than ₱0.00 (or select Non-Monetary).';
+  }
+
+  for (let i = 0; i < revenues.length; i++) {
+    const rev = revenues[i];
+    if (((Number(rev?.totalAmount) || 0) > 0 || (Number(rev?.thisYearProposed) || 0) > 0) && !rev?.description?.trim()) {
+      errs.revenues = `Revenue #${i + 1} has an amount but is missing an item description.`;
+      break;
+    }
+  }
+
+  if (balanceCheck.isDeficit) {
+    errs.projectedBalance = PROJECTED_REVENUE_DEFICIT_WARNING;
+  }
+
+  const candidateAllocs =
+    Array.isArray(data.allocations) && data.allocations.length > 0
+      ? data.fundingSource === 'school_budget'
+        ? data.allocations.filter((a) => a.fundType === 'misc_fee')
+        : data.allocations
+      : [];
+
+  const rawAllocs =
+    candidateAllocs.length > 0
+      ? candidateAllocs
+      : Array.isArray(data.miscFeeBucketAllocations) && data.miscFeeBucketAllocations.length > 0
+        ? data.miscFeeBucketAllocations.map((a) => ({
+            bucketId: a.bucketId,
+            bucketName: a.bucketName,
+            fundType: 'misc_fee' as const,
+            allocatedAmount: data.miscFeeBucketAllocations!.length === 1 ? totalExpenses : 0,
+            availableAmount: a.availableAmount,
+            poolAmount: a.poolAmount,
+          }))
+        : [];
+
+  const allocCheck = validateBucketAllocations({
+    fundingSource: data.fundingSource,
+    totalExpenses,
+    allocations: rawAllocs,
+  });
+  if (!allocCheck.isValid && allocCheck.summaryError) {
+    errs.bucketAllocations = allocCheck.summaryError;
+  }
+
+  return errs;
 }

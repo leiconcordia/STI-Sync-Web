@@ -22,14 +22,12 @@ import { useEventPayablesStream } from '../hooks/usePayableStream';
 import {
   toggleQRTicketUnlock,
   applyCashierContributionPayments,
-  type CashierUploadReceiptProof,
 } from '../services/payable.service';
 import type { PayableDocument } from '../types/payable.types';
 import { AdminRecordPaymentModal } from './AdminRecordPaymentModal';
 import { useStudents } from '../../students/hooks/useStudentStream';
 import { generatePayablesForEvent } from '../../events/services/event.service';
 import { formatCurrency } from '../../../utils/currency';
-import { uploadToCloudinary } from '../../../../services/cloudinary';
 import {
   exportEventContributionRosterExcel,
   parseCashierContributionFile,
@@ -172,39 +170,14 @@ export function EventPayablesQRControl({
   const [isSyncing, setIsSyncing] = useState(false);
   const autoSyncedEventRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const receiptInputRef = useRef<HTMLInputElement>(null);
   const [cashierPreview, setCashierPreview] = useState<ParsedCashierContributionResult | null>(null);
   const [cashierFileName, setCashierFileName] = useState<string>('');
   const [batchReferenceNo, setBatchReferenceNo] = useState<string>('');
-  const [batchReceiptProof, setBatchReceiptProof] = useState<CashierUploadReceiptProof | null>(null);
-  const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [isApplyingCashier, setIsApplyingCashier] = useState(false);
 
   const canUseCashierFile = canManagePayments && !isOfficer && !isClubEvent;
   const spendableCashOnHand = Math.round((totalCollected + Math.max(0, appliedRetainedAmount)) * 100) / 100;
   const uncollectedReceivables = Math.max(0, Math.round((totalAssigned - totalCollected) * 100) / 100);
-
-  const handleBatchReceiptUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setIsUploadingReceipt(true);
-    try {
-      const res = await uploadToCloudinary(file, { folder: 'cashier-contribution-receipts' });
-      const ext = file.name.split('.').pop()?.toLowerCase() || '';
-      setBatchReceiptProof({
-        url: res.secureUrl,
-        fileName: file.name,
-        fileType: ext === 'pdf' ? 'pdf' : 'image',
-      });
-      toast.success('Cashier receipt proof attached.');
-    } catch (err: any) {
-      console.error('[handleBatchReceiptUpload] Upload failed:', err);
-      toast.error(err?.message || 'Failed to upload receipt proof.');
-    } finally {
-      setIsUploadingReceipt(false);
-    }
-  };
 
   const handleExportRoster = () => {
     if (payables.length === 0) {
@@ -244,7 +217,6 @@ export function EventPayablesQRControl({
       );
       setCashierFileName(file.name);
       setBatchReferenceNo('');
-      setBatchReceiptProof(null);
       setCashierPreview(parsed);
     } catch (err: any) {
       console.error('[handleCashierFileSelected] Parse error:', err);
@@ -271,7 +243,7 @@ export function EventPayablesQRControl({
         recordedByUid,
         recordedByName,
         batchReferenceNo,
-        receiptProof: batchReceiptProof,
+        receiptProof: null,
       });
       toast.success(
         res.routedToRetainedFund
@@ -281,7 +253,6 @@ export function EventPayablesQRControl({
       setCashierPreview(null);
       setCashierFileName('');
       setBatchReferenceNo('');
-      setBatchReceiptProof(null);
     } catch (err: any) {
       console.error('[handleConfirmCashierImport] Failed:', err);
       toast.error(err?.message || 'Failed to apply Cashier payment file.');
@@ -467,11 +438,11 @@ export function EventPayablesQRControl({
               ? canUseCashierFile
                 ? `Track student contribution payables and upload Cashier Collected files for ${eventTitle}`
                 : canManagePayments
-                ? `Manage student fee collections and payment settlement for ${eventTitle}`
-                : `View student payables roster and payment records for ${eventTitle}`
+                  ? `Manage student fee collections and payment settlement for ${eventTitle}`
+                  : `View student payables roster and payment records for ${eventTitle}`
               : canManagePayments
-              ? `Manage student payments and explicitly unlock or lock event QR ticket entry for ${eventTitle}`
-              : `View student payables roster and QR ticket entry status for ${eventTitle}`}
+                ? `Manage student payments and explicitly unlock or lock event QR ticket entry for ${eventTitle}`
+                : `View student payables roster and QR ticket entry status for ${eventTitle}`}
           </p>
         </div>
 
@@ -543,7 +514,7 @@ export function EventPayablesQRControl({
           <span className="text-[10px] text-emerald-700 block mt-0.5">{paidCount} student(s) paid</span>
         </div>
         <div className="p-3 bg-blue-50/80 rounded-xl border border-blue-200">
-          <span className="text-[10px] font-bold uppercase text-blue-700 block">Spendable Cash On Hand Now</span>
+          <span className="text-[10px] font-bold uppercase text-blue-700 block">Spendable Cash</span>
           <span className="text-base font-black font-mono text-[#001A4D]">{formatCurrency(spendableCashOnHand)}</span>
           <span className="text-[10px] text-blue-700 block mt-0.5">
             {appliedRetainedAmount > 0 ? `Includes ${formatCurrency(appliedRetainedAmount)} retained` : 'Max cash custodians can spend'}
@@ -626,20 +597,19 @@ export function EventPayablesQRControl({
               { id: 'paid', label: `Paid (${paidCount})` },
               ...(isQREnabled
                 ? [
-                    { id: 'locked' as const, label: `Locked (${lockedCount})` },
-                    { id: 'unlocked' as const, label: `Unlocked (${unlockedCount})` },
-                  ]
+                  { id: 'locked' as const, label: `Locked (${lockedCount})` },
+                  { id: 'unlocked' as const, label: `Unlocked (${unlockedCount})` },
+                ]
                 : []),
             ] as const
           ).map((f) => (
             <button
               key={f.id}
               onClick={() => setStatusFilter(f.id)}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all text-xs cursor-pointer ${
-                statusFilter === f.id
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all text-xs cursor-pointer ${statusFilter === f.id
                   ? 'bg-[#001A4D] text-white shadow-xs'
                   : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-100'
-              }`}
+                }`}
             >
               {f.label}
             </button>
@@ -686,21 +656,20 @@ export function EventPayablesQRControl({
                   </td>
                   <td className="px-5 py-3.5">
                     <span
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${
-                        (!payable.assignedAmount || payable.assignedAmount <= 0)
+                      className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase ${(!payable.assignedAmount || payable.assignedAmount <= 0)
                           ? 'bg-emerald-100 text-emerald-800'
                           : isPaid
-                          ? 'bg-emerald-100 text-emerald-800'
-                          : isPartial
-                          ? 'bg-amber-100 text-amber-800'
-                          : isWaived
-                          ? 'bg-gray-100 text-gray-700'
-                          : isRefundPending
-                          ? 'bg-amber-50 text-amber-800 border border-amber-300'
-                          : isRefunded
-                          ? 'bg-purple-100 text-purple-800'
-                          : 'bg-red-100 text-red-700'
-                      }`}
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : isPartial
+                              ? 'bg-amber-100 text-amber-800'
+                              : isWaived
+                                ? 'bg-gray-100 text-gray-700'
+                                : isRefundPending
+                                  ? 'bg-amber-50 text-amber-800 border border-amber-300'
+                                  : isRefunded
+                                    ? 'bg-purple-100 text-purple-800'
+                                    : 'bg-red-100 text-red-700'
+                        }`}
                     >
                       {(!payable.assignedAmount || payable.assignedAmount <= 0) ? 'Free Entry' : payable.status}
                     </span>
@@ -719,11 +688,10 @@ export function EventPayablesQRControl({
                         <button
                           onClick={() => handleToggleQR(payable.id, isUnlocked)}
                           disabled={togglingId === payable.id}
-                          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${
-                            isUnlocked
+                          className={`px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center gap-1.5 transition-all cursor-pointer ${isUnlocked
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
                               : 'bg-amber-50 text-amber-800 border border-amber-300 hover:bg-amber-100'
-                          }`}
+                            }`}
                           title="Click to toggle QR ticket access status"
                         >
                           {togglingId === payable.id ? (
@@ -742,11 +710,10 @@ export function EventPayablesQRControl({
                         </button>
                       ) : (
                         <span
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1.5 ${
-                            isUnlocked
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1.5 ${isUnlocked
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                               : 'bg-amber-50 text-amber-800 border border-amber-200'
-                          }`}
+                            }`}
                         >
                           {isUnlocked ? (
                             <>
@@ -846,14 +813,14 @@ export function EventPayablesQRControl({
               ? 'Event is cancelled: Cash payment recording and QR ticket unlocking are disabled.'
               : 'Event is cancelled: Student fee collections are closed.'
             : canUseCashierFile
-            ? 'Payments are recorded exclusively via Cashier Collected Excel uploads.'
-            : canManagePayments
-            ? isQREnabled
-              ? 'Advisers & Officers have permission to record cash payments and manage QR ticket gate access'
-              : 'Advisers & Officers have permission to record cash payments for student contributions.'
-            : isQREnabled
-            ? 'Payment collections and QR ticket unlocking for club events are managed by student officers.'
-            : 'Payment collections for club events are managed by student officers.'}
+              ? 'Payments are recorded exclusively via Cashier Collected Excel uploads.'
+              : canManagePayments
+                ? isQREnabled
+                  ? 'Advisers & Officers have permission to record cash payments and manage QR ticket gate access'
+                  : 'Advisers & Officers have permission to record cash payments for student contributions.'
+                : isQREnabled
+                  ? 'Payment collections and QR ticket unlocking for club events are managed by student officers.'
+                  : 'Payment collections for club events are managed by student officers.'}
         </span>
       </div>
 
@@ -931,56 +898,17 @@ export function EventPayablesQRControl({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Cashier Batch / Summary Reference No. (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={batchReferenceNo}
-                    onChange={(e) => setBatchReferenceNo(e.target.value)}
-                    placeholder="e.g., CASHIER-OR-2026-1117"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D] outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Cashier OR / Batch Receipt Proof (Optional)
-                  </label>
-                  <input
-                    ref={receiptInputRef}
-                    type="file"
-                    accept="image/*,.pdf"
-                    onChange={handleBatchReceiptUpload}
-                    className="hidden"
-                  />
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => receiptInputRef.current?.click()}
-                      disabled={isUploadingReceipt}
-                      className="px-3 py-2 rounded-xl border border-slate-300 bg-slate-50 hover:bg-slate-100 text-xs font-bold text-slate-700 inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      {isUploadingReceipt ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Upload className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                      )}
-                      <span>{batchReceiptProof ? 'Replace Proof' : 'Attach Cashier Receipt'}</span>
-                    </button>
-                    {batchReceiptProof && (
-                      <a
-                        href={batchReceiptProof.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[11px] font-semibold text-emerald-700 hover:underline truncate max-w-[140px]"
-                      >
-                        {batchReceiptProof.fileName}
-                      </a>
-                    )}
-                  </div>
-                </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Cashier Batch OR / Reference # (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={batchReferenceNo}
+                  onChange={(e) => setBatchReferenceNo(e.target.value)}
+                  placeholder="e.g., CASHIER-OR-2026-1117"
+                  className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs focus:ring-2 focus:ring-[#001A4D] outline-none"
+                />
               </div>
 
               {cashierPreview.matchedToMarkPaid.length > 0 ? (

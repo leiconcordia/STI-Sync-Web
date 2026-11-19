@@ -52,6 +52,11 @@ import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import { isSasCreatedEvent } from '../../modules/events/utils/organization-display.utils';
+import {
+  ORG_FUND_SOURCE_FILTER_OPTIONS,
+  resolveEventFundSourceDisplay,
+  type FundSourceDisplayCategory,
+} from '../../modules/events/utils/fund-source-display.utils';
 
 type EventStatusTab = 'all' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -166,6 +171,7 @@ export default function EventManagement() {
   const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [filterCategory, setFilterCategory] = useState('All');
   const [filterVenue, setFilterVenue] = useState('All');
+  const [filterFundSource, setFilterFundSource] = useState<'all' | FundSourceDisplayCategory>('all');
   const [showFilters, setShowFilters] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
 
@@ -203,8 +209,8 @@ export default function EventManagement() {
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
   const activeOrgName = activeOrg
     ? (activeOrg.acronym && !activeOrg.name.includes(activeOrg.acronym)
-        ? `${activeOrg.name} (${activeOrg.acronym})`
-        : activeOrg.name)
+      ? `${activeOrg.name} (${activeOrg.acronym})`
+      : activeOrg.name)
     : 'My Organization';
   const activeOrgAcronym = activeOrg ? activeOrg.acronym || activeOrg.name.slice(0, 4).toUpperCase() : 'ORG';
   const activeOrgLogo = activeOrg?.logoUrl || (activeOrg as any)?.logo || null;
@@ -413,15 +419,19 @@ export default function EventManagement() {
         const titleMatch = !q || (event.title || '').toLowerCase().includes(q);
         const refMatch = (event.referenceId || '').toLowerCase().includes(q);
         const taglineMatch = (event.tagline || '').toLowerCase().includes(q);
-        const matchesSearch = titleMatch || refMatch || taglineMatch;
+        const creatorMatch = String((event as any).createdByName || '').toLowerCase().includes(q);
+        const matchesSearch = titleMatch || refMatch || taglineMatch || creatorMatch;
 
         const matchesCategory = filterCategory === 'All' || event.eventCategoryId === filterCategory;
         const matchesVenue = filterVenue === 'All' || event.venueId === filterVenue;
+        const matchesFundSource =
+          filterFundSource === 'all' ||
+          resolveEventFundSourceDisplay(event, false).category === filterFundSource;
 
-        return statusMatch && matchesSearch && matchesCategory && matchesVenue;
+        return statusMatch && matchesSearch && matchesCategory && matchesVenue && matchesFundSource;
       })
       .sort(compareActivityProposals);
-  }, [periodEvents, activeStatus, searchQuery, filterCategory, filterVenue]);
+  }, [periodEvents, activeStatus, searchQuery, filterCategory, filterVenue, filterFundSource]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / ITEMS_PER_PAGE));
@@ -437,7 +447,7 @@ export default function EventManagement() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterCategory, filterVenue, filterSchoolYear, filterSemester]);
+  }, [searchQuery, filterCategory, filterVenue, filterFundSource, filterSchoolYear, filterSemester]);
 
   const handleDelete = async (id: string) => {
     if (!window.confirm('Are you sure you want to discard this draft? You can safely restore it anytime from the Trash tab.')) return;
@@ -507,13 +517,17 @@ export default function EventManagement() {
       toast.info(`No ${activeStatus === 'all' ? '' : activeStatus + ' '}events to export.`);
       return;
     }
-    const headers = ['Event Title', 'Category', 'Event Date', 'Venue', 'Total Budget', 'Submitted', 'Status'];
+    const headers = ['Event Title', 'Creator', 'Fund Source', 'Category', 'Event Date', 'Venue', 'Total Budget', 'Submitted', 'Status'];
     const rows = filteredEvents.map((e) => {
       const eventDate = formatEventDateRange(e.sessions);
       const venueName = venueMap.get(e.venueId || '') || e.eventFormat || 'On-Campus';
       const totalBudget = getEventBudget(e);
+      const fundInfo = resolveEventFundSourceDisplay(e, false);
+      const creator = (e as any).createdByName ? `${activeOrgName} (${(e as any).createdByName})` : activeOrgName;
       return [
         `"${(e.title || '').replace(/"/g, '""')}"`,
+        `"${creator.replace(/"/g, '""')}"`,
+        `"${fundInfo.label}"`,
         `"${categoryMap.get(e.eventCategoryId || '') || 'General'}"`,
         `"${eventDate}"`,
         `"${venueName}"`,
@@ -668,8 +682,8 @@ export default function EventManagement() {
         <div
           onClick={() => handleTabChange('pending')}
           className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'pending'
-              ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-white border-amber-600 ring-2 ring-amber-400/30 shadow-md'
-              : 'bg-white border-gray-200 hover:border-amber-300 hover:shadow-sm'
+            ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-white border-amber-600 ring-2 ring-amber-400/30 shadow-md'
+            : 'bg-white border-gray-200 hover:border-amber-300 hover:shadow-sm'
             }`}
         >
           <div className="flex items-center justify-between mb-2">
@@ -694,8 +708,8 @@ export default function EventManagement() {
         <div
           onClick={() => handleTabChange('approved')}
           className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'approved'
-              ? 'bg-gradient-to-br from-emerald-600 to-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-400/30 shadow-md'
-              : 'bg-white border-gray-200 hover:border-emerald-300 hover:shadow-sm'
+            ? 'bg-gradient-to-br from-emerald-600 to-emerald-700 text-white border-emerald-700 ring-2 ring-emerald-400/30 shadow-md'
+            : 'bg-white border-gray-200 hover:border-emerald-300 hover:shadow-sm'
             }`}
         >
           <div className="flex items-center justify-between mb-2">
@@ -720,8 +734,8 @@ export default function EventManagement() {
         <div
           onClick={() => handleTabChange('completed')}
           className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'completed'
-              ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white border-blue-700 ring-2 ring-blue-400/30 shadow-md'
-              : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm'
+            ? 'bg-gradient-to-br from-blue-600 to-blue-700 text-white border-blue-700 ring-2 ring-blue-400/30 shadow-md'
+            : 'bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm'
             }`}
         >
           <div className="flex items-center justify-between mb-2">
@@ -746,8 +760,8 @@ export default function EventManagement() {
         <div
           onClick={() => handleTabChange('rejected')}
           className={`p-4 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group shadow-xs ${activeStatus === 'rejected'
-              ? 'bg-gradient-to-br from-rose-600 to-red-700 text-white border-rose-700 ring-2 ring-rose-400/30 shadow-md'
-              : 'bg-white border-gray-200 hover:border-rose-300 hover:shadow-sm'
+            ? 'bg-gradient-to-br from-rose-600 to-red-700 text-white border-rose-700 ring-2 ring-rose-400/30 shadow-md'
+            : 'bg-white border-gray-200 hover:border-rose-300 hover:shadow-sm'
             }`}
         >
           <div className="flex items-center justify-between mb-2">
@@ -792,8 +806,8 @@ export default function EventManagement() {
                   key={tab.key}
                   onClick={() => handleTabChange(tab.key as EventStatusTab)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
-                      ? 'bg-[#001A4D] text-white shadow-xs'
-                      : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
+                    ? 'bg-[#001A4D] text-white shadow-xs'
+                    : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
                     }`}
                 >
                   <span>{tab.label}</span>
@@ -827,9 +841,9 @@ export default function EventManagement() {
             {/* Filter Toggle */}
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterCategory !== 'All' || filterVenue !== 'All' || filterSchoolYear !== (defaultSchoolYear || 'All') || filterSemester !== 'All'
-                  ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
-                  : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors flex items-center gap-1.5 cursor-pointer ${showFilters || filterCategory !== 'All' || filterVenue !== 'All' || filterFundSource !== 'all' || filterSchoolYear !== (defaultSchoolYear || 'All') || filterSemester !== 'All'
+                ? 'border-[#001A4D] bg-[#001A4D]/5 text-[#001A4D]'
+                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
                 }`}
             >
               <Filter className="w-3.5 h-3.5" />
@@ -886,6 +900,22 @@ export default function EventManagement() {
             </div>
 
             <div>
+              <span className="text-gray-500 font-semibold mr-1.5">Fund Source:</span>
+              <select
+                value={filterFundSource}
+                onChange={(e) => setFilterFundSource(e.target.value as 'all' | FundSourceDisplayCategory)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="all">All Fund Sources</option>
+                {ORG_FUND_SOURCE_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
               <span className="text-gray-500 font-semibold mr-1.5">Category:</span>
               <select
                 value={filterCategory}
@@ -917,13 +947,14 @@ export default function EventManagement() {
               </select>
             </div>
 
-            {(filterCategory !== 'All' || filterVenue !== 'All' || filterSchoolYear !== (defaultSchoolYear || 'All') || filterSemester !== 'All') && (
+            {(filterCategory !== 'All' || filterVenue !== 'All' || filterFundSource !== 'all' || filterSchoolYear !== (defaultSchoolYear || 'All') || filterSemester !== 'All') && (
               <button
                 onClick={() => {
                   setFilterSchoolYear(defaultSchoolYear || 'All');
                   setFilterSemester('All');
                   setFilterCategory('All');
                   setFilterVenue('All');
+                  setFilterFundSource('all');
                 }}
                 className="text-xs text-red-600 hover:text-red-700 font-semibold flex items-center gap-1 cursor-pointer"
               >
@@ -968,8 +999,8 @@ export default function EventManagement() {
                   <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
                     <tr>
                       <th className="py-3 px-4">Activity & Reference</th>
-                      <th className="py-3 px-4">Host Org</th>
-                      <th className="py-3 px-4">Target Audience & Pax</th>
+                      <th className="py-3 px-4">Creator</th>
+                      <th className="py-3 px-4">Fund Source</th>
                       <th className="py-3 px-4">Schedule & Venue</th>
                       <th className="py-3 px-4">Budget</th>
                       <th className="py-3 px-4">Signatory Stage</th>
@@ -989,12 +1020,8 @@ export default function EventManagement() {
                       const isApproved = isEventApproved(event);
                       const isAP = Boolean((event as any).isActivityProposal || (event as any).referenceId?.startsWith('AP-'));
 
-                      const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
-                      const audienceLevel = (event as any).targetAcademicLevel || 'Campus-wide';
-                      const targetCourses = (event as any).targetCourses || [];
-                      const audienceSub = targetCourses.length > 0
-                        ? targetCourses.slice(0, 2).join(', ') + (targetCourses.length > 2 ? ` +${targetCourses.length - 2}` : '')
-                        : 'All Programs';
+                      const fundInfo = resolveEventFundSourceDisplay(event, false);
+                      const creatorName = String((event as any).createdByName || '').trim();
 
                       const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
                       const sigProgress = getSignatoryProgress(event);
@@ -1028,7 +1055,7 @@ export default function EventManagement() {
                             ) : null}
                           </td>
 
-                          {/* Host Org */}
+                          {/* Creator */}
                           <td className="py-3.5 px-4">
                             <div className="flex items-center gap-2">
                               {activeOrgLogo ? (
@@ -1042,19 +1069,26 @@ export default function EventManagement() {
                                   {activeOrgName.slice(0, 2).toUpperCase()}
                                 </div>
                               )}
-                              <span className="font-bold text-gray-800 text-xs truncate max-w-[120px]">
-                                {activeOrgName}
-                              </span>
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-800 text-xs truncate max-w-[140px]">
+                                  {activeOrgName}
+                                </div>
+                                {creatorName && creatorName.toLowerCase() !== activeOrgName.toLowerCase() && (
+                                  <div className="text-[11px] text-gray-500 font-medium truncate max-w-[140px]">
+                                    {creatorName}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </td>
 
-                          {/* Target Audience & Pax */}
+                          {/* Fund Source */}
                           <td className="py-3.5 px-4">
-                            <div className="font-semibold text-gray-800 text-xs truncate max-w-[160px]">
-                              {audienceLevel} • {audienceSub}
-                            </div>
-                            <div className="text-[11px] text-gray-500 font-medium">
-                              Est. {targetPax} pax
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${fundInfo.badgeClass}`}>
+                              {fundInfo.label}
+                            </span>
+                            <div className="text-[11px] text-gray-500 font-medium truncate max-w-[160px] mt-0.5">
+                              {fundInfo.detail}
                             </div>
                           </td>
 
@@ -1134,12 +1168,12 @@ export default function EventManagement() {
                               <div className="inline-flex flex-col items-center justify-center">
                                 <span
                                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs ${sigProgress.isComplete
-                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : isRejected
-                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                        : isReturned
-                                          ? 'bg-amber-50 text-amber-800 border-amber-200'
-                                          : 'bg-blue-50 text-[#001A4D] border-blue-200'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : isRejected
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : isReturned
+                                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                        : 'bg-blue-50 text-[#001A4D] border-blue-200'
                                     }`}
                                   title={`${sigProgress.signedCount} of ${sigProgress.totalCount} signatories have signed`}
                                 >

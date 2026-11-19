@@ -44,6 +44,12 @@ import {
   resolveCleanOrgAcronym,
   isSasCreatedEvent,
 } from "../../modules/events/utils/organization-display.utils";
+import {
+  ORG_FUND_SOURCE_FILTER_OPTIONS,
+  SAS_FUND_SOURCE_FILTER_OPTIONS,
+  resolveEventFundSourceDisplay,
+  type FundSourceDisplayCategory,
+} from "../../modules/events/utils/fund-source-display.utils";
 import type { EventDocument } from "../../modules/events/types/event.types";
 import { formatCurrency } from "../../utils/currency";
 import { formatAppDateTime } from "../../utils/date";
@@ -183,6 +189,7 @@ export function EventApprovals() {
   const [filterSemester, setFilterSemester] = useState<string>("all");
   const [hasInitializedPeriod, setHasInitializedPeriod] = useState(false);
   const [filterOrg, setFilterOrg] = useState<string>("all");
+  const [filterFundSource, setFilterFundSource] = useState<"all" | FundSourceDisplayCategory>("all");
   const [filterDateRange, setFilterDateRange] = useState<DateRangeOption>("all");
   const [filterCategory, setFilterCategory] = useState<string>("all");
   const [customFrom, setCustomFrom] = useState("");
@@ -316,7 +323,19 @@ export function EventApprovals() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, filterOrg, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo]);
+  }, [searchQuery, filterOrg, filterFundSource, filterDateRange, filterCategory, filterSchoolYear, filterSemester, customFrom, customTo]);
+
+  useEffect(() => {
+    if (filterOrg === "sas" && (filterFundSource === "club_funded" || filterFundSource === "student_contribution")) {
+      setFilterFundSource("all");
+    } else if (
+      filterOrg !== "all" &&
+      filterOrg !== "sas" &&
+      filterFundSource === "student_allocation"
+    ) {
+      setFilterFundSource("all");
+    }
+  }, [filterOrg, filterFundSource]);
 
   const orgMap = useMemo(() => {
     const map = new Map<string, { name: string; acronym?: string; logoUrl?: string | null }>();
@@ -487,6 +506,12 @@ export function EventApprovals() {
         // Category filter
         if (filterCategory !== "all" && event.eventCategoryId !== filterCategory) return false;
 
+        // Fund Source filter
+        if (filterFundSource !== "all") {
+          const isSasItem = isSasOrg(event.hostingOrgId) || isSasCreatedEvent(event, orgMap);
+          if (resolveEventFundSourceDisplay(event, isSasItem).category !== filterFundSource) return false;
+        }
+
         // Date range filter
         const firstDate = getFirstSessionDate(event);
         if (!isWithinDateRange(firstDate, filterDateRange, customFrom, customTo)) return false;
@@ -497,14 +522,15 @@ export function EventApprovals() {
           const titleMatch = event.title?.toLowerCase().includes(q);
           const refMatch = event.referenceId?.toLowerCase().includes(q);
           const orgMatch = getOrgName(event).toLowerCase().includes(q);
+          const creatorMatch = String((event as any).createdByName || "").toLowerCase().includes(q);
           const venueMatch = getVenueName(event.venueId).toLowerCase().includes(q);
-          if (!titleMatch && !refMatch && !orgMatch && !venueMatch) return false;
+          if (!titleMatch && !refMatch && !orgMatch && !creatorMatch && !venueMatch) return false;
         }
 
         return true;
       })
       .sort(compareActivityProposals);
-  }, [periodEvents, searchQuery, activeTab, filterOrg, filterDateRange, filterCategory, customFrom, customTo, orgMap]);
+  }, [periodEvents, searchQuery, activeTab, filterOrg, filterFundSource, filterDateRange, filterCategory, customFrom, customTo, orgMap]);
 
   const periodDrafts = useMemo(() => {
     return drafts.filter((draft) => {
@@ -537,12 +563,16 @@ export function EventApprovals() {
           return false;
         }
         if (filterCategory !== "all" && draft.eventCategoryId !== filterCategory) return false;
+        if (filterFundSource !== "all") {
+          const isSasItem = isSasOrg(draft.hostingOrgId) || isSasCreatedEvent(draft, orgMap);
+          if (resolveEventFundSourceDisplay(draft, isSasItem).category !== filterFundSource) return false;
+        }
         const q = searchQuery.toLowerCase().trim();
         if (q && !draft.title?.toLowerCase().includes(q) && !draft.referenceId?.toLowerCase().includes(q)) return false;
         return true;
       })
       .sort(compareActivityProposals);
-  }, [periodDrafts, filterOrg, filterCategory, searchQuery, orgMap]);
+  }, [periodDrafts, filterOrg, filterFundSource, filterCategory, searchQuery, orgMap]);
 
   // Counts scoped to active School Year / Semester filter (excluding archived & soft-deleted from active tallies)
   const allCount = periodEvents.filter((e) => !e.isArchived && !e.isDeleted && !resolveApStatusFlags(e).isDraft).length;
@@ -705,17 +735,23 @@ export function EventApprovals() {
       toast.info(`No ${activeTab === "all" ? "" : activeTab + " "}events to export.`);
       return;
     }
-    const headers = ["Event Title", "Organization", "Category", "Date", "Venue", "Budget", "Submitted", "Status"];
-    const rows = (activeList as EventDocument[]).map((e) => [
-      `"${(e.title || "").replace(/"/g, '""')}"`,
-      `"${getOrgAcronym(e)}"`,
-      `"${getCategoryName(e.eventCategoryId || "")}"`,
-      `"${getFirstSessionDate(e) || "TBD"}"`,
-      `"${getVenueName(e.venueId)}"`,
-      `"${e.totalRequestedBudget || e.totalApprovedBudget || 0}"`,
-      `"${formatSubmittedDate(e.createdAt)}"`,
-      `"${e.proposalStatus || (activeTab === "drafts" ? "draft" : "pending")}"`,
-    ]);
+    const headers = ["Event Title", "Creator", "Fund Source", "Category", "Date", "Venue", "Budget", "Submitted", "Status"];
+    const rows = (activeList as EventDocument[]).map((e) => {
+      const isSasItem = isSasOrg(e.hostingOrgId) || isSasCreatedEvent(e, orgMap);
+      const fundInfo = resolveEventFundSourceDisplay(e, isSasItem);
+      const creatorName = (e as any).createdByName ? `${getOrgAcronym(e)} (${(e as any).createdByName})` : getOrgAcronym(e);
+      return [
+        `"${(e.title || "").replace(/"/g, '""')}"`,
+        `"${creatorName.replace(/"/g, '""')}"`,
+        `"${fundInfo.label}"`,
+        `"${getCategoryName(e.eventCategoryId || "")}"`,
+        `"${getFirstSessionDate(e) || "TBD"}"`,
+        `"${getVenueName(e.venueId)}"`,
+        `"${e.totalRequestedBudget || e.totalApprovedBudget || 0}"`,
+        `"${formatSubmittedDate(e.createdAt)}"`,
+        `"${e.proposalStatus || (activeTab === "drafts" ? "draft" : "pending")}"`,
+      ];
+    });
 
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);
@@ -732,6 +768,7 @@ export function EventApprovals() {
     setFilterSchoolYear(defaultSchoolYear || "all");
     setFilterSemester("all");
     setFilterOrg("all");
+    setFilterFundSource("all");
     setFilterDateRange("all");
     setFilterCategory("all");
     setCustomFrom("");
@@ -743,6 +780,7 @@ export function EventApprovals() {
     filterSchoolYear !== (defaultSchoolYear || "all") ||
     filterSemester !== "all" ||
     filterOrg !== "all" ||
+    filterFundSource !== "all" ||
     filterDateRange !== "all" ||
     filterCategory !== "all" ||
     searchQuery !== "";
@@ -1167,6 +1205,38 @@ export function EventApprovals() {
             </div>
 
             <div>
+              <span className="text-gray-500 font-semibold mr-1.5">Fund Source:</span>
+              <select
+                value={filterFundSource}
+                onChange={(e) => setFilterFundSource(e.target.value as "all" | FundSourceDisplayCategory)}
+                className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-800 outline-none focus:border-[#001A4D]"
+              >
+                <option value="all">All Fund Sources</option>
+                {filterOrg === "sas" ? (
+                  SAS_FUND_SOURCE_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))
+                ) : filterOrg !== "all" ? (
+                  ORG_FUND_SOURCE_FILTER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value="misc">Miscellaneous Fee</option>
+                    <option value="student_allocation">Student Allocation (SAS)</option>
+                    <option value="club_funded">Club Funded (Orgs)</option>
+                    <option value="student_contribution">Student Contribution (Orgs)</option>
+                    <option value="non_monetary">Non-Monetary</option>
+                  </>
+                )}
+              </select>
+            </div>
+
+            <div>
               <span className="text-gray-500 font-semibold mr-1.5">Category:</span>
               <select
                 value={filterCategory}
@@ -1262,8 +1332,8 @@ export function EventApprovals() {
               <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase tracking-wider text-[11px] border-b border-gray-200 sticky top-0 z-10 backdrop-blur-xs">
                 <tr>
                   <th className="py-3 px-4">Activity & Reference</th>
-                  <th className="py-3 px-4">Host Org</th>
-                  <th className="py-3 px-4">Target Audience & Pax</th>
+                  <th className="py-3 px-4">Creator</th>
+                  <th className="py-3 px-4">Fund Source</th>
                   <th className="py-3 px-4">Schedule & Venue</th>
                   <th className="py-3 px-4">Budget</th>
                   <th className="py-3 px-4">Signatory Stage</th>
@@ -1274,8 +1344,10 @@ export function EventApprovals() {
               <tbody className="divide-y divide-gray-100 text-gray-700 font-normal">
                 {activeTab === "drafts" ? (
                   (paginatedItems as EventDocument[]).map((draft) => {
-                    const targetPax = (draft as any).expectedParticipantCount || draft.targetPax || (draft as any).targetAudienceCount || (draft as any).estimatedAttendance || 0;
-                    const targetAudienceStr = (draft as any).targetAcademicLevel || 'All Levels';
+                    const isSasDraft = isSasOrg(draft.hostingOrgId) || isSasCreatedEvent(draft, orgMap);
+                    const fundInfo = resolveEventFundSourceDisplay(draft, isSasDraft);
+                    const draftCreatorName = String((draft as any).createdByName || "").trim();
+                    const draftAcronym = getOrgAcronym(draft);
                     return (
                       <tr key={draft.id} className="hover:bg-gray-50/80 transition-colors">
                         <td className="py-3.5 px-4 max-w-[240px]">
@@ -1294,16 +1366,27 @@ export function EventApprovals() {
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-2">
                             <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-800 font-bold text-[10px] flex items-center justify-center flex-shrink-0">
-                              {getOrgAcronym(draft).slice(0, 2)}
+                              {draftAcronym.slice(0, 2)}
                             </div>
-                            <span className="font-semibold text-gray-800 text-xs">
-                              {getOrgAcronym(draft)}
-                            </span>
+                            <div className="min-w-0">
+                              <div className="font-semibold text-gray-800 text-xs truncate max-w-[140px]">
+                                {draftAcronym}
+                              </div>
+                              {draftCreatorName && draftCreatorName.toLowerCase() !== draftAcronym.toLowerCase() && (
+                                <div className="text-[11px] text-gray-400 font-medium truncate max-w-[140px]">
+                                  {draftCreatorName}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
                         <td className="py-3.5 px-4">
-                          <div className="font-medium text-gray-800 text-xs">{targetAudienceStr}</div>
-                          <div className="text-[11px] text-gray-400 font-medium">Est. {targetPax} pax</div>
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${fundInfo.badgeClass}`}>
+                            {fundInfo.label}
+                          </span>
+                          <div className="text-[11px] text-gray-400 font-medium truncate max-w-[160px] mt-0.5">
+                            {fundInfo.detail}
+                          </div>
                         </td>
                         <td className="py-3.5 px-4 text-gray-600">
                           <div className="flex items-center gap-1.5 font-medium">
@@ -1375,12 +1458,9 @@ export function EventApprovals() {
                     const effectiveIsReturned = !isApproved && isReturned;
                     const isAP = Boolean((event as any).isActivityProposal || event.referenceId?.startsWith('AP-'));
 
-                    const targetPax = (event as any).expectedParticipantCount || event.targetPax || (event as any).targetAudienceCount || (event as any).estimatedAttendance || 0;
-                    const audienceLevel = (event as any).targetAcademicLevel || 'Campus-wide';
-                    const targetCourses = (event as any).targetCourses || [];
-                    const audienceSub = targetCourses.length > 0
-                      ? targetCourses.slice(0, 2).join(', ') + (targetCourses.length > 2 ? ` +${targetCourses.length - 2}` : '')
-                      : 'All Programs';
+                    const isSasItem = isSasOrg(event.hostingOrgId) || isSasCreatedEvent(event, orgMap);
+                    const fundInfo = resolveEventFundSourceDisplay(event, isSasItem);
+                    const creatorName = String((event as any).createdByName || "").trim();
 
                     const currentStep = (event as any).approvalChain?.find((s: any) => s.status === 'current');
                     const sigProgress = getSignatoryProgress(event);
@@ -1415,7 +1495,7 @@ export function EventApprovals() {
                           ) : null}
                         </td>
 
-                        {/* Host Org */}
+                        {/* Creator */}
                         <td className="py-3.5 px-4">
                           <div className="flex items-center gap-2">
                             {orgLogo ? (
@@ -1429,19 +1509,26 @@ export function EventApprovals() {
                                 {orgAcronym.slice(0, 2)}
                               </div>
                             )}
-                            <span className="font-bold text-gray-800 text-xs">
-                              {orgAcronym}
-                            </span>
+                            <div className="min-w-0">
+                              <div className="font-bold text-gray-800 text-xs truncate max-w-[140px]">
+                                {orgAcronym}
+                              </div>
+                              {creatorName && creatorName.toLowerCase() !== orgAcronym.toLowerCase() && (
+                                <div className="text-[11px] text-gray-500 font-medium truncate max-w-[140px]">
+                                  {creatorName}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </td>
 
-                        {/* Target Audience & Pax */}
+                        {/* Fund Source */}
                         <td className="py-3.5 px-4">
-                          <div className="font-semibold text-gray-800 text-xs truncate max-w-[160px]">
-                            {audienceLevel} • {audienceSub}
-                          </div>
-                          <div className="text-[11px] text-gray-500 font-medium">
-                            Est. {targetPax} pax
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold border ${fundInfo.badgeClass}`}>
+                            {fundInfo.label}
+                          </span>
+                          <div className="text-[11px] text-gray-500 font-medium truncate max-w-[160px] mt-0.5">
+                            {fundInfo.detail}
                           </div>
                         </td>
 

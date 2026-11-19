@@ -46,6 +46,7 @@ import { isEventLiquidationExempt } from '../../events/utils/organization-displa
 import { parSubmissionDeadline } from '../../events/utils/activity-compliance.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import { sanitizeCleanDocumentSnapshot } from '../../workflow/utils/snapshot-cleaner.utils';
+import { normalizeFlatStringArray } from '../../workflow/utils/firestore-payload.utils';
 import { getActiveMiscFeeAcademicContext } from '../../finance/services/misc-fee.service';
 import { evaluatePARLiquidationGate } from '../../finance/utils/liquidation-settlement.utils';
 
@@ -206,21 +207,10 @@ export function enforceSinglePARApprover(steps: PARApprovalStep[]): PARApprovalS
 }
 
 /**
- * Strips undefined values from Firestore payloads.
+ * Sanitizes Firestore payloads while preserving top-level/map FieldValues (serverTimestamp, arrayUnion, deleteField).
  */
-function cleanPayload<T extends Record<string, any>>(obj: T): T {
-  const result: any = Array.isArray(obj) ? [] : {};
-  Object.keys(obj).forEach((key) => {
-    const val = obj[key];
-    if (val !== undefined) {
-      if (val !== null && typeof val === 'object' && !(val instanceof Timestamp) && typeof val.toDate !== 'function') {
-        result[key] = cleanPayload(val);
-      } else {
-        result[key] = val;
-      }
-    }
-  });
-  return result;
+function cleanPayload<T>(obj: T): T {
+  return sanitizeFirestorePayload(obj);
 }
 
 /**
@@ -766,7 +756,16 @@ export async function saveOrSubmitPAR(
     isSasInternal: isSasEvent,
     visibility: isSasEvent ? 'sas_only' : 'owner_and_sas',
 
-    approvalChain,
+    proposalOrganizers: normalizeFlatStringArray((formData as any).proposalOrganizers),
+    proposedMechanics: normalizeFlatStringArray((formData as any).proposedMechanics),
+    proposalMaterials: normalizeFlatStringArray((formData as any).proposalMaterials),
+    proposalMarketingPlan: normalizeFlatStringArray((formData as any).proposalMarketingPlan),
+    proposalDocumentationPlan: normalizeFlatStringArray((formData as any).proposalDocumentationPlan),
+    proposalObjectives: normalizeFlatStringArray((formData as any).proposalObjectives),
+    proposalSuccessIndicators: normalizeFlatStringArray((formData as any).proposalSuccessIndicators),
+    materialsUtilized: normalizeFlatStringArray((formData as any).materialsUtilized),
+    marketingConducted: normalizeFlatStringArray((formData as any).marketingConducted),
+    approvalChain: sanitizeFirestorePayload(approvalChain || []),
     currentStageIndex: isResubmission ? 1 : (formData.currentStageIndex ?? 1),
     currentStepIndex: isResubmission ? 0 : (formData.currentStepIndex ?? 0),
     status,
@@ -944,20 +943,27 @@ export async function endorsePARStep(
   }
 
   const targetStep = chain[targetStepIdx];
+  const stepAction = String(targetStep.actionType || '').toLowerCase().trim();
+  const isStepEndorseOrCheck =
+    stepAction === 'endorse' || stepAction === 'check' || stepAction === 'note';
   const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
   const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
-  const canApprove = canSignatoryApproveDocument(signatory as any, 'par', targetStep);
+  const canApprove =
+    !isStepEndorseOrCheck && canSignatoryApproveDocument(signatory as any, 'par', targetStep);
   const decision = approvalDecision || signatory.approvalDecision;
 
   const isExecutiveApprover =
-    isPresident ||
-    isSchoolAdmin ||
-    canApprove ||
-    targetStep.actionType === 'approve' ||
-    signatory.actionType === 'approve';
+    !isStepEndorseOrCheck &&
+    (isPresident ||
+      isSchoolAdmin ||
+      canApprove ||
+      targetStep.actionType === 'approve' ||
+      signatory.actionType === 'approve');
 
   let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (decision === 'approve') {
+  if (isStepEndorseOrCheck) {
+    newStatus = 'endorsed';
+  } else if (decision === 'approve') {
     newStatus = 'approved';
   } else if (decision === 'forward') {
     newStatus = 'endorsed';
