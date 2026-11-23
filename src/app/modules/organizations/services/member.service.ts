@@ -35,8 +35,82 @@ import {
   isOrganizationCrossDepartmental,
   resolveCanonicalDepartment,
 } from '../utils/department-eligibility.utils';
+import {
+  checkStudentOrgTypeQuota,
+  normalizeMaxMembershipsPerStudent,
+} from '../utils/org-type-quota.utils';
+import { createNotification } from '../../notifications';
 
 const COLLECTION = 'organization_members';
+
+/**
+ * Enforces the organization type's `maxMembershipsPerStudent` quota (if configured)
+ * before adding or approving a student into an organization.
+ */
+async function verifyStudentOrgTypeMembershipQuota(
+  orgData: any,
+  studentIdentifiers: { studentId?: string; authUid?: string }
+): Promise<void> {
+  const typeId = String(orgData?.typeId || '').trim();
+  if (!typeId) return;
+
+  const typeSnap = await getDoc(doc(db, 'organization_types', typeId)).catch(() => null);
+  if (!typeSnap || !typeSnap.exists()) return;
+
+  const orgType = { id: typeSnap.id, ...(typeSnap.data() as any) };
+  if (normalizeMaxMembershipsPerStudent(orgType.maxMembershipsPerStudent) === null) {
+    return;
+  }
+
+  const candidateStudentId = String(studentIdentifiers.studentId || '').trim();
+  const candidateAuthUid = String(studentIdentifiers.authUid || '').trim();
+  if (!candidateStudentId && !candidateAuthUid) return;
+
+  const membershipDocsMap = new Map<string, { organizationId?: string; status?: string }>();
+  const queryTasks: Promise<any>[] = [];
+
+  if (candidateStudentId) {
+    queryTasks.push(
+      getDocs(query(collection(db, COLLECTION), where('studentId', '==', candidateStudentId)))
+        .then((snap) => {
+          snap.docs.forEach((d) => membershipDocsMap.set(d.id, d.data() as any));
+        })
+        .catch(() => null)
+    );
+  }
+  if (candidateAuthUid) {
+    queryTasks.push(
+      getDocs(query(collection(db, COLLECTION), where('authUid', '==', candidateAuthUid)))
+        .then((snap) => {
+          snap.docs.forEach((d) => membershipDocsMap.set(d.id, d.data() as any));
+        })
+        .catch(() => null)
+    );
+  }
+
+  const [orgsSnap] = await Promise.all([
+    getDocs(collection(db, 'organizations')).catch(() => null),
+    ...queryTasks,
+  ]);
+
+  const allOrganizations = orgsSnap
+    ? orgsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))
+    : [];
+
+  const quota = checkStudentOrgTypeQuota({
+    targetOrg: orgData,
+    orgType,
+    allOrganizations,
+    studentMemberships: Array.from(membershipDocsMap.values()),
+  });
+
+  if (!quota.allowed) {
+    throw new Error(
+      quota.reason ||
+        `Student has reached the maximum allowed memberships for "${quota.orgTypeName}" organizations.`
+    );
+  }
+}
 
 interface MemberStudentHint {
   authUid?: string;
@@ -352,6 +426,12 @@ export const addMember = async (payload: AddMemberPayload, addedBy: string): Pro
         if (!resolvedDeptName && canonicalStudentDept.canonicalName) {
           resolvedDeptName = canonicalStudentDept.canonicalName;
         }
+
+        // Enforce per-organization-type maximum membership limit
+        await verifyStudentOrgTypeMembershipQuota(orgData, {
+          studentId: studentInfo.studentSchoolId || payload.studentId,
+          authUid: studentInfo.authUid || payload.authUid,
+        });
       }
     }
 
@@ -521,6 +601,12 @@ export const approveMemberApplication = async (
           );
         }
       }
+
+      // Enforce per-organization-type maximum membership limit before activating membership
+      await verifyStudentOrgTypeMembershipQuota(orgData, {
+        studentId: memberData.studentSchoolId || memberData.studentId || studentId,
+        authUid: memberData.authUid || '',
+      });
     }
   }
 
@@ -1103,6 +1189,26 @@ export const appointAsOfficer = async (
   
   try {
     await Promise.race([commitPromise, timeoutPromise]);
+
+    if (wantWebAccess) {
+      const orgSnap = await getDoc(doc(db, 'organizations', organizationId)).catch(() => null);
+      const orgName = orgSnap?.exists() ? (orgSnap.data()?.name || 'your organization') : 'your organization';
+      const cleanEmail = (email || student?.email || '').trim().toLowerCase();
+      void createNotification({
+        recipientRole: 'officer',
+        recipientId: [studentId, student?.authUid, cleanEmail].filter(Boolean).join('|'),
+        targetOrgId: organizationId,
+        targetOrgName: orgName,
+        type: 'role_assigned',
+        category: 'system',
+        title: 'Web Portal Access Granted',
+        message: `You have been appointed as ${roleName || 'Officer'} of ${orgName} with Organization Web Portal access. Welcome!`,
+        resourceId: organizationId,
+        resourceType: 'system',
+        actionRoute: '/officer/dashboard',
+        senderRoleTitle: 'Club Adviser',
+      }).catch((err) => console.warn('Failed to dispatch officer web-access notification:', err));
+    }
   } catch (error: any) {
     console.error("Appoint officer failed:", error);
     throw new Error(`Appoint officer failed: ${error.message}`);
@@ -1208,4 +1314,25 @@ export const updateOfficerWebPortalAccess = async (
     hasWebPortalAccess: grantAccess,
     updatedAt: serverTimestamp(),
   });
+
+  if (grantAccess) {
+    const orgSnap = await getDoc(doc(db, 'organizations', organizationId)).catch(() => null);
+    const orgName = orgSnap?.exists() ? (orgSnap.data()?.name || 'your organization') : 'your organization';
+    const roleTitle = officerData.roleName || 'Officer';
+    const cleanEmail = String(officerData.email || '').trim().toLowerCase();
+    void createNotification({
+      recipientRole: 'officer',
+      recipientId: [officerData.studentId, officerData.authUid, cleanEmail].filter(Boolean).join('|'),
+      targetOrgId: organizationId,
+      targetOrgName: orgName,
+      type: 'role_assigned',
+      category: 'system',
+      title: 'Web Portal Access Granted',
+      message: `You have been granted Organization Web Portal access as ${roleTitle} of ${orgName}. Welcome!`,
+      resourceId: organizationId,
+      resourceType: 'system',
+      actionRoute: '/officer/dashboard',
+      senderRoleTitle: 'Club Adviser',
+    }).catch((err) => console.warn('Failed to dispatch officer web-access notification:', err));
+  }
 };

@@ -17,6 +17,25 @@ const normalizeToken = (val: unknown): string =>
     .replace(/\s+/g, ' ');
 
 /**
+ * Extracts explicit non-sentinel department IDs configured on an organization
+ * (supports multi-department `allowedDepartmentIds[]` as well as legacy single `departmentId`).
+ */
+export function getOrganizationAllowedDepartmentIds(org: any): string[] {
+  if (!org) return [];
+  if (Array.isArray(org.allowedDepartmentIds) && org.allowedDepartmentIds.length > 0) {
+    const clean = org.allowedDepartmentIds
+      .map((v: unknown) => String(v ?? '').trim())
+      .filter((v: string) => Boolean(v) && !CROSS_DEPT_SENTINELS.has(normalizeToken(v)));
+    return Array.from(new Set(clean));
+  }
+  const singleId = String(org.departmentId ?? '').trim();
+  if (singleId && !CROSS_DEPT_SENTINELS.has(normalizeToken(singleId))) {
+    return [singleId];
+  }
+  return [];
+}
+
+/**
  * Determines whether an organization is explicitly configured as Cross-Departmental.
  * Only treats an organization as open to all departments when cross-departmental flags/sentinels
  * are active OR no department restriction fields are set at all.
@@ -26,6 +45,13 @@ export function isOrganizationCrossDepartmental(org: any): boolean {
   if (org.isCrossDepartmental === true) return true;
   const scope = normalizeToken(org.scope);
   if (CROSS_DEPT_SENTINELS.has(scope)) return true;
+
+  if (Array.isArray(org.allowedDepartmentIds)) {
+    const validIds = org.allowedDepartmentIds
+      .map(normalizeToken)
+      .filter((v: string) => Boolean(v) && !CROSS_DEPT_SENTINELS.has(v));
+    if (validIds.length > 0) return false;
+  }
 
   const rawValues = [
     org.departmentId,
@@ -138,14 +164,73 @@ export function resolveCanonicalDepartment(
   };
 }
 
+/**
+ * Resolves all allowed canonical department identities for a departmental organization
+ * (supports multi-department `allowedDepartmentIds[]` + legacy single department fields).
+ */
+export function resolveAllowedOrgDepartments(
+  org: any,
+  departments: any[] = [],
+  courses: any[] = []
+): ResolvedDepartmentIdentity[] {
+  if (!org || isOrganizationCrossDepartmental(org)) return [];
+
+  if (Array.isArray(org.allowedDepartmentIds) && org.allowedDepartmentIds.length > 0) {
+    const names = Array.isArray(org.allowedDepartmentNames) ? org.allowedDepartmentNames : [];
+    const codes = Array.isArray(org.allowedDepartmentCodes) ? org.allowedDepartmentCodes : [];
+    const seen = new Set<string>();
+    const results: ResolvedDepartmentIdentity[] = [];
+
+    org.allowedDepartmentIds.forEach((rawId: unknown, idx: number) => {
+      const idStr = String(rawId ?? '').trim();
+      const normId = normalizeToken(idStr);
+      if (!normId || CROSS_DEPT_SENTINELS.has(normId) || seen.has(normId)) return;
+      seen.add(normId);
+      results.push(
+        resolveCanonicalDepartment(
+          {
+            departmentId: idStr,
+            departmentName: names[idx] || '',
+            departmentCode: codes[idx] || '',
+          },
+          departments,
+          courses
+        )
+      );
+    });
+
+    if (results.length > 0) return results;
+  }
+
+  return [resolveCanonicalDepartment(org, departments, courses)];
+}
+
 export function resolveOrgDepartmentDisplay(org: any, departments: any[] = []): string {
   if (!org || isOrganizationCrossDepartmental(org)) {
     return 'Cross-Departmental';
   }
-  const resolved = resolveCanonicalDepartment(org, departments);
-  return resolved.canonicalCode && resolved.canonicalName
-    ? `${resolved.canonicalName} (${resolved.canonicalCode})`
-    : resolved.label;
+  const allowed = resolveAllowedOrgDepartments(org, departments);
+  if (allowed.length === 0) return 'Cross-Departmental';
+  if (allowed.length === 1) {
+    const resolved = allowed[0];
+    return resolved.canonicalCode && resolved.canonicalName
+      ? `${resolved.canonicalName} (${resolved.canonicalCode})`
+      : resolved.label;
+  }
+  return allowed
+    .map((r) => (r.canonicalCode && r.canonicalName ? `${r.canonicalName} (${r.canonicalCode})` : r.label))
+    .join(', ');
+}
+
+export function resolveOrgDepartmentShortDisplay(org: any, departments: any[] = []): string {
+  if (!org || isOrganizationCrossDepartmental(org)) {
+    return 'Cross-Departmental';
+  }
+  const allowed = resolveAllowedOrgDepartments(org, departments);
+  if (allowed.length === 0) return 'Cross-Departmental';
+  return allowed
+    .map((r) => r.canonicalCode || r.canonicalName || r.label)
+    .join(', ');
 }
 
 export interface DepartmentEligibilityResult {
@@ -156,10 +241,40 @@ export interface DepartmentEligibilityResult {
   reason?: string;
 }
 
+function matchesSingleDepartment(
+  orgDept: ResolvedDepartmentIdentity,
+  studentDept: ResolvedDepartmentIdentity,
+  studentOrPayload: any
+): boolean {
+  // Case 1: Both resolved to canonical /departments records — require exact department ID match
+  if (orgDept.canonicalDeptId && studentDept.canonicalDeptId) {
+    return normalizeToken(orgDept.canonicalDeptId) === normalizeToken(studentDept.canonicalDeptId);
+  }
+
+  // Case 2: At least one side uses an uncataloged/legacy department string — require exact normalized token match
+  for (const orgTok of orgDept.tokens) {
+    if (studentDept.tokens.has(orgTok)) {
+      return true;
+    }
+  }
+
+  // Legacy support: If an organization itself was named after a program code (e.g. "BSIT" before departments FK existed)
+  // and didn't map to any /departments entry, allow exact courseCode match ONLY in that case.
+  if (!orgDept.canonicalDeptId) {
+    const stuCourseTok = normalizeToken(studentOrPayload?.courseCode || studentOrPayload?.course);
+    if (stuCourseTok && orgDept.tokens.has(stuCourseTok)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
- * Strictly validates whether a student belongs to the organization's department.
+ * Strictly validates whether a student belongs to one of the organization's allowed departments.
  * - Cross-departmental organizations allow any active student.
- * - Departmental organizations allow a student ONLY if their canonical department strictly matches.
+ * - Departmental organizations allow a student ONLY if their canonical department strictly matches
+ *   at least one selected department on the organization.
  *   Never uses loose `.includes()` substring checks and never passes when a student's department is missing.
  */
 export function checkStudentDepartmentEligibility(
@@ -187,70 +302,181 @@ export function checkStudentDepartmentEligibility(
     };
   }
 
-  const orgDept = resolveCanonicalDepartment(org, departments, courses);
+  const allowedOrgDepts = resolveAllowedOrgDepartments(org, departments, courses);
+  const orgDeptLabel = allowedOrgDepts.map((d) => d.label).join(', ');
   const studentDept = resolveCanonicalDepartment(studentOrPayload, departments, courses);
 
   if (studentDept.tokens.size === 0 && !studentDept.canonicalDeptId) {
     return {
       eligible: false,
       isCrossDepartmental: false,
-      orgDeptLabel: orgDept.label,
+      orgDeptLabel,
       studentDeptLabel: 'No Department Assigned',
-      reason: `Cannot add member: Student has no assigned academic department on record. This organization only accepts ${orgDept.label} students.`,
+      reason: `Cannot add member: Student has no assigned academic department on record. This organization only accepts ${orgDeptLabel} students.`,
     };
   }
 
-  // Case 1: Both resolved to canonical /departments records — require exact department ID match
-  if (orgDept.canonicalDeptId && studentDept.canonicalDeptId) {
-    const sameDept =
-      normalizeToken(orgDept.canonicalDeptId) === normalizeToken(studentDept.canonicalDeptId);
-    return sameDept
-      ? {
-          eligible: true,
-          isCrossDepartmental: false,
-          orgDeptLabel: orgDept.label,
-          studentDeptLabel: studentDept.label,
-        }
-      : {
-          eligible: false,
-          isCrossDepartmental: false,
-          orgDeptLabel: orgDept.label,
-          studentDeptLabel: studentDept.label,
-          reason: `Cannot add member: Student belongs to "${studentDept.label}", but this organization is restricted exclusively to "${orgDept.label}" students.`,
-        };
-  }
+  const isMatched = allowedOrgDepts.some((orgDept) =>
+    matchesSingleDepartment(orgDept, studentDept, studentOrPayload)
+  );
 
-  // Case 2: At least one side uses an uncataloged/legacy department string — require exact normalized token match
-  for (const orgTok of orgDept.tokens) {
-    if (studentDept.tokens.has(orgTok)) {
-      return {
-        eligible: true,
-        isCrossDepartmental: false,
-        orgDeptLabel: orgDept.label,
-        studentDeptLabel: studentDept.label,
-      };
-    }
-  }
-
-  // Legacy support: If an organization itself was named after a program code (e.g. "BSIT" before departments FK existed)
-  // and didn't map to any /departments entry, allow exact courseCode match ONLY in that case.
-  if (!orgDept.canonicalDeptId) {
-    const stuCourseTok = normalizeToken(studentOrPayload?.courseCode || studentOrPayload?.course);
-    if (stuCourseTok && orgDept.tokens.has(stuCourseTok)) {
-      return {
-        eligible: true,
-        isCrossDepartmental: false,
-        orgDeptLabel: orgDept.label,
-        studentDeptLabel: studentDept.label,
-      };
-    }
+  if (isMatched) {
+    return {
+      eligible: true,
+      isCrossDepartmental: false,
+      orgDeptLabel,
+      studentDeptLabel: studentDept.label,
+    };
   }
 
   return {
     eligible: false,
     isCrossDepartmental: false,
-    orgDeptLabel: orgDept.label,
+    orgDeptLabel,
     studentDeptLabel: studentDept.label,
-    reason: `Cannot add member: Student belongs to "${studentDept.label}", which is not in "${orgDept.label}". Only same-department students may join unless the organization is cross-departmental.`,
+    reason:
+      allowedOrgDepts.length > 1
+        ? `Cannot add member: Student belongs to "${studentDept.label}", but this organization is restricted to: "${orgDeptLabel}" students.`
+        : `Cannot add member: Student belongs to "${studentDept.label}", but this organization is restricted exclusively to "${orgDeptLabel}" students.`,
+  };
+}
+
+export interface DepartmentScopeConflict {
+  departmentId: string | null;
+  departmentLabel: string;
+  count: number;
+  memberNames: string[];
+}
+
+export interface DepartmentScopeConflictResult {
+  hasConflicts: boolean;
+  totalConflictingMembers: number;
+  conflictsByDepartment: DepartmentScopeConflict[];
+  activeMemberCountsByDeptId: Record<string, number>;
+  summaryMessage?: string;
+}
+
+const ACTIVE_MEMBER_SCOPE_STATUSES = new Set(['active', 'pending_removal']);
+
+/**
+ * Checks whether narrowing an organization's Department / Audience Scope
+ * conflicts with currently active members from excluded departments.
+ */
+export function findDepartmentScopeConflicts(params: {
+  proposedOrg: any;
+  members?: any[];
+  departments?: any[];
+  courses?: any[];
+  studentsById?: Map<string, any>;
+}): DepartmentScopeConflictResult {
+  const {
+    proposedOrg,
+    members = [],
+    departments = [],
+    courses = [],
+    studentsById,
+  } = params;
+
+  const activeMembers = (members || []).filter((m) =>
+    ACTIVE_MEMBER_SCOPE_STATUSES.has(String(m?.status || '').trim().toLowerCase())
+  );
+
+  const activeMemberCountsByDeptId: Record<string, number> = {};
+  const enrichedCandidates = activeMembers.map((m) => {
+    const studentLookup =
+      studentsById?.get(String(m?.studentId || '').trim()) ||
+      studentsById?.get(String(m?.authUid || '').trim()) ||
+      null;
+
+    const candidate = {
+      studentId: m?.studentId || studentLookup?.studentId || '',
+      authUid: m?.authUid || studentLookup?.authUid || '',
+      departmentId: m?.departmentId || studentLookup?.departmentId || '',
+      departmentName: m?.department || studentLookup?.departmentName || studentLookup?.department || '',
+      department: m?.department || studentLookup?.departmentName || studentLookup?.department || '',
+      courseCode: m?.course || studentLookup?.courseCode || '',
+      courseName: studentLookup?.courseName || '',
+      courseId: studentLookup?.courseId || '',
+    };
+
+    const resolvedDept = resolveCanonicalDepartment(candidate, departments, courses);
+    if (resolvedDept.canonicalDeptId) {
+      activeMemberCountsByDeptId[resolvedDept.canonicalDeptId] =
+        (activeMemberCountsByDeptId[resolvedDept.canonicalDeptId] || 0) + 1;
+    }
+
+    return {
+      member: m,
+      candidate,
+      resolvedDept,
+      displayName: String(m?.studentName || studentLookup?.firstName || m?.studentId || 'Student').trim(),
+    };
+  });
+
+  if (!proposedOrg || isOrganizationCrossDepartmental(proposedOrg)) {
+    return {
+      hasConflicts: false,
+      totalConflictingMembers: 0,
+      conflictsByDepartment: [],
+      activeMemberCountsByDeptId,
+    };
+  }
+
+  const conflictGroups = new Map<string, DepartmentScopeConflict>();
+  let totalConflictingMembers = 0;
+
+  for (const item of enrichedCandidates) {
+    const check = checkStudentDepartmentEligibility(
+      proposedOrg,
+      item.candidate,
+      departments,
+      courses
+    );
+    if (check.eligible) continue;
+
+    totalConflictingMembers++;
+    const groupKey =
+      item.resolvedDept.canonicalDeptId ||
+      normalizeToken(item.resolvedDept.label) ||
+      'unassigned';
+    const existing = conflictGroups.get(groupKey);
+    if (existing) {
+      existing.count += 1;
+      if (item.displayName && existing.memberNames.length < 5) {
+        existing.memberNames.push(item.displayName);
+      }
+    } else {
+      conflictGroups.set(groupKey, {
+        departmentId: item.resolvedDept.canonicalDeptId,
+        departmentLabel: item.resolvedDept.label || check.studentDeptLabel || 'Unassigned Department',
+        count: 1,
+        memberNames: item.displayName ? [item.displayName] : [],
+      });
+    }
+  }
+
+  const conflictsByDepartment = Array.from(conflictGroups.values()).sort(
+    (a, b) => b.count - a.count || a.departmentLabel.localeCompare(b.departmentLabel)
+  );
+
+  if (conflictsByDepartment.length === 0) {
+    return {
+      hasConflicts: false,
+      totalConflictingMembers: 0,
+      conflictsByDepartment: [],
+      activeMemberCountsByDeptId,
+    };
+  }
+
+  const breakdown = conflictsByDepartment
+    .map((c) => `${c.departmentLabel} (${c.count} active member${c.count === 1 ? '' : 's'})`)
+    .join(', ');
+
+  return {
+    hasConflicts: true,
+    totalConflictingMembers,
+    conflictsByDepartment,
+    activeMemberCountsByDeptId,
+    summaryMessage: `Cannot restrict department scope: There are still active student members from ${breakdown}. Keep Cross-Departmental, include their department(s), or remove those members first.`,
   };
 }

@@ -1,4 +1,6 @@
-import { Award, Clock, CheckCircle, UserPlus, Calendar, Eye, ChevronRight, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+import { Award, Clock, CheckCircle, UserPlus, Calendar, ChevronRight, CheckCircle2, Settings, X } from "lucide-react";
+import { toast } from "sonner";
 import { useAllEvents } from "../../events/hooks/useEventStream";
 import { useAttendanceStream } from "../../attendance/hooks/useAttendanceStream";
 import { useCertificateTemplatesStream, useIssuedCertificatesStream } from "../hooks/useCertificateStream";
@@ -8,12 +10,21 @@ import { isEventReadyForCertificates } from "../../events/utils/event-lifecycle.
 interface Props {
   isAdmin: boolean;
   organizationId?: string;
-  onGenerate: (eventId: string) => void;
-  onOpenTemplateLibrary: () => void;
-  onOpenEditor: () => void;
+  onGenerate: (eventId: string, templateId?: string) => void;
+  onOpenTemplateLibrary?: () => void;
+  onOpenEditor?: () => void;
+  onManageTemplatesInSettings?: () => void;
 }
 
-export default function CertificateDashboard({ isAdmin, organizationId, onGenerate, onOpenTemplateLibrary, onOpenEditor }: Props) {
+export default function CertificateDashboard({
+  isAdmin,
+  organizationId,
+  onGenerate,
+  onOpenTemplateLibrary,
+  onOpenEditor,
+  onManageTemplatesInSettings,
+}: Props) {
+  const [pickEventForTemplate, setPickEventForTemplate] = useState<{ id: string; name: string } | null>(null);
   const { events, loading: eventsLoading } = useAllEvents();
   const { attendance, loading: attendanceLoading } = useAttendanceStream();
   const { templates, loading: templatesLoading } = useCertificateTemplatesStream(organizationId, isAdmin);
@@ -172,20 +183,57 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
           </div>
         </div>
 
-        {/* Saved Templates */}
+        {/* Ready-Made Templates */}
         <div className="col-span-4 bg-white rounded-2xl border border-[#E0E0E0] overflow-hidden flex flex-col shadow-sm">
           <div className={`${isAdmin ? "bg-[#001A4D]" : "bg-[#83358E]"} px-5 py-3 flex items-center justify-between`}>
-            <span className="text-white font-bold text-sm">Saved Templates</span>
-            <button onClick={onOpenEditor} className="text-white text-xs font-semibold hover:underline">+ Upload New</button>
+            <span className="text-white font-bold text-sm">
+              {isAdmin ? "Ready-Made Templates" : "Saved Templates"}
+            </span>
+            {!isAdmin && onOpenEditor ? (
+              <button onClick={onOpenEditor} className="text-white text-xs font-semibold hover:underline cursor-pointer">
+                + Upload New
+              </button>
+            ) : (
+              <span className="bg-white/20 text-white text-[11px] font-bold px-2 py-0.5 rounded-full">
+                {templates.length}
+              </span>
+            )}
           </div>
           <div className="max-h-[310px] overflow-y-auto divide-y divide-[#E0E0E0]">
             {templatesLoading ? (
               <div className="p-6 text-center text-gray-400 text-xs">Loading templates...</div>
             ) : templates.length === 0 ? (
-              <div className="p-6 text-center text-gray-400 text-xs">No templates saved yet. Click + Upload New to create one!</div>
+              <div className="p-6 text-center text-gray-400 text-xs space-y-2">
+                <p>No ready-made templates available yet.</p>
+                {isAdmin && onManageTemplatesInSettings && (
+                  <button
+                    type="button"
+                    onClick={onManageTemplatesInSettings}
+                    className="text-[#0E4EBD] font-semibold hover:underline cursor-pointer"
+                  >
+                    Create templates in Settings →
+                  </button>
+                )}
+              </div>
             ) : (
               templates.map((t) => (
-                <div key={t.id} className="flex items-center gap-3 px-4 py-3 hover:bg-[#F3E8FF]/30 transition-colors group">
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    if (readyEvents.length === 0) {
+                      toast.info("No concluded events with attendance enabled found yet. Conclude an event first to use this template.");
+                      return;
+                    }
+                    if (readyEvents.length === 1) {
+                      onGenerate(readyEvents[0].id, t.id);
+                      return;
+                    }
+                    setPickEventForTemplate({ id: t.id, name: t.name });
+                  }}
+                  className="w-full text-left flex items-center gap-3 px-4 py-3 hover:bg-[#F3E8FF]/30 transition-colors group cursor-pointer"
+                  title="Choose this ready-made template to generate certificates"
+                >
                   <div className="w-12 h-8 bg-[#F8F8F8] rounded border border-[#E0E0E0] flex items-center justify-center flex-shrink-0 overflow-hidden">
                     {t.imageUrl ? (
                       <img src={t.imageUrl} alt={t.name} className="w-full h-full object-cover" />
@@ -197,17 +245,77 @@ export default function CertificateDashboard({ isAdmin, organizationId, onGenera
                     <p className="text-[#001A4D] font-bold text-xs truncate">{t.name}</p>
                     <p className="text-[#888780] text-[11px]">{t.namePosition?.fontFamily || 'Arial'} · {t.namePosition?.textColor || '#001A4D'}</p>
                   </div>
-                </div>
+                  <span className={`text-[11px] font-bold px-2.5 py-1 rounded-lg transition-colors shrink-0 ${
+                    isAdmin
+                      ? "bg-blue-50 text-[#0E4EBD] group-hover:bg-[#001A4D] group-hover:text-white"
+                      : "bg-purple-50 text-[#83358E] group-hover:bg-[#83358E] group-hover:text-white"
+                  }`}>
+                    Use
+                  </span>
+                </button>
               ))
             )}
           </div>
           <div className="px-4 py-3 border-t border-[#E0E0E0] mt-auto">
-            <button onClick={onOpenTemplateLibrary} className={`${isAdmin ? "text-[#0E4EBD]" : "text-[#83358E]"} text-xs font-semibold hover:underline flex items-center gap-1`}>
-              View All Templates <ChevronRight className="w-3.5 h-3.5" />
-            </button>
+            {isAdmin && onManageTemplatesInSettings ? (
+              <button
+                type="button"
+                onClick={onManageTemplatesInSettings}
+                className="text-[#0E4EBD] text-xs font-semibold hover:underline flex items-center gap-1.5 cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Manage &amp; Edit Templates in Settings <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            ) : onOpenTemplateLibrary ? (
+              <button onClick={onOpenTemplateLibrary} className={`${isAdmin ? "text-[#0E4EBD]" : "text-[#83358E]"} text-xs font-semibold hover:underline flex items-center gap-1 cursor-pointer`}>
+                View All Templates <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
+
+      {/* Event Picker Modal when choosing a ready-made template */}
+      {pickEventForTemplate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" onClick={() => setPickEventForTemplate(null)} />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden z-10 border border-gray-200">
+            <div className={`${isAdmin ? "bg-[#001A4D]" : "bg-[#83358E]"} px-5 py-4 flex items-center justify-between text-white`}>
+              <div>
+                <h3 className="font-bold text-sm">Select Event for Template</h3>
+                <p className="text-[11px] text-white/80 truncate">{pickEventForTemplate.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPickEventForTemplate(null)}
+                className="text-white/70 hover:text-white p-1 rounded-lg hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 max-h-80 overflow-y-auto divide-y divide-gray-100">
+              {readyEvents.map((ev) => (
+                <button
+                  key={ev.id}
+                  type="button"
+                  onClick={() => {
+                    const tmplId = pickEventForTemplate.id;
+                    setPickEventForTemplate(null);
+                    onGenerate(ev.id, tmplId);
+                  }}
+                  className="w-full text-left py-3 px-2 hover:bg-blue-50/60 rounded-lg transition-colors flex items-center justify-between gap-3 cursor-pointer"
+                >
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#001A4D] truncate">{ev.name}</p>
+                    <p className="text-[11px] text-gray-500">{ev.date} · {ev.attended} attendees</p>
+                  </div>
+                  <span className="text-xs font-bold text-[#0E4EBD] shrink-0">Select →</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

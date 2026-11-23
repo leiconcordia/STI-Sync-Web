@@ -639,6 +639,11 @@ export async function saveOrSubmitPAR(
   }
 
   const isOfficer = !isSasEvent && !isUserSas;
+  const isOfficerNonAdviser =
+    isOfficer &&
+    user.role !== 'adviser' &&
+    !(user as any).isAdviser;
+  const submitToAdviser = Boolean(submit && isOfficerNonAdviser);
   const docId = formData.id || doc(collection(db, PAR_COLLECTION)).id;
   const parDocRef = doc(db, PAR_COLLECTION, docId);
 
@@ -658,7 +663,11 @@ export async function saveOrSubmitPAR(
     approvalChain = enforceSinglePARApprover(approvalChain);
   }
 
-  const status: PostActivityReportStatus = submit ? 'under_review' : (formData.status || 'draft');
+  const status: PostActivityReportStatus = submitToAdviser
+    ? 'for_adviser_review'
+    : submit
+    ? 'under_review'
+    : (formData.status || 'draft');
 
   let currentVersion = Number((formData as any).version || 1);
   let isResubmission = false;
@@ -741,9 +750,31 @@ export async function saveOrSubmitPAR(
     schoolYear: eventData.schoolYear || formData.schoolYear || activeMiscCtx?.schoolYear || '',
     semester: eventData.semester || formData.semester || activeMiscCtx?.semester || '',
     fundingSource: (formData as any).fundingSource || eventData.fundingSource || (isOfficer ? 'organization_funds' : 'school_budget'),
-    isPendingSasVetting: submit ? requiresSasPreApprovalGate : false,
+    isPendingSasVetting: submit && !submitToAdviser ? requiresSasPreApprovalGate : false,
     sasVettedAt: null,
     sasVettedBy: null,
+    ...(submitToAdviser
+      ? {
+          submittedByOfficer: true,
+          submittedToAdviserAt: serverTimestamp(),
+          adviserReview: { status: 'pending' },
+          isReturned: false,
+          returnedByRole: null,
+        }
+      : submit && isOfficer && !isUserSas
+      ? {
+          submittedToSasAt: serverTimestamp(),
+          adviserReview: {
+            status: 'approved',
+            reviewedByUid: user.uid,
+            reviewedByName: user.name || 'Club Adviser',
+            reviewedByEmail: user.email || '',
+            reviewedAt: new Date().toISOString(),
+            remarks: 'Submitted and endorsed by Organization Adviser.',
+            signatureUrl: (formData as any).submittedBySignatureUrl || formData.preparedBy?.signatureUrl || '',
+          },
+        }
+      : {}),
 
     organizationId: isSasEvent ? 'sas' : (eventData.hostingOrgId || formData.organizationId || ''),
     organizationName: isSasEvent ? 'Student Affairs Services (SAS)' : (eventData.hostingOrgName || formData.organizationName || ''),
@@ -827,9 +858,15 @@ export async function saveOrSubmitPAR(
     const submitRemark: PARRemark = {
       id: `rem-${Date.now()}`,
       authorName: user.name || 'Author',
-      authorRole: isUserSas ? 'admin' : 'officer',
-      action: 'submitted',
-      comment: isResubmission
+      authorRole: isUserSas ? 'admin' : submitToAdviser ? 'officer' : 'adviser',
+      action: submitToAdviser ? 'submitted_to_adviser' : 'submitted',
+      comment: submitToAdviser
+        ? isResubmission
+          ? resubmissionNote
+            ? `Revision v${currentVersion}.0 submitted to Club Adviser: ${resubmissionNote}`
+            : `Post-Activity Report revised to v${currentVersion}.0 and submitted to Club Adviser for review.`
+          : 'Post-Activity Report submitted by Officer for Club Adviser review.'
+        : isResubmission
         ? resubmissionNote
           ? `Revision v${currentVersion}.0 resubmitted: ${resubmissionNote}. Route reset to Stage 1.`
           : `Post-Activity Report revised to v${currentVersion}.0 and resubmitted for Stage 1 review.`
@@ -853,8 +890,49 @@ export async function saveOrSubmitPAR(
     console.warn('[saveOrSubmitPAR] Notice updating event doc with PAR reference:', err);
   }
 
-  // Real-time submission notification to SAS Admin if submitted
-  if (submit) {
+  // Real-time submission notification: Club Adviser if officer-submitted, SAS Admin if Adviser/SAS-submitted
+  if (submitToAdviser) {
+    try {
+      const targetOrgId = String(payload.organizationId || '').trim();
+      let orgAdviserEmail = '';
+      let orgAdviserUid = '';
+      if (targetOrgId && targetOrgId !== 'sas') {
+        try {
+          const orgSnap = await getDoc(doc(db, 'organizations', targetOrgId));
+          if (orgSnap.exists()) {
+            const oData = orgSnap.data() as any;
+            orgAdviserEmail = oData?.adviser?.email || oData?.adviserEmail || '';
+            orgAdviserUid = oData?.adviser?.uid || oData?.adviserUid || '';
+          }
+        } catch (_) {}
+      }
+      const adviserTokens = [`adviser:${targetOrgId}`, orgAdviserEmail, orgAdviserUid].filter(Boolean).join('|');
+      if (adviserTokens) {
+        const orgName = payload.organizationAcronym || payload.organizationName || 'Student Organization';
+        const eventTitle = payload.eventTitle || 'Post-Activity Report';
+        await createNotification({
+          recipientRole: 'officer',
+          recipientId: adviserTokens,
+          type: 'document_submission',
+          category: 'post_activity_report',
+          title: isResubmission
+            ? `Revised Officer PAR for Review: ${eventTitle}`
+            : `New Officer PAR for Review: ${eventTitle}`,
+          message: `${user.name || 'An officer'} submitted Post-Activity Report (${referenceNo}) for your Club Adviser decision.`,
+          resourceId: docId,
+          resourceType: 'par',
+          actionRoute: `/officer/post-activity-reports?tab=officer_reports&id=${docId}`,
+          targetOrgId,
+          targetOrgName: orgName,
+          senderId: user.uid,
+          senderName: user.name,
+          senderRoleTitle: 'Organization Officer',
+        });
+      }
+    } catch (notifErr) {
+      console.warn('[saveOrSubmitPAR] Adviser notification notice:', notifErr);
+    }
+  } else if (submit) {
     try {
       const orgName = payload.organizationAcronym || payload.organizationName || 'Student Organization';
       const eventTitle = payload.eventTitle || 'Post-Activity Report';
@@ -1412,4 +1490,329 @@ export async function restorePAR(
       console.warn('[restorePAR] Event relink notice:', e);
     }
   }
+}
+
+/**
+ * Club Adviser Action: Approve & Forward an officer-submitted Post-Activity Report to SAS
+ * (and Institutional Signatories if fundingSource is school_budget / misc fee).
+ */
+export async function approveAndForwardPARByAdviser(
+  parId: string,
+  adviser: { uid: string; name: string; email: string; signatureUrl: string },
+  remarks = ''
+): Promise<{ success: boolean }> {
+  if (!adviser.signatureUrl || !adviser.signatureUrl.trim()) {
+    throw new Error('Club Adviser electronic signature is required to approve and forward this Post-Activity Report.');
+  }
+
+  const parRef = doc(db, PAR_COLLECTION, parId);
+  const snap = await getDoc(parRef);
+  if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+  const data = snap.data() as any;
+
+  const resolvedSource = String(data.fundingSource || 'organization_funds').toLowerCase();
+  const isOrgDirectSas =
+    resolvedSource === 'organization_funds' ||
+    resolvedSource === 'student_contributions' ||
+    resolvedSource === 'zero_budget';
+  const requiresSasPreApprovalGate = !isOrgDirectSas;
+
+  let chain: any[] = Array.isArray(data.approvalChain) ? data.approvalChain : [];
+  if (chain.length === 0) {
+    chain = await generateDefaultPARSignatoryChain(data.organizationId, undefined, false);
+  }
+  chain = chain.map((step: any) => ({
+    ...step,
+    status: requiresSasPreApprovalGate ? 'waiting' : (step.stageIndex ?? 1) === 1 ? 'current' : 'waiting',
+    signedAt: null,
+    signatureUrl: null,
+    remarks: null,
+  }));
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'approved' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS.',
+    signatureUrl: adviser.signatureUrl.trim(),
+  };
+
+  const remarkEntry: PARRemark = {
+    id: `rem-adv-approve-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_approved',
+    comment: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS for institutional clearance.',
+    timestamp: nowIso,
+  };
+
+  await setDoc(
+    parRef,
+    sanitizeFirestorePayload({
+      status: 'under_review',
+      isPendingSasVetting: requiresSasPreApprovalGate,
+      isReturned: false,
+      adviserReview,
+      submittedToSasAt: serverTimestamp(),
+      submittedAt: serverTimestamp(),
+      approvalChain: chain,
+      currentStageIndex: 1,
+      currentStepIndex: 0,
+      preparedBy: {
+        name: adviser.name || data.preparedBy?.name || 'Organization Adviser',
+        roleTitle: 'Organization Adviser',
+        signatureUrl: adviser.signatureUrl.trim(),
+        signedAt: nowIso,
+      },
+      submittedBySignatureUrl: adviser.signatureUrl.trim(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        parStatus: 'under_review',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    const orgName = data.organizationAcronym || data.organizationName || 'Student Organization';
+    const eventTitle = data.eventTitle || 'Post-Activity Report';
+    await createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'post_activity_report',
+      title: `PAR Forwarded by Club Adviser: ${eventTitle}`,
+      message: `${adviser.name} (Club Adviser, ${orgName}) approved and forwarded ${data.referenceNo || parId} for SAS review.`,
+      resourceId: parId,
+      resourceType: 'par',
+      actionRoute: `/home/post-activity-reports?id=${parId}`,
+      targetOrgId: data.organizationId,
+      targetOrgName: orgName,
+      senderId: adviser.uid,
+      senderName: adviser.name,
+      senderRoleTitle: 'Club Adviser',
+    });
+
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: orgName,
+        type: 'document_approved',
+        category: 'post_activity_report',
+        title: `PAR Approved by Club Adviser: ${eventTitle}`,
+        message: `${adviser.name} approved your Post-Activity Report (${data.referenceNo}) and forwarded it to SAS.`,
+        resourceId: parId,
+        resourceType: 'par',
+        actionRoute: `/officer/post-activity-reports?id=${parId}`,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Return an officer-submitted Post-Activity Report for revision.
+ */
+export async function returnPARByAdviser(
+  parId: string,
+  adviser: { uid: string; name: string; email: string },
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
+): Promise<{ success: boolean }> {
+  const parRef = doc(db, PAR_COLLECTION, parId);
+  const snap = await getDoc(parRef);
+  if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+  const data = snap.data() as any;
+
+  const nowIso = new Date().toISOString();
+  const cleanSnap = sanitizeCleanDocumentSnapshot(data);
+  try {
+    await archiveDocumentRevision('post_activity_reports', parId, {
+      version: Number(data.version || 1),
+      versionLabel: `v${Number(data.version || 1)}.0`,
+      dataSnapshot: cleanSnap,
+      returnFlags: returnFlags || [],
+      stepRevisionRemarks: stepRevisionRemarks || {},
+      returnRemarks: remarks || 'Returned by Club Adviser for revision.',
+      returnedBy: adviser.uid,
+      returnedByName: adviser.name || 'Club Adviser',
+      returnedByRoleTitle: 'Club Adviser',
+      returnedAt: nowIso,
+      archivedAt: nowIso,
+    });
+  } catch (_) {}
+
+  const adviserReview = {
+    status: 'returned' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Returned by Club Adviser for revision.',
+  };
+
+  const remarkEntry: PARRemark = {
+    id: `rem-adv-return-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_returned',
+    comment: remarks?.trim() || 'Returned by Club Adviser for revision.',
+    timestamp: nowIso,
+  };
+
+  await setDoc(
+    parRef,
+    sanitizeFirestorePayload({
+      status: 'returned',
+      isReturned: true,
+      isPendingSasVetting: false,
+      adviserReview,
+      returnedByRole: 'adviser',
+      returnedBy: adviser.uid,
+      returnedByName: adviser.name || 'Club Adviser',
+      returnedByRoleTitle: 'Club Adviser',
+      returnedByEmail: adviser.email || '',
+      returnedAt: nowIso,
+      returnRemarks: remarks?.trim() || null,
+      stepRevisionRemarks: stepRevisionRemarks || {},
+      returnFlags: returnFlags || [],
+      returnDeadline: returnDeadline || null,
+      returnedSnapshot: cleanSnap,
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        parStatus: 'returned',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        type: 'document_returned',
+        category: 'post_activity_report',
+        title: `PAR Returned by Club Adviser: ${data.eventTitle || 'Post-Activity Report'}`,
+        message: `${adviser.name} (Club Adviser): "${remarks}"`,
+        resourceId: parId,
+        resourceType: 'par',
+        actionRoute: `/officer/post-activity-reports?tab=returned&id=${parId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Reject an officer-submitted Post-Activity Report.
+ */
+export async function rejectPARByAdviser(
+  parId: string,
+  adviser: { uid: string; name: string; email: string },
+  reason: string
+): Promise<{ success: boolean }> {
+  const parRef = doc(db, PAR_COLLECTION, parId);
+  const snap = await getDoc(parRef);
+  if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+  const data = snap.data() as any;
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'rejected' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: reason,
+  };
+
+  const remarkEntry: PARRemark = {
+    id: `rem-adv-reject-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_rejected',
+    comment: reason,
+    timestamp: nowIso,
+  };
+
+  await setDoc(
+    parRef,
+    sanitizeFirestorePayload({
+      status: 'rejected',
+      isPendingSasVetting: false,
+      isReturned: false,
+      adviserReview,
+      rejectedByRole: 'adviser',
+      rejectedByName: adviser.name || 'Club Adviser',
+      rejectionReason: reason,
+      rejectedAt: serverTimestamp(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    }),
+    { merge: true }
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        parId: null,
+        parReferenceNo: null,
+        parStatus: null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        type: 'document_rejected',
+        category: 'post_activity_report',
+        title: `PAR Rejected by Club Adviser: ${data.eventTitle || 'Post-Activity Report'}`,
+        message: `${adviser.name} (Club Adviser) rejected this PAR: "${reason}"`,
+        resourceId: parId,
+        resourceType: 'par',
+        actionRoute: `/officer/post-activity-reports?tab=rejected&id=${parId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
 }

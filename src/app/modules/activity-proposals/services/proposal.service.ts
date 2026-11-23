@@ -49,6 +49,7 @@ import {
   migrateLegacyVersionHistory,
 } from '../../workflow/services/revision-history.service';
 import { getExcludedMemberIdentifiersForOrg } from '../../organizations/services/member.service';
+import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
 
 export const ACTIVITIES_COLLECTION = 'activities';
 export const PROPOSALS_COLLECTION = ACTIVITIES_COLLECTION;
@@ -99,7 +100,7 @@ export function formatCleanOrgDisplayName(
  */
 export async function syncProposalToEventsCollection(
   proposal: Partial<ActivityProposal | ProposalFormData>,
-  mappedStatus: 'draft' | 'pending' | 'approved' | 'returned' | 'rejected' | 'completed' = 'pending',
+  mappedStatus: 'draft' | 'for_adviser_review' | 'pending' | 'approved' | 'returned' | 'rejected' | 'completed' = 'pending',
   extraUpdates: Record<string, any> = {}
 ): Promise<void> {
   if (!proposal.id) return;
@@ -434,6 +435,38 @@ export async function syncProposalToEventsCollection(
         isReturned: Boolean((proposal as any).isReturned),
         stepRevisionRemarks: (proposal as any).stepRevisionRemarks || null,
         returnFlags: (proposal as any).returnFlags || [],
+        submittedByOfficer:
+          (proposal as any).submittedByOfficer !== undefined
+            ? Boolean((proposal as any).submittedByOfficer)
+            : Boolean(existingData.submittedByOfficer),
+        submittedToAdviserAt:
+          (proposal as any).submittedToAdviserAt !== undefined
+            ? (proposal as any).submittedToAdviserAt
+            : existingData.submittedToAdviserAt || null,
+        submittedToSasAt:
+          (proposal as any).submittedToSasAt !== undefined
+            ? (proposal as any).submittedToSasAt
+            : existingData.submittedToSasAt || null,
+        adviserReview:
+          (proposal as any).adviserReview !== undefined
+            ? (proposal as any).adviserReview
+            : existingData.adviserReview || null,
+        returnedByRole:
+          (proposal as any).returnedByRole !== undefined
+            ? (proposal as any).returnedByRole
+            : existingData.returnedByRole || null,
+        rejectedByRole:
+          (proposal as any).rejectedByRole !== undefined
+            ? (proposal as any).rejectedByRole
+            : existingData.rejectedByRole || null,
+        rejectionReason:
+          (proposal as any).rejectionReason !== undefined
+            ? (proposal as any).rejectionReason
+            : existingData.rejectionReason || null,
+        rejectedByName:
+          (proposal as any).rejectedByName !== undefined
+            ? (proposal as any).rejectedByName
+            : existingData.rejectedByName || null,
         createdBy: proposal.createdByUid || 'creator',
         createdByName: proposal.createdByName || '',
         createdByEmail: proposal.createdByEmail || '',
@@ -787,6 +820,20 @@ export async function submitProposalForReview(
     isPendingSasVetting: requiresSasPreApprovalGate,
     sasVettedAt: null,
     sasVettedBy: null,
+    submittedToSasAt: serverTimestamp(),
+    ...(isOfficer && !isSasAdmin
+      ? {
+          adviserReview: {
+            status: 'approved',
+            reviewedByUid: user.uid,
+            reviewedByName: user.name || 'Organization Adviser',
+            reviewedByEmail: user.email || '',
+            reviewedAt: new Date().toISOString(),
+            remarks: 'Submitted and endorsed by Organization Adviser.',
+            signatureUrl: (user as any).signatureUrl || formData.submittedBySignatureUrl || (formData as any).signatureUrl || '',
+          },
+        }
+      : {}),
     organizationId: isSasAdmin ? 'sas' : (formData.organizationId || (user as any).organizationId || (formData as any).hostingOrgId || 'student_org'),
     hostingOrgId: isSasAdmin ? 'sas' : (formData.hostingOrgId || formData.organizationId || (user as any).organizationId || 'student_org'),
     excludedMemberIds: await (async () => {
@@ -2078,13 +2125,19 @@ export async function withdrawProposal(
   if (!data) throw new Error('Proposal not found.');
 
   const currentStatus = (data.status || data.proposalStatus || '').toLowerCase().trim();
-  if (currentStatus !== 'under_review' && currentStatus !== 'pending' && currentStatus !== 'pending_review') {
-    throw new Error('Only proposals currently under review can be withdrawn.');
+  const isFromAdviserQueue = currentStatus === 'for_adviser_review';
+  if (
+    currentStatus !== 'under_review' &&
+    currentStatus !== 'pending' &&
+    currentStatus !== 'pending_review' &&
+    !isFromAdviserQueue
+  ) {
+    throw new Error('Only proposals currently under review or awaiting adviser review can be withdrawn.');
   }
 
-  // Enforce signature lock conditions
+  // Enforce signature lock conditions (skipped when still awaiting Club Adviser before SAS)
   const rawChain: any[] = Array.isArray(data.approvalChain) ? data.approvalChain : [];
-  const anySignatorySigned = rawChain.some(
+  const anySignatorySigned = !isFromAdviserQueue && rawChain.some(
     (s: any) =>
       s &&
       (s.status === 'endorsed' ||
@@ -2098,13 +2151,13 @@ export async function withdrawProposal(
       data.fundingSource === 'student_contributions' ||
       data.fundingSource === 'zero_budget');
 
-  if (isOrgDirectSas) {
+  if (!isFromAdviserQueue && isOrgDirectSas) {
     if (anySignatorySigned || Boolean(data.sasSignedAt) || Boolean(data.isApproved) || Boolean(data.approvedBy)) {
       throw new Error(
         'Cannot withdraw: SAS has already digitally signed and approved this organization proposal.'
       );
     }
-  } else if (anySignatorySigned) {
+  } else if (!isFromAdviserQueue && anySignatorySigned) {
     throw new Error(
       'Cannot withdraw: One or more signatories have already digitally signed this proposal. Request a Return for Revision instead.'
     );
@@ -2139,6 +2192,7 @@ export async function withdrawProposal(
     isPendingSasVetting: false,
     sasVettedAt: null,
     sasVettedBy: null,
+    ...(isFromAdviserQueue ? { adviserReview: null } : {}),
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
@@ -2151,11 +2205,44 @@ export async function withdrawProposal(
   // Sync to events, proposals, activity_proposals collections
   await syncProposalToEventsCollection({ ...data, ...payload, id: proposalId }, 'draft');
 
-  // Notify signatories and SAS so reviewers know the maker withdrew the submission
+  // Notify signatories and SAS (or Club Adviser if withdrawn before reaching SAS)
   try {
     const notifiedKeys = new Set<string>();
     const titleLabel = data.title || 'Activity Proposal';
     const refLabel = data.referenceNo || data.referenceId || proposalId;
+
+    if (isFromAdviserQueue) {
+      const targetOrgId = String(data.hostingOrgId || data.organizationId || '').trim();
+      if (targetOrgId && targetOrgId !== 'sas') {
+        let orgAdviserEmail = '';
+        let orgAdviserUid = '';
+        try {
+          const orgSnap = await getDoc(doc(db, 'organizations', targetOrgId));
+          if (orgSnap.exists()) {
+            const oData = orgSnap.data() as any;
+            orgAdviserEmail = oData?.adviser?.email || oData?.adviserEmail || '';
+            orgAdviserUid = oData?.adviser?.uid || oData?.adviserUid || '';
+          }
+        } catch (_) {}
+        const adviserRecipientTokens = [`adviser:${targetOrgId}`, orgAdviserEmail, orgAdviserUid]
+          .filter(Boolean)
+          .join('|');
+        await createNotification({
+          recipientRole: 'officer',
+          recipientId: adviserRecipientTokens,
+          targetOrgId,
+          targetOrgName: data.organizationName || undefined,
+          title: `Officer Proposal Withdrawn: ${titleLabel}`,
+          message: `${actorName} withdrew "${titleLabel}" (${refLabel}) back to Draft before adviser review.`,
+          type: 'proposal',
+          category: 'activity_proposal',
+          resourceId: proposalId,
+          resourceType: 'event',
+          actionRoute: `/officer/events?tab=officer_proposals`,
+        }).catch(() => {});
+      }
+      return;
+    }
 
     for (const step of rawChain) {
       const recId = step?.signatoryUid || step?.signatoryId || step?.uid || step?.signatoryEmail || '';
@@ -2194,6 +2281,697 @@ export async function withdrawProposal(
   } catch (notifErr) {
     console.warn('[withdrawProposal] Non-critical notification notice:', notifErr);
   }
+}
+
+/**
+ * Helper: Resolve an organization's Club Adviser notification recipient tokens.
+ */
+async function resolveOrgAdviserRecipientTokens(targetOrgId: string): Promise<string> {
+  if (!targetOrgId || ['sas', 'sas_admin', 'sao', 'admin', 'student_org'].includes(targetOrgId.toLowerCase())) {
+    return '';
+  }
+  let orgAdviserEmail = '';
+  let orgAdviserUid = '';
+  try {
+    const orgSnap = await getDoc(doc(db, 'organizations', targetOrgId));
+    if (orgSnap.exists()) {
+      const oData = orgSnap.data() as any;
+      orgAdviserEmail = oData?.adviser?.email || oData?.adviserEmail || '';
+      orgAdviserUid = oData?.adviser?.uid || oData?.adviserUid || '';
+    }
+  } catch (_) {}
+  return [`adviser:${targetOrgId}`, orgAdviserEmail, orgAdviserUid].filter(Boolean).join('|');
+}
+
+/**
+ * Officer Action: Submit (or Resubmit) an Activity Proposal to the Club Adviser Checker Gate.
+ * - Status becomes 'for_adviser_review' (strictly isolated from SAS & Signatory queues).
+ * - Notifies only the Organization's Club Adviser.
+ */
+export async function submitProposalForAdviserReview(
+  formData: ProposalFormData,
+  officerUser: { uid: string; name: string; email: string; role?: string; organizationId?: string },
+  existingId?: string
+): Promise<{ success: boolean; id: string; referenceNo: string }> {
+  const balanceCheck = checkProjectedBalance(
+    (formData as any).financialProjections,
+    formData.fundingSource
+  );
+  if (balanceCheck.isDeficit) {
+    throw new Error(PROJECTED_REVENUE_DEFICIT_WARNING);
+  }
+
+  const docId = existingId || formData.id || doc(collection(db, PROPOSALS_COLLECTION)).id;
+  const docRef = doc(db, PROPOSALS_COLLECTION, docId);
+
+  const referenceNo =
+    formData.referenceNo ||
+    (await generateProposalReferenceNumber('ORG'));
+
+  const isResubmission =
+    formData.status === 'returned' ||
+    formData.status === 'returned_for_revision' ||
+    (formData as any).proposalStatus === 'returned' ||
+    (formData as any).isReturned === true ||
+    Boolean((formData as any).adviserRemarks) ||
+    Boolean((formData as any).stepRevisionRemarks && Object.keys((formData as any).stepRevisionRemarks).length > 0) ||
+    Boolean((formData as any).returnFlags && (formData as any).returnFlags.length > 0);
+
+  let currentVersion = Number((formData as any).version || 1);
+  if (isResubmission) {
+    currentVersion += 1;
+  }
+
+  const rawSubmissionOrganizers = formData.organizers || [];
+  const cleanedSubmissionOrganizers = Array.isArray(rawSubmissionOrganizers)
+    ? rawSubmissionOrganizers.map((o) => String(o || '').trim()).filter((o) => stripSasPhrases(o).length > 0)
+    : [];
+  const finalSubmissionOrganizers =
+    cleanedSubmissionOrganizers.length > 0
+      ? cleanedSubmissionOrganizers
+      : [formData.organizationName || 'Student Organization'];
+
+  const targetOrgId = String(
+    formData.hostingOrgId || formData.organizationId || officerUser.organizationId || 'student_org'
+  ).trim();
+
+  const activeMiscCtx = await getActiveMiscFeeAcademicContext();
+  const normalizedChain = Array.isArray(formData.approvalChain) && formData.approvalChain.length > 0
+    ? normalizeApprovalStages(formData.approvalChain).map((step) => {
+        const cleanStep: any = { ...step, status: 'waiting' };
+        delete cleanStep.signatureUrl;
+        delete cleanStep.signedAt;
+        delete cleanStep.remarks;
+        return cleanStep;
+      })
+    : [];
+
+  let excludedMemberIds: string[] | undefined = Array.isArray((formData as any).excludedMemberIds)
+    ? (formData as any).excludedMemberIds
+    : undefined;
+  if (targetOrgId && !['sas', 'sas_admin', 'sao', 'admin', 'student_org'].includes(targetOrgId.toLowerCase())) {
+    try {
+      const currentExcluded = await getExcludedMemberIdentifiersForOrg(targetOrgId);
+      excludedMemberIds = Array.from(new Set([...(excludedMemberIds || []), ...currentExcluded]));
+    } catch (_) {}
+  }
+
+  const nowIso = new Date().toISOString();
+  const payload: any = {
+    ...formData,
+    organizers: finalSubmissionOrganizers,
+    id: docId,
+    referenceNo,
+    schoolYear: (formData as any).schoolYear || activeMiscCtx?.schoolYear || '',
+    semester: (formData as any).semester || activeMiscCtx?.semester || '1st Semester',
+    status: 'for_adviser_review' as ProposalStatus,
+    proposalStatus: 'for_adviser_review',
+    lifecycleStatus: 'for_adviser_review',
+    isOfficerProposal: true,
+    isSasDirect: false,
+    submittedByOfficer: true,
+    submittedToAdviserAt: serverTimestamp(),
+    isPendingSasVetting: false,
+    isReturned: false,
+    adviserReview: {
+      status: 'pending',
+    },
+    organizationId: targetOrgId,
+    hostingOrgId: targetOrgId,
+    excludedMemberIds,
+    approvalChain: normalizedChain,
+    currentStepIndex: 0,
+    currentStageIndex: 1,
+    version: currentVersion,
+    versionLabel: `v${currentVersion}.0`,
+    submissionDate:
+      formData.submissionDate ||
+      new Intl.DateTimeFormat('en-US', {
+        month: 'long',
+        day: 'numeric',
+        year: 'numeric',
+      }).format(new Date()),
+    createdByUid: formData.createdByUid || officerUser.uid,
+    createdByName: formData.createdByName || officerUser.name,
+    createdByEmail: formData.createdByEmail || officerUser.email,
+    creatorRole: 'officer',
+    updatedAt: serverTimestamp(),
+  };
+
+  if (isResubmission) {
+    let existingSnapshotData: any = null;
+    try {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists()) {
+        const d = existingSnap.data();
+        existingSnapshotData = { ...d, ...(d.returnedSnapshot || {}) };
+      }
+    } catch (_) {}
+    const cleanSnap = sanitizeCleanDocumentSnapshot(existingSnapshotData || formData);
+    const versionSnapshot = sanitizeFirestorePayload({
+      version: currentVersion - 1,
+      versionLabel: `v${currentVersion - 1}.0`,
+      archivedAt: nowIso,
+      returnFlags: formData.returnFlags || [],
+      stepRevisionRemarks: formData.stepRevisionRemarks || {},
+      returnRemarks: (formData as any).adviserRemarks || (formData as any).returnRemarks || '',
+      returnedByName: (formData as any).returnedByName || '',
+      returnedByRoleTitle: (formData as any).returnedByRoleTitle || '',
+      returnedAt: (formData as any).returnedAt || '',
+      resubmittedBy: officerUser.name || 'Student Officer',
+      resubmittedByUid: officerUser.uid || 'officer',
+      dataSnapshot: cleanSnap,
+    });
+    try {
+      await archiveDocumentRevision('activities', docId, versionSnapshot);
+      await archiveDocumentRevision('events', docId, versionSnapshot);
+    } catch (_) {}
+
+    const resubmissionNote = (formData as any).resubmissionNote || '';
+    payload.previousSnapshot = deleteField();
+    payload.dataSnapshot = deleteField();
+    payload.versionHistory = deleteField();
+    payload.stepRevisionRemarks = null;
+    payload.returnFlags = [];
+    payload.adviserRemarks = null;
+    payload.returnedByRole = null;
+    payload.versionSummary = {
+      version: currentVersion,
+      latestResubmissionAt: nowIso,
+      resubmissionNote,
+    };
+    if (resubmissionNote) payload.resubmissionNote = resubmissionNote;
+
+    payload.proposalHistory = arrayUnion(
+      sanitizeFirestorePayload({
+        id: `hist_officer_resubmit_${Date.now()}`,
+        action: 'submitted_to_adviser',
+        version: currentVersion,
+        versionLabel: `v${currentVersion}.0`,
+        performedBy: officerUser.uid,
+        performedByName: officerUser.name || 'Student Officer',
+        performedAt: nowIso,
+        remarks: resubmissionNote
+          ? `Revised to v${currentVersion}.0 and submitted to Club Adviser: ${resubmissionNote}`
+          : `Revised to v${currentVersion}.0 and submitted to Club Adviser for review.`,
+      })
+    );
+  } else {
+    payload.proposalHistory = arrayUnion(
+      sanitizeFirestorePayload({
+        id: `hist_officer_submit_${Date.now()}`,
+        action: 'submitted_to_adviser',
+        version: currentVersion,
+        versionLabel: `v${currentVersion}.0`,
+        performedBy: officerUser.uid,
+        performedByName: officerUser.name || 'Student Officer',
+        performedAt: nowIso,
+        remarks: 'Submitted by Student Officer for Club Adviser review and endorsement.',
+      })
+    );
+  }
+
+  if (!existingId && !formData.id) {
+    payload.createdAt = serverTimestamp();
+  }
+
+  await setDoc(docRef, sanitizeFirestorePayload(payload), { merge: true });
+  await syncProposalToEventsCollection(payload, 'for_adviser_review', {
+    status: 'for_adviser_review',
+    proposalStatus: 'for_adviser_review',
+    lifecycleStatus: 'for_adviser_review',
+    isReturned: false,
+    stepRevisionRemarks: null,
+    returnFlags: [],
+    adviserRemarks: null,
+  });
+
+  // Notify ONLY the organization's Club Adviser
+  try {
+    const adviserRecipientTokens = await resolveOrgAdviserRecipientTokens(targetOrgId);
+    if (adviserRecipientTokens) {
+      const cleanOrgName = formatCleanOrgDisplayName(
+        finalSubmissionOrganizers,
+        targetOrgId,
+        formData.organizationName,
+        true
+      );
+      await createNotification({
+        recipientRole: 'officer',
+        recipientId: adviserRecipientTokens,
+        targetOrgId,
+        targetOrgName: cleanOrgName,
+        type: 'document_submission',
+        category: 'activity_proposal',
+        title: `${payload.isUrgent ? '[URGENT] ' : ''}${
+          isResubmission
+            ? `Revised Officer Proposal for Review: ${payload.title || 'Activity Proposal'}`
+            : `New Officer Proposal for Review: ${payload.title || 'Activity Proposal'}`
+        }`,
+        message: `${officerUser.name || 'A student officer'} submitted ${referenceNo} for your Club Adviser decision before forwarding to SAS.`,
+        resourceId: docId,
+        resourceType: 'event',
+        actionRoute: `/officer/events?tab=officer_proposals&id=${docId}`,
+        isUrgent: Boolean(payload.isUrgent),
+        senderId: officerUser.uid,
+        senderName: officerUser.name,
+        senderRoleTitle: 'Organization Officer',
+      });
+    }
+  } catch (notifErr) {
+    console.warn('[submitProposalForAdviserReview] Adviser notification error:', notifErr);
+  }
+
+  return { success: true, id: docId, referenceNo };
+}
+
+/**
+ * Club Adviser Action: Approve & Forward an officer-submitted Activity Proposal to SAS
+ * (and Institutional Signatory pipeline if fundingSource is school_budget / miscellaneous).
+ * Requires the Club Adviser's registered e-signature.
+ */
+export async function approveAndForwardProposalByAdviser(
+  proposalId: string,
+  adviser: {
+    uid: string;
+    name: string;
+    email: string;
+    signatureUrl: string;
+  },
+  remarks = ''
+): Promise<{ success: boolean }> {
+  if (!adviser.signatureUrl || !adviser.signatureUrl.trim()) {
+    throw new Error('A registered Club Adviser electronic signature is required to approve and forward this proposal.');
+  }
+
+  const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+  let snap = await getDoc(docRef);
+  let data: any = snap.exists() ? snap.data() : null;
+  if (!data) {
+    const fbSnap = await getDoc(doc(db, 'events', proposalId));
+    if (fbSnap.exists()) data = fbSnap.data();
+  }
+  if (!data) throw new Error('Activity Proposal not found.');
+
+  const isOrgDirectSas =
+    data.fundingSource === 'organization_funds' ||
+    data.fundingSource === 'student_contributions' ||
+    data.fundingSource === 'zero_budget';
+  const requiresSasPreApprovalGate = !isOrgDirectSas;
+
+  // Prepare approval chain based on funding source
+  let chain: any[] = [];
+  if (isOrgDirectSas) {
+    const sasCfg = getCachedSasSignatoryConfig();
+    chain = [
+      {
+        id: 'step_sas_direct_approval',
+        step: 1,
+        stageIndex: 1,
+        stageName: 'Stage 1: Direct SAS Institutional Approval',
+        role: 'sas_head',
+        roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+        actionType: 'approve',
+        signatoryLabel: 'Approved by:',
+        signatoryUid: sasCfg.employeeId || 'sas_admin',
+        signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+        signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+        department: sasCfg.department || 'Student Affairs & Services',
+        status: 'current',
+        isMandatory: true,
+        isPermanent: true,
+      },
+    ];
+  } else {
+    chain = normalizeApprovalStages(Array.isArray(data.approvalChain) ? data.approvalChain : []).map((step) => {
+      const cleanStep: any = { ...step, status: 'waiting' };
+      delete cleanStep.signatureUrl;
+      delete cleanStep.signedAt;
+      delete cleanStep.remarks;
+      return cleanStep;
+    });
+  }
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'approved' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS for review.',
+    signatureUrl: adviser.signatureUrl.trim(),
+  };
+
+  const historyEntry = sanitizeFirestorePayload({
+    id: `hist_adviser_approve_${Date.now()}`,
+    action: 'adviser_approved',
+    performedBy: adviser.uid,
+    performedByName: adviser.name || 'Club Adviser',
+    roleTitle: 'Club Adviser',
+    performedAt: nowIso,
+    remarks:
+      remarks?.trim() ||
+      (requiresSasPreApprovalGate
+        ? 'Approved by Club Adviser and forwarded to SAS Vetting → Institutional Signatories.'
+        : 'Approved by Club Adviser and forwarded directly to SAS for approval.'),
+    signatureUrl: adviser.signatureUrl.trim(),
+  });
+
+  const updates: any = {
+    status: 'under_review' as ProposalStatus,
+    proposalStatus: 'pending',
+    lifecycleStatus: 'pending_review',
+    isPendingSasVetting: requiresSasPreApprovalGate,
+    sasVettedAt: null,
+    sasVettedBy: null,
+    isReturned: false,
+    adviserReview,
+    submittedToSasAt: serverTimestamp(),
+    submittedAt: serverTimestamp(),
+    approvalChain: chain,
+    currentStepIndex: 0,
+    currentStageIndex: 1,
+    preparedBy: {
+      name: adviser.name || data.preparedBy?.name || 'Organization Adviser',
+      roleTitle: 'Organization Adviser',
+      email: adviser.email || '',
+      signatureUrl: adviser.signatureUrl.trim(),
+      signedAt: nowIso,
+    },
+    submittedBySignatureUrl: adviser.signatureUrl.trim(),
+    proposalHistory: arrayUnion(historyEntry),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(docRef, sanitizeFirestorePayload(updates), { merge: true });
+  await syncProposalToEventsCollection({ ...data, ...updates, id: proposalId }, 'pending', {
+    status: 'pending',
+    proposalStatus: 'pending',
+    lifecycleStatus: 'pending_review',
+    isPendingSasVetting: requiresSasPreApprovalGate,
+    isReturned: false,
+    adviserReview,
+    submittedToSasAt: serverTimestamp(),
+    submittedAt: serverTimestamp(),
+    approvalChain: chain,
+    currentStepIndex: 0,
+    currentStageIndex: 1,
+    preparedBy: updates.preparedBy,
+    submittedBySignatureUrl: updates.submittedBySignatureUrl,
+  });
+
+  // Notify SAS Admin & Student Officers
+  try {
+    const orgId = data.hostingOrgId || data.organizationId || '';
+    const refNo = data.referenceNo || data.referenceId || proposalId;
+    const eventTitle = data.title || 'Activity Proposal';
+    const cleanOrgName = formatCleanOrgDisplayName(data.organizers, orgId, data.organizationName, true);
+
+    await createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'activity_proposal',
+      title: `${data.isUrgent ? '[URGENT] ' : ''}New Proposal Forwarded by Adviser: ${eventTitle}`,
+      message: `${adviser.name} (Club Adviser, ${cleanOrgName}) approved and forwarded ${refNo} for SAS review.`,
+      resourceId: proposalId,
+      resourceType: 'event',
+      actionRoute: `/home/event-approvals?tab=pending&id=${proposalId}`,
+      isUrgent: Boolean(data.isUrgent),
+      targetOrgId: orgId || undefined,
+      targetOrgName: cleanOrgName,
+      senderId: adviser.uid,
+      senderName: adviser.name,
+      senderRoleTitle: 'Club Adviser',
+    });
+
+    if (orgId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: orgId,
+        targetOrgName: cleanOrgName,
+        type: 'document_approved',
+        category: 'activity_proposal',
+        title: `Approved by Club Adviser: ${eventTitle}`,
+        message: `${adviser.name} approved your proposal (${refNo}) and forwarded it to SAS for institutional review.`,
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: `/officer/events?tab=pending&id=${proposalId}`,
+        isUrgent: Boolean(data.isUrgent),
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (notifErr) {
+    console.warn('[approveAndForwardProposalByAdviser] Notification error:', notifErr);
+  }
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Return an officer-submitted Activity Proposal for revision.
+ * Keeps the proposal strictly inside the organization (hidden from SAS/Signatories).
+ */
+export async function returnProposalByAdviser(
+  proposalId: string,
+  adviser: { uid: string; name: string; email: string },
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
+): Promise<{ success: boolean }> {
+  const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+  let snap = await getDoc(docRef);
+  let data: any = snap.exists() ? snap.data() : null;
+  if (!data) {
+    const fbSnap = await getDoc(doc(db, 'events', proposalId));
+    if (fbSnap.exists()) data = fbSnap.data();
+  }
+  if (!data) throw new Error('Activity Proposal not found.');
+
+  const nowIso = new Date().toISOString();
+  const effectiveDeadline =
+    returnDeadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+  const canonicalStepRemarks: Record<string, string> = {};
+  if (stepRevisionRemarks && typeof stepRevisionRemarks === 'object') {
+    Object.entries(stepRevisionRemarks).forEach(([key, text]) => {
+      if (!text || typeof text !== 'string' || !text.trim()) return;
+      const numMatch = key.match(/(?:step[-_\s]*)?(\d+)/i);
+      const isNumberedStep = Boolean(numMatch && !key.startsWith('item_'));
+      const canonicalKey = isNumberedStep ? `step_${numMatch![1]}` : key;
+      canonicalStepRemarks[canonicalKey] = text.trim();
+    });
+  }
+
+  const cleanSnap = sanitizeCleanDocumentSnapshot(data);
+  try {
+    const revPayload = {
+      version: Number(data.version || 1),
+      versionLabel: `v${Number(data.version || 1)}.0`,
+      dataSnapshot: cleanSnap,
+      returnFlags: returnFlags || [],
+      stepRevisionRemarks: canonicalStepRemarks,
+      returnRemarks: remarks || 'Returned by Club Adviser for revision.',
+      returnedBy: adviser.uid,
+      returnedByName: adviser.name || 'Club Adviser',
+      returnedByRoleTitle: 'Club Adviser',
+      returnedAt: nowIso,
+      archivedAt: nowIso,
+    };
+    await archiveDocumentRevision('activities', proposalId, revPayload);
+    await archiveDocumentRevision('events', proposalId, revPayload);
+  } catch (_) {}
+
+  const adviserReview = {
+    status: 'returned' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Returned for revision by Club Adviser.',
+  };
+
+  const historyEntry = sanitizeFirestorePayload({
+    id: `hist_adviser_return_${Date.now()}`,
+    action: 'adviser_returned',
+    performedBy: adviser.uid,
+    performedByName: adviser.name || 'Club Adviser',
+    roleTitle: 'Club Adviser',
+    performedAt: nowIso,
+    remarks: remarks?.trim() || 'Returned for revision by Club Adviser.',
+    stepRemarks: canonicalStepRemarks,
+    returnFlags: returnFlags || [],
+  });
+
+  const updates: any = {
+    status: 'returned_for_revision' as ProposalStatus,
+    proposalStatus: 'returned',
+    lifecycleStatus: 'returned',
+    isReturned: true,
+    isApproved: false,
+    isPendingSasVetting: false,
+    adviserReview,
+    returnedByRole: 'adviser',
+    returnedByName: adviser.name || 'Club Adviser',
+    returnedByRoleTitle: 'Club Adviser',
+    returnedByEmail: adviser.email || '',
+    returnedAt: nowIso,
+    returnDeadline: effectiveDeadline,
+    adviserRemarks: remarks?.trim() || null,
+    returnRemarks: remarks?.trim() || null,
+    stepRevisionRemarks: canonicalStepRemarks,
+    returnFlags: returnFlags || [],
+    returnedSnapshot: cleanSnap,
+    proposalHistory: arrayUnion(historyEntry),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(docRef, sanitizeFirestorePayload(updates), { merge: true });
+  await syncProposalToEventsCollection({ ...data, ...updates, id: proposalId }, 'returned', {
+    status: 'returned',
+    proposalStatus: 'returned',
+    lifecycleStatus: 'returned',
+    isReturned: true,
+    isApproved: false,
+    isPendingSasVetting: false,
+    adviserReview,
+    returnedByRole: 'adviser',
+    returnedByName: adviser.name || 'Club Adviser',
+    returnedByRoleTitle: 'Club Adviser',
+    returnedByEmail: adviser.email || '',
+    returnedAt: nowIso,
+    returnDeadline: effectiveDeadline,
+    adviserRemarks: remarks?.trim() || null,
+    returnRemarks: remarks?.trim() || null,
+    stepRevisionRemarks: canonicalStepRemarks,
+    returnFlags: returnFlags || [],
+  });
+
+  try {
+    const orgId = data.hostingOrgId || data.organizationId || '';
+    const eventTitle = data.title || 'Activity Proposal';
+    const cleanOrgName = formatCleanOrgDisplayName(data.organizers, orgId, data.organizationName, true);
+    if (orgId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: orgId,
+        targetOrgName: cleanOrgName,
+        type: 'document_returned',
+        category: 'activity_proposal',
+        title: `Returned by Club Adviser for Revision: ${eventTitle}`,
+        message: remarks?.trim()
+          ? `${adviser.name} (Club Adviser): "${remarks.trim()}"`
+          : `${adviser.name} returned your proposal for revision before forwarding to SAS.`,
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: `/officer/events?tab=returned&id=${proposalId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Reject an officer-submitted Activity Proposal.
+ * Terminal state — kept internal to the organization (hidden from SAS if never forwarded).
+ */
+export async function rejectProposalByAdviser(
+  proposalId: string,
+  adviser: { uid: string; name: string; email: string },
+  reason: string
+): Promise<{ success: boolean }> {
+  const docRef = doc(db, PROPOSALS_COLLECTION, proposalId);
+  let snap = await getDoc(docRef);
+  let data: any = snap.exists() ? snap.data() : null;
+  if (!data) {
+    const fbSnap = await getDoc(doc(db, 'events', proposalId));
+    if (fbSnap.exists()) data = fbSnap.data();
+  }
+  if (!data) throw new Error('Activity Proposal not found.');
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'rejected' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: reason,
+  };
+
+  const historyEntry = sanitizeFirestorePayload({
+    id: `hist_adviser_reject_${Date.now()}`,
+    action: 'adviser_rejected',
+    performedBy: adviser.uid,
+    performedByName: adviser.name || 'Club Adviser',
+    roleTitle: 'Club Adviser',
+    performedAt: nowIso,
+    reason,
+    remarks: reason,
+  });
+
+  const updates: any = {
+    status: 'rejected' as ProposalStatus,
+    proposalStatus: 'rejected',
+    lifecycleStatus: 'rejected',
+    isPendingSasVetting: false,
+    isReturned: false,
+    adviserReview,
+    rejectedByRole: 'adviser',
+    rejectedByName: adviser.name || 'Club Adviser',
+    rejectionReason: reason,
+    rejectedAt: serverTimestamp(),
+    proposalHistory: arrayUnion(historyEntry),
+    updatedAt: serverTimestamp(),
+  };
+
+  await setDoc(docRef, sanitizeFirestorePayload(updates), { merge: true });
+  await syncProposalToEventsCollection({ ...data, ...updates, id: proposalId }, 'rejected', {
+    status: 'rejected',
+    proposalStatus: 'rejected',
+    lifecycleStatus: 'rejected',
+    isPendingSasVetting: false,
+    isReturned: false,
+    adviserReview,
+    rejectedByRole: 'adviser',
+    rejectedByName: adviser.name || 'Club Adviser',
+    rejectionReason: reason,
+    rejectedAt: serverTimestamp(),
+  });
+
+  try {
+    const orgId = data.hostingOrgId || data.organizationId || '';
+    const eventTitle = data.title || 'Activity Proposal';
+    const cleanOrgName = formatCleanOrgDisplayName(data.organizers, orgId, data.organizationName, true);
+    if (orgId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: orgId,
+        targetOrgName: cleanOrgName,
+        type: 'document_rejected',
+        category: 'activity_proposal',
+        title: `Proposal Rejected by Club Adviser: ${eventTitle}`,
+        message: `${adviser.name} (Club Adviser) rejected this proposal: "${reason}"`,
+        resourceId: proposalId,
+        resourceType: 'event',
+        actionRoute: `/officer/events?tab=rejected&id=${proposalId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
 }
 
 

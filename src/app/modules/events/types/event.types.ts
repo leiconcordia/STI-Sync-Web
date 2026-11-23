@@ -89,6 +89,13 @@ export interface EventDocument extends SoftDeletable, Archivable {
   historicalReference?: any | null;
   budgetItems: BudgetLineItem[];
   totalApprovedBudget: number;
+  originalApprovedBudget?: number;
+  supplementalBudgetTotal?: number;
+  effectiveApprovedBudget?: number;
+  supplementalAllocations?: import('../../supplemental-budget/types/sbr.types').SupplementalEventAllocation[];
+  approvedSupplementalCount?: number;
+  hasPendingSupplementalRequest?: boolean;
+  hasSupplementalSchoolBudget?: boolean;
   budgetCustodians?: BudgetCustodianAllocation[];
   totalAllocatedBudget?: number;
 
@@ -102,7 +109,13 @@ export interface EventDocument extends SoftDeletable, Archivable {
   scannerActivationCode: string;           // auto-generated 6-digit code
 
   // ─── Lifecycle ───
-  proposalStatus: 'draft' | 'pending_review' | 'pending' | 'approved' | 'rejected' | 'returned' | 'cancelled' | 'completed';
+  proposalStatus: 'draft' | 'for_adviser_review' | 'pending_review' | 'pending' | 'approved' | 'rejected' | 'returned' | 'cancelled' | 'completed';
+  submittedByOfficer?: boolean;
+  submittedToAdviserAt?: Timestamp | string | any;
+  submittedToSasAt?: Timestamp | string | any;
+  adviserReview?: import('../../activity-proposals/types/proposal.types').AdviserReviewRecord | null;
+  returnedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectedByRole?: 'adviser' | 'sas' | 'signatory' | string;
   createdBy: string;                       // SAO Adviser UID or Officer UID
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -153,7 +166,7 @@ export interface EventDocument extends SoftDeletable, Archivable {
 
 export interface EventProposalHistoryLog {
   id: string;
-  action: 'created' | 'submitted' | 'approved' | 'returned' | 'rejected' | 'resubmitted' | 'edited' | 'draft_saved' | 'withdrawn' | 'cancelled' | 'archived' | 'restored' | 'completed' | 'deleted';
+  action: 'created' | 'submitted' | 'submitted_to_adviser' | 'adviser_approved' | 'adviser_returned' | 'adviser_rejected' | 'approved' | 'returned' | 'rejected' | 'resubmitted' | 'edited' | 'draft_saved' | 'withdrawn' | 'cancelled' | 'archived' | 'restored' | 'completed' | 'deleted' | (string & {});
   performedBy: string;
   performedByName?: string;
   performedAt: Timestamp | Date | any;

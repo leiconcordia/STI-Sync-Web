@@ -1,20 +1,13 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import {
-  Building, Plus, Edit2, Trash2, Users, Shield, X, AlertTriangle, Archive, RotateCcw,
-  Search, Eye, Ban, CheckCircle2, ArchiveRestore
+  Plus, Edit2, Trash2, Shield, X, AlertTriangle, Archive, RotateCcw,
 } from 'lucide-react';
-import { collection, onSnapshot } from 'firebase/firestore';
 import { toast } from 'sonner';
-import { db } from '../../../../services/firebase';
 import {
   useOrganizationTypes,
   createOrganizationType,
   updateOrganizationType,
   deleteOrganizationType,
-  useOrganizationStream,
-  useOrgMemberCountsStream,
-  CreateClubModal,
-  type OrganizationDocument,
   type OrganizationTypeDocument
 } from '../../../modules/organizations';
 import {
@@ -24,16 +17,13 @@ import {
   deleteOfficerRole,
   type OfficerRoleDocument
 } from '../../../modules/roles';
-import { OrganizationDetailModal } from '../OrganizationDetailModal';
-import { EditOrganizationModal } from '../EditOrganizationModal';
-import { OrganizationStatusModal } from '../OrganizationStatusModal';
 
 interface OrganizationSettingsProps {
   onUnsavedChange: () => void;
-  initialSubTab?: 'organizations' | 'types' | 'roles';
+  initialSubTab?: 'types' | 'roles';
 }
 
-type SubTab = 'organizations' | 'types' | 'roles';
+type SubTab = 'types' | 'roles';
 
 type ModalState =
   | { type: 'none' }
@@ -154,7 +144,7 @@ function ConfirmModal({
   );
 }
 
-export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 'organizations' }: OrganizationSettingsProps) {
+export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 'types' }: OrganizationSettingsProps) {
   const [subTab, setSubTab] = useState<SubTab>(initialSubTab);
 
   useEffect(() => {
@@ -163,51 +153,9 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
     }
   }, [initialSubTab]);
 
-  // ─── Real Organizations Stream ──────────────────────────────────────────────
-  const { data: rawOrganizations = [], loading: loadingOrgs } = useOrganizationStream();
-  const { countsMap = {}, loading: loadingCounts } = useOrgMemberCountsStream();
+  // ─── Types & Roles Streams ──────────────────────────────────────────────────
   const { data: organizationTypes = [], loading: loadingTypes } = useOrganizationTypes();
   const { data: roles = [], loading: loadingRoles } = useRoles();
-
-  // ─── Real Officer Counts Stream ─────────────────────────────────────────────
-  const [officerCountsMap, setOfficerCountsMap] = useState<Record<string, number>>({});
-
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'organization_officers'), (snapshot) => {
-      const map: Record<string, number> = {};
-      snapshot.docs.forEach((doc) => {
-        const d = doc.data();
-        const oId = d.organizationId;
-        if (oId) {
-          map[oId] = (map[oId] || 0) + 1;
-        }
-      });
-      setOfficerCountsMap(map);
-    });
-    return () => unsub();
-  }, []);
-
-  // Merge live member counts
-  const organizations = useMemo(() => {
-    return rawOrganizations.map((org) => ({
-      ...org,
-      memberCount: countsMap[org.id] ?? org.memberCount ?? 0,
-      officerCount: officerCountsMap[org.id] ?? 0,
-    }));
-  }, [rawOrganizations, countsMap, officerCountsMap]);
-
-  // ─── Organization Filters & Views ───────────────────────────────────────────
-  const [orgSearch, setOrgSearch] = useState('');
-  const [orgTypeFilter, setOrgTypeFilter] = useState('All');
-  const [orgStatusTab, setOrgStatusTab] = useState<'active' | 'archived'>('active');
-
-  // Modals for Organization actions
-  const [isCreateClubOpen, setIsCreateClubOpen] = useState(false);
-  const [selectedOrg, setSelectedOrg] = useState<OrganizationDocument | null>(null);
-  const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [isEditOpen, setIsEditOpen] = useState(false);
-  const [isStatusOpen, setIsStatusOpen] = useState(false);
-  const [statusMode, setStatusMode] = useState<'archive' | null>(null);
 
   // ─── Types & Roles State ───────────────────────────────────────────────────
   const [typeArchivedView, setTypeArchivedView] = useState(false);
@@ -217,7 +165,11 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
   const [deleteText, setDeleteText] = useState('');
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 
-  const [orgTypeForm, setOrgTypeForm] = useState({ name: '', color: '#0E4EBD' });
+  const [orgTypeForm, setOrgTypeForm] = useState({
+    name: '',
+    color: '#0E4EBD',
+    maxMembershipsPerStudent: '',
+  });
   const [roleForm, setRoleForm] = useState({ name: '', isRequired: false });
 
   const close = () => {
@@ -226,29 +178,6 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
       setDeleteText('');
     }
   };
-
-  // ─── Filtered Organizations ────────────────────────────────────────────────
-  const filteredOrgs = useMemo(() => {
-    return organizations.filter((org) => {
-      // Status filter
-      if (orgStatusTab === 'active' && org.status !== 'active') return false;
-      if (orgStatusTab === 'suspended' && org.status !== 'suspended') return false;
-      if (orgStatusTab === 'archived' && org.status !== 'archived') return false;
-
-      // Type filter
-      if (orgTypeFilter !== 'All' && org.typeId !== orgTypeFilter) return false;
-
-      // Search query
-      if (orgSearch.trim()) {
-        const q = orgSearch.trim().toLowerCase();
-        const matchName = org.name?.toLowerCase().includes(q);
-        const matchAcronym = org.acronym?.toLowerCase().includes(q);
-        if (!matchName && !matchAcronym) return false;
-      }
-
-      return true;
-    });
-  }, [organizations, orgStatusTab, orgTypeFilter, orgSearch]);
 
   const activeTypes = organizationTypes.filter(t => !t.archived);
   const archivedTypes = organizationTypes.filter(t => t.archived);
@@ -274,13 +203,33 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
       return;
     }
 
+    const rawMax = orgTypeForm.maxMembershipsPerStudent.trim();
+    let parsedMax: number | null = null;
+    if (rawMax !== '') {
+      const n = Number(rawMax);
+      if (!Number.isInteger(n) || n < 0) {
+        toast.error('Maximum organizations per student must be a whole number (0 or blank for unlimited).');
+        return;
+      }
+      parsedMax = n > 0 ? n : null;
+    }
+
     setIsSaving(true);
     try {
       if (modal.type === 'add-org-type') {
-        await createOrganizationType({ name: cleanName, color: orgTypeForm.color, archived: false });
+        await createOrganizationType({
+          name: cleanName,
+          color: orgTypeForm.color,
+          maxMembershipsPerStudent: parsedMax,
+          archived: false,
+        });
         toast.success(`Organization type "${cleanName}" created successfully.`);
       } else if (modal.type === 'edit-org-type') {
-        await updateOrganizationType(modal.item.id, { name: cleanName, color: orgTypeForm.color });
+        await updateOrganizationType(modal.item.id, {
+          name: cleanName,
+          color: orgTypeForm.color,
+          maxMembershipsPerStudent: parsedMax,
+        });
         toast.success(`Organization type "${cleanName}" updated successfully.`);
       }
       onUnsavedChange();
@@ -345,22 +294,19 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
     }
   };
 
-  const getTypeObj = (typeId?: string) => organizationTypes.find(t => t.id === typeId);
-
   return (
     <div className="space-y-6 max-w-5xl">
       {/* Header */}
       <div>
         <h2 className="text-2xl font-bold text-[#001A4D]">Organization Settings</h2>
         <p className="text-sm text-gray-500 mt-1">
-          Manage campus student organizations, custom classifications, and officer role permissions
+          Manage organization classifications, membership caps, and officer roles
         </p>
       </div>
 
       {/* Sub-Tab Navigation Header */}
       <div className="flex items-center gap-2 border-b border-gray-200">
         {[
-          { key: 'organizations' as SubTab, label: 'Organizations' },
           { key: 'types' as SubTab, label: 'Organization Types' },
           { key: 'roles' as SubTab, label: 'Officer Roles' }
         ].map((tab) => (
@@ -380,202 +326,6 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════════════
-          TAB 1: ORGANIZATIONS (LIVE FIRESTORE DATA)
-         ═══════════════════════════════════════════════════════════════════════ */}
-      {subTab === 'organizations' && (
-        <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
-          {/* Controls Bar */}
-          <div className="p-5 border-b border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3">
-              {/* Status Tabs */}
-              <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
-                {[
-                  { key: 'active', label: 'Active' },
-                  { key: 'archived', label: 'Archived' }
-                ].map((st) => (
-                  <button
-                    key={st.key}
-                    type="button"
-                    onClick={() => setOrgStatusTab(st.key as any)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                      orgStatusTab === st.key
-                        ? 'bg-white text-[#001A4D] shadow-xs'
-                        : 'text-gray-500 hover:text-gray-700'
-                    }`}
-                  >
-                    {st.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Type Filter */}
-              <select
-                value={orgTypeFilter}
-                onChange={(e) => setOrgTypeFilter(e.target.value)}
-                className="text-xs font-semibold px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-gray-700 focus:ring-1 focus:ring-[#001A4D]"
-              >
-                <option value="All">All Types</option>
-                {activeTypes.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
-
-              {/* Search */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
-                  type="text"
-                  placeholder="Search clubs or acronym..."
-                  value={orgSearch}
-                  onChange={(e) => setOrgSearch(e.target.value)}
-                  className="pl-8 pr-3 py-1.5 text-xs border border-gray-200 rounded-lg w-52 focus:ring-1 focus:ring-[#001A4D] focus:border-[#001A4D]"
-                />
-              </div>
-            </div>
-
-            {/* Add Club Button */}
-            <button
-              type="button"
-              onClick={() => setIsCreateClubOpen(true)}
-              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer shadow-xs"
-            >
-              <Plus className="w-4 h-4" /> Add Organization
-            </button>
-          </div>
-
-          {/* Organizations List */}
-          {loadingOrgs || loadingCounts ? (
-            <div className="p-8 text-center text-sm text-gray-400">Loading student organizations...</div>
-          ) : filteredOrgs.length === 0 ? (
-            <div className="p-12 text-center">
-              <Building className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-              <div className="text-sm font-semibold text-gray-600">No organizations found</div>
-              <p className="text-xs text-gray-400 mt-1">Try adjusting your filters or click "Add Organization" to register one.</p>
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {filteredOrgs.map((org) => {
-                const typeObj = getTypeObj(org.typeId);
-                const isSuspended = org.status === 'suspended';
-                const isArchived = org.status === 'archived';
-
-                return (
-                  <div
-                    key={org.id}
-                    className="flex flex-col sm:flex-row sm:items-center justify-between p-4 hover:bg-gray-50/80 transition-colors gap-4"
-                  >
-                    <div className="flex items-center gap-4 min-w-0">
-                      {/* Logo / Avatar */}
-                      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] flex items-center justify-center text-white font-bold text-sm flex-shrink-0 overflow-hidden shadow-xs border border-gray-100">
-                        {org.logoUrl ? (
-                          <img src={org.logoUrl} alt={org.acronym} className="w-full h-full object-cover" />
-                        ) : (
-                          org.acronym?.slice(0, 3) || 'ORG'
-                        )}
-                      </div>
-
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-bold text-gray-900 text-sm">{org.acronym}</span>
-                          <span className="text-xs text-gray-500 font-medium truncate max-w-xs">{org.name}</span>
-                          {typeObj && (
-                            <span
-                              className="px-2 py-0.5 rounded-full text-[10px] font-bold"
-                              style={{
-                                backgroundColor: `${typeObj.color}18`,
-                                color: typeObj.color
-                              }}
-                            >
-                              {typeObj.name}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex flex-wrap items-center gap-4 text-xs text-gray-500 mt-1">
-                          <span className="flex items-center gap-1 font-medium">
-                            <Users className="w-3.5 h-3.5 text-gray-400" />
-                            {org.memberCount} members
-                          </span>
-                          <span className="flex items-center gap-1 font-medium">
-                            <Shield className="w-3.5 h-3.5 text-gray-400" />
-                            {(org as any).officerCount || 0} officers
-                          </span>
-                          {org.adviser?.name && (
-                            <span className="text-gray-400 text-[11px]">
-                              Adviser: <span className="text-gray-600 font-medium">{org.adviser.name}</span>
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Status Badge & Actions */}
-                    <div className="flex items-center gap-2 self-end sm:self-center">
-                      <span
-                        className={`px-2.5 py-1 rounded-full text-xs font-bold ${
-                          isArchived
-                            ? 'bg-gray-100 text-gray-600'
-                            : isSuspended
-                            ? 'bg-amber-100 text-amber-700'
-                            : 'bg-green-100 text-green-700'
-                        }`}
-                      >
-                        {isArchived ? 'Archived' : isSuspended ? 'Suspended' : 'Active'}
-                      </span>
-
-                      {/* View Details */}
-                      <button
-                        type="button"
-                        title="View Details"
-                        onClick={() => {
-                          setSelectedOrg(org);
-                          setIsDetailOpen(true);
-                        }}
-                        className="p-1.5 text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <Eye className="w-4 h-4" />
-                      </button>
-
-                      {/* Edit */}
-                      <button
-                        type="button"
-                        title="Edit Organization"
-                        onClick={() => {
-                          setSelectedOrg(org);
-                          setIsEditOpen(true);
-                        }}
-                        className="p-1.5 text-[#0E4EBD] hover:bg-[#0E4EBD]/10 rounded-lg transition-colors cursor-pointer"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-
-                      {/* Archive / Restore */}
-                      <button
-                        type="button"
-                        title={isArchived ? 'Restore Organization' : 'Archive Organization'}
-                        onClick={() => {
-                          setSelectedOrg(org);
-                          setStatusMode('archive');
-                          setIsStatusOpen(true);
-                        }}
-                        className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-                          isArchived
-                            ? 'text-blue-600 hover:bg-blue-50'
-                            : 'text-gray-500 hover:bg-gray-100'
-                        }`}
-                      >
-                        {isArchived ? <ArchiveRestore className="w-4 h-4" /> : <Archive className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ═══════════════════════════════════════════════════════════════════════
           TAB 2: ORGANIZATION TYPES
          ═══════════════════════════════════════════════════════════════════════ */}
       {subTab === 'types' && (
@@ -588,7 +338,7 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
             <button
               type="button"
               onClick={() => {
-                setOrgTypeForm({ name: '', color: '#0E4EBD' });
+                setOrgTypeForm({ name: '', color: '#0E4EBD', maxMembershipsPerStudent: '' });
                 setModal({ type: 'add-org-type' });
               }}
               className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-bold hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer shadow-xs"
@@ -612,12 +362,23 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
                   onMouseEnter={() => setHoveredRow(type.id)}
                   onMouseLeave={() => setHoveredRow(null)}
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
                     <div className="w-4 h-4 rounded-full shadow-xs" style={{ backgroundColor: type.color }} />
                     <span className={`font-semibold text-sm ${type.archived ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
                       {type.name}
                     </span>
                     <span className="text-xs font-mono text-gray-400">{type.color}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                        type.maxMembershipsPerStudent && type.maxMembershipsPerStudent > 0
+                          ? 'bg-blue-50 text-[#001A4D] border-blue-200'
+                          : 'bg-gray-50 text-gray-500 border-gray-200'
+                      }`}
+                    >
+                      {type.maxMembershipsPerStudent && type.maxMembershipsPerStudent > 0
+                        ? `Max ${type.maxMembershipsPerStudent} org${type.maxMembershipsPerStudent === 1 ? '' : 's'} / student`
+                        : 'Unlimited / student'}
+                    </span>
                   </div>
 
                   <div className={`flex items-center gap-1 transition-opacity ${hoveredRow === type.id ? 'opacity-100' : 'opacity-0'}`}>
@@ -626,7 +387,14 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
                         <button
                           type="button"
                           onClick={() => {
-                            setOrgTypeForm({ name: type.name, color: type.color });
+                            setOrgTypeForm({
+                              name: type.name,
+                              color: type.color,
+                              maxMembershipsPerStudent:
+                                type.maxMembershipsPerStudent && type.maxMembershipsPerStudent > 0
+                                  ? String(type.maxMembershipsPerStudent)
+                                  : '',
+                            });
                             setModal({ type: 'edit-org-type', item: type });
                           }}
                           className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer"
@@ -820,6 +588,24 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
                     />
                   </div>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                    Max Organizations a Student Can Join
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={orgTypeForm.maxMembershipsPerStudent}
+                    onChange={e => setOrgTypeForm({ ...orgTypeForm, maxMembershipsPerStudent: e.target.value })}
+                    disabled={isSaving}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D] focus:border-transparent disabled:opacity-50"
+                    placeholder="Leave blank or 0 for unlimited (e.g. 2)"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Caps how many active organizations of this type a single student can join at once (e.g. 2 for Academic). Leave blank or 0 for unlimited.
+                  </p>
+                </div>
                 <div className="flex gap-3 pt-2">
                   <button
                     type="button"
@@ -967,62 +753,6 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
           )}
         </div>
       )}
-
-      {/* ═══════════════════════════════════════════════════════════════════════
-          MODALS FOR ORGANIZATIONS
-         ═══════════════════════════════════════════════════════════════════════ */}
-      {/* Create Club Modal */}
-      <CreateClubModal
-        isOpen={isCreateClubOpen}
-        onClose={() => setIsCreateClubOpen(false)}
-        onSuccess={() => {
-          setIsCreateClubOpen(false);
-          toast.success('Organization registered successfully.');
-        }}
-      />
-
-      {/* Organization Detail Modal */}
-      <OrganizationDetailModal
-        organization={selectedOrg}
-        isOpen={isDetailOpen}
-        onClose={() => {
-          setIsDetailOpen(false);
-          setSelectedOrg(null);
-        }}
-      />
-
-      {/* Edit Organization Modal */}
-      <EditOrganizationModal
-        organization={selectedOrg}
-        isOpen={isEditOpen}
-        onClose={() => {
-          setIsEditOpen(false);
-          setSelectedOrg(null);
-        }}
-        onSuccess={() => {
-          setIsEditOpen(false);
-          setSelectedOrg(null);
-          toast.success('Organization updated successfully.');
-        }}
-      />
-
-      {/* Organization Status Modal (Suspend / Reactivate / Archive) */}
-      <OrganizationStatusModal
-        organization={selectedOrg}
-        mode={statusMode}
-        isOpen={isStatusOpen}
-        onClose={() => {
-          setIsStatusOpen(false);
-          setSelectedOrg(null);
-          setStatusMode(null);
-        }}
-        onSuccess={() => {
-          setIsStatusOpen(false);
-          setSelectedOrg(null);
-          setStatusMode(null);
-          toast.success('Organization status updated successfully.');
-        }}
-      />
     </div>
   );
 }

@@ -5,7 +5,13 @@ import { changeOfficerOrAdviserPassword } from '../../auth/services/password.ser
 import type { OfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { Lock, Eye, EyeOff, AlertCircle, CheckCircle2, ShieldCheck, Loader2 } from 'lucide-react';
 
-export function RequiredPasswordChange({ profile }: { profile: OfficerProfile }) {
+export function RequiredPasswordChange({
+  profile,
+  orgName,
+}: {
+  profile: OfficerProfile;
+  orgName?: string;
+}) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -121,9 +127,16 @@ export function RequiredPasswordChange({ profile }: { profile: OfficerProfile })
             </div>
           </div>
 
-          <p className="text-xs text-gray-600 bg-blue-50/70 border border-blue-100 rounded-xl p-3 leading-relaxed">
-            Please set your own private, permanent password before continuing to your dashboard.
-          </p>
+          <div className="text-xs text-blue-950 bg-blue-50/80 border border-blue-200 rounded-xl p-3.5 leading-relaxed space-y-1.5">
+            <p className="font-bold text-[#001A4D]">
+              {isAdviser
+                ? `You have been assigned as Club Adviser${orgName && orgName !== 'Organization' ? ` for ${orgName}` : ''}.`
+                : `You have been granted Organization Web Portal access${orgName && orgName !== 'Organization' ? ` for ${orgName}` : ''}.`}
+            </p>
+            <p className="text-gray-600">
+              Please set your own private, permanent password before continuing to your dashboard.
+            </p>
+          </div>
 
           {/* Form */}
           <form onSubmit={submit} className="space-y-4">

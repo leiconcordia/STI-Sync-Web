@@ -179,6 +179,83 @@ export async function deductApprovedEventBudget(
 }
 
 /**
+ * Idempotently deducts an approved Supplemental Budget Request (SBR) delta from
+ * `organization_ledger` (Club Treasury) or `sao_ledger` (SAO Institutional Budget).
+ * Keyed by `sbrId` + `source: 'supplemental_budget'` so it never collides with the parent event budget.
+ */
+export async function deductSupplementalBudget(params: {
+  sbrId: string;
+  referenceCode: string;
+  eventId: string;
+  eventTitle: string;
+  organizationId: string;
+  organizationName?: string;
+  isSasInstitutional: boolean;
+  amount: number;
+  semesterId?: string | null;
+  schoolYear?: string;
+  semester?: string;
+  performedBy?: string;
+}): Promise<string | null> {
+  const amount = Math.max(0, Math.round((Number(params.amount) || 0) * 100) / 100);
+  if (!params.sbrId || !params.eventId || amount <= 0) return null;
+
+  const targetColName = params.isSasInstitutional ? SAO_LEDGER_COLLECTION : ORG_LEDGER_COLLECTION;
+  const ledgerRef = collection(db, targetColName);
+  const qDup = query(
+    ledgerRef,
+    where('sbrId', '==', params.sbrId),
+    where('source', '==', 'supplemental_budget')
+  );
+  const existingSnap = await getDocs(qDup);
+  if (!existingSnap.empty) {
+    return existingSnap.docs[0].id;
+  }
+
+  const description = `Supplemental Budget (${params.referenceCode}) – ${params.eventTitle}`;
+  const docPayload: Record<string, any> = {
+    semesterId: params.semesterId || null,
+    date: Timestamp.now(),
+    description,
+    eventId: params.eventId,
+    sbrId: params.sbrId,
+    type: 'expense' as const,
+    source: 'supplemental_budget' as const,
+    amount,
+    addedBy: params.performedBy || 'SAS Approval',
+    createdAt: serverTimestamp(),
+  };
+
+  if (!params.isSasInstitutional) {
+    docPayload.organizationId = params.organizationId;
+  }
+
+  const docRef = await addDoc(ledgerRef, cleanUndefined(docPayload));
+
+  // Also keep Org Retained Fund mirror synced when Club Treasury deducts
+  if (!params.isSasInstitutional && params.organizationId) {
+    try {
+      const { deductRetainedFundOnProposalApproval } = await import('./retained-fund.service');
+      await deductRetainedFundOnProposalApproval({
+        eventId: params.eventId,
+        eventTitle: `${params.eventTitle} (Supplemental ${params.referenceCode})`,
+        amount,
+        organizationId: params.organizationId,
+        organizationName: params.organizationName,
+        schoolYear: params.schoolYear,
+        semester: params.semester,
+        performedBy: params.performedBy || 'SAS Approval',
+        ledgerDocIdOverride: `sbr_${params.sbrId}`,
+      });
+    } catch (err) {
+      console.warn('[deductSupplementalBudget] Retained Org fund mirror warning:', err);
+    }
+  }
+
+  return docRef.id;
+}
+
+/**
  * Completely purges and rolls back all ledger entries related to a specific liquidation.
  * Searches both /organization_ledger and /sao_ledger by collectionId == liquidationId.
  */

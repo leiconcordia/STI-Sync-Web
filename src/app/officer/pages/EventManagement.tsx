@@ -57,8 +57,20 @@ import {
   resolveEventFundSourceDisplay,
   type FundSourceDisplayCategory,
 } from '../../modules/events/utils/fund-source-display.utils';
+import {
+  isDocumentForAdviserReview,
+  isOfficerAuthoredRecord,
+  resolveDocumentTrackingState,
+} from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
+import {
+  useOrgSupplementalBudgets,
+  SupplementalBudgetDetailModal,
+  SupplementalBudgetModal,
+  getEventEffectiveApprovedBudget,
+  type SupplementalBudgetRequest,
+} from '../../modules/supplemental-budget';
 
-type EventStatusTab = 'all' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'trash';
+type EventStatusTab = 'all' | 'officer_proposals' | 'supplemental_budgets' | 'draft' | 'pending' | 'approved' | 'completed' | 'archived' | 'rejected' | 'returned' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 function parseDateSafe(input: any): Date | null {
@@ -96,6 +108,8 @@ function formatSubmittedDate(dateInput: any): string {
 }
 
 export function getEventBudget(event: EventDocument): number {
+  const effective = getEventEffectiveApprovedBudget(event);
+  if (effective > 0) return effective;
   if (event.totalApprovedBudget !== undefined && event.totalApprovedBudget !== null && Number(event.totalApprovedBudget) > 0) {
     return Number(event.totalApprovedBudget);
   }
@@ -165,6 +179,7 @@ function getEventTimestamp(event: EventDocument): number {
 export default function EventManagement() {
   const navigate = useNavigate();
   const [activeStatus, setActiveStatus] = useState<EventStatusTab>('all');
+  const [officerSubFilter, setOfficerSubFilter] = useState<'all' | 'for_adviser_review' | 'returned' | 'forwarded' | 'rejected'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterSchoolYear, setFilterSchoolYear] = useState('All');
   const [filterSemester, setFilterSemester] = useState('All');
@@ -246,6 +261,19 @@ export default function EventManagement() {
   }, [profile, activeOrg, orgs]);
 
   const { events, loading } = useOrgEvents(activeOrgId);
+  const { data: orgSbrs } = useOrgSupplementalBudgets(activeOrgId);
+  const [selectedSbrId, setSelectedSbrId] = useState<string | null>(null);
+  const [editingSbr, setEditingSbr] = useState<SupplementalBudgetRequest | null>(null);
+
+  const liveSelectedSbr = useMemo(
+    () => (selectedSbrId ? orgSbrs.find((s) => s.id === selectedSbrId) || null : null),
+    [selectedSbrId, orgSbrs]
+  );
+
+  const pendingAdviserSbrCount = useMemo(
+    () => orgSbrs.filter((s) => s.status === 'for_adviser_review').length,
+    [orgSbrs]
+  );
 
   const categoryMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -380,8 +408,10 @@ export default function EventManagement() {
 
   const statusCounts = {
     all: periodEvents.filter((e) => !e.isArchived && !e.isDeleted).length,
-    draft: periodEvents.filter((e) => (e.proposalStatus === 'draft' || e.status === 'draft') && !isItemReturnedCheck(e) && !e.isDeleted).length,
-    pending: periodEvents.filter((e) => (e.proposalStatus === 'pending' || e.proposalStatus === 'pending_review') && !e.isArchived && !e.isDeleted).length,
+    officer_proposals: periodEvents.filter((e) => isDocumentForAdviserReview(e) && !e.isArchived && !e.isDeleted).length,
+    officer_proposals_total: periodEvents.filter((e) => isOfficerAuthoredRecord(e) && !e.isArchived && !e.isDeleted && (e.proposalStatus !== 'draft' && e.status !== 'draft')).length,
+    draft: periodEvents.filter((e) => (e.proposalStatus === 'draft' || e.status === 'draft') && !isItemReturnedCheck(e) && !isDocumentForAdviserReview(e) && !e.isDeleted).length,
+    pending: periodEvents.filter((e) => (e.proposalStatus === 'pending' || e.proposalStatus === 'pending_review' || isDocumentForAdviserReview(e)) && !e.isArchived && !e.isDeleted).length,
     approved: periodEvents.filter((e) => isEventApprovedUpcoming(e)).length,
     completed: periodEvents.filter((e) => isEventCompleted(e)).length,
     archived: periodEvents.filter((e) => e.isArchived === true && !e.isDeleted).length,
@@ -389,7 +419,7 @@ export default function EventManagement() {
     returned: periodEvents.filter((e) => isItemReturnedCheck(e) && !e.isArchived && !e.isDeleted).length,
   };
 
-  // Filtered & Sorted (LATEST FIRST by default)
+  // Filtered & Sorted (LATEST FIRST by default; Officer Proposals pins For Adviser Review on top)
   const filteredEvents = useMemo(() => {
     return periodEvents
       .filter((event) => {
@@ -405,10 +435,26 @@ export default function EventManagement() {
 
         let statusMatch = true;
         const currentStatus = (event.proposalStatus || event.status || 'draft').toLowerCase();
+        const isForAdv = isDocumentForAdviserReview(event);
 
         const isItemReturned = currentStatus === 'returned' || event.status === 'returned' || Boolean((event as any).isReturned) || Boolean((event as any).stepRevisionRemarks && Object.keys((event as any).stepRevisionRemarks).length > 0);
-        if (activeStatus === 'draft') statusMatch = (currentStatus === 'draft' || event.status === 'draft') && !isItemReturned;
-        else if (activeStatus === 'pending') statusMatch = currentStatus === 'pending' || currentStatus === 'pending_review';
+        if (activeStatus === 'officer_proposals') {
+          const isOfficerSub = isOfficerAuthoredRecord(event) && currentStatus !== 'draft';
+          if (!isOfficerSub) {
+            statusMatch = false;
+          } else if (officerSubFilter === 'for_adviser_review') {
+            statusMatch = isForAdv;
+          } else if (officerSubFilter === 'returned') {
+            statusMatch = isItemReturned;
+          } else if (officerSubFilter === 'forwarded') {
+            statusMatch = !isForAdv && !isItemReturned && currentStatus !== 'rejected';
+          } else if (officerSubFilter === 'rejected') {
+            statusMatch = currentStatus === 'rejected';
+          } else {
+            statusMatch = true;
+          }
+        } else if (activeStatus === 'draft') statusMatch = (currentStatus === 'draft' || event.status === 'draft') && !isItemReturned && !isForAdv;
+        else if (activeStatus === 'pending') statusMatch = currentStatus === 'pending' || currentStatus === 'pending_review' || isForAdv;
         else if (activeStatus === 'approved') statusMatch = isEventApprovedUpcoming(event);
         else if (activeStatus === 'completed') statusMatch = isEventCompleted(event);
         else if (activeStatus === 'archived') statusMatch = event.isArchived === true;
@@ -430,8 +476,15 @@ export default function EventManagement() {
 
         return statusMatch && matchesSearch && matchesCategory && matchesVenue && matchesFundSource;
       })
-      .sort(compareActivityProposals);
-  }, [periodEvents, activeStatus, searchQuery, filterCategory, filterVenue, filterFundSource]);
+      .sort((a, b) => {
+        if (activeStatus === 'officer_proposals') {
+          const aAdv = isDocumentForAdviserReview(a) ? 1 : 0;
+          const bAdv = isDocumentForAdviserReview(b) ? 1 : 0;
+          if (bAdv !== aAdv) return bAdv - aAdv;
+        }
+        return compareActivityProposals(a, b);
+      });
+  }, [periodEvents, activeStatus, officerSubFilter, searchQuery, filterCategory, filterVenue, filterFundSource]);
 
   // Pagination
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / ITEMS_PER_PAGE));
@@ -625,7 +678,7 @@ export default function EventManagement() {
 
   useEffect(() => {
     const tabParam = searchParams.get('tab');
-    if (tabParam && ['all', 'draft', 'pending', 'approved', 'completed', 'archived', 'rejected', 'returned', 'trash'].includes(tabParam)) {
+    if (tabParam && ['all', 'officer_proposals', 'supplemental_budgets', 'draft', 'pending', 'approved', 'completed', 'archived', 'rejected', 'returned', 'trash'].includes(tabParam)) {
       setActiveStatus(tabParam as EventStatusTab);
       setCurrentPage(1);
     }
@@ -668,10 +721,10 @@ export default function EventManagement() {
               setIsApModalOpen(true);
             }}
             className="flex items-center gap-2 px-4 py-2.5 bg-[#0E4EBD] hover:bg-[#0A3D96] text-white rounded-xl text-sm font-bold transition-colors shadow-xs cursor-pointer"
-            title={isAdviser ? "Create an official Activity Proposal as Organization Adviser" : "Prepare a new Activity Proposal draft for Adviser review and formal endorsement"}
+            title={isAdviser ? "Create an official Activity Proposal as Organization Adviser" : "Create an Activity Proposal and submit to your Club Adviser for checking and endorsement"}
           >
             <FileText className="w-4 h-4 text-[#FFD41C]" />
-            {isAdviser ? 'Create Activity Proposal' : 'Draft Activity Proposal'}
+            Create Activity Proposal
           </button>
         </div>
       </div>
@@ -791,15 +844,27 @@ export default function EventManagement() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
             {[
               { key: 'all', label: 'All', count: statusCounts.all },
-              { key: 'pending', label: 'Pending', count: statusCounts.pending },
+              {
+                key: 'officer_proposals',
+                label: 'Officer Proposals',
+                count: statusCounts.officer_proposals > 0 ? statusCounts.officer_proposals : statusCounts.officer_proposals_total,
+                highlight: statusCounts.officer_proposals > 0,
+              },
+              {
+                key: 'supplemental_budgets',
+                label: 'Supplemental Budgets',
+                count: pendingAdviserSbrCount > 0 ? pendingAdviserSbrCount : orgSbrs.length,
+                highlight: isAdviser && pendingAdviserSbrCount > 0,
+              },
+              { key: 'pending', label: 'In Review', count: statusCounts.pending },
               { key: 'approved', label: 'Approved', count: statusCounts.approved },
-              { key: 'returned', label: 'Returned', count: statusCounts.returned },
+              { key: 'returned', label: 'For Revision', count: statusCounts.returned },
               { key: 'completed', label: 'Completed', count: statusCounts.completed },
               { key: 'rejected', label: 'Rejected', count: statusCounts.rejected },
               { key: 'draft', label: 'Drafts', count: statusCounts.draft },
               { key: 'archived', label: 'Archived', count: statusCounts.archived },
               { key: 'trash', label: 'Trash', count: undefined },
-            ].map((tab) => {
+            ].map((tab: any) => {
               const isActive = activeStatus === tab.key;
               return (
                 <button
@@ -807,13 +872,19 @@ export default function EventManagement() {
                   onClick={() => handleTabChange(tab.key as EventStatusTab)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
                     ? 'bg-[#001A4D] text-white shadow-xs'
+                    : tab.highlight
+                    ? 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
                     : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
                     }`}
                 >
                   <span>{tab.label}</span>
                   {tab.count !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive
+                        ? 'bg-white/20 text-white'
+                        : tab.highlight
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-200/80 text-gray-700'
                         }`}
                     >
                       {tab.count}
@@ -861,6 +932,45 @@ export default function EventManagement() {
             </button>
           </div>
         </div>
+
+        {/* Officer Proposals Sub-Filter Bar */}
+        {activeStatus === 'officer_proposals' && (
+          <div className="px-4 py-2.5 bg-indigo-50/60 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-900">
+                Officer Proposals Queue:
+              </span>
+              {[
+                { key: 'all', label: 'All Submitted' },
+                { key: 'for_adviser_review', label: `For Adviser Review (${statusCounts.officer_proposals})` },
+                { key: 'returned', label: 'For Revision' },
+                { key: 'forwarded', label: 'Approved by Adviser / Forwarded' },
+                { key: 'rejected', label: 'Rejected' },
+              ].map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={() => {
+                    setOfficerSubFilter(chip.key as any);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
+                    officerSubFilter === chip.key
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-white text-indigo-900 border border-indigo-200 hover:bg-indigo-100/70'
+                  }`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+            <span className="text-[11px] text-indigo-800/80 font-medium">
+              {isAdviser
+                ? 'Click "Review & Decide" on any pending officer proposal to approve & forward, return for revision, or reject.'
+                : 'Track your submissions awaiting Club Adviser review before forwarding to SAS.'}
+            </span>
+          </div>
+        )}
 
         {/* Filter Drawer */}
         {showFilters && (
@@ -965,7 +1075,94 @@ export default function EventManagement() {
           </div>
         )}
 
-        {activeStatus === 'trash' ? (
+        {activeStatus === 'supplemental_budgets' ? (
+          <div className="p-4">
+            {orgSbrs.length === 0 ? (
+              <div className="py-12 text-center text-sm text-gray-500">
+                No Supplemental Budget Requests yet. Open any <strong>Approved</strong> event prior to implementation and click <strong>Request Additional Funds</strong> inside Section 8 (Financial Projections).
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[11px]">
+                    <tr>
+                      <th className="text-left px-4 py-3 font-bold">Ref / Activity</th>
+                      <th className="text-left px-4 py-3 font-bold">Funding Source</th>
+                      <th className="text-right px-4 py-3 font-bold">Base → New Budget</th>
+                      <th className="text-left px-4 py-3 font-bold">Status</th>
+                      <th className="text-right px-4 py-3 font-bold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {orgSbrs
+                      .filter((s) => {
+                        if (!searchQuery.trim()) return true;
+                        const q = searchQuery.toLowerCase();
+                        return (
+                          s.referenceCode.toLowerCase().includes(q) ||
+                          s.eventTitle.toLowerCase().includes(q) ||
+                          s.creatorName.toLowerCase().includes(q)
+                        );
+                      })
+                      .map((sbr) => {
+                        const track = resolveDocumentTrackingState(sbr, 'SBR');
+                        return (
+                          <tr
+                            key={sbr.id}
+                            onClick={() => setSelectedSbrId(sbr.id)}
+                            className="hover:bg-blue-50/30 cursor-pointer"
+                          >
+                            <td className="px-4 py-3">
+                              <div className="font-mono font-bold text-[#001A4D]">{sbr.referenceCode}</div>
+                              <div className="font-semibold text-gray-900">{sbr.eventTitle}</div>
+                              <div className="text-[11px] text-gray-500">By {sbr.creatorName}</div>
+                            </td>
+                            <td className="px-4 py-3 font-medium text-gray-700">
+                              {sbr.fundingSource === 'organization_funds'
+                                ? 'Club Treasury'
+                                : 'School Budget (Misc Fee)'}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono">
+                              <div className="font-bold text-amber-700">+{formatCurrency(sbr.requestedAmount)}</div>
+                              <div className="text-[11px] text-gray-500">
+                                Base {formatCurrency(sbr.baseApprovedBudget)}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${track.badgeClass}`}>
+                                {sbr.status === 'withdrawn' ? 'Withdrawn' : track.label}
+                              </span>
+                              {track.subLabel && (
+                                <div className="text-[10px] text-gray-500 mt-0.5">{track.subLabel}</div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedSbrId(sbr.id);
+                                }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                                  isAdviser && sbr.status === 'for_adviser_review'
+                                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                                    : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                                }`}
+                              >
+                                {isAdviser && sbr.status === 'for_adviser_review'
+                                  ? 'Review & Decide'
+                                  : 'Inspect'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : activeStatus === 'trash' ? (
           <div className="p-4">
             <TrashRepositoryViewer
               collectionName="activities"
@@ -1127,39 +1324,30 @@ export default function EventManagement() {
                             )}
                           </td>
 
-                          {/* Signatory Stage */}
+                          {/* Proposal Status (7-Stage Tracker Badge) */}
                           <td className="py-3.5 px-4 whitespace-nowrap">
-                            {isRejected ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
-                                Rejected
-                              </span>
-                            ) : isReturned ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                                Revision
-                              </span>
-                            ) : isApproved ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                Approved
-                              </span>
-                            ) : isDraft ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-                                Draft
-                              </span>
-                            ) : isEventCompleted(event) ? (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-teal-50 text-teal-700 border border-teal-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
-                                Completed
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
-                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                                {currentStep ? (currentStep.roleTitle || currentStep.role || 'In Review') : `Stage ${currentStageIdx} • Review`}
-                              </span>
-                            )}
+                            {(() => {
+                              const track = resolveDocumentTrackingState(event, 'AP');
+                              return (
+                                <div className="inline-flex flex-col items-start gap-0.5">
+                                  <span
+                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${track.badgeClass}`}
+                                  >
+                                    <span
+                                      className={`w-1.5 h-1.5 rounded-full ${track.dotClass} ${
+                                        track.isPulsing ? 'animate-pulse' : ''
+                                      }`}
+                                    />
+                                    {track.label}
+                                  </span>
+                                  {track.subLabel && (
+                                    <span className="text-[10px] text-gray-500 font-medium pl-1">
+                                      {track.subLabel}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </td>
 
                           {/* Signatory Status (e.g. 3/5) */}
@@ -1203,15 +1391,26 @@ export default function EventManagement() {
                           {/* Actions */}
                           <td className="py-3.5 px-4 text-right whitespace-nowrap">
                             <div className="flex items-center justify-end gap-1.5">
-                              {/* Always View */}
-                              <button
-                                onClick={() => setSelectedEventId(event.id)}
-                                className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                title="View Activity Proposal"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                <span>View</span>
-                              </button>
+                              {/* Club Adviser Review CTA when awaiting adviser decision */}
+                              {isAdviser && isDocumentForAdviserReview(event) && !event.isArchived ? (
+                                <button
+                                  onClick={() => setSelectedEventId(event.id)}
+                                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-xs"
+                                  title="Open Club Adviser Decision Panel"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Review &amp; Decide</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => setSelectedEventId(event.id)}
+                                  className="px-2.5 py-1.5 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                                  title="View Activity Proposal"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>View</span>
+                                </button>
+                              )}
 
                               {/* Lifecycle Actions */}
                               {event.isArchived ? (
@@ -1427,6 +1626,53 @@ export default function EventManagement() {
         documentTitle={withdrawingEventTarget?.title}
         documentTypeLabel="Activity Proposal"
       />
+
+      {/* Supplemental Budget Review / Edit Modals */}
+      <SupplementalBudgetDetailModal
+        isOpen={Boolean(liveSelectedSbr)}
+        onClose={() => setSelectedSbrId(null)}
+        sbr={liveSelectedSbr}
+        viewerRole={isAdviser ? 'adviser' : 'officer'}
+        actor={{
+          uid: profile?.authUid || profile?.uid || '',
+          name: profile?.studentName || (profile as any)?.name || 'Club Officer',
+          email: profile?.email || '',
+          role: isAdviser ? 'adviser' : 'officer',
+          signatureUrl: (profile as any)?.signatureUrl || undefined,
+        }}
+        onEditRequested={(sbrToEdit) => {
+          setSelectedSbrId(null);
+          setEditingSbr(sbrToEdit);
+        }}
+      />
+
+      {editingSbr && (
+        <SupplementalBudgetModal
+          isOpen={Boolean(editingSbr)}
+          onClose={() => setEditingSbr(null)}
+          event={
+            events.find((e) => e.id === editingSbr.eventId) || {
+              id: editingSbr.eventId,
+              title: editingSbr.eventTitle,
+              totalApprovedBudget: editingSbr.baseApprovedBudget,
+              startDate: editingSbr.eventStartDate,
+            }
+          }
+          isSasInstitutional={false}
+          organizationId={activeOrgId || editingSbr.organizationId}
+          organizationName={activeOrg?.name || editingSbr.organizationName}
+          organizationAcronym={activeOrg?.acronym || editingSbr.organizationAcronym}
+          priorSupplementalTotal={editingSbr.priorSupplementalTotal}
+          actor={{
+            uid: profile?.authUid || profile?.uid || '',
+            name: profile?.studentName || (profile as any)?.name || 'Club Officer',
+            email: profile?.email || '',
+            role: isAdviser ? 'adviser' : 'officer',
+            signatureUrl: (profile as any)?.signatureUrl || undefined,
+          }}
+          existingSbr={editingSbr}
+        />
+      )}
     </div>
   );
 }

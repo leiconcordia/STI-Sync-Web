@@ -2,7 +2,15 @@ import { Timestamp } from 'firebase/firestore';
 import type { SoftDeletable, Archivable } from '../../workflow/types/approval.types';
 import type { ReturnStepItem } from '../../workflow/components/StepReturnRevisionModal';
 
-export type LiquidationStatus = 'draft' | 'pending' | 'under_review' | 'approved' | 'returned' | 'voided';
+export type LiquidationStatus =
+  | 'draft'
+  | 'for_adviser_review'
+  | 'pending'
+  | 'under_review'
+  | 'approved'
+  | 'returned'
+  | 'rejected'
+  | 'voided';
 
 export interface ReceiptAttachment {
   id: string;
@@ -64,8 +72,21 @@ export interface ExpenseLineItem {
 export interface LiquidationRemark {
   id: string;
   authorName: string;
-  authorRole: 'admin' | 'officer' | 'signatory';
-  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'voided' | 'endorsed' | 'cashier_proof' | 'cashier_verified';
+  authorRole: 'admin' | 'officer' | 'adviser' | 'signatory';
+  action:
+    | 'submitted'
+    | 'submitted_to_adviser'
+    | 'adviser_approved'
+    | 'adviser_returned'
+    | 'adviser_rejected'
+    | 'returned'
+    | 'approved'
+    | 'rejected'
+    | 'draft_saved'
+    | 'voided'
+    | 'endorsed'
+    | 'cashier_proof'
+    | 'cashier_verified';
   comment: string;
   timestamp: string; // ISO string
 }
@@ -146,6 +167,15 @@ export interface LiquidationDocument extends SoftDeletable, Archivable {
   totalActualSpending: number;  // Sum of all line items
   surplusOrDeficit: number;     // allocatedBudget - totalActualSpending
   status: LiquidationStatus;
+  submittedByOfficer?: boolean;
+  submittedToAdviserAt?: Timestamp | any;
+  submittedToSasAt?: Timestamp | any;
+  adviserReview?: import('../../activity-proposals/types/proposal.types').AdviserReviewRecord | null;
+  returnedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectionReason?: string | null;
+  rejectedByName?: string;
+  rejectedAt?: Timestamp | any;
   lineItems: ExpenseLineItem[];
   approvalChain?: LiquidationApprovalStep[];
   currentStageIndex?: number;

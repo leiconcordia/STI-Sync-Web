@@ -30,6 +30,10 @@ import { formatPHP } from '../../modules/activity-proposals/utils/proposal-calcu
 import { formatLongDate } from '../../utils/date';
 import ProposalEndorsementModal from '../components/ProposalEndorsementModal';
 import type { ActivityProposal } from '../../modules/activity-proposals/types/proposal.types';
+import {
+  SupplementalBudgetDetailModal,
+  type SupplementalBudgetRequest,
+} from '../../modules/supplemental-budget';
 
 interface ContextType {
   session: any;
@@ -43,13 +47,34 @@ export default function SignatoryProposalsPage() {
     pendingProposals,
     endorsedProposals,
     returnedProposals,
+    pendingSbrs,
+    endorsedSbrs,
+    returnedSbrs,
     loading,
   } = useSignatoryDocuments(session);
 
   const [activeTab, setActiveTab] = useState<'pending' | 'endorsed' | 'returned'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedProposal, setSelectedProposal] = useState<ActivityProposal | null>(null);
+  const [selectedSbr, setSelectedSbr] = useState<SupplementalBudgetRequest | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+
+  const currentSbrList =
+    activeTab === 'pending'
+      ? pendingSbrs
+      : activeTab === 'endorsed'
+      ? endorsedSbrs
+      : returnedSbrs;
+
+  const filteredSbrList = currentSbrList.filter((s) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      s.referenceCode.toLowerCase().includes(q) ||
+      s.eventTitle.toLowerCase().includes(q) ||
+      s.organizationName.toLowerCase().includes(q)
+    );
+  });
 
   const currentList =
     activeTab === 'pending'
@@ -118,7 +143,7 @@ export default function SignatoryProposalsPage() {
               activeTab === 'pending' ? 'bg-[#FFD41C] text-[#001A4D]' : 'bg-slate-200 text-slate-700'
             }`}
           >
-            {pendingProposals.length}
+            {pendingProposals.length + pendingSbrs.length}
           </span>
         </button>
 
@@ -138,7 +163,7 @@ export default function SignatoryProposalsPage() {
               activeTab === 'endorsed' ? 'bg-[#FFD41C] text-[#001A4D]' : 'bg-slate-200 text-slate-700'
             }`}
           >
-            {endorsedProposals.length}
+            {endorsedProposals.length + endorsedSbrs.length}
           </span>
         </button>
 
@@ -280,6 +305,66 @@ export default function SignatoryProposalsPage() {
         )}
       </div>
 
+      {/* Supplemental Budget Requests Queue (School Budget / Institutional Addendums) */}
+      {filteredSbrList.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xs font-black uppercase tracking-wider text-indigo-900 flex items-center gap-2">
+              <DollarSign className="w-4 h-4 text-indigo-600" />
+              Supplemental Budget Requests ({filteredSbrList.length})
+            </h2>
+          </div>
+          {filteredSbrList.map((sbr) => (
+            <div
+              key={sbr.id}
+              onClick={() => setSelectedSbr(sbr)}
+              className="bg-indigo-50/40 border border-indigo-200 hover:border-indigo-400 rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer transition-all shadow-2xs"
+            >
+              <div className="space-y-1.5 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded bg-indigo-600 text-white">
+                    Supplemental Budget
+                  </span>
+                  <span className="font-mono text-xs font-bold text-[#001A4D]">{sbr.referenceCode}</span>
+                  <span className="text-xs font-semibold text-slate-600">• {sbr.organizationName}</span>
+                </div>
+                <h3 className="text-base font-bold text-slate-900 truncate">{sbr.eventTitle}</h3>
+                <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600">
+                  <span>Base Approved: <strong>{formatPHP(sbr.baseApprovedBudget)}</strong></span>
+                  <span className="text-amber-700 font-bold">
+                    Additional Requested: +{formatPHP(sbr.requestedAmount)}
+                  </span>
+                  <span className="text-emerald-700 font-bold">
+                    New Total: {formatPHP(sbr.baseApprovedBudget + sbr.priorSupplementalTotal + sbr.requestedAmount)}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedSbr(sbr);
+                }}
+                className="px-4 py-2 rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold flex items-center gap-2 shadow-xs shrink-0 self-start md:self-center"
+              >
+                {activeTab === 'pending' ? (
+                  <>
+                    <Send className="w-3.5 h-3.5 text-[#FFD41C]" />
+                    <span>Review &amp; Sign SBR</span>
+                  </>
+                ) : (
+                  <>
+                    <Eye className="w-3.5 h-3.5 text-[#FFD41C]" />
+                    <span>View SBR Details</span>
+                  </>
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Proposal Modal */}
       {selectedProposal && (
         <ProposalEndorsementModal
@@ -290,6 +375,22 @@ export default function SignatoryProposalsPage() {
           onOpenSignaturePad={onOpenSignatureModal}
         />
       )}
+
+      {/* Supplemental Budget Review & Sign Modal */}
+      <SupplementalBudgetDetailModal
+        isOpen={Boolean(selectedSbr)}
+        onClose={() => setSelectedSbr(null)}
+        sbr={selectedSbr}
+        viewerRole="signatory"
+        actor={{
+          uid: session?.uid || session?.id || '',
+          name: session?.name || 'Institutional Signatory',
+          email: session?.email || '',
+          role: 'signatory',
+          roleTitle: session?.roleTitle || session?.role || '',
+          signatureUrl: session?.signatureUrl || session?.signatureDataUrl || undefined,
+        }}
+      />
     </div>
   );
 }

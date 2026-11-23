@@ -45,6 +45,10 @@ import {
   isSasCreatedEvent,
 } from "../../modules/events/utils/organization-display.utils";
 import {
+  isHiddenFromSasAndSignatories,
+  resolveDocumentTrackingState,
+} from "../../modules/activity-proposals/utils/proposal-status-tracker.utils";
+import {
   ORG_FUND_SOURCE_FILTER_OPTIONS,
   SAS_FUND_SOURCE_FILTER_OPTIONS,
   resolveEventFundSourceDisplay,
@@ -56,10 +60,14 @@ import { formatAppDateTime } from "../../utils/date";
 import stiOrmocLogo from "../../../imports/STI_ORMOC_LOGO.jpg";
 import { TablePagination } from "../../components/common/TablePagination";
 import { TrashRepositoryViewer } from "../../modules/workflow/components/TrashRepositoryViewer";
+import {
+  useAllSupplementalBudgets,
+  SupplementalBudgetDetailModal,
+} from "../../modules/supplemental-budget";
 
 const ITEMS_PER_PAGE = 8;
 
-type TabValue = "all" | "urgent" | "pending" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "trash";
+type TabValue = "all" | "urgent" | "pending" | "supplemental_budgets" | "approved" | "returned" | "completed" | "archived" | "rejected" | "drafts" | "trash";
 type DateRangeOption = "all" | "this_week" | "this_month" | "custom";
 
 function isWithinDateRange(
@@ -198,6 +206,28 @@ export function EventApprovals() {
   // ── Data streams ─────────────────────────────────────────────────────────
   const { events, loading: eventsLoading } = useAllEvents();
   const { drafts, loading: draftsLoading } = useDraftEvents();
+  const { data: allSbrs = [] } = useAllSupplementalBudgets();
+  const [selectedSbrId, setSelectedSbrId] = useState<string | null>(null);
+
+  const sasVisibleSbrs = useMemo(
+    () =>
+      allSbrs.filter((s) => {
+        if (!s || s.isDeleted) return false;
+        if (s.isSasInstitutional) return true;
+        return !isHiddenFromSasAndSignatories(s);
+      }),
+    [allSbrs]
+  );
+
+  const pendingSasSbrCount = useMemo(
+    () => sasVisibleSbrs.filter((s) => s.status === 'for_sas_review').length,
+    [sasVisibleSbrs]
+  );
+
+  const liveSelectedSbr = useMemo(
+    () => (selectedSbrId ? allSbrs.find((s) => s.id === selectedSbrId) || null : null),
+    [selectedSbrId, allSbrs]
+  );
   const { data: orgs } = useOrganizationStream();
   const { categories } = useEventCategoriesStream();
   const { venues } = useVenuesStream();
@@ -406,7 +436,8 @@ export function EventApprovals() {
     const isDraft =
       event.proposalStatus === "draft" ||
       event.status === "draft" ||
-      (event as any).lifecycleStatus === "draft";
+      (event as any).lifecycleStatus === "draft" ||
+      isHiddenFromSasAndSignatories(event);
     const isCancelled =
       event.status === "cancelled" ||
       event.proposalStatus === "cancelled" ||
@@ -1076,6 +1107,11 @@ export function EventApprovals() {
               { key: "all", label: "All", count: allCount },
               ...(urgentCount > 0 ? [{ key: "urgent", label: "Urgent", count: urgentCount }] : []),
               { key: "pending", label: "Pending", count: pendingCount },
+              {
+                key: "supplemental_budgets",
+                label: "Supplemental Budgets",
+                count: pendingSasSbrCount > 0 ? pendingSasSbrCount : sasVisibleSbrs.length,
+              },
               { key: "approved", label: "Approved", count: approvedCount },
               { key: "returned", label: "Returned", count: returnedCount },
               { key: "completed", label: "Completed", count: completedCount },
@@ -1296,7 +1332,101 @@ export function EventApprovals() {
           </div>
         )}
 
-        {activeTab === "trash" ? (
+        {activeTab === "supplemental_budgets" ? (
+          <div className="p-4">
+            {sasVisibleSbrs.length === 0 ? (
+              <div className="py-12 text-center text-sm text-gray-500">
+                No Supplemental Budget Requests awaiting SAS review or recorded yet. Open any approved SAS institutional activity to file a supplemental budget request.
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-gray-200 rounded-xl">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[11px]">
+                    <tr>
+                      <th className="text-left px-4 py-3 font-bold">Ref / Activity</th>
+                      <th className="text-left px-4 py-3 font-bold">Organization</th>
+                      <th className="text-left px-4 py-3 font-bold">Funding Source</th>
+                      <th className="text-right px-4 py-3 font-bold">Requested Delta</th>
+                      <th className="text-left px-4 py-3 font-bold">Status</th>
+                      <th className="text-right px-4 py-3 font-bold">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {sasVisibleSbrs
+                      .filter((s) => {
+                        if (!searchQuery.trim()) return true;
+                        const q = searchQuery.toLowerCase();
+                        return (
+                          s.referenceCode.toLowerCase().includes(q) ||
+                          s.eventTitle.toLowerCase().includes(q) ||
+                          s.organizationName.toLowerCase().includes(q)
+                        );
+                      })
+                      .map((sbr) => {
+                        const track = resolveDocumentTrackingState(sbr, 'SBR');
+                        return (
+                          <tr
+                            key={sbr.id}
+                            onClick={() => setSelectedSbrId(sbr.id)}
+                            className="hover:bg-blue-50/30 cursor-pointer"
+                          >
+                            <td className="px-4 py-3">
+                              <div className="font-mono font-bold text-[#001A4D]">{sbr.referenceCode}</div>
+                              <div className="font-semibold text-gray-900">{sbr.eventTitle}</div>
+                            </td>
+                            <td className="px-4 py-3 text-gray-700 font-medium">{sbr.organizationName}</td>
+                            <td className="px-4 py-3 text-gray-700">
+                              {sbr.fundingSource === 'organization_funds'
+                                ? 'Club Treasury (Direct SAS)'
+                                : sbr.fundingSource === 'retained_sao_fund'
+                                ? 'SAO Retained Fund'
+                                : 'School Budget (Misc Fee)'}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono">
+                              <div className="font-bold text-amber-700">+{formatCurrency(sbr.requestedAmount)}</div>
+                              <div className="text-[11px] text-gray-500">
+                                Base {formatCurrency(sbr.baseApprovedBudget)}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${track.badgeClass}`}>
+                                {sbr.status === 'withdrawn' ? 'Withdrawn' : track.label}
+                              </span>
+                              {sbr.status === 'approved' && sbr.fundingSource === 'school_budget' && (
+                                <div className="text-[10px] font-semibold mt-0.5 text-emerald-700">
+                                  {sbr.disbursementVoucher ? 'Voucher Recorded' : 'Needs Supplemental Voucher'}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedSbrId(sbr.id);
+                                }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                                  sbr.status === 'for_sas_review'
+                                    ? 'bg-[#001A4D] text-white hover:bg-[#002d80]'
+                                    : 'bg-gray-100 text-gray-800 hover:bg-gray-200'
+                                }`}
+                              >
+                                {sbr.status === 'for_sas_review'
+                                  ? sbr.requiresSignatories
+                                    ? 'Vet & Forward'
+                                    : 'Review & Approve'
+                                  : 'Inspect'}
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : activeTab === "trash" ? (
           <div className="p-4">
             <TrashRepositoryViewer
               collectionName="activities"
@@ -1816,6 +1946,21 @@ export function EventApprovals() {
         onConfirm={confirmWithdrawExecution}
         documentTitle={withdrawingEventTarget?.title}
         documentTypeLabel="Activity Proposal"
+      />
+
+      {/* Supplemental Budget Review Modal (SAS Admin) */}
+      <SupplementalBudgetDetailModal
+        isOpen={Boolean(liveSelectedSbr)}
+        onClose={() => setSelectedSbrId(null)}
+        sbr={liveSelectedSbr}
+        viewerRole="admin"
+        actor={{
+          uid: adviserProfile?.uid || 'admin-user',
+          name: adviserProfile?.displayName || 'SAS Admin',
+          email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
+          role: 'admin',
+          signatureUrl: adviserProfile?.signatureUrl || (adviserProfile as any)?.signatureDataUrl || undefined,
+        }}
       />
     </div>
   );

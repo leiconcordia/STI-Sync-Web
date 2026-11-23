@@ -10,6 +10,7 @@ import { PAR_COLLECTION } from '../services/par.service';
 import type { PostActivityReportDocument } from '../types/par.types';
 import type { EventDocument } from '../../events/types/event.types';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { isHiddenFromSasAndSignatories } from '../../activity-proposals/utils/proposal-status-tracker.utils';
 import { subscribeRawEvents } from '../../events/hooks/useEventStream';
 import { createSingletonStream, createKeyedSingletonStream } from '../../../utils/createSingletonStream';
 
@@ -109,10 +110,14 @@ const allPARsStream = createSingletonStream<PostActivityReportDocument[]>({
 });
 
 /**
- * Stream hook for Admin / SAS: fetches all PARs (both Org-submitted and SAS internal).
+ * Stream hook for Admin / SAS: fetches all PARs (excluding internal officer drafts & adviser-pending/adviser-rejected reports).
  */
 export function useAdminPARs() {
-  const { data: pars, loading, error } = allPARsStream.use();
+  const { data: allPars, loading, error } = allPARsStream.use();
+  const pars = useMemo(
+    () => allPars.filter((p) => !isHiddenFromSasAndSignatories(p) || p.isSasInternal),
+    [allPars]
+  );
   return { pars, loading, error };
 }
 
@@ -150,7 +155,7 @@ export function useEligibleEventsForPAR(
     const map = new Map<string, PostActivityReportDocument>();
     existingPars.forEach((p) => {
       const st = (p.status || '').toLowerCase();
-      if (p.eventId && st !== 'cancelled' && st !== 'voided' && (p as any).isDeleted !== true) {
+      if (p.eventId && st !== 'cancelled' && st !== 'voided' && st !== 'rejected' && (p as any).isDeleted !== true) {
         map.set(p.eventId, p);
       }
     });

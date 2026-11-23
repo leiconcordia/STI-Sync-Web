@@ -25,7 +25,17 @@ import { toast } from 'sonner';
 import type { PostActivityReportDocument } from '../types/par.types';
 import { exportPostActivityReportPDF } from '../utils/par-pdf-exporter';
 import { formatCurrency, formatVariance } from '../../../utils/currency';
-import { approvePAR, returnPAR, withdrawPostActivityReport } from '../services/par.service';
+import {
+  approvePAR,
+  returnPAR,
+  withdrawPostActivityReport,
+  approveAndForwardPARByAdviser,
+  returnPARByAdviser,
+  rejectPARByAdviser,
+} from '../services/par.service';
+import ProposalStatusStepper from '../../activity-proposals/components/workflow/ProposalStatusStepper';
+import ClubAdviserDecisionPanel from '../../workflow/components/ClubAdviserDecisionPanel';
+import { resolveDocumentTrackingState } from '../../activity-proposals/utils/proposal-status-tracker.utils';
 import { resolveApprovalPermissions } from '../../workflow/utils/approval-permissions.utils';
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../workflow/components/WithdrawConfirmModal';
@@ -55,6 +65,8 @@ interface PostActivityReportDetailModalProps {
     uid: string;
     name?: string;
     role?: string;
+    isAdviser?: boolean;
+    signatureUrl?: string | null;
     organizationId?: string;
     email?: string;
   };
@@ -289,33 +301,19 @@ export default function PostActivityReportDetailModal({
     (report.financialSummary?.totalDisbursed || 0);
 
   const statusBadge = () => {
-    switch (report.status) {
-      case 'approved':
-        return (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-            <CheckCircle2 className="w-3.5 h-3.5" /> Approved & Cleared
-          </span>
-        );
-      case 'under_review':
-        return (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-200">
-            <Clock className="w-3.5 h-3.5" /> Under Institutional Review
-          </span>
-        );
-      case 'returned':
-        return (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-red-100 text-red-800 border border-red-200">
-            <RotateCcw className="w-3.5 h-3.5" /> Returned for Revision
-          </span>
-        );
-      default:
-        return (
-          <span className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200">
-            Draft
-          </span>
-        );
-    }
+    const track = resolveDocumentTrackingState(report, 'PAR');
+    return (
+      <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold border ${track.badgeClass}`}>
+        <span className={`w-1.5 h-1.5 rounded-full ${track.dotClass} ${track.isPulsing ? 'animate-pulse' : ''}`} />
+        {track.label}
+      </span>
+    );
   };
+
+  const isClubAdviserViewer = Boolean(
+    !isSasAdmin &&
+    (currentUser?.isAdviser || (currentUser?.role || '').toLowerCase() === 'adviser')
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-sm animate-fade-in overflow-y-auto">
@@ -369,6 +367,69 @@ export default function PostActivityReportDetailModal({
 
         {/* Body Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* 7-Stage Status Stepper + Club Adviser Decision Panel (for Org PARs) */}
+          {!report.isSasInternal && (
+            <ProposalStatusStepper record={report} docKind="PAR" compact />
+          )}
+          {!isSasAdmin && !report.isSasInternal && (
+            <ClubAdviserDecisionPanel
+              documentType="PAR"
+              documentTitle={report.eventTitle || 'Post-Activity Report'}
+              referenceNo={report.referenceNo}
+              record={report}
+              isAdviser={isClubAdviserViewer}
+              adviserProfile={{
+                uid: currentUser?.uid || currentUserId || 'adviser',
+                name: currentUser?.name || currentUserName || 'Club Adviser',
+                email: currentUser?.email || '',
+                signatureUrl: currentUser?.signatureUrl || null,
+              }}
+              returnSteps={PAR_SECTIONS_FOR_REVISION}
+              onApproveAndForward={async ({ signatureUrl, remarks }) => {
+                await approveAndForwardPARByAdviser(
+                  report.id,
+                  {
+                    uid: currentUser?.uid || currentUserId || 'adviser',
+                    name: currentUser?.name || currentUserName || 'Club Adviser',
+                    email: currentUser?.email || '',
+                    signatureUrl,
+                  },
+                  remarks
+                );
+              }}
+              onReturnForRevision={async ({ overallRemarks, flaggedSteps, stepRevisionRemarks, returnDeadline }) => {
+                await returnPARByAdviser(
+                  report.id,
+                  {
+                    uid: currentUser?.uid || currentUserId || 'adviser',
+                    name: currentUser?.name || currentUserName || 'Club Adviser',
+                    email: currentUser?.email || '',
+                  },
+                  overallRemarks,
+                  stepRevisionRemarks,
+                  flaggedSteps,
+                  returnDeadline
+                );
+              }}
+              onReject={async ({ reason }) => {
+                await rejectPARByAdviser(
+                  report.id,
+                  {
+                    uid: currentUser?.uid || currentUserId || 'adviser',
+                    name: currentUser?.name || currentUserName || 'Club Adviser',
+                    email: currentUser?.email || '',
+                  },
+                  reason
+                );
+              }}
+              onDecisionComplete={() => {
+                onRefresh?.();
+                onClose();
+              }}
+              layout="inline"
+            />
+          )}
+
           {/* Returned Alert Notice with full history if applicable */}
           {hasRevisions && (
             <RevisionFeedbackBanner

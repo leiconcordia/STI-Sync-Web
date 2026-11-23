@@ -127,12 +127,13 @@ export function calculateFinancialTotals(
 
 /**
  * Check compliance with the STI 15-Calendar-Day Rule:
- * "Note: This proposal must be submitted to the Administrator at least 15 calendar days before the start of the initial task."
+ * Compares the Target Implementation Date / Activity Session Dates against the submission date.
+ * Preparatory tasks in Step 5 (scheduled from today up to the implementation date) do NOT trigger Urgent mode.
  */
 export function check15DayRule(
   submissionDateStr: string,
   sessions: ProposalSession[] = [],
-  tasks: ProposalTask[] = [],
+  _tasks: ProposalTask[] = [],
   eventDate?: string
 ): {
   isCompliant: boolean;
@@ -160,28 +161,26 @@ export function check15DayRule(
     });
   }
 
-  // 3. Collect task completion dates (15-day rule applies before the start of the initial task)
-  if (tasks && tasks.length > 0) {
-    tasks.forEach((t) => {
-      if (t.completionDate) {
-        const parsed = parseISO(t.completionDate);
-        if (isValid(parsed)) dates.push(parsed);
-      }
-    });
-  }
-
   if (dates.length === 0) {
     return {
       isCompliant: true,
       daysDiff: 15,
       earliestDate: null,
-      policyRequirement: '15 calendar days before start of initial task/event',
+      policyRequirement: '15 calendar days before target implementation date',
     };
   }
 
-  // Find minimum date
+  // Find earliest implementation / session date
   const earliest = new Date(Math.min(...dates.map((d) => d.getTime())));
-  const submissionDate = submissionDateStr ? new Date(submissionDateStr) : new Date();
+  let submissionDate = new Date();
+  if (submissionDateStr) {
+    const parsedSub = /^\d{4}-\d{2}-\d{2}$/.test(submissionDateStr.trim())
+      ? parseISO(submissionDateStr.trim())
+      : new Date(submissionDateStr);
+    if (isValid(parsedSub)) {
+      submissionDate = parsedSub;
+    }
+  }
 
   const daysDiff = differenceInCalendarDays(earliest, submissionDate);
   const isCompliant = daysDiff >= 15;
@@ -189,18 +188,17 @@ export function check15DayRule(
   return {
     isCompliant,
     daysDiff,
-    earliestDate: earliest.toISOString().split('T')[0],
-    policyRequirement: '15 calendar days before start of initial task/event',
+    earliestDate: format(earliest, 'yyyy-MM-dd'),
+    policyRequirement: '15 calendar days before target implementation date',
   };
 }
 
-export const POST_EVENT_TASK_WINDOW_DAYS = 15;
+export const POST_EVENT_TASK_WINDOW_DAYS = 0;
 
 /**
  * Computes valid task completion date bounds for Step 5 Task List:
- * - Minimum: today (if Urgent) or today + 15 calendar days (standard rule).
- * - Maximum: up to +15 calendar days after the latest implementation/session date
- *   (allowing post-event wrap-up, FL, and PAR tasks, but never past +15 days).
+ * - Minimum: today (`todayStr`) — preparatory tasks can start immediately from today.
+ * - Maximum: the latest implementation/session date (`implementationEndDate`).
  */
 export function resolveTaskDateBounds(params: {
   eventDate?: string;
@@ -220,7 +218,7 @@ export function resolveTaskDateBounds(params: {
     : new Date();
   const todayStr = format(now, 'yyyy-MM-dd');
   const standardMinDate = format(addDays(now, 15), 'yyyy-MM-dd');
-  const minTaskDate = params.isUrgent ? todayStr : standardMinDate;
+  const minTaskDate = todayStr;
 
   const validDates = Array.from(
     new Set(
@@ -234,9 +232,7 @@ export function resolveTaskDateBounds(params: {
 
   const implementationStartDate = validDates[0] || '';
   const implementationEndDate = validDates[validDates.length - 1] || '';
-  const maxTaskDate = implementationEndDate
-    ? format(addDays(parseISO(implementationEndDate), POST_EVENT_TASK_WINDOW_DAYS), 'yyyy-MM-dd')
-    : '';
+  const maxTaskDate = implementationEndDate || '';
 
   return {
     todayStr,

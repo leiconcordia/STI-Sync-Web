@@ -4,6 +4,8 @@ export interface OrganizationTypeDocument {
   id: string;
   name: string;
   color: string;
+  /** Maximum number of active organizations of this type a single student can join. null/0 = unlimited. */
+  maxMembershipsPerStudent?: number | null;
   archived: boolean;
 
   createdAt: Timestamp;
@@ -50,10 +52,13 @@ export interface OrganizationDocument {
   name: string;
   acronym: string;
   typeId: string;                              // FK → /organization_types
-  departmentId: string | 'cross-departmental'; // FK → /departments or sentinel
+  departmentId: string | 'cross-departmental'; // FK → /departments or sentinel (primary/first selected for legacy readers)
   departmentName?: string;
   departmentCode?: string;
   department?: string;
+  allowedDepartmentIds?: string[];             // Multi-department FK array when isCrossDepartmental === false
+  allowedDepartmentNames?: string[];
+  allowedDepartmentCodes?: string[];
   scope?: 'departmental' | 'cross-departmental';
   isCrossDepartmental?: boolean;
   description: string;
@@ -86,6 +91,9 @@ export interface CreateOrganizationPayload {
   departmentName?: string;
   departmentCode?: string;
   department?: string;
+  allowedDepartmentIds?: string[];
+  allowedDepartmentNames?: string[];
+  allowedDepartmentCodes?: string[];
   scope?: 'departmental' | 'cross-departmental';
   isCrossDepartmental?: boolean;
   description: string;

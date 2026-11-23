@@ -53,7 +53,7 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
 
   const statusPill = (s: VenueDocument['status']) =>
     s === 'available' ? 'bg-green-100 text-green-700' :
-    s === 'maintenance' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700';
+      s === 'maintenance' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700';
 
   const saveVenue = async () => {
     const cleanName = venueForm.name.trim();
@@ -102,71 +102,70 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
   return (
     <div className="space-y-6 max-w-4xl">
       <div>
-        <h2 className="text-2xl font-bold text-[#001A4D]">Event Configuration</h2>
+        <h2 className="text-2xl font-bold text-[#001A4D]">Venue Registry</h2>
         <p className="text-sm text-gray-500 mt-1">Manage event venue registry</p>
       </div>
 
       {/* VENUES */}
       <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <div className="flex items-center gap-3">
-              <h3 className="font-bold text-[#001A4D]">Venue Registry</h3>
-              <ActiveArchivedTabs active={venueArchivedView} onChange={setVenueArchivedView} />
-            </div>
-            <button onClick={() => { setVenueForm({ name: '', venueType: 'inside', status: 'available' }); setModal({ type: 'add-venue' }); }}
-              className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer">
-              <Plus className="w-4 h-4" /> Add New Venue
-            </button>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <div className="flex items-center gap-3">
+            <h3 className="font-bold text-[#001A4D]">Venue Registry</h3>
+            <ActiveArchivedTabs active={venueArchivedView} onChange={setVenueArchivedView} />
           </div>
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Venue</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Location Type</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Status</th>
-                <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {(venueArchivedView ? archivedVenues : activeVenues).map(venue => (
-                <tr key={venue.id} className="hover:bg-gray-50 transition-colors"
-                  onMouseEnter={() => setHoveredRow(venue.id)} onMouseLeave={() => setHoveredRow(null)}>
-                  <td className="px-4 py-3 text-sm font-medium text-gray-900">{venue.name}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
-                      venue.venueType === 'outside'
-                        ? 'bg-purple-100 text-purple-700 border border-purple-200'
-                        : 'bg-blue-100 text-blue-700 border border-blue-200'
-                    }`}>
-                      {venue.venueType === 'outside' ? 'Outside (Off-Campus)' : 'Inside (Campus)'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 text-xs rounded-full font-medium capitalize ${statusPill(venue.status)}`}>{venue.status}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === venue.id ? 'opacity-100' : 'opacity-0'}`}>
-                      {!venue.archived ? (
-                        <>
-                          <button onClick={() => { setVenueForm({ name: venue.name, venueType: venue.venueType || 'inside', status: venue.status }); setModal({ type: 'edit-venue', item: venue }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer"><Edit2 className="w-4 h-4" /></button>
-                          <button onClick={() => setModal({ type: 'archive-venue', item: venue })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500 cursor-pointer"><Archive className="w-4 h-4" /></button>
-                        </>
-                      ) : (
-                        <>
-                          <button onClick={() => setModal({ type: 'restore-venue', item: venue })} className="p-1.5 rounded hover:bg-green-50 text-green-600 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
-                          <button onClick={() => setModal({ type: 'delete-venue', item: venue })} className="p-1.5 rounded hover:bg-red-50 text-red-600 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {(venueArchivedView ? archivedVenues : activeVenues).length === 0 && (
-                <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-400">No {venueArchivedView ? 'archived' : 'active'} venues.</td></tr>
-              )}
-            </tbody>
-          </table>
+          <button onClick={() => { setVenueForm({ name: '', venueType: 'inside', status: 'available' }); setModal({ type: 'add-venue' }); }}
+            className="px-4 py-2 bg-[#001A4D] text-white rounded-lg text-sm font-medium hover:bg-[#001A4D]/90 flex items-center gap-2 cursor-pointer">
+            <Plus className="w-4 h-4" /> Add New Venue
+          </button>
         </div>
+        <table className="w-full">
+          <thead className="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Venue</th>
+              <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Location Type</th>
+              <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Status</th>
+              <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {(venueArchivedView ? archivedVenues : activeVenues).map(venue => (
+              <tr key={venue.id} className="hover:bg-gray-50 transition-colors"
+                onMouseEnter={() => setHoveredRow(venue.id)} onMouseLeave={() => setHoveredRow(null)}>
+                <td className="px-4 py-3 text-sm font-medium text-gray-900">{venue.name}</td>
+                <td className="px-4 py-3">
+                  <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${venue.venueType === 'outside'
+                      ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                      : 'bg-blue-100 text-blue-700 border border-blue-200'
+                    }`}>
+                    {venue.venueType === 'outside' ? 'Outside (Off-Campus)' : 'Inside (Campus)'}
+                  </span>
+                </td>
+                <td className="px-4 py-3">
+                  <span className={`px-2 py-0.5 text-xs rounded-full font-medium capitalize ${statusPill(venue.status)}`}>{venue.status}</span>
+                </td>
+                <td className="px-4 py-3">
+                  <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === venue.id ? 'opacity-100' : 'opacity-0'}`}>
+                    {!venue.archived ? (
+                      <>
+                        <button onClick={() => { setVenueForm({ name: venue.name, venueType: venue.venueType || 'inside', status: venue.status }); setModal({ type: 'edit-venue', item: venue }); }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer"><Edit2 className="w-4 h-4" /></button>
+                        <button onClick={() => setModal({ type: 'archive-venue', item: venue })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500 cursor-pointer"><Archive className="w-4 h-4" /></button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => setModal({ type: 'restore-venue', item: venue })} className="p-1.5 rounded hover:bg-green-50 text-green-600 cursor-pointer"><RotateCcw className="w-4 h-4" /></button>
+                        <button onClick={() => setModal({ type: 'delete-venue', item: venue })} className="p-1.5 rounded hover:bg-red-50 text-red-600 cursor-pointer"><Trash2 className="w-4 h-4" /></button>
+                      </>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {(venueArchivedView ? archivedVenues : activeVenues).length === 0 && (
+              <tr><td colSpan={4} className="px-4 py-8 text-center text-sm text-gray-400">No {venueArchivedView ? 'archived' : 'active'} venues.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {/* MODALS */}
       {modal.type !== 'none' && (
@@ -193,11 +192,10 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Location Type <span className="text-red-500">*</span></label>
                   <div className="grid grid-cols-2 gap-3">
                     <label
-                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${
-                        venueForm.venueType === 'inside'
+                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${venueForm.venueType === 'inside'
                           ? 'border-[#001A4D] bg-blue-50/50 text-[#001A4D] font-bold shadow-2xs'
                           : 'border-gray-200 text-gray-700 hover:bg-gray-50'
-                      }`}
+                        }`}
                     >
                       <input
                         type="radio"
@@ -210,11 +208,10 @@ export default function EventConfiguration({ onUnsavedChange }: EventConfigurati
                       <span className="text-xs">Inside (Campus)</span>
                     </label>
                     <label
-                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${
-                        venueForm.venueType === 'outside'
+                      className={`flex items-center gap-2 p-3 border rounded-xl cursor-pointer transition-all ${venueForm.venueType === 'outside'
                           ? 'border-[#001A4D] bg-blue-50/50 text-[#001A4D] font-bold shadow-2xs'
                           : 'border-gray-200 text-gray-700 hover:bg-gray-50'
-                      }`}
+                        }`}
                     >
                       <input
                         type="radio"

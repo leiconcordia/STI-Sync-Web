@@ -103,7 +103,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             </h4>
           </div>
           <p className="text-xs text-indigo-700/90 mt-0.5 leading-relaxed">
-            Itemize preparatory and post-activity milestones, assigned committees, and completion dates. Tasks may occur before, during, or up to <strong>+{POST_EVENT_TASK_WINDOW_DAYS} days after</strong> the implementation date.
+            Itemize preparatory milestones, assigned committees, and completion dates. Tasks must be scheduled from <strong>today ({todayStr})</strong> up to the <strong>implementation date</strong>.
           </p>
         </div>
       </div>
@@ -123,7 +123,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
         </div>
         <div className="text-[11px] text-blue-800 font-medium">
           {maxTaskDate ? (
-            <span>Latest allowed task completion: <strong>{maxTaskDate}</strong> (+{POST_EVENT_TASK_WINDOW_DAYS} days post-event)</span>
+            <span>Allowed task window: <strong>{todayStr}</strong> to <strong>{maxTaskDate}</strong></span>
           ) : (
             <span className="text-amber-700 font-semibold">⚠ Please configure event date in Step 4</span>
           )}
@@ -134,7 +134,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
       <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl text-xs text-amber-800 flex items-start gap-2">
         <Clock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
         <div className="leading-relaxed">
-          <strong>Sequencing Policy:</strong> Tasks may be scheduled before, on, or after the implementation date (e.g., post-event liquidation &amp; PAR), but must never exceed <strong>+{POST_EVENT_TASK_WINDOW_DAYS} calendar days</strong> after <strong>{implementationEndDate || 'the implementation date'}</strong>{maxTaskDate ? ` (latest: ${maxTaskDate})` : ''}.
+          <strong>Task Date Policy:</strong> Task completion dates must fall between <strong>today ({todayStr})</strong> and the <strong>implementation date ({implementationEndDate || 'set in Step 4'})</strong>, ordered chronologically.
         </div>
       </div>
 
@@ -149,16 +149,10 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
       {/* Task Rows Table / Cards */}
       <div className="space-y-3">
         {tasks.map((task, index) => {
-          const isDateMatchingOrExceedingEvent = Boolean(
-            eventDate && maxTaskDate && task.completionDate && task.completionDate > maxTaskDate
+          const isDateExceedingEvent = Boolean(
+            maxTaskDate && task.completionDate && task.completionDate > maxTaskDate
           );
           const isDateInPast = Boolean(task.completionDate && task.completionDate < todayStr);
-          const isDateUnder15Days = Boolean(
-            !isUrgent &&
-            task.completionDate &&
-            task.completionDate >= todayStr &&
-            task.completionDate < standardMinDate
-          );
           const isPrecededByLaterTask = Boolean(
             index > 0 &&
             task.completionDate &&
@@ -170,7 +164,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
             <div
               key={task.id || index}
               className={`p-4 bg-white border rounded-2xl shadow-xs transition-colors flex flex-col gap-3 ${
-                isDateMatchingOrExceedingEvent || isDateInPast || isDateUnder15Days
+                isDateExceedingEvent || isDateInPast
                   ? 'border-red-300 bg-red-50/10'
                   : 'border-slate-200 hover:border-slate-300'
               }`}
@@ -237,7 +231,7 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
                       value={task.completionDate}
                       onChange={(e) => updateTask(index, { completionDate: e.target.value })}
                       className={`w-full px-3 py-2 bg-slate-50/60 border rounded-xl text-xs focus:outline-none focus:ring-2 transition-all font-semibold ${
-                        isDateMatchingOrExceedingEvent || isDateInPast || isDateUnder15Days
+                        isDateExceedingEvent || isDateInPast
                           ? 'border-red-400 text-red-900 bg-red-50/30 focus:ring-red-500/20'
                           : 'border-slate-200 text-slate-800 focus:ring-indigo-500/20 focus:border-indigo-500'
                       }`}
@@ -259,11 +253,11 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
               </div>
 
               {/* Dynamic Task Validation Alerts */}
-              {isDateMatchingOrExceedingEvent && (
+              {isDateExceedingEvent && (
                 <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>
-                    Cannot exceed {maxTaskDate}. Task completion dates are allowed up to +{POST_EVENT_TASK_WINDOW_DAYS} calendar days after the implementation date ({implementationEndDate || eventDate}).
+                    Cannot exceed {maxTaskDate}. Task completion dates must be on or before the implementation date ({implementationEndDate || eventDate}).
                   </span>
                 </div>
               )}
@@ -271,20 +265,11 @@ export default function Step5TaskAllocation({ formData, onChange, errors = {} }:
               {isDateInPast && (
                 <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>Completion date cannot be in the past ({task.completionDate}).</span>
+                  <span>Completion date cannot be in the past ({task.completionDate}). Earliest allowed is today ({todayStr}).</span>
                 </div>
               )}
 
-              {isDateUnder15Days && (
-                <div className="text-[11px] text-red-600 font-semibold flex items-center gap-1.5 bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg">
-                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                  <span>
-                    Standard policy requires at least 15 calendar days before the initial task ({standardMinDate} or later). Enable Urgent Mode in Step 4 if filing expedited.
-                  </span>
-                </div>
-              )}
-
-              {isPrecededByLaterTask && !isDateMatchingOrExceedingEvent && !isDateInPast && (
+              {isPrecededByLaterTask && !isDateExceedingEvent && !isDateInPast && (
                 <div className="text-[11px] text-amber-700 font-medium flex items-center gap-1.5 bg-amber-50 border border-amber-200 px-3 py-1 rounded-lg">
                   <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>

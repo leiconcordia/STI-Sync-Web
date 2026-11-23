@@ -3,6 +3,7 @@ import { collection, query, onSnapshot, doc, where } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 import type { EventDocument } from '../types/event.types';
 import { isProposalFullySigned, isOfficerProposal } from '../utils/event-lifecycle.utils';
+import { isHiddenFromSasAndSignatories } from '../../activity-proposals/utils/proposal-status-tracker.utils';
 import { createSingletonStream, createKeyedSingletonStream } from '../../../utils/createSingletonStream';
 
 interface RawEventsSnapshot {
@@ -160,14 +161,11 @@ export function useAllEvents() {
 
     const combined = Array.from(map.values()).filter((e) => {
       if ((e as any).isDeleted === true) return false;
-      const isDraft =
-        e.proposalStatus === 'draft' ||
-        e.status === 'draft' ||
-        (e as any).lifecycleStatus === 'draft';
+      if (isHiddenFromSasAndSignatories(e)) return false;
       const isReturnedOrgProp =
         isOfficerProposal(e) &&
         (Boolean((e as any).isReturned) || e.proposalStatus === 'returned' || e.status === 'returned');
-      return !isDraft && !isReturnedOrgProp;
+      return !isReturnedOrgProp;
     });
     combined.sort((a, b) => {
       const aTime = (a.createdAt as any)?.seconds ?? (a.updatedAt as any)?.seconds ?? 0;

@@ -1,7 +1,7 @@
 import {
   UserCircle, Lock, Book,
   Building, Users, CalendarDays,
-  Files,
+  Files, Award, Briefcase,
 } from 'lucide-react';
 
 interface SettingsNavigationProps {
@@ -20,6 +20,12 @@ const navItems = [
     ]
   },
   {
+    group: 'EMPLOYEES',
+    items: [
+      { id: 'employees', icon: Briefcase, label: 'Employee Maintenance' },
+    ]
+  },
+  {
     group: 'ACADEMIC',
     items: [
       { id: 'course-department', icon: Book, label: 'Programs & Sections Registry' },
@@ -35,13 +41,19 @@ const navItems = [
   {
     group: 'EVENTS',
     items: [
-      { id: 'event-configuration', icon: CalendarDays, label: 'Event Configuration' },
+      { id: 'event-configuration', icon: CalendarDays, label: 'Venue Registry' },
     ]
   },
   {
     group: 'DOCUMENTS',
     items: [
       { id: 'document-management', icon: Files, label: 'Document Management' },
+    ]
+  },
+  {
+    group: 'CERTIFICATES',
+    items: [
+      { id: 'certificates', icon: Award, label: 'Certificates & Templates' },
     ]
   },
 ];
@@ -75,11 +87,10 @@ export default function SettingsNavigation({
                 <button
                   key={item.id}
                   onClick={() => onSectionChange(item.id)}
-                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors relative ${
-                    isActive
-                      ? 'bg-[#001A4D] text-white'
-                      : 'text-[#001A4D] hover:bg-gray-50'
-                  }`}
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors relative ${isActive
+                    ? 'bg-[#001A4D] text-white'
+                    : 'text-[#001A4D] hover:bg-gray-50'
+                    }`}
                 >
                   {isActive && (
                     <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#FFD41C]"></div>
@@ -87,11 +98,10 @@ export default function SettingsNavigation({
                   <Icon className={`w-5 h-5 ${isActive ? 'text-white' : 'text-[#001A4D]'}`} />
                   <span className="flex-1 text-left font-medium">{item.label}</span>
                   {item.badge && (
-                    <span className={`px-2 py-0.5 text-xs rounded ${
-                      item.badgeColor === 'green' ? 'bg-green-100 text-green-700' :
+                    <span className={`px-2 py-0.5 text-xs rounded ${item.badgeColor === 'green' ? 'bg-green-100 text-green-700' :
                       item.badgeColor === 'amber' ? 'bg-amber-100 text-amber-700' :
-                      'bg-red-100 text-red-700'
-                    }`}>
+                        'bg-red-100 text-red-700'
+                      }`}>
                       {item.badge}
                     </span>
                   )}

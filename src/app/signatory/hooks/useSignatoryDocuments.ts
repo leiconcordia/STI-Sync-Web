@@ -11,9 +11,12 @@ import type { ActivityProposal } from '../../modules/activity-proposals/types/pr
 import type { LiquidationDocument } from '../../modules/finance/types/liquidation.types';
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
 import { subscribeToProposals } from '../../modules/activity-proposals/services/proposal.service';
+import { subscribeToSupplementalBudgetRequests } from '../../modules/supplemental-budget/services/sbr.service';
+import type { SupplementalBudgetRequest } from '../../modules/supplemental-budget/types/sbr.types';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
 import { isSignatoryApplicableTo } from '../../modules/signatories/types/signatory.types';
+import { isHiddenFromSasAndSignatories } from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 import {
   documentStatus,
   isCurrentDocument,
@@ -26,6 +29,8 @@ export function useSignatoryDocuments(session: any) {
   const [allProposals, setAllProposals] = useState<ActivityProposal[]>([]);
   const [proposalsLoading, setProposalsLoading] = useState(true);
   const [proposalsError, setProposalsError] = useState<Error | null>(null);
+  const [allSbrs, setAllSbrs] = useState<SupplementalBudgetRequest[]>([]);
+  const [sbrsLoading, setSbrsLoading] = useState(true);
 
   const { liquidations: allLiquidations, loading: liquidationsLoading, error: liquidationsError } = useAllLiquidations();
   const { pars: allPARs, loading: parsLoading, error: parsError } = useAllPARsForSignatories();
@@ -69,6 +74,18 @@ export function useSignatoryDocuments(session: any) {
     return () => unsubscribe();
   }, []);
 
+  // Subscribe to Supplemental Budget Requests (School Budget / Institutional Signatories only)
+  useEffect(() => {
+    const unsubscribe = subscribeToSupplementalBudgetRequests(
+      (list) => {
+        setAllSbrs(list);
+        setSbrsLoading(false);
+      },
+      () => setSbrsLoading(false)
+    );
+    return () => unsubscribe();
+  }, []);
+
   const canAccessProposal = session ? isSignatoryApplicableTo(session, 'proposal') : true;
   const canAccessLiquidation = session ? isSignatoryApplicableTo(session, 'liquidation') : true;
   const canAccessPAR = session ? isSignatoryApplicableTo(session, 'par') : true;
@@ -80,7 +97,12 @@ export function useSignatoryDocuments(session: any) {
     const returned: ActivityProposal[] = [];
 
     allProposals.forEach((p) => {
-      if (!p || p.isDeleted === true || ['voided', 'deleted'].includes(String(p.status || '').toLowerCase())) {
+      if (
+        !p ||
+        p.isDeleted === true ||
+        isHiddenFromSasAndSignatories(p) ||
+        ['voided', 'deleted'].includes(String(p.status || '').toLowerCase())
+      ) {
         return;
       }
       const isActiveLifecycleDoc = isCurrentDocument(p);
@@ -187,7 +209,7 @@ export function useSignatoryDocuments(session: any) {
     const returned: LiquidationDocument[] = [];
 
     allLiquidations.forEach((l) => {
-      if (!isCurrentDocument(l)) return;
+      if (!isCurrentDocument(l) || isHiddenFromSasAndSignatories(l)) return;
       const chain = l.approvalChain || [];
       const currentIdx = l.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
@@ -271,7 +293,7 @@ export function useSignatoryDocuments(session: any) {
     const returned: PostActivityReportDocument[] = [];
 
     allPARs.forEach((par) => {
-      if (!isCurrentDocument(par)) return;
+      if (!isCurrentDocument(par) || isHiddenFromSasAndSignatories(par)) return;
       const chain = par.approvalChain || [];
       const currentIdx = par.currentStepIndex ?? 0;
       const currentStep = chain[currentIdx];
@@ -350,18 +372,66 @@ export function useSignatoryDocuments(session: any) {
     };
   }, [allPARs, session, canAccessPAR]);
 
-  const totalPending = pendingProposals.length + pendingLiquidations.length + pendingPARs.length;
-  const totalSigned = endorsedProposals.length + endorsedLiquidations.length + endorsedPARs.length;
-  const totalReturned = returnedProposals.length + returnedLiquidations.length + returnedPARs.length;
-  const loading = proposalsLoading || liquidationsLoading || parsLoading;
+  const { pendingSbrs, endorsedSbrs, returnedSbrs } = useMemo(() => {
+    const pending: SupplementalBudgetRequest[] = [];
+    const endorsed: SupplementalBudgetRequest[] = [];
+    const returned: SupplementalBudgetRequest[] = [];
+
+    allSbrs.forEach((sbr) => {
+      if (
+        !sbr ||
+        sbr.isDeleted ||
+        !sbr.requiresSignatories ||
+        sbr.isPendingSasVetting ||
+        isHiddenFromSasAndSignatories(sbr)
+      ) {
+        return;
+      }
+
+      const chain = sbr.approvalChain || [];
+      const currentIdx = sbr.currentStepIndex ?? 0;
+      const currentStep = chain[currentIdx];
+      const hasSignedPersonally = chain.some(
+        (step: any) => step && step.status === 'approved' && matchesSignatory(step)
+      );
+
+      if (canAccessProposal && sbr.status === 'pending_signatories' && !hasSignedPersonally) {
+        if (currentStep && matchesSignatory(currentStep)) {
+          pending.push(sbr);
+        }
+      }
+
+      if (hasSignedPersonally) {
+        endorsed.push(sbr);
+      }
+
+      if ((sbr.status === 'for_revision' || sbr.isReturned) && chain.some(matchesSignatory)) {
+        returned.push(sbr);
+      }
+    });
+
+    return { pendingSbrs: pending, endorsedSbrs: endorsed, returnedSbrs: returned };
+  }, [allSbrs, session, canAccessProposal]);
+
+  const totalPending =
+    pendingProposals.length + pendingSbrs.length + pendingLiquidations.length + pendingPARs.length;
+  const totalSigned =
+    endorsedProposals.length + endorsedSbrs.length + endorsedLiquidations.length + endorsedPARs.length;
+  const totalReturned =
+    returnedProposals.length + returnedSbrs.length + returnedLiquidations.length + returnedPARs.length;
+  const loading = proposalsLoading || sbrsLoading || liquidationsLoading || parsLoading;
 
   return {
     allProposals,
+    allSbrs,
     allLiquidations,
     allPARs,
     pendingProposals,
     endorsedProposals,
     returnedProposals,
+    pendingSbrs,
+    endorsedSbrs,
+    returnedSbrs,
     pendingLiquidations,
     endorsedLiquidations,
     returnedLiquidations,

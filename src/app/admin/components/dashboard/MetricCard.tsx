@@ -1,4 +1,4 @@
-import { LucideIcon } from "lucide-react";
+import { ArrowUpRight, LucideIcon } from "lucide-react";
 import { ReactNode } from "react";
 
 interface MetricCardProps {
@@ -35,8 +35,20 @@ export function MetricCard({
   return (
     <div
       onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick();
+              }
+            }
+          : undefined
+      }
       className={`relative bg-gradient-to-br ${gradients[gradient]} rounded-2xl p-5 sm:p-6 text-white overflow-hidden shadow-sm flex flex-col justify-between min-h-[148px] ${
-        onClick ? "cursor-pointer hover:shadow-lg hover:scale-[1.01] transition-all group" : ""
+        onClick ? "cursor-pointer hover:shadow-lg hover:scale-[1.01] transition-all group focus:outline-none focus:ring-2 focus:ring-white/70" : ""
       }`}
     >
       {/* Decorative ambient subtle circle accents matching basis design */}
@@ -58,6 +70,8 @@ export function MetricCard({
           <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 17l5-5m0 0l-5-5m5 5H6" />
           </svg>
+        ) : onClick ? (
+          <ArrowUpRight className="w-5 h-5 text-white/70 group-hover:text-white group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
         ) : null}
       </div>
 

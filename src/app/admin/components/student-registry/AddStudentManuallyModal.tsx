@@ -24,6 +24,7 @@ import {
   createLateEnrolleeStudent,
   promoteOrUpdateStudentStanding,
 } from '../../../modules/students/services/student.service';
+import { formatShortDate } from '../../../utils/date';
 import {
   useCourses,
   useDepartments,
@@ -137,7 +138,7 @@ export default function AddStudentManuallyModal({ onClose, onSuccess }: Props) {
         return {
           status: 'DUPLICATE_PERSON' as const,
           student: samePerson,
-          message: `Duplicate Student: A student named ${cleanFirst} ${cleanLast} with birthdate ${cleanDob} is already registered under ID ${samePerson.studentId}. Same name and same birthday are not allowed.`,
+          message: `Duplicate Student: A student named ${cleanFirst} ${cleanLast} with birthdate ${formatShortDate(cleanDob, cleanDob)} is already registered under ID ${samePerson.studentId}. Same name and same birthday are not allowed.`,
         };
       }
     }

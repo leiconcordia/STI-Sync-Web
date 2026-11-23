@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Outlet, useLocation, Navigate, useNavigate } from 'react-router';
 import { ShieldAlert, LogOut, Mail, Lock, KeyRound, ArrowRight } from 'lucide-react';
+import { toast } from 'sonner';
 import { OfficerSidebar } from './OfficerSidebar';
 import { OfficerTopNav } from './OfficerTopNav';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
+import { useNotificationStream } from '../../modules/notifications';
 import { FirstTimePasswordReminderModal } from './FirstTimePasswordReminderModal';
 import { RequiredPasswordChange } from './RequiredPasswordChange';
 
@@ -30,6 +32,45 @@ export function OfficerLayout() {
   const title = pageTitles[location.pathname] || 'Officer Portal';
 
   const [showReminderModal, setShowReminderModal] = useState(false);
+
+  const notificationUserId = useMemo(
+    () =>
+      [
+        profile?.studentId,
+        profile?.uid,
+        profile?.email,
+        profile?.isAdviser && profile?.activeOrganizationId
+          ? `adviser:${profile.activeOrganizationId}`
+          : null,
+        profile?.isAdviser ? 'adviser' : null,
+      ]
+        .filter(Boolean)
+        .join('|') || undefined,
+    [profile?.studentId, profile?.uid, profile?.email, profile?.isAdviser, profile?.activeOrganizationId]
+  );
+
+  const { notifications } = useNotificationStream(
+    'officer',
+    profile?.activeOrganizationId || undefined,
+    notificationUserId
+  );
+
+  useEffect(() => {
+    if (!profile || profile.requiresPasswordChange) return;
+    const unreadAssignment = notifications.find(
+      (n) => !n.isRead && n.type === 'role_assigned'
+    );
+    if (!unreadAssignment) return;
+
+    const seenKey = `sti_sync_seen_assign_toast_${unreadAssignment.id}`;
+    if (sessionStorage.getItem(seenKey)) return;
+    sessionStorage.setItem(seenKey, 'true');
+
+    toast.success(unreadAssignment.title, {
+      description: unreadAssignment.message,
+      duration: 8000,
+    });
+  }, [notifications, profile]);
 
   useEffect(() => {
     if (profile?.requiresPasswordChange) {
@@ -63,7 +104,7 @@ export function OfficerLayout() {
   }
 
   if (profile.requiresPasswordChange) {
-    return <RequiredPasswordChange profile={profile} />;
+    return <RequiredPasswordChange profile={profile} orgName={activeOrgName} />;
   }
 
   // Intercept layout if organization status is suspended, inactive, or archived

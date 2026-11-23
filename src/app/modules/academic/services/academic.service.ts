@@ -19,7 +19,7 @@ export const SEMESTERS_COLLECTION   = 'semesters';
 
 // ─── DEPARTMENTS ─────────────────────────────────────────────────────────────
 
-export async function createDepartment(data: Pick<DepartmentDocument, 'name' | 'code'> & { academicLevel?: AcademicLevel }): Promise<void> {
+export async function createDepartment(data: Pick<DepartmentDocument, 'name' | 'code'> & { academicLevel?: AcademicLevel }): Promise<string> {
   const cleanCode = data.code.trim().toUpperCase();
   const cleanName = data.name.trim();
 
@@ -53,6 +53,7 @@ export async function createDepartment(data: Pick<DepartmentDocument, 'name' | '
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
   });
+  return newRef.id;
 }
 
 export async function updateDepartment(id: string, data: Partial<Pick<DepartmentDocument, 'name' | 'code' | 'academicLevel' | 'archived'>>): Promise<void> {
@@ -96,7 +97,7 @@ export async function deleteDepartment(id: string): Promise<void> {
 
 // ─── COURSES ─────────────────────────────────────────────────────────────────
 
-export async function createCourse(data: Pick<CourseDocument, 'name' | 'code' | 'departmentId' | 'yearLevels'> & { academicLevel?: AcademicLevel }): Promise<void> {
+export async function createCourse(data: Pick<CourseDocument, 'name' | 'code' | 'departmentId' | 'yearLevels'> & { academicLevel?: AcademicLevel }): Promise<string> {
   const cleanCode = data.code.trim().toUpperCase();
   const cleanName = data.name.trim();
 
@@ -130,6 +131,7 @@ export async function createCourse(data: Pick<CourseDocument, 'name' | 'code' | 
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
   });
+  return newRef.id;
 }
 
 export async function updateCourse(id: string, data: Partial<Pick<CourseDocument, 'name' | 'code' | 'departmentId' | 'yearLevels' | 'academicLevel' | 'archived'>>): Promise<void> {

@@ -16,7 +16,8 @@ export type NotificationType =
   | 'liquidation_reminder'   // Admin reminded org of upcoming/overdue LF-01
   | 'signatory_required'     // Awaiting designated signatory signature
   | 'compliance_notice'      // Accreditation or institutional announcement
-  | 'password_reset_request'; // Portal user requested SAS Admin password reset
+  | 'password_reset_request' // Portal user requested SAS Admin password reset
+  | 'role_assigned';         // Adviser assigned to org or Officer granted Web Portal access
 
 export type NotificationCategory =
   | 'activity_proposal'

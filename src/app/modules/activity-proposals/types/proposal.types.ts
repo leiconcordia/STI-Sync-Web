@@ -10,10 +10,22 @@ import type { SoftDeletable, Archivable } from '../../workflow/types/approval.ty
 
 export type ProposalStatus =
   | 'draft'
+  | 'for_adviser_review'
   | 'under_review'
   | 'returned_for_revision'
   | 'approved_president'
-  | 'activated';
+  | 'activated'
+  | 'rejected';
+
+export interface AdviserReviewRecord {
+  status: 'pending' | 'approved' | 'returned' | 'rejected';
+  reviewedByUid?: string;
+  reviewedByName?: string;
+  reviewedByEmail?: string;
+  reviewedAt?: string;
+  remarks?: string;
+  signatureUrl?: string;
+}
 
 export type FundAllocationFundType =
   | 'misc_fee'
@@ -278,10 +290,19 @@ export interface ActivityProposal extends SoftDeletable, Archivable {
   createdByUid: string;
   createdByName: string;
   createdByEmail: string;
-  creatorRole: 'sas_admin' | 'officer' | 'program_head';
+  creatorRole: 'sas_admin' | 'officer' | 'adviser' | 'program_head' | (string & {});
   proponents?: string[]; // Array of co-makers / proponents (defaults to maker, expandable)
   organizationId?: string; // If originated by a club
   organizationName?: string;
+  submittedByOfficer?: boolean;
+  submittedToAdviserAt?: any;
+  submittedToSasAt?: any;
+  adviserReview?: AdviserReviewRecord | null;
+  returnedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectionReason?: string;
+  rejectedByName?: string;
+  rejectedAt?: any;
   createdAt: any;
   updatedAt: any;
   approvedAt?: any;

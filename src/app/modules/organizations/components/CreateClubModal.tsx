@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from 'react';
+import { useState, useMemo, useRef, useEffect } from 'react';
 import {
   X, Upload, Mail, Building, Check, ArrowRight,
   ArrowLeft, Loader2, AlertCircle, ShieldCheck, Sparkles,
@@ -8,6 +8,8 @@ import { useOrganizationTypes } from '../hooks/useOrganizationTypes';
 import { useOrganizationMutations } from '../hooks/useOrganizationMutations';
 import { useOrganizationStream } from '../hooks/useOrganizationStream';
 import { useSemesters, useActiveAcademicPeriods, useDepartments } from '../../academic';
+import { useEmployees } from '../../employees';
+import { subscribeToSignatories, type InstitutionalSignatory } from '../../signatories';
 import type { CreateOrganizationPayload, OrgAdviserData } from '../types/organization.types';
 import { formatStructuredFullName } from '../../../utils/name.utils';
 import {
@@ -53,6 +55,7 @@ interface Step1Errors {
   name?: string;
   typeId?: string;
   acronym?: string;
+  departments?: string;
   description?: string;
   logo?: string;
 }
@@ -70,6 +73,8 @@ function validateStep1(
     name: string;
     typeId: string;
     acronym: string;
+    isCrossDepartmental: boolean;
+    selectedDepartmentIds: string[];
     description: string;
     logo: File | null;
   },
@@ -91,6 +96,9 @@ function validateStep1(
 
   if (!form.typeId) errors.typeId = 'Please select an organization type.';
   if (!form.acronym.trim()) errors.acronym = 'Acronym is required.';
+  if (!form.isCrossDepartmental && form.selectedDepartmentIds.length === 0) {
+    errors.departments = 'Select at least one department or enable Cross-Departmental.';
+  }
   if (!form.description.trim()) errors.description = 'Description is required.';
   if (!form.logo) errors.logo = 'Organization logo is required.';
   return errors;
@@ -186,7 +194,20 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const { data: semesters } = useSemesters();
   const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
   const { data: allOrganizations } = useOrganizationStream();
+  const { data: employees = [] } = useEmployees();
+  const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
   const { create, isSaving } = useOrganizationMutations();
+
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => setSignatories(list));
+    return () => unsub();
+  }, []);
+
+  const activeEmployees = useMemo(
+    () => employees.filter((e) => !e.archived && e.status === 'ACTIVE'),
+    [employees]
+  );
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
 
   const activeOrgTypes = orgTypes.filter(t => !t.archived);
   const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
@@ -203,7 +224,8 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const [formData, setFormData] = useState({
     name: '',
     typeId: '',
-    department: 'cross-departmental',
+    isCrossDepartmental: true,
+    selectedDepartmentIds: [] as string[],
     acronym: '',
     description: '',
     logo: null as File | null,
@@ -276,17 +298,29 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
   const handleCreate = async () => {
     setSubmitError(null);
     const activePeriod = activeCollegePeriod || activeShsPeriod || activeSemester;
-    const isCross = !formData.department || formData.department === 'cross-departmental';
-    const selectedDept = departments.find(d => d.id === formData.department);
+    const isCross = formData.isCrossDepartmental || formData.selectedDepartmentIds.length === 0;
+    const selectedDepts = activeDepartments.filter((d) =>
+      formData.selectedDepartmentIds.includes(d.id)
+    );
+    const selectedIds = selectedDepts.map((d) => d.id);
+    const selectedNames = selectedDepts.map((d) => d.name);
+    const selectedCodes = selectedDepts.map((d) => d.code || d.name);
 
     const payload: CreateOrganizationPayload = {
       name: formData.name.trim(),
       acronym: formData.acronym.trim(),
       typeId: formData.typeId,
-      departmentId: isCross ? 'cross-departmental' : formData.department,
-      departmentName: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
-      departmentCode: isCross ? 'ALL' : (selectedDept?.code || ''),
-      department: isCross ? 'Cross-Departmental / All Students' : (selectedDept?.name || 'Academic Department'),
+      departmentId: isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental'),
+      departmentName: isCross
+        ? 'Cross-Departmental / All Students'
+        : selectedNames.join(', ') || 'Academic Department',
+      departmentCode: isCross ? 'ALL' : selectedCodes.join(', '),
+      department: isCross
+        ? 'Cross-Departmental / All Students'
+        : selectedNames.join(', ') || 'Academic Department',
+      allowedDepartmentIds: isCross ? [] : selectedIds,
+      allowedDepartmentNames: isCross ? [] : selectedNames,
+      allowedDepartmentCodes: isCross ? [] : selectedCodes,
       scope: isCross ? 'cross-departmental' : 'departmental',
       isCrossDepartmental: isCross,
       description: formData.description.trim(),
@@ -295,7 +329,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       logoUrl: null,
       adviser: {
         ...adviserData,
-        departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : formData.department),
+        departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental')),
         title: 'Club Adviser',
         requiresPasswordChange: true,
       },
@@ -416,7 +450,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           <label className="block text-sm font-semibold text-[#001A4D] mb-1.5 flex items-center justify-between">
             <span className="flex items-center gap-1.5">
               <Building className="w-4 h-4 text-[#0E4EBD]" />
-              Academic Department & Eligibility Scope <span className="text-red-500">*</span>
+              Academic Department &amp; Eligibility Scope <span className="text-red-500">*</span>
             </span>
             <span className="text-[11px] text-gray-500 font-normal">Controls student eligibility to join</span>
           </label>
@@ -425,29 +459,110 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
               <Loader2 className="w-4 h-4 animate-spin" /> Loading departments...
             </div>
           ) : (
-            <select
-              value={formData.department}
-              onChange={(e) => {
-                setFormData({ ...formData, department: e.target.value });
-              }}
-              className="w-full px-4 py-2.5 border border-[#E0E0E0] rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent bg-white cursor-pointer"
-            >
-              <option value="cross-departmental">🌐 Cross-Departmental (Open to All Students / Campus-Wide)</option>
-              {activeDepartments.length > 0 && (
-                <optgroup label="Academic Departments (Department-Exclusive)">
-                  {activeDepartments.map(d => (
-                    <option key={d.id} value={d.id}>
-                      🏛️ {d.code} — {d.name} ({d.academicLevel || 'COLLEGE'})
-                    </option>
-                  ))}
-                </optgroup>
+            <div className={`border rounded-xl p-3 space-y-3 bg-white ${step1Errors.departments ? 'border-red-400 bg-red-50/40' : 'border-[#E0E0E0]'}`}>
+              {/* Cross-Departmental Option */}
+              <label className="flex items-start gap-2.5 p-2.5 rounded-lg border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-50 cursor-pointer transition-colors">
+                <input
+                  type="checkbox"
+                  checked={formData.isCrossDepartmental}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setFormData({
+                      ...formData,
+                      isCrossDepartmental: checked,
+                      selectedDepartmentIds: checked ? [] : formData.selectedDepartmentIds,
+                    });
+                    setStep1Errors((prev) => {
+                      const n = { ...prev };
+                      delete n.departments;
+                      return n;
+                    });
+                  }}
+                  className="mt-0.5 w-4 h-4 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <div className="flex-1">
+                  <div className="text-xs font-bold text-emerald-900">
+                    🌐 Cross-Departmental (Open to All Students / Campus-Wide)
+                  </div>
+                  <div className="text-[11px] text-emerald-700 mt-0.5">
+                    Any enrolled student from any department can join this organization.
+                  </div>
+                </div>
+              </label>
+
+              {/* Multi-Department Checkboxes */}
+              {!formData.isCrossDepartmental && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-600 px-0.5">
+                    <span>Select Allowed Department(s) ({formData.selectedDepartmentIds.length} selected)</span>
+                    {formData.selectedDepartmentIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, selectedDepartmentIds: [] })}
+                        className="text-[#0E4EBD] hover:underline cursor-pointer"
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+                  {activeDepartments.length === 0 ? (
+                    <div className="text-xs text-gray-400 py-3 text-center">
+                      No active departments found. Add departments in Academic Settings first.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                      {activeDepartments.map((d) => {
+                        const isChecked = formData.selectedDepartmentIds.includes(d.id);
+                        return (
+                          <label
+                            key={d.id}
+                            className={`flex items-start gap-2.5 p-2.5 rounded-lg border text-xs cursor-pointer transition-colors ${
+                              isChecked
+                                ? 'border-[#0E4EBD] bg-blue-50/70 text-[#001A4D]'
+                                : 'border-gray-200 hover:bg-gray-50 text-gray-700'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                const nextIds = e.target.checked
+                                  ? [...formData.selectedDepartmentIds, d.id]
+                                  : formData.selectedDepartmentIds.filter((id) => id !== d.id);
+                                setFormData({
+                                  ...formData,
+                                  selectedDepartmentIds: nextIds,
+                                });
+                                setStep1Errors((prev) => {
+                                  const n = { ...prev };
+                                  delete n.departments;
+                                  return n;
+                                });
+                              }}
+                              className="mt-0.5 w-4 h-4 rounded border-gray-300 text-[#0E4EBD] focus:ring-[#0E4EBD] cursor-pointer"
+                            />
+                            <div className="min-w-0">
+                              <div className="font-bold truncate">
+                                {d.code} — {d.name}
+                              </div>
+                              <div className="text-[10px] text-gray-500">
+                                {d.academicLevel || 'COLLEGE'}
+                              </div>
+                            </div>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               )}
-            </select>
+            </div>
           )}
+          <FieldError msg={step1Errors.departments} />
           <p className="text-[11px] text-gray-500 mt-1">
-            {formData.department === 'cross-departmental'
+            {formData.isCrossDepartmental
               ? 'Any enrolled student can discover, apply, and join this organization on the mobile and web apps.'
-              : 'Membership applications and manual officer additions are restricted strictly to students enrolled in this department.'}
+              : 'Only students enrolled in the checked department(s) above will be eligible to join or be added to this organization.'}
           </p>
         </div>
 
@@ -535,123 +650,130 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       </div>
 
       <div className="space-y-4">
-        {/* Structured Name Inputs: First Name, Middle Name, Last Name */}
+        {/* Employee Dropdown Selector (Replaces Manual Name & Employee ID Typing) */}
         <div className="space-y-1.5">
-          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-            <div className="sm:col-span-4">
-              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-                First Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={adviserData.firstName || ''}
-                onChange={(e) => {
-                  const firstName = e.target.value;
-                  const name = formatStructuredFullName(firstName, adviserData.lastName, adviserData.middleName);
-                  setAdviserData({ ...adviserData, firstName, name });
-                  setStep2Errors(prev => { const n = { ...prev }; delete n.firstName; delete n.name; return n; });
-                }}
-                placeholder="e.g. Maria Santos"
-                className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
-                  step2Errors.firstName ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
-                }`}
-              />
-              <FieldError msg={step2Errors.firstName} />
-            </div>
+          <label className="block text-sm font-semibold text-[#001A4D]">
+            Select Faculty / Employee <span className="text-red-500">*</span>
+          </label>
+          <select
+            value={selectedEmployeeId}
+            onChange={(e) => {
+              const empDocId = e.target.value;
+              setSelectedEmployeeId(empDocId);
+              const emp = activeEmployees.find((item) => item.id === empDocId);
+              if (!emp) {
+                setAdviserData({
+                  ...adviserData,
+                  firstName: '',
+                  middleName: '',
+                  lastName: '',
+                  name: '',
+                  employeeId: '',
+                });
+                return;
+              }
+              const name = formatStructuredFullName(emp.firstName, emp.lastName, emp.middleName) || emp.fullName;
+              setAdviserData({
+                ...adviserData,
+                firstName: emp.firstName,
+                middleName: emp.middleName || '',
+                lastName: emp.lastName,
+                name,
+                employeeId: emp.employeeId,
+              });
+              setStep2Errors((prev) => {
+                const n = { ...prev };
+                delete n.firstName;
+                delete n.lastName;
+                delete n.name;
+                delete n.employeeId;
+                return n;
+              });
+            }}
+            className={`w-full px-3.5 py-2.5 border rounded-xl text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+              step2Errors.firstName || step2Errors.lastName || step2Errors.name
+                ? 'border-red-400 bg-red-50'
+                : 'border-[#E0E0E0]'
+            }`}
+          >
+            <option value="">
+              {activeEmployees.length === 0
+                ? 'No employees found — upload Excel in Settings → Employee Maintenance'
+                : 'Select an employee to assign as Club Adviser...'}
+            </option>
+            {activeEmployees.map((emp) => {
+              const empIdNorm = String(emp.employeeId || '').trim().toLowerCase();
+              const empNameNorm = String(emp.fullName || '').trim().toLowerCase();
+              const isAlreadyAdviser = allOrganizations.some(
+                (o) =>
+                  o.status !== 'archived' &&
+                  o.adviser &&
+                  ((empIdNorm && String(o.adviser.employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                    (empNameNorm && String(o.adviser.name || '').trim().toLowerCase() === empNameNorm))
+              );
+              const isAlreadySignatory = signatories.some(
+                (s) =>
+                  s.isActive !== false &&
+                  ((empIdNorm && String((s as any).employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                    (empNameNorm && String(s.name || '').trim().toLowerCase() === empNameNorm))
+              );
+              const disabledReason = isAlreadyAdviser
+                ? ' (Already Club Adviser)'
+                : isAlreadySignatory
+                  ? ' (Already Institutional Signatory)'
+                  : '';
+              return (
+                <option
+                  key={emp.id}
+                  value={emp.id}
+                  disabled={isAlreadyAdviser || isAlreadySignatory}
+                >
+                  {emp.lastName}, {emp.firstName}{emp.middleName ? ` ${emp.middleName[0]}.` : ''} ({emp.employeeId})
+                  {emp.positionTitle ? ` — ${emp.positionTitle}` : ''}
+                  {disabledReason}
+                </option>
+              );
+            })}
+          </select>
 
-            <div className="sm:col-span-4">
-              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5 text-center">
-                Middle Name <span className="text-gray-400 font-normal text-xs">(Optional)</span>
-              </label>
-              <input
-                type="text"
-                autoComplete="additional-name"
-                aria-label="Middle name"
-                value={adviserData.middleName || ''}
-                onChange={(e) => {
-                  const middleName = e.target.value;
-                  const name = formatStructuredFullName(adviserData.firstName, adviserData.lastName, middleName);
-                  setAdviserData({ ...adviserData, middleName, name });
-                }}
-                placeholder="e.g. Sigmund"
-                className="w-full px-2 py-2.5 border border-[#E0E0E0] rounded-xl text-sm font-medium focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent"
-              />
+          {adviserData.name && (
+            <div className="px-3 py-2 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
+              <div>
+                <span className="font-semibold text-gray-500 block text-[10px] uppercase">Selected Adviser</span>
+                <span className="font-bold text-[#0E4EBD]">{adviserData.name}</span>
+              </div>
+              {adviserData.employeeId && (
+                <span className="px-2 py-0.5 bg-white border border-blue-200 rounded font-mono text-[11px] font-bold text-[#001A4D]">
+                  {adviserData.employeeId}
+                </span>
+              )}
             </div>
-
-            <div className="sm:col-span-4">
-              <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-                Last Name <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                value={adviserData.lastName || ''}
-                onChange={(e) => {
-                  const lastName = e.target.value;
-                  const name = formatStructuredFullName(adviserData.firstName, lastName, adviserData.middleName);
-                  setAdviserData({ ...adviserData, lastName, name });
-                  setStep2Errors(prev => { const n = { ...prev }; delete n.lastName; delete n.name; return n; });
-                }}
-                placeholder="e.g. Dela Cruz"
-                className={`w-full px-3.5 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
-                  step2Errors.lastName ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
-                }`}
-              />
-              <FieldError msg={step2Errors.lastName} />
-            </div>
-          </div>
-
-          {/* Combined Name Preview */}
-          {adviserData.name ? (
-            <div className="px-3 py-1.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
-              <span className="font-semibold text-gray-500">Official Combined Name:</span>
-              <span className="font-bold text-[#0E4EBD]">{adviserData.name}</span>
-            </div>
-          ) : null}
-          <FieldError msg={step2Errors.name} />
+          )}
+          <FieldError msg={step2Errors.firstName || step2Errors.lastName || step2Errors.name} />
         </div>
 
-        {/* Email + Faculty / Employee ID */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-              Email <span className="text-red-500">*</span>
-            </label>
-            <div className="relative">
-              <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input
-                type="email"
-                value={adviserData.email}
-                onChange={(e) => {
-                  setAdviserData({ ...adviserData, email: e.target.value });
-                  setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
-                }}
-                placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
-                className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
-                  step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
-                }`}
-              />
-            </div>
-            <FieldError msg={step2Errors.email} />
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
-              Faculty / Employee ID <span className="text-gray-400 text-xs font-normal">(Optional)</span>
-            </label>
+        {/* Email */}
+        <div>
+          <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+            Email <span className="text-red-500">*</span>
+          </label>
+          <div className="relative">
+            <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
-              type="text"
-              value={adviserData.employeeId || ''}
+              type="email"
+              value={adviserData.email}
               onChange={(e) => {
-                setAdviserData({ ...adviserData, employeeId: e.target.value });
-                setStep2Errors(prev => { const n = { ...prev }; delete n.employeeId; return n; });
+                setAdviserData({ ...adviserData, email: e.target.value });
+                setStep2Errors(prev => { const n = { ...prev }; delete n.email; return n; });
               }}
-              placeholder="e.g. FAC-2024-001"
-              className={`w-full px-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
-                step2Errors.employeeId ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+              placeholder="e.g. juan.delacruz@ormoc.sti.edu.ph"
+              className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                step2Errors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
               }`}
             />
-            <FieldError msg={step2Errors.employeeId} />
           </div>
+          <FieldError msg={step2Errors.email} />
+          <FieldError msg={step2Errors.employeeId} />
         </div>
 
         {/* Designation / Title (Fixed) + Generated Temporary Password Preview */}
@@ -719,15 +841,22 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           </div>
           <div>
             <div className="text-gray-400 font-medium">Audience Eligibility Scope</div>
-            <div className="mt-0.5">
-              {!formData.department || formData.department === 'cross-departmental' ? (
+            <div className="mt-0.5 flex flex-wrap gap-1">
+              {formData.isCrossDepartmental || formData.selectedDepartmentIds.length === 0 ? (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
                   🌐 Open to All Students
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 font-bold border border-blue-200">
-                  🏛️ {departments.find(d => d.id === formData.department)?.name || 'Department Specific'}
-                </span>
+                activeDepartments
+                  .filter((d) => formData.selectedDepartmentIds.includes(d.id))
+                  .map((d) => (
+                    <span
+                      key={d.id}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 font-bold border border-blue-200"
+                    >
+                      🏛️ {d.code || d.name}
+                    </span>
+                  ))
               )}
             </div>
           </div>

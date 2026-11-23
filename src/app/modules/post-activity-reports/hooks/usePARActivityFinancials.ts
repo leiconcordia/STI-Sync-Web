@@ -146,7 +146,9 @@ export function extractProposalAnticipatedItems(proposal: ActivityProposal | nul
   });
 
   const itemSum = anticipatedLineItems.reduce((s, i) => s + i.totalAmount, 0);
-  const explicitTotal = Number(
+  const suppTotal = Math.max(0, Number((eventDoc as any)?.supplementalBudgetTotal) || 0);
+  const effectiveFromEvent = Number((eventDoc as any)?.effectiveApprovedBudget) || 0;
+  const baseExplicit = Number(
     fp?.totalExpenses ??
       fp?.totalEstimatedExpenses ??
       (proposal as any)?.totalExpenseAmount ??
@@ -155,6 +157,12 @@ export function extractProposalAnticipatedItems(proposal: ActivityProposal | nul
       eventDoc?.totalApprovedBudget ??
       0
   ) || 0;
+  const explicitTotal =
+    effectiveFromEvent > 0
+      ? effectiveFromEvent
+      : suppTotal > 0
+      ? Math.round((baseExplicit + suppTotal) * 100) / 100
+      : baseExplicit;
 
   return {
     anticipatedExpenses: explicitTotal > 0 ? explicitTotal : Math.round(itemSum * 100) / 100,

@@ -1030,19 +1030,18 @@ export default function PostActivityReportWizardModal({
     }
 
     if (submitForReview) {
-      if (!isAdviserOrAdmin) {
-        toast.error('Only the Organization Adviser or SAS Administrator can formally submit a Post-Activity Report. Officers can Save as Draft.');
-        return;
-      }
       const isValid = validateFormForSubmission();
       if (!isValid) return;
 
-      const checkSig = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
-      if (!checkSig) {
-        toast.error('Signature Required: No Registered Signature Found', {
-          description: 'Please upload or register your signature in Settings first before submitting this Post-Activity Report so that it is attached upon export.',
-        });
-        return;
+      // Advisers and SAS Makers require a registered e-signature; Officers route to Club Adviser first
+      if (isAdviserOrAdmin) {
+        const checkSig = makerSignatureUrl || (currentUser as any)?.signatureUrl || '';
+        if (!checkSig) {
+          toast.error('Signature Required: No Registered Signature Found', {
+            description: 'Please upload or register your signature in Settings first before submitting this Post-Activity Report so that it is attached upon export.',
+          });
+          return;
+        }
       }
     }
 
@@ -2443,9 +2442,9 @@ export default function PostActivityReportWizardModal({
               </button>
             )}
             {!isAdviserOrAdmin && (
-              <div className="hidden sm:flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
-                <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                <span><strong>Drafting Mode:</strong> Officers can save drafts. Only your Club Adviser can submit for endorsement.</span>
+              <div className="hidden sm:flex items-center gap-2 text-xs text-indigo-900 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg">
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span><strong>Adviser Checker Gate:</strong> Submitting routes this report to your Club Adviser before forwarding to SAS.</span>
               </div>
             )}
           </div>
@@ -2475,27 +2474,31 @@ export default function PostActivityReportWizardModal({
                 Next <ChevronRight className="w-4 h-4" />
               </button>
             ) : (
-              isAdviserOrAdmin && (
-                <button
-                  type="button"
-                  disabled={isSubmitting || !parLiquidationGate.allowedToSubmit}
-                  title={!parLiquidationGate.allowedToSubmit ? parLiquidationGate.submitReason : undefined}
-                  onClick={() => handleSubmitOrDraft(true)}
-                  className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  {isSubmitting ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Submitting...
-                    </>
-                  ) : (
-                    <>
-                      <Send className="w-4 h-4 text-[#FFD41C]" />
-                      {isReturnedReport ? 'Resubmit Post-Activity Report' : 'Submit for Endorsement'}
-                    </>
-                  )}
-                </button>
-              )
+              <button
+                type="button"
+                disabled={isSubmitting || !parLiquidationGate.allowedToSubmit}
+                title={!parLiquidationGate.allowedToSubmit ? parLiquidationGate.submitReason : undefined}
+                onClick={() => handleSubmitOrDraft(true)}
+                className="px-5 py-2 text-xs font-black text-white bg-gradient-to-r from-[#0E4EBD] to-[#001A4D] hover:opacity-95 shadow-md rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4 text-[#FFD41C]" />
+                    {!isAdviserOrAdmin
+                      ? isReturnedReport
+                        ? 'Resubmit for Adviser Review'
+                        : 'Submit for Adviser Review'
+                      : isReturnedReport
+                      ? 'Resubmit Post-Activity Report'
+                      : 'Submit for Endorsement'}
+                  </>
+                )}
+              </button>
             )}
           </div>
         </div>

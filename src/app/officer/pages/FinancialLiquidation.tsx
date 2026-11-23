@@ -28,11 +28,24 @@ import OfficerLiquidationModal from '../components/OfficerLiquidationModal';
 import { LiquidationExportPreviewModal } from '../../modules/finance/components/LiquidationExportPreviewModal';
 import LiquidationSignatoryTracker from '../../modules/finance/components/LiquidationSignatoryTracker';
 import type { LiquidationDocument, LiquidationStatus } from '../../modules/finance/types/liquidation.types';
-import { isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
+import { buildLiquidationReturnSteps, isExpenseItemFlagged } from '../../modules/finance/types/liquidation.types';
 import {
   getLiquidationSettlementState,
 } from '../../modules/finance/utils/liquidation-settlement.utils';
-import { deleteLiquidationReport, withdrawLiquidationReport } from '../../modules/finance/services/liquidation.service';
+import {
+  deleteLiquidationReport,
+  withdrawLiquidationReport,
+  approveAndForwardLiquidationByAdviser,
+  returnLiquidationByAdviser,
+  rejectLiquidationByAdviser,
+} from '../../modules/finance/services/liquidation.service';
+import ProposalStatusStepper from '../../modules/activity-proposals/components/workflow/ProposalStatusStepper';
+import ClubAdviserDecisionPanel from '../../modules/workflow/components/ClubAdviserDecisionPanel';
+import {
+  isDocumentForAdviserReview,
+  isOfficerAuthoredRecord,
+  resolveDocumentTrackingState,
+} from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 import RevisionFeedbackBanner from '../../modules/workflow/components/RevisionFeedbackBanner';
 import WithdrawConfirmModal from '../../modules/workflow/components/WithdrawConfirmModal';
 import { formatCurrency, formatVariance } from '../../utils/currency';
@@ -58,7 +71,7 @@ import {
 } from '../../modules/workflow/utils/table-priority-sort.utils';
 import { hasAnySignatorySigned } from '../../modules/workflow/utils/approval-permissions.utils';
 
-type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
+type FilterTab = 'all' | 'officer_liquidations' | 'pending' | 'approved' | 'returned' | 'rejected' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 function getLiquidationTimestamp(liq: LiquidationDocument): number {
@@ -245,12 +258,20 @@ export default function FinancialLiquidation() {
     );
   }, [events, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
 
-  // Filtered & Sorted Liquidations (LATEST FIRST by default)
+  const isAdviser = Boolean(
+    profile?.isAdviser ||
+    profile?.activeRoleId?.toLowerCase() === 'adviser' ||
+    profile?.role?.toLowerCase() === 'adviser'
+  );
+
+  // Filtered & Sorted Liquidations (LATEST FIRST by default; Officer Liquidations pins For Adviser Review on top)
   const filteredReports = useMemo(() => {
     return periodLiquidations
       .filter((report) => {
-        if (activeTab === 'pending') {
-          if (report.status !== 'pending' && report.status !== 'under_review') return false;
+        if (activeTab === 'officer_liquidations') {
+          if (!(isOfficerAuthoredRecord(report) && report.status !== 'draft')) return false;
+        } else if (activeTab === 'pending') {
+          if (report.status !== 'pending' && report.status !== 'under_review' && !isDocumentForAdviserReview(report)) return false;
         } else if (activeTab !== 'all' && report.status !== activeTab) {
           return false;
         }
@@ -265,15 +286,25 @@ export default function FinancialLiquidation() {
 
         return true;
       })
-      .sort((a, b) => compareLiquidations(a, b, eventsById));
+      .sort((a, b) => {
+        if (activeTab === 'officer_liquidations') {
+          const aAdv = isDocumentForAdviserReview(a) ? 1 : 0;
+          const bAdv = isDocumentForAdviserReview(b) ? 1 : 0;
+          if (bAdv !== aAdv) return bAdv - aAdv;
+        }
+        return compareLiquidations(a, b, eventsById);
+      });
   }, [periodLiquidations, activeTab, searchQuery, eventsById]);
 
   // Counts (scoped to active School Year / Semester filter)
   const counts = {
     all: periodLiquidations.length,
-    pending: periodLiquidations.filter((r) => r.status === 'pending' || r.status === 'under_review').length,
+    officer_liquidations: periodLiquidations.filter((r) => isDocumentForAdviserReview(r)).length,
+    officer_liquidations_total: periodLiquidations.filter((r) => isOfficerAuthoredRecord(r) && r.status !== 'draft').length,
+    pending: periodLiquidations.filter((r) => r.status === 'pending' || r.status === 'under_review' || isDocumentForAdviserReview(r)).length,
     approved: periodLiquidations.filter((r) => r.status === 'approved').length,
     returned: periodLiquidations.filter((r) => r.status === 'returned').length,
+    rejected: periodLiquidations.filter((r) => r.status === 'rejected').length,
     draft: periodLiquidations.filter((r) => r.status === 'draft').length,
   };
 
@@ -449,15 +480,15 @@ export default function FinancialLiquidation() {
         <div>
           <div className="flex items-center gap-2.5">
             <div className="text-gray-500 text-xs font-medium">Dashboard &gt; Financial Liquidation</div>
-            {profile?.isAdviser ? (
+            {isAdviser ? (
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                 Adviser Authorized
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-300">
-                <Lock className="w-3.5 h-3.5 text-amber-600" />
-                Student Officer (Draft Mode)
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-800 border border-indigo-200">
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+                Student Officer (Adviser Checked)
               </span>
             )}
           </div>
@@ -625,12 +656,19 @@ export default function FinancialLiquidation() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
             {[
               { key: 'all', label: 'All', count: counts.all },
-              { key: 'pending', label: 'Pending', count: counts.pending },
+              {
+                key: 'officer_liquidations',
+                label: 'Officer Liquidations',
+                count: counts.officer_liquidations > 0 ? counts.officer_liquidations : counts.officer_liquidations_total,
+                highlight: counts.officer_liquidations > 0,
+              },
+              { key: 'pending', label: 'In Review', count: counts.pending },
               { key: 'approved', label: 'Approved', count: counts.approved },
-              { key: 'returned', label: 'Returned', count: counts.returned },
+              { key: 'returned', label: 'For Revision', count: counts.returned },
+              { key: 'rejected', label: 'Rejected', count: counts.rejected },
               { key: 'draft', label: 'Drafts', count: counts.draft },
               { key: 'trash', label: 'Trash', count: undefined },
-            ].map((tab) => {
+            ].map((tab: any) => {
               const isActive = activeTab === tab.key;
               return (
                 <button
@@ -639,6 +677,8 @@ export default function FinancialLiquidation() {
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                     isActive
                       ? 'bg-[#001A4D] text-white shadow-xs'
+                      : tab.highlight
+                      ? 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
                       : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
                   }`}
                 >
@@ -646,7 +686,11 @@ export default function FinancialLiquidation() {
                   {tab.count !== undefined && (
                     <span
                       className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${
-                        isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                        isActive
+                          ? 'bg-white/20 text-white'
+                          : tab.highlight
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-gray-200/80 text-gray-700'
                       }`}
                     >
                       {tab.count}
@@ -870,7 +914,20 @@ export default function FinancialLiquidation() {
                       {/* Status */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         <div className="flex flex-col items-start gap-1">
-                          {statusBadge(report.status)}
+                          {(() => {
+                            const track = resolveDocumentTrackingState(report, 'FL');
+                            return (
+                              <div className="inline-flex flex-col items-start gap-0.5">
+                                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${track.badgeClass}`}>
+                                  <span className={`w-1.5 h-1.5 rounded-full ${track.dotClass} ${track.isPulsing ? 'animate-pulse' : ''}`} />
+                                  {track.label}
+                                </span>
+                                {track.subLabel && (
+                                  <span className="text-[10px] text-gray-500 font-medium pl-1">{track.subLabel}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
                           {isApproved && settlement.requiresMakerAction && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
                               <AlertCircle className="w-2.5 h-2.5 text-amber-700" />
@@ -930,16 +987,27 @@ export default function FinancialLiquidation() {
                             </button>
                           )}
 
-                          <button
-                            onClick={() => setViewingDetailReport(report)}
-                            className="px-2.5 py-1 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
-                            title="View Report Details"
-                          >
-                            <Eye className="w-3 h-3" />
-                            <span>View</span>
-                          </button>
+                          {isAdviser && isDocumentForAdviserReview(report) ? (
+                            <button
+                              onClick={() => setViewingDetailReport(report)}
+                              className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title="Open Club Adviser Decision Panel"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Review &amp; Decide</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setViewingDetailReport(report)}
+                              className="px-2.5 py-1 bg-gray-100 hover:bg-[#001A4D] hover:text-white text-gray-700 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
+                              title="View Report Details"
+                            >
+                              <Eye className="w-3 h-3" />
+                              <span>View</span>
+                            </button>
+                          )}
 
-                          {isPending && !hasAnySignatorySigned(report) && (
+                          {(isPending || isDocumentForAdviserReview(report)) && !hasAnySignatorySigned(report) && (
                             <button
                               onClick={() => setWithdrawingReport(report)}
                               className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors inline-flex items-center gap-1 cursor-pointer"
@@ -1094,6 +1162,68 @@ export default function FinancialLiquidation() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {/* 7-Stage Status Stepper + Club Adviser Decision Panel */}
+              <ProposalStatusStepper record={viewingDetailReport} docKind="FL" compact />
+              <ClubAdviserDecisionPanel
+                documentType="FL"
+                documentTitle={viewingDetailReport.eventTitle || 'Financial Liquidation'}
+                referenceNo={viewingDetailReport.referenceNo || viewingDetailReport.id}
+                record={viewingDetailReport}
+                isAdviser={isAdviser}
+                adviserProfile={{
+                  uid: profile?.uid || profile?.authUid || userUid || 'adviser',
+                  name: profile?.studentName || userName || 'Club Adviser',
+                  email: profile?.email || '',
+                  signatureUrl: profile?.signatureUrl || null,
+                }}
+                returnSteps={buildLiquidationReturnSteps(viewingDetailReport.lineItems || [])}
+                onApproveAndForward={async ({ signatureUrl, remarks }) => {
+                  await approveAndForwardLiquidationByAdviser(
+                    viewingDetailReport.id,
+                    {
+                      uid: profile?.uid || profile?.authUid || userUid || 'adviser',
+                      name: profile?.studentName || userName || 'Club Adviser',
+                      email: profile?.email || '',
+                      signatureUrl,
+                    },
+                    remarks
+                  );
+                }}
+                onReturnForRevision={async ({ overallRemarks, flaggedSteps, stepRevisionRemarks, returnDeadline }) => {
+                  await returnLiquidationByAdviser(
+                    viewingDetailReport.id,
+                    {
+                      uid: profile?.uid || profile?.authUid || userUid || 'adviser',
+                      name: profile?.studentName || userName || 'Club Adviser',
+                      email: profile?.email || '',
+                    },
+                    overallRemarks,
+                    stepRevisionRemarks,
+                    flaggedSteps,
+                    returnDeadline
+                  );
+                }}
+                onReject={async ({ reason }) => {
+                  await rejectLiquidationByAdviser(
+                    viewingDetailReport.id,
+                    {
+                      uid: profile?.uid || profile?.authUid || userUid || 'adviser',
+                      name: profile?.studentName || userName || 'Club Adviser',
+                      email: profile?.email || '',
+                    },
+                    reason
+                  );
+                }}
+                onDecisionComplete={() => {
+                  setViewingDetailReport(null);
+                  setDocumentParams((previous) => {
+                    previous.delete('id');
+                    return previous;
+                  });
+                }}
+                layout="inline"
+              />
+
               {/* Event Linkage & Budget Ceiling Summary */}
               {(() => {
                 const isEventBudgetFlagged = Boolean(

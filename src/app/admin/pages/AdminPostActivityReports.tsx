@@ -55,6 +55,7 @@ import {
   type SasSignatoryConfig,
 } from '../../modules/signatories/services/sas-signatory.service';
 import { toast } from 'sonner';
+import { isHiddenFromSasAndSignatories } from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 
 type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'sas_internal' | 'trash';
 const ITEMS_PER_PAGE = 8;
@@ -206,6 +207,7 @@ export default function AdminPostActivityReports() {
   // Academic Period scoped PARs & due events (KPI cards, tab counts, and table share this slice)
   const periodPars = useMemo(() => {
     return pars.filter((p) => {
+      if (!p.isSasInternal && isHiddenFromSasAndSignatories(p)) return false;
       const parentEvent = p.eventId ? eventsById.get(p.eventId) : null;
       return matchesRecordAcademicPeriod({
         record: p,

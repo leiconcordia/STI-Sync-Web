@@ -93,6 +93,7 @@ import { toast } from 'sonner';
 import { TablePagination } from '../../components/common/TablePagination';
 import { TrashRepositoryViewer } from '../../modules/workflow/components/TrashRepositoryViewer';
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
+import { isHiddenFromSasAndSignatories } from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 
 const ITEMS_PER_PAGE = 8;
 type TabValue = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
@@ -710,6 +711,13 @@ export function FinancialLiquidations() {
   // Academic Period scoped liquidations & events (KPI cards, tab counts, dues, and table share this slice)
   const periodLiquidations = useMemo(() => {
     return liquidations.filter((liq) => {
+      // Hide student org drafts, adviser-pending reports, and pre-SAS adviser-rejected reports from SAS Admin
+      const isSasOwned =
+        ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(
+          String(liq.organizationId || '').trim().toLowerCase()
+        ) || (liq as any).createdByRole === 'admin';
+      if (!isSasOwned && isHiddenFromSasAndSignatories(liq)) return false;
+
       const parentEvent = liq.eventId ? eventsById.get(liq.eventId) : null;
       return matchesRecordAcademicPeriod({
         record: liq,

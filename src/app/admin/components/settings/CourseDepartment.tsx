@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, Archive, RotateCcw, Trash2, Edit2, X, AlertTriangle } from 'lucide-react';
+import { Plus, Archive, RotateCcw, Trash2, Edit2, X, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   useDepartments,
@@ -42,7 +42,21 @@ type ModalState =
   | { type: 'edit-section'; item: SectionDocument }
   | { type: 'archive-section'; item: SectionDocument }
   | { type: 'restore-section'; item: SectionDocument }
-  | { type: 'delete-section'; item: SectionDocument };
+  | { type: 'delete-section'; item: SectionDocument }
+  | {
+      type: 'suggest-course';
+      deptId: string;
+      deptName: string;
+      deptCode: string;
+      academicLevel: AcademicLevel;
+    }
+  | {
+      type: 'suggest-section';
+      courseId: string;
+      courseName: string;
+      courseCode: string;
+      academicLevel: AcademicLevel;
+    };
 
 function ActiveArchivedTabs({ active, onChange }: { active: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -211,8 +225,17 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
     setIsSaving(true);
     try {
       if (modal.type === 'add-dept') {
-        await createDepartment({ name: cleanName, code: cleanCode, academicLevel: deptForm.academicLevel });
+        const newDeptId = await createDepartment({ name: cleanName, code: cleanCode, academicLevel: deptForm.academicLevel });
         toast.success(`Department "${cleanCode}" created successfully.`);
+        change();
+        setModal({
+          type: 'suggest-course',
+          deptId: newDeptId,
+          deptName: cleanName,
+          deptCode: cleanCode,
+          academicLevel: deptForm.academicLevel,
+        });
+        return;
       } else if (modal.type === 'edit-dept') {
         await updateDepartment(modal.item.id, { name: cleanName, code: cleanCode, academicLevel: deptForm.academicLevel });
         toast.success(`Department "${cleanCode}" updated successfully.`);
@@ -256,8 +279,17 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
     setIsSaving(true);
     try {
       if (modal.type === 'add-course') {
-        await createCourse({ ...courseForm, code: cleanCode, name: cleanName });
+        const newCourseId = await createCourse({ ...courseForm, code: cleanCode, name: cleanName });
         toast.success(`Program / strand "${cleanCode}" created successfully.`);
+        change();
+        setModal({
+          type: 'suggest-section',
+          courseId: newCourseId,
+          courseName: cleanName,
+          courseCode: cleanCode,
+          academicLevel: courseForm.academicLevel,
+        });
+        return;
       } else if (modal.type === 'edit-course') {
         await updateCourse(modal.item.id, { ...courseForm, code: cleanCode, name: cleanName });
         toast.success(`Program / strand "${cleanCode}" updated successfully.`);
@@ -900,6 +932,104 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
           {modal.type === 'archive-section' && <ConfirmModal type="archive" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateSection(modal.item.id, { archived: true }))} onClose={close} />}
           {modal.type === 'restore-section' && <ConfirmModal type="restore" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateSection(modal.item.id, { archived: false }))} onClose={close} />}
           {modal.type === 'delete-section' && <ConfirmModal type="delete" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => deleteSection(modal.item.id))} onClose={close} deleteText={deleteText} onDeleteTextChange={setDeleteText} />}
+
+          {/* GUIDED NEXT-STEP SUGGESTION: DEPARTMENT -> ADD COURSE */}
+          {modal.type === 'suggest-course' && (
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+              <div className="bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] px-6 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-white">
+                  <CheckCircle2 className="w-5 h-5 text-[#FFD41C]" />
+                  <h3 className="font-bold text-lg">Department Created</h3>
+                </div>
+                <button onClick={close} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  <strong>{modal.deptCode} — {modal.deptName}</strong> has been added. Would you like to add a{' '}
+                  <strong>{modal.academicLevel === 'SHS' ? 'Strand' : 'Course / Program'}</strong> under this department now?
+                </p>
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 cursor-pointer"
+                  >
+                    Not Now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubTab('courses');
+                      setCourseArchivedView(false);
+                      setCourseForm({
+                        name: '',
+                        code: '',
+                        departmentId: modal.deptId,
+                        academicLevel: modal.academicLevel,
+                        yearLevels: modal.academicLevel === 'SHS' ? 2 : 4,
+                      });
+                      setModal({ type: 'add-course' });
+                    }}
+                    className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#0E4EBD] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Yes, Add {modal.academicLevel === 'SHS' ? 'Strand' : 'Course'}</span>
+                    <ArrowRight className="w-4 h-4 text-[#FFD41C]" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* GUIDED NEXT-STEP SUGGESTION: COURSE -> ADD SECTION */}
+          {modal.type === 'suggest-section' && (
+            <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+              <div className="bg-gradient-to-r from-[#001A4D] to-[#0E4EBD] px-6 py-4 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-white">
+                  <CheckCircle2 className="w-5 h-5 text-[#FFD41C]" />
+                  <h3 className="font-bold text-lg">
+                    {modal.academicLevel === 'SHS' ? 'Strand Created' : 'Course Created'}
+                  </h3>
+                </div>
+                <button onClick={close} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <p className="text-sm text-gray-700 leading-relaxed">
+                  <strong>{modal.courseCode} — {modal.courseName}</strong> has been added. Would you like to add a{' '}
+                  <strong>Section</strong> for this {modal.academicLevel === 'SHS' ? 'strand' : 'course'} now?
+                </p>
+                <div className="flex gap-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 cursor-pointer"
+                  >
+                    Not Now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSubTab('sections');
+                      setSectionArchivedView(false);
+                      setSectionForm({
+                        name: '',
+                        courseId: modal.courseId,
+                        yearLevel: modal.academicLevel === 'SHS' ? 11 : 1,
+                      });
+                      setModal({ type: 'add-section' });
+                    }}
+                    className="flex-1 py-2.5 bg-[#001A4D] text-white rounded-xl text-sm font-bold hover:bg-[#0E4EBD] transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>Yes, Add Section</span>
+                    <ArrowRight className="w-4 h-4 text-[#FFD41C]" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

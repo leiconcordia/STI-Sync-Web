@@ -12,11 +12,16 @@ import {
   UserPlus,
   Mail,
   KeyRound,
+  AlertTriangle,
 } from 'lucide-react';
 import type { OrganizationDocument } from '../../modules/organizations/types/organization.types';
 import { useOrganizationTypes } from '../../modules/organizations/hooks/useOrganizationTypes';
-import { useDepartments } from '../../modules/academic';
+import { useCourses, useDepartments } from '../../modules/academic';
+import { useEmployees } from '../../modules/employees';
+import { subscribeToSignatories, type InstitutionalSignatory } from '../../modules/signatories';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
+import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useAdviserProfile } from '../../modules/auth';
 import {
   AdviserValidationError,
@@ -25,6 +30,7 @@ import {
   type AdviserUpdateOptions,
 } from '../../modules/organizations/services/organization.service';
 import { findAdviserConflictInOrganizations } from '../../modules/organizations/utils/adviser-validation.utils';
+import { findDepartmentScopeConflicts } from '../../modules/organizations/utils/department-eligibility.utils';
 import { formatStructuredFullName } from '../../utils/name.utils';
 import { toast } from 'sonner';
 
@@ -43,7 +49,22 @@ export function EditOrganizationModal({
 }: EditOrganizationModalProps) {
   const { data: orgTypes, loading: loadingTypes } = useOrganizationTypes();
   const { data: departments = [], loading: loadingDepts } = useDepartments();
+  const { data: courses = [] } = useCourses();
   const { data: allOrganizations = [] } = useOrganizationStream();
+  const { data: employees = [] } = useEmployees();
+  const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
+
+  useEffect(() => {
+    const unsub = subscribeToSignatories((list) => setSignatories(list));
+    return () => unsub();
+  }, []);
+  const activeEmployees = useMemo(
+    () => employees.filter((e) => !e.archived && e.status === 'ACTIVE'),
+    [employees]
+  );
+  const [selectedAdviserEmployeeId, setSelectedAdviserEmployeeId] = useState('');
+  const { members: orgMembers = [], loading: loadingOrgMembers } = useOrgMembers(organization?.id);
+  const { data: allStudents = [] } = useStudents();
   const { profile } = useAdviserProfile();
 
   const activeDepartments = useMemo(
@@ -64,7 +85,8 @@ export function EditOrganizationModal({
     name: '',
     acronym: '',
     typeId: '',
-    department: 'cross-departmental',
+    isCrossDepartmental: true,
+    selectedDepartmentIds: [] as string[],
     description: '',
   });
 
@@ -94,13 +116,23 @@ export function EditOrganizationModal({
 
   useEffect(() => {
     if (organization) {
+      const existingAllowedIds = Array.isArray(organization.allowedDepartmentIds)
+        ? organization.allowedDepartmentIds.filter((id) => id && id !== 'cross-departmental')
+        : organization.departmentId && organization.departmentId !== 'cross-departmental'
+          ? [organization.departmentId]
+          : [];
+      const isCross =
+        organization.isCrossDepartmental === true ||
+        organization.scope === 'cross-departmental' ||
+        (existingAllowedIds.length === 0 &&
+          (!organization.departmentId || organization.departmentId === 'cross-departmental'));
+
       setFormData({
         name: organization.name || '',
         acronym: organization.acronym || '',
         typeId: organization.typeId || '',
-        department:
-          organization.departmentId ||
-          (organization.isCrossDepartmental ? 'cross-departmental' : 'cross-departmental'),
+        isCrossDepartmental: isCross,
+        selectedDepartmentIds: isCross ? [] : existingAllowedIds,
         description: organization.description || '',
       });
       setLogoPreview(organization.logoUrl || null);
@@ -108,6 +140,7 @@ export function EditOrganizationModal({
 
       // Reset adviser mode & state
       setAdviserMode('keep');
+      setSelectedAdviserEmployeeId('');
       setNewAdviserData({
         name: '',
         firstName: '',
@@ -121,6 +154,46 @@ export function EditOrganizationModal({
       setAdviserErrors({});
     }
   }, [organization]);
+
+  const studentsById = useMemo(() => {
+    const map = new Map<string, any>();
+    allStudents.forEach((s) => {
+      if (s.studentId) map.set(String(s.studentId).trim(), s);
+      if (s.authUid) map.set(String(s.authUid).trim(), s);
+      if (s.id) map.set(String(s.id).trim(), s);
+    });
+    return map;
+  }, [allStudents]);
+
+  const scopeConflictCheck = useMemo(() => {
+    const isCross = formData.isCrossDepartmental || formData.selectedDepartmentIds.length === 0;
+    const selectedDepts = departments.filter((d) =>
+      formData.selectedDepartmentIds.includes(d.id)
+    );
+    return findDepartmentScopeConflicts({
+      proposedOrg: {
+        id: organization?.id,
+        departmentId: isCross ? 'cross-departmental' : (selectedDepts[0]?.id || 'cross-departmental'),
+        allowedDepartmentIds: isCross ? [] : selectedDepts.map((d) => d.id),
+        allowedDepartmentNames: isCross ? [] : selectedDepts.map((d) => d.name),
+        allowedDepartmentCodes: isCross ? [] : selectedDepts.map((d) => d.code || d.name),
+        scope: isCross ? 'cross-departmental' : 'departmental',
+        isCrossDepartmental: isCross,
+      },
+      members: orgMembers,
+      departments,
+      courses,
+      studentsById,
+    });
+  }, [
+    formData.isCrossDepartmental,
+    formData.selectedDepartmentIds,
+    organization?.id,
+    orgMembers,
+    departments,
+    courses,
+    studentsById,
+  ]);
 
   if (!isOpen || !organization) return null;
 
@@ -207,8 +280,27 @@ export function EditOrganizationModal({
       }
     }
 
-    const isCross = !formData.department || formData.department === 'cross-departmental';
-    const selectedDept = departments.find((d) => d.id === formData.department);
+    if (!formData.isCrossDepartmental && formData.selectedDepartmentIds.length === 0) {
+      toast.error('Please select at least one department or enable Cross-Departmental.');
+      return;
+    }
+
+    if (scopeConflictCheck.hasConflicts) {
+      toast.error('Department scope conflict', {
+        description:
+          scopeConflictCheck.summaryMessage ||
+          'Active members from excluded departments are still enrolled in this organization.',
+      });
+      return;
+    }
+
+    const isCross = formData.isCrossDepartmental || formData.selectedDepartmentIds.length === 0;
+    const selectedDepts = departments.filter((d) =>
+      formData.selectedDepartmentIds.includes(d.id)
+    );
+    const selectedIds = selectedDepts.map((d) => d.id);
+    const selectedNames = selectedDepts.map((d) => d.name);
+    const selectedCodes = selectedDepts.map((d) => d.code || d.name);
 
     // Prepare adviser update payload
     let adviserUpdate: AdviserUpdateOptions = {
@@ -233,7 +325,7 @@ export function EditOrganizationModal({
           middleName,
           email: newAdviserData.email.trim().toLowerCase(),
           employeeId: newAdviserData.employeeId.trim(),
-          departmentId: isCross ? 'cross-departmental' : formData.department,
+          departmentId: isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental'),
           temporaryPassword: newAdviserData.temporaryPassword || 'Adv-2026!#',
         },
         adminUser: adminName,
@@ -249,14 +341,17 @@ export function EditOrganizationModal({
           name: formData.name.trim(),
           acronym: formData.acronym.trim().toUpperCase(),
           typeId: formData.typeId,
-          departmentId: isCross ? 'cross-departmental' : formData.department,
+          departmentId: isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental'),
           departmentName: isCross
             ? 'Cross-Departmental / All Students'
-            : selectedDept?.name || 'Academic Department',
-          departmentCode: isCross ? 'ALL' : selectedDept?.code || '',
+            : selectedNames.join(', ') || 'Academic Department',
+          departmentCode: isCross ? 'ALL' : selectedCodes.join(', '),
           department: isCross
             ? 'Cross-Departmental / All Students'
-            : selectedDept?.name || 'Academic Department',
+            : selectedNames.join(', ') || 'Academic Department',
+          allowedDepartmentIds: isCross ? [] : selectedIds,
+          allowedDepartmentNames: isCross ? [] : selectedNames,
+          allowedDepartmentCodes: isCross ? [] : selectedCodes,
           scope: isCross ? 'cross-departmental' : 'departmental',
           isCrossDepartmental: isCross,
           description: formData.description.trim(),
@@ -375,50 +470,146 @@ export function EditOrganizationModal({
             </div>
           </div>
 
-          {/* Type & Department */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">
-                Organization Type *
-              </label>
-              <select
-                value={formData.typeId}
-                onChange={(e) => setFormData({ ...formData, typeId: e.target.value })}
-                disabled={loadingTypes}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none disabled:opacity-50"
-              >
-                <option value="">Select type...</option>
-                {orgTypes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+          {/* Organization Type */}
+          <div>
+            <label className="block text-xs font-bold text-gray-700 mb-1">
+              Organization Type *
+            </label>
+            <select
+              value={formData.typeId}
+              onChange={(e) => setFormData({ ...formData, typeId: e.target.value })}
+              disabled={loadingTypes}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none disabled:opacity-50"
+            >
+              <option value="">Select type...</option>
+              {orgTypes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">
-                <Building className="w-3.5 h-3.5 text-[#0E4EBD]" />
-                <span>Department / Audience Scope *</span>
+          {/* Department / Audience Scope (Cross-Departmental + Multi-Department Checkboxes) */}
+          <div className="space-y-2">
+            <label className="block text-xs font-bold text-gray-700 flex items-center gap-1">
+              <Building className="w-3.5 h-3.5 text-[#0E4EBD]" />
+              <span>Department / Audience Scope *</span>
+            </label>
+            <div className="border border-gray-300 rounded-xl p-3 space-y-2.5 bg-white">
+              <label className="flex items-start gap-2.5 p-2 rounded-lg border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-50 cursor-pointer transition-colors">
+                <input
+                  type="checkbox"
+                  checked={formData.isCrossDepartmental}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setFormData({
+                      ...formData,
+                      isCrossDepartmental: checked,
+                      selectedDepartmentIds: checked ? [] : formData.selectedDepartmentIds,
+                    });
+                  }}
+                  disabled={loadingDepts}
+                  className="mt-0.5 w-4 h-4 rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <div className="flex-1">
+                  <div className="text-xs font-bold text-emerald-900">
+                    🌐 Cross-Departmental (Open to All Students)
+                  </div>
+                  <div className="text-[11px] text-emerald-700">
+                    Any enrolled student from any department can join.
+                  </div>
+                </div>
               </label>
-              <select
-                value={formData.department}
-                onChange={(e) => setFormData({ ...formData, department: e.target.value })}
-                disabled={loadingDepts}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#0E4EBD]/30 focus:border-[#0E4EBD] outline-none disabled:opacity-50"
-              >
-                <option value="cross-departmental">🌐 Cross-Departmental (Open to All)</option>
-                {activeDepartments.length > 0 && (
-                  <optgroup label="Academic Departments (Department-Exclusive)">
-                    {activeDepartments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        🏛️ {d.code} — {d.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+
+              {!formData.isCrossDepartmental && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-600">
+                    <span>Allowed Department(s) ({formData.selectedDepartmentIds.length} selected)</span>
+                    {formData.selectedDepartmentIds.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData({ ...formData, selectedDepartmentIds: [] })}
+                        className="text-[#0E4EBD] hover:underline cursor-pointer"
+                      >
+                        Clear all
+                      </button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
+                    {activeDepartments.map((d) => {
+                      const isChecked = formData.selectedDepartmentIds.includes(d.id);
+                      const deptMemberCount = scopeConflictCheck.activeMemberCountsByDeptId[d.id] || 0;
+                      return (
+                        <label
+                          key={d.id}
+                          className={`flex items-start gap-2 p-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+                            isChecked
+                              ? 'border-[#0E4EBD] bg-blue-50/70 text-[#001A4D]'
+                              : deptMemberCount > 0
+                                ? 'border-amber-300 bg-amber-50/40 text-amber-950 hover:bg-amber-50/70'
+                                : 'border-gray-200 hover:bg-gray-50 text-gray-700'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              const nextIds = e.target.checked
+                                ? [...formData.selectedDepartmentIds, d.id]
+                                : formData.selectedDepartmentIds.filter((id) => id !== d.id);
+                              setFormData({
+                                ...formData,
+                                selectedDepartmentIds: nextIds,
+                              });
+                            }}
+                            disabled={loadingDepts}
+                            className="mt-0.5 w-4 h-4 rounded border-gray-300 text-[#0E4EBD] focus:ring-[#0E4EBD] cursor-pointer"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <span className="font-semibold leading-tight block">
+                              {d.code} — {d.name}
+                            </span>
+                            {deptMemberCount > 0 && (
+                              <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-white/90 border border-gray-200 text-[10px] font-bold text-gray-600">
+                                {deptMemberCount} active member{deptMemberCount === 1 ? '' : 's'}
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
+            {scopeConflictCheck.hasConflicts && (
+              <div className="p-3 rounded-xl bg-rose-50 border border-rose-300 text-xs text-rose-900 space-y-1.5">
+                <div className="flex items-start gap-2 font-bold text-rose-800">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>
+                    Cannot restrict scope: {scopeConflictCheck.totalConflictingMembers} active member
+                    {scopeConflictCheck.totalConflictingMembers === 1 ? '' : 's'} belong to excluded department(s)
+                  </span>
+                </div>
+                <ul className="list-disc pl-6 space-y-0.5 text-[11px] text-rose-800">
+                  {scopeConflictCheck.conflictsByDepartment.map((c) => (
+                    <li key={c.departmentId || c.departmentLabel}>
+                      <strong>{c.departmentLabel}</strong>: {c.count} active member{c.count === 1 ? '' : 's'}
+                      {c.memberNames.length > 0 ? ` (${c.memberNames.join(', ')}${c.count > c.memberNames.length ? ', …' : ''})` : ''}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[11px] text-rose-700 pl-6">
+                  Include those department(s) above, keep <strong>Cross-Departmental</strong>, or remove those members from the organization roster first.
+                </p>
+              </div>
+            )}
+            <p className="text-[11px] text-gray-500">
+              {formData.isCrossDepartmental
+                ? 'Open to all enrolled students regardless of department.'
+                : 'Only students from the checked department(s) can join this organization.'}
+            </p>
           </div>
 
           {/* ─── Club Adviser Assignment Section ─── */}
@@ -524,132 +715,132 @@ export function EditOrganizationModal({
 
                 {/* Form fields for new adviser */}
                 <div className="space-y-3">
-                  {/* Structured Name Inputs: First Name, Middle Name, Last Name */}
+                  {/* Employee Dropdown Selector */}
                   <div className="space-y-1.5">
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-                      <div className="sm:col-span-4">
-                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                          First Name <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          value={newAdviserData.firstName || ''}
-                          onChange={(e) => {
-                            const firstName = e.target.value;
-                            const name = formatStructuredFullName(firstName, newAdviserData.lastName, newAdviserData.middleName);
-                            setNewAdviserData({ ...newAdviserData, firstName, name });
-                            if (adviserErrors.firstName) setAdviserErrors({ ...adviserErrors, firstName: undefined });
-                          }}
-                          placeholder="e.g. Maria"
-                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.firstName ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                            }`}
-                        />
-                        {adviserErrors.firstName && (
-                          <p className="text-[11px] text-red-600 mt-1">{adviserErrors.firstName}</p>
-                        )}
-                      </div>
+                    <label className="block text-[11px] font-bold text-gray-700 uppercase">
+                      Select Faculty / Employee <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={selectedAdviserEmployeeId}
+                      onChange={(e) => {
+                        const empDocId = e.target.value;
+                        setSelectedAdviserEmployeeId(empDocId);
+                        const emp = activeEmployees.find((item) => item.id === empDocId);
+                        if (!emp) {
+                          setNewAdviserData({
+                            ...newAdviserData,
+                            firstName: '',
+                            middleName: '',
+                            lastName: '',
+                            name: '',
+                            employeeId: '',
+                          });
+                          return;
+                        }
+                        const name = formatStructuredFullName(emp.firstName, emp.lastName, emp.middleName) || emp.fullName;
+                        setNewAdviserData({
+                          ...newAdviserData,
+                          firstName: emp.firstName,
+                          middleName: emp.middleName || '',
+                          lastName: emp.lastName,
+                          name,
+                          employeeId: emp.employeeId,
+                        });
+                        setAdviserErrors((prev) => ({
+                          ...prev,
+                          firstName: undefined,
+                          lastName: undefined,
+                          name: undefined,
+                          employeeId: undefined,
+                        }));
+                      }}
+                      className={`w-full px-3 py-2 border rounded-lg text-xs bg-white focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${
+                        adviserErrors.firstName || adviserErrors.lastName || adviserErrors.name
+                          ? 'border-red-400 bg-red-50'
+                          : 'border-gray-300'
+                      }`}
+                    >
+                      <option value="">
+                        {activeEmployees.length === 0
+                          ? 'No employees found — upload Excel in Settings → Employee Maintenance'
+                          : 'Select an employee to assign as Club Adviser...'}
+                      </option>
+                      {activeEmployees.map((emp) => {
+                        const empIdNorm = String(emp.employeeId || '').trim().toLowerCase();
+                        const empNameNorm = String(emp.fullName || '').trim().toLowerCase();
+                        const isAlreadyAdviser = allOrganizations.some(
+                          (o) =>
+                            o.id !== organization.id &&
+                            o.status !== 'archived' &&
+                            o.adviser &&
+                            ((empIdNorm && String(o.adviser.employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                              (empNameNorm && String(o.adviser.name || '').trim().toLowerCase() === empNameNorm))
+                        );
+                        const isAlreadySignatory = signatories.some(
+                          (s) =>
+                            s.isActive !== false &&
+                            ((empIdNorm && String((s as any).employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                              (empNameNorm && String(s.name || '').trim().toLowerCase() === empNameNorm))
+                        );
+                        const disabledReason = isAlreadyAdviser
+                          ? ' (Already Club Adviser)'
+                          : isAlreadySignatory
+                            ? ' (Already Institutional Signatory)'
+                            : '';
+                        return (
+                          <option
+                            key={emp.id}
+                            value={emp.id}
+                            disabled={isAlreadyAdviser || isAlreadySignatory}
+                          >
+                            {emp.lastName}, {emp.firstName}{emp.middleName ? ` ${emp.middleName[0]}.` : ''} ({emp.employeeId})
+                            {emp.positionTitle ? ` — ${emp.positionTitle}` : ''}
+                            {disabledReason}
+                          </option>
+                        );
+                      })}
+                    </select>
 
-                      <div className="sm:col-span-4">
-                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1 text-center">
-                          Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
-                        </label>
-                        <input
-                          type="text"
-                          autoComplete="additional-name"
-                          aria-label="Middle name"
-                          value={newAdviserData.middleName || ''}
-                          onChange={(e) => {
-                            const middleName = e.target.value;
-                            const name = formatStructuredFullName(newAdviserData.firstName, newAdviserData.lastName, middleName);
-                            setNewAdviserData({ ...newAdviserData, middleName, name });
-                          }}
-                          placeholder="e.g. Sigmund"
-                          className="w-full px-2 py-2 border border-gray-300 rounded-lg text-xs font-medium focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-4">
-                        <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                          Last Name <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="text"
-                          value={newAdviserData.lastName || ''}
-                          onChange={(e) => {
-                            const lastName = e.target.value;
-                            const name = formatStructuredFullName(newAdviserData.firstName, lastName, newAdviserData.middleName);
-                            setNewAdviserData({ ...newAdviserData, lastName, name });
-                            if (adviserErrors.lastName) setAdviserErrors({ ...adviserErrors, lastName: undefined });
-                          }}
-                          placeholder="e.g. Santos"
-                          className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.lastName ? 'border-red-400 bg-red-50' : 'border-gray-300'
-                            }`}
-                        />
-                        {adviserErrors.lastName && (
-                          <p className="text-[11px] text-red-600 mt-1">{adviserErrors.lastName}</p>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Combined Name Preview */}
                     {newAdviserData.name && (
                       <div className="px-3 py-1.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
-                        <span className="font-semibold text-gray-500">Official Combined Name:</span>
                         <span className="font-bold text-[#0E4EBD]">{newAdviserData.name}</span>
+                        {newAdviserData.employeeId && (
+                          <span className="px-2 py-0.5 bg-white border border-blue-200 rounded font-mono text-[10px] font-bold text-[#001A4D]">
+                            {newAdviserData.employeeId}
+                          </span>
+                        )}
                       </div>
                     )}
-                    {adviserErrors.name && !adviserErrors.firstName && !adviserErrors.lastName && (
-                      <p className="text-[11px] text-red-600 mt-1">{adviserErrors.name}</p>
+                    {(adviserErrors.firstName || adviserErrors.lastName || adviserErrors.name) && (
+                      <p className="text-[11px] text-red-600 mt-1">
+                        {adviserErrors.firstName || adviserErrors.lastName || adviserErrors.name}
+                      </p>
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                        Institutional Email *
-                      </label>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
-                        <input
-                          type="email"
-                          value={newAdviserData.email}
-                          onChange={(e) => {
-                            setNewAdviserData({ ...newAdviserData, email: e.target.value });
-                            if (adviserErrors.email) setAdviserErrors({ ...adviserErrors, email: undefined });
-                          }}
-                          placeholder="faculty@ormoc.sti.edu.ph"
-                          className={`w-full pl-9 pr-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
-                        />
-                      </div>
-                      {adviserErrors.email && (
-                        <p className="text-[11px] text-red-600 mt-1">{adviserErrors.email}</p>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
-                        Faculty / Employee ID{' '}
-                        <span className="text-gray-400 font-normal">(Optional)</span>
-                      </label>
+                  <div>
+                    <label className="block text-[11px] font-bold text-gray-700 uppercase mb-1">
+                      Institutional Email *
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" />
                       <input
-                        type="text"
-                        value={newAdviserData.employeeId}
+                        type="email"
+                        value={newAdviserData.email}
                         onChange={(e) => {
-                          setNewAdviserData({
-                            ...newAdviserData,
-                            employeeId: e.target.value,
-                          });
-                          if (adviserErrors.employeeId) setAdviserErrors({ ...adviserErrors, employeeId: undefined });
+                          setNewAdviserData({ ...newAdviserData, email: e.target.value });
+                          if (adviserErrors.email) setAdviserErrors({ ...adviserErrors, email: undefined });
                         }}
-                        placeholder="e.g. FAC-2026-042"
-                        className={`w-full px-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.employeeId ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                        placeholder="faculty@ormoc.sti.edu.ph"
+                        className={`w-full pl-9 pr-3 py-2 border rounded-lg text-xs focus:ring-2 focus:ring-[#0E4EBD]/30 outline-none ${adviserErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
                       />
-                      {adviserErrors.employeeId && (
-                        <p className="text-[11px] text-red-600 mt-1">
-                          {adviserErrors.employeeId}
-                        </p>
-                      )}
                     </div>
+                    {adviserErrors.email && (
+                      <p className="text-[11px] text-red-600 mt-1">{adviserErrors.email}</p>
+                    )}
+                    {adviserErrors.employeeId && (
+                      <p className="text-[11px] text-red-600 mt-1">{adviserErrors.employeeId}</p>
+                    )}
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
@@ -735,7 +926,7 @@ export function EditOrganizationModal({
           <button
             type="submit"
             form="edit-org-form"
-            disabled={isSaving}
+            disabled={isSaving || loadingOrgMembers || scopeConflictCheck.hasConflicts}
             className="px-5 py-2 text-xs font-bold text-white bg-[#001A4D] rounded-lg hover:bg-[#0E4EBD] transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer"
           >
             {isSaving && <Loader2 className="w-4 h-4 animate-spin" />}

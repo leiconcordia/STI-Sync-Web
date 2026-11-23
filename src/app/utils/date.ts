@@ -46,6 +46,13 @@ export function parseDateSafe(input: any): Date | null {
     const trimmed = input.trim();
     if (!trimmed) return null;
 
+    // Pure YYYY-MM-DD calendar date: parse as local date to avoid UTC timezone day-shift
+    const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+    if (ymd) {
+      const localDate = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]));
+      return isValid(localDate) && !isNaN(localDate.getTime()) ? localDate : null;
+    }
+
     // Direct JS Date parse
     const parsed = new Date(trimmed);
     if (isValid(parsed) && !isNaN(parsed.getTime())) {
@@ -68,6 +75,19 @@ export function formatAppDate(date: any, fallback = '—'): string {
   if (!parsed) return fallback;
   try {
     return format(parsed, 'MMM d yyyy');
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Formats a date as "MMM d, yyyy" (e.g. "Aug 9, 2005").
+ */
+export function formatShortDate(date: any, fallback = '—'): string {
+  const parsed = parseDateSafe(date);
+  if (!parsed) return fallback;
+  try {
+    return format(parsed, 'MMM d, yyyy');
   } catch {
     return fallback;
   }

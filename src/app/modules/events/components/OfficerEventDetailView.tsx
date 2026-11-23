@@ -17,6 +17,18 @@ import { useOrganizationStream } from '../../organizations/hooks/useOrganization
 import { useEventTypesStream, useVenuesStream } from '../hooks/useEventConfigStream';
 import { useDepartments, useCourses, useSections } from '../../academic/hooks/useAcademicStream';
 import ActivitySignatoryTracker from '../../activity-proposals/components/workflow/ActivitySignatoryTracker';
+import ProposalStatusStepper from '../../activity-proposals/components/workflow/ProposalStatusStepper';
+import ClubAdviserDecisionPanel from '../../workflow/components/ClubAdviserDecisionPanel';
+import {
+  getProposalById,
+  approveAndForwardProposalByAdviser,
+  returnProposalByAdviser,
+  rejectProposalByAdviser,
+} from '../../activity-proposals/services/proposal.service';
+import {
+  isDocumentForAdviserReview,
+  resolveDocumentTrackingState,
+} from '../../activity-proposals/utils/proposal-status-tracker.utils';
 import { normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
 import PublishStudentFeedModal from './PublishStudentFeedModal';
 import AttendanceScannersModal from './AttendanceScannersModal';
@@ -28,7 +40,6 @@ import { EventPayablesQRControl } from '../../finance/components/EventPayablesQR
 import RevisionFeedbackBanner from '../../workflow/components/RevisionFeedbackBanner';
 import RevisionDiffViewerModal from '../../workflow/components/RevisionDiffViewerModal';
 import WithdrawConfirmModal from '../../workflow/components/WithdrawConfirmModal';
-import { getProposalById } from '../../activity-proposals/services/proposal.service';
 import { exportActivityProposalPDF } from '../../activity-proposals/utils/proposal-pdf-exporter';
 import { canWithdrawProposal, canEditProposal, isEventEditable, getEventTimingStatus, isProposalFullySigned, isEventAttendanceEnabled } from '../utils/event-lifecycle.utils';
 import { ConcludeEventModal } from './ConcludeEventModal';
@@ -44,6 +55,14 @@ import {
   resolveCleanOrgAcronym,
   stripSasPhrases,
 } from '../utils/organization-display.utils';
+import {
+  EventSupplementalBudgetsSection,
+  SupplementalBudgetModal,
+  SupplementalBudgetDetailModal,
+  useEventSupplementalBudgets,
+  canRequestSupplementalBudget,
+  type SupplementalBudgetRequest,
+} from '../../supplemental-budget';
 
 interface OfficerEventDetailViewProps {
   event: EventDocument;
@@ -73,6 +92,16 @@ const STEP_LABELS: Record<number, string> = {
   6: 'Step 6: Financial Projections',
   7: 'Step 7: Signatories & Vetting',
 };
+
+const AP_ADVISER_RETURN_STEPS = [
+  { key: 'step_1', stepNumber: 1, label: 'Step 1: General Info & Proponents', description: 'Activity Title, Rationale, Theme, Proponents, and Organizing Body' },
+  { key: 'step_2', stepNumber: 2, label: 'Step 2: Objectives & Mechanics', description: 'Institutional Objectives, Measurable Indicators, Mechanics, and Materials' },
+  { key: 'step_3', stepNumber: 3, label: 'Step 3: Target Audience & Market', description: 'Target Demographics, Academic Level, and Estimated Attendance' },
+  { key: 'step_4', stepNumber: 4, label: 'Step 4: Date, Venue & Schedule', description: 'Event Dates, Campus Venues, and Multi-Session Scanning Windows' },
+  { key: 'step_5', stepNumber: 5, label: 'Step 5: Committee Task Matrix', description: 'Committee Milestones, Assigned Persons, and Target Deadlines' },
+  { key: 'step_6', stepNumber: 6, label: 'Step 6: Financial Projections', description: 'Projected Revenues, Line-Item Expenses, Fund Sources, and Balanced Budget' },
+  { key: 'step_7', stepNumber: 7, label: 'Step 7: Signatories & Vetting', description: 'Signatory Routing Sequence, Endorsements, and Urgent Justification' },
+];
 
 function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -220,6 +249,9 @@ export default function OfficerEventDetailView({
   const [isAttendanceModalOpen, setIsAttendanceModalOpen] = useState(false);
   const [isLiquidationModalOpen, setIsLiquidationModalOpen] = useState(false);
   const [isDisbursementVoucherModalOpen, setIsDisbursementVoucherModalOpen] = useState(false);
+  const [isSbrCreateModalOpen, setIsSbrCreateModalOpen] = useState(false);
+  const [editingSbrFromUtils, setEditingSbrFromUtils] = useState<SupplementalBudgetRequest | null>(null);
+  const [selectedSbrFromUtilsId, setSelectedSbrFromUtilsId] = useState<string | null>(null);
   const [isPayablesModalOpen, setIsPayablesModalOpen] = useState(false);
   const [isUtilsOpen, setIsUtilsOpen] = useState(false);
   const [showDiffModal, setShowDiffModal] = useState(false);
@@ -238,6 +270,19 @@ export default function OfficerEventDetailView({
   }, [isUtilsOpen]);
 
   const { liquidations: allLiquidations = [] } = useAllLiquidations();
+  const {
+    data: eventSbrs = [],
+    approvedTotal: sbrApprovedTotal,
+    pendingRequest: pendingSbrRequest,
+  } = useEventSupplementalBudgets(event?.id);
+  const sbrEligibility = useMemo(
+    () => canRequestSupplementalBudget(activeEvent || event, eventSbrs, allLiquidations),
+    [activeEvent, event, eventSbrs, allLiquidations]
+  );
+  const liveSelectedSbrFromUtils = useMemo(
+    () => (selectedSbrFromUtilsId ? eventSbrs.find((s) => s.id === selectedSbrFromUtilsId) || null : null),
+    [selectedSbrFromUtilsId, eventSbrs]
+  );
 
   const linkedLiquidation = useMemo(() => {
     if (!event?.id) return null;
@@ -321,6 +366,32 @@ export default function OfficerEventDetailView({
     const hId = unifiedEventEntity.hostingOrgId || unifiedEventEntity.organizationId;
     return (orgs || []).find((o) => o.id === hId);
   }, [orgs, unifiedEventEntity.hostingOrgId, unifiedEventEntity.organizationId]);
+  const isAdviser = useMemo(() => {
+    if (
+      profile?.isAdviser ||
+      profile?.activeRoleId?.toLowerCase() === 'adviser' ||
+      profile?.role?.toLowerCase() === 'adviser'
+    ) {
+      return true;
+    }
+    const cleanEmail = (profile?.email || '').trim().toLowerCase();
+    const cleanUid = profile?.authUid || profile?.uid || '';
+    const checkMatch = (adv: any) => {
+      if (!adv) return false;
+      const advEmail = (adv.email || '').trim().toLowerCase();
+      if (cleanEmail && advEmail && cleanEmail === advEmail) return true;
+      const advUid = adv.authUid || adv.uid || '';
+      if (cleanUid && advUid && cleanUid === advUid) return true;
+      return false;
+    };
+    if (orgObj && checkMatch((orgObj as any).adviser)) return true;
+    return false;
+  }, [profile, orgObj]);
+  const showAdviserRightPanel = Boolean(
+    !isSasCreated &&
+      (isDocumentForAdviserReview(unifiedEventEntity) ||
+        Boolean((unifiedEventEntity as any)?.adviserReview))
+  );
   const orgLogo = isSas ? null : (orgObj?.logoUrl || orgObj?.logo || null);
   const eventTypeName = eventTypes.find((t) => t.id === event.eventTypeId)?.name || 'General Activity';
   const resolvedVenueId = (activeEvent as any)?.venueId || event.venueId;
@@ -689,18 +760,19 @@ export default function OfficerEventDetailView({
   );
 
   const statusColors: Record<string, { bg: string; text: string; label: string; icon: any }> = {
-    draft: { bg: 'bg-gray-100 text-gray-700 border-gray-300', text: 'text-gray-700', label: 'Draft Proposal', icon: Clock },
-    pending: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Pending Review', icon: Clock },
-    pending_review: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Pending Review', icon: Clock },
-    under_review: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Pending Review', icon: Clock },
-    approved: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved Activity', icon: CheckCircle2 },
-    upcoming: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved Activity', icon: CheckCircle2 },
-    active: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved Activity', icon: CheckCircle2 },
+    draft: { bg: 'bg-gray-100 text-gray-700 border-gray-300', text: 'text-gray-700', label: 'Draft', icon: Clock },
+    for_adviser_review: { bg: 'bg-indigo-50 text-indigo-800 border-indigo-300', text: 'text-indigo-700', label: 'For Adviser Review', icon: Clock },
+    pending: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'For SAS Review', icon: Clock },
+    pending_review: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'For SAS Review', icon: Clock },
+    under_review: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'For SAS Review', icon: Clock },
+    approved: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved', icon: CheckCircle2 },
+    upcoming: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved', icon: CheckCircle2 },
+    active: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: isSasCreated ? 'Active Activity' : 'Approved', icon: CheckCircle2 },
     published: { bg: 'bg-emerald-50 text-emerald-800 border-emerald-300', text: 'text-emerald-700', label: 'Published Activity', icon: CheckCircle2 },
     ongoing: { bg: 'bg-indigo-50 text-indigo-800 border-indigo-300', text: 'text-indigo-700', label: 'Ongoing Activity', icon: CheckCircle2 },
-    completed: { bg: 'bg-blue-50 text-blue-800 border-blue-300', text: 'text-blue-700', label: 'Completed Activity', icon: CheckCircle2 },
-    returned: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'Returned for Revision', icon: RotateCcw },
-    rejected: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Rejected Proposal', icon: XCircle },
+    completed: { bg: 'bg-blue-50 text-blue-800 border-blue-300', text: 'text-blue-700', label: 'Completed', icon: CheckCircle2 },
+    returned: { bg: 'bg-amber-50 text-amber-800 border-amber-300', text: 'text-amber-700', label: 'For Revision', icon: RotateCcw },
+    rejected: { bg: 'bg-red-50 text-red-800 border-red-300', text: 'text-red-700', label: 'Rejected', icon: XCircle },
   };
 
   const currentStatusKey = isCompleted
@@ -1207,6 +1279,100 @@ export default function OfficerEventDetailView({
                       </button>
                     )}
 
+                    {/* 3c. Supplemental Budget (Request Additional Funds) */}
+                    {isApproved && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUtilsOpen(false);
+                          if (pendingSbrRequest) {
+                            setSelectedSbrFromUtilsId(pendingSbrRequest.id);
+                            return;
+                          }
+                          if (!isSasCreated && sbrEligibility.eligible) {
+                            setEditingSbrFromUtils(null);
+                            setIsSbrCreateModalOpen(true);
+                            return;
+                          }
+                          if (eventSbrs.length > 0) {
+                            setSelectedSbrFromUtilsId(eventSbrs[0].id);
+                            return;
+                          }
+                          if (isSasCreated) {
+                            toast.info('Supplemental budgets for institutional activities are managed by SAS.');
+                            return;
+                          }
+                          toast.error(sbrEligibility.reason || 'Supplemental budget window is currently closed.');
+                        }}
+                        className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                          !pendingSbrRequest && (isSasCreated || (!sbrEligibility.eligible && eventSbrs.length === 0))
+                            ? 'opacity-65 hover:bg-gray-50 cursor-pointer'
+                            : 'hover:bg-amber-50/70 cursor-pointer active:scale-[0.99]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                            pendingSbrRequest
+                              ? 'bg-indigo-50 text-indigo-600 border border-indigo-200'
+                              : !isSasCreated && sbrEligibility.eligible
+                              ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                              : sbrApprovedTotal > 0
+                              ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                              : 'bg-gray-100 text-gray-500 border border-gray-200'
+                          }`}>
+                            {!pendingSbrRequest && (isSasCreated || (!sbrEligibility.eligible && eventSbrs.length === 0)) ? (
+                              <Lock className="w-4 h-4" />
+                            ) : (
+                              <Coins className="w-4 h-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="font-bold text-gray-900 truncate">
+                              {pendingSbrRequest
+                                ? `Supplemental Budget (${pendingSbrRequest.referenceCode})`
+                                : 'Request Additional Budget'}
+                            </div>
+                            <div className="text-[11px] text-gray-500 truncate">
+                              {pendingSbrRequest
+                                ? `Pending • +${formatPHP(pendingSbrRequest.requestedAmount)} (${pendingSbrRequest.status.replace(/_/g, ' ')})`
+                                : sbrApprovedTotal > 0
+                                ? `Approved +${formatPHP(sbrApprovedTotal)} • ${sbrEligibility.eligible && !isSasCreated ? 'Click to add another' : 'Click to inspect'}`
+                                : !isSasCreated && sbrEligibility.eligible
+                                ? 'Pre-implementation supplemental funds'
+                                : isSasCreated
+                                ? 'Managed by SAS Administration'
+                                : sbrEligibility.code === 'EVENT_ALREADY_STARTED' || sbrEligibility.code === 'EVENT_CONCLUDED'
+                                ? 'Closed • Event already started/concluded'
+                                : sbrEligibility.code === 'LIQUIDATION_EXISTS'
+                                ? 'Locked • Liquidation already initiated'
+                                : 'Unavailable for this activity'}
+                            </div>
+                          </div>
+                        </div>
+                        <span
+                          className={`shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full border ${
+                            pendingSbrRequest
+                              ? 'bg-indigo-100 text-indigo-800 border-indigo-300'
+                              : !isSasCreated && sbrEligibility.eligible
+                              ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D]'
+                              : sbrApprovedTotal > 0
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-gray-100 text-gray-600 border-gray-200'
+                          }`}
+                        >
+                          {pendingSbrRequest
+                            ? isAdviser && pendingSbrRequest.status === 'for_adviser_review'
+                              ? 'Review'
+                              : 'Pending'
+                            : !isSasCreated && sbrEligibility.eligible
+                            ? 'Request'
+                            : sbrApprovedTotal > 0
+                            ? 'View'
+                            : 'Locked'}
+                        </span>
+                      </button>
+                    )}
+
                     {/* 4. Financial Liquidation */}
                     {(() => {
                       const isFlDisabled =
@@ -1563,6 +1729,11 @@ export default function OfficerEventDetailView({
 
         {/* Center Content Pane */}
         <main ref={centerRef} className="flex-1 overflow-y-auto bg-gray-50/30 p-6 lg:p-8 space-y-8">
+          {/* 7-Stage Proposal Status Tracking Stepper */}
+          {!isSasCreated && (
+            <ProposalStatusStepper record={unifiedEventEntity} docKind="AP" />
+          )}
+
           {/* Status Feedback Banners */}
           {withdrawCheck.canWithdraw && (
             <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -2390,6 +2561,29 @@ export default function OfficerEventDetailView({
                 </div>
               </div>
             </div>
+
+            {/* Supplemental Budget Requests (Pre-Implementation Addendums) */}
+            <EventSupplementalBudgetsSection
+              event={activeEvent}
+              isSasInstitutional={isSasCreatedEvent(activeEvent)}
+              organizationId={
+                activeEvent.hostingOrgId ||
+                (activeEvent as any).organizationId ||
+                profile?.organizationId ||
+                ''
+              }
+              organizationName={resolveCleanOrgName(activeEvent, orgMap)}
+              organizationAcronym={resolveCleanOrgAcronym(activeEvent, orgMap)}
+              viewerRole={isAdviser ? 'adviser' : 'officer'}
+              actor={{
+                uid: profile?.authUid || profile?.uid || '',
+                name: profile?.studentName || (profile as any)?.name || 'Club Officer',
+                email: profile?.email || '',
+                role: isAdviser ? 'adviser' : 'officer',
+                signatureUrl: (profile as any)?.signatureUrl || undefined,
+              }}
+              existingLiquidations={allLiquidations}
+            />
           </section>
 
           {/* SECTION 9: SIGNATORIES & APPROVAL PIPELINE */}
@@ -2550,6 +2744,64 @@ export default function OfficerEventDetailView({
       )}
 
     </main>
+
+        {/* Right Sidebar: Club Adviser Decision Panel */}
+        {showAdviserRightPanel && (
+          <aside className="w-80 lg:w-96 flex-shrink-0 border-l border-gray-200 bg-white overflow-y-auto p-5">
+            <ClubAdviserDecisionPanel
+              documentType="AP"
+              documentTitle={fullProposal.title || event.title || 'Activity Proposal'}
+              referenceNo={fullProposal.referenceNo || event.referenceId}
+              record={unifiedEventEntity}
+              isAdviser={isAdviser}
+              adviserProfile={{
+                uid: profile?.uid || profile?.authUid || 'adviser',
+                name: profile?.studentName || (profile as any)?.displayName || (profile as any)?.name || 'Club Adviser',
+                email: profile?.email || '',
+                signatureUrl: profile?.signatureUrl || null,
+              }}
+              returnSteps={AP_ADVISER_RETURN_STEPS}
+              onApproveAndForward={async ({ signatureUrl, remarks }) => {
+                await approveAndForwardProposalByAdviser(
+                  event.id,
+                  {
+                    uid: profile?.uid || profile?.authUid || 'adviser',
+                    name: profile?.studentName || (profile as any)?.displayName || (profile as any)?.name || 'Club Adviser',
+                    email: profile?.email || '',
+                    signatureUrl,
+                  },
+                  remarks
+                );
+              }}
+              onReturnForRevision={async ({ overallRemarks, flaggedSteps, stepRevisionRemarks, returnDeadline }) => {
+                await returnProposalByAdviser(
+                  event.id,
+                  {
+                    uid: profile?.uid || profile?.authUid || 'adviser',
+                    name: profile?.studentName || (profile as any)?.displayName || (profile as any)?.name || 'Club Adviser',
+                    email: profile?.email || '',
+                  },
+                  overallRemarks,
+                  stepRevisionRemarks,
+                  flaggedSteps,
+                  returnDeadline
+                );
+              }}
+              onReject={async ({ reason }) => {
+                await rejectProposalByAdviser(
+                  event.id,
+                  {
+                    uid: profile?.uid || profile?.authUid || 'adviser',
+                    name: profile?.studentName || (profile as any)?.displayName || (profile as any)?.name || 'Club Adviser',
+                    email: profile?.email || '',
+                  },
+                  reason
+                );
+              }}
+              layout="sidebar"
+            />
+          </aside>
+        )}
       </div>
 
       {/* CONCLUDE EVENT MODAL */}
@@ -2701,6 +2953,53 @@ export default function OfficerEventDetailView({
         onConfirm={confirmWithdrawExecution}
         documentTitle={fullProposal.title || event.title}
         documentTypeLabel="Activity Proposal"
+      />
+
+      {/* 6. SUPPLEMENTAL BUDGET MODALS (FROM UTILS DROPDOWN) */}
+      <SupplementalBudgetModal
+        isOpen={isSbrCreateModalOpen}
+        onClose={() => {
+          setIsSbrCreateModalOpen(false);
+          setEditingSbrFromUtils(null);
+        }}
+        event={activeEvent}
+        isSasInstitutional={isSasCreated}
+        organizationId={
+          activeEvent.hostingOrgId ||
+          (activeEvent as any).organizationId ||
+          profile?.organizationId ||
+          ''
+        }
+        organizationName={resolveCleanOrgName(activeEvent, orgMap)}
+        organizationAcronym={resolveCleanOrgAcronym(activeEvent, orgMap)}
+        priorSupplementalTotal={sbrApprovedTotal}
+        actor={{
+          uid: profile?.authUid || profile?.uid || '',
+          name: profile?.studentName || (profile as any)?.name || 'Club Officer',
+          email: profile?.email || '',
+          role: isAdviser ? 'adviser' : 'officer',
+          signatureUrl: (profile as any)?.signatureUrl || undefined,
+        }}
+        existingSbr={editingSbrFromUtils}
+      />
+
+      <SupplementalBudgetDetailModal
+        isOpen={Boolean(liveSelectedSbrFromUtils)}
+        onClose={() => setSelectedSbrFromUtilsId(null)}
+        sbr={liveSelectedSbrFromUtils}
+        viewerRole={isAdviser ? 'adviser' : 'officer'}
+        actor={{
+          uid: profile?.authUid || profile?.uid || '',
+          name: profile?.studentName || (profile as any)?.name || 'Club Officer',
+          email: profile?.email || '',
+          role: isAdviser ? 'adviser' : 'officer',
+          signatureUrl: (profile as any)?.signatureUrl || undefined,
+        }}
+        onEditRequested={(sbrToEdit) => {
+          setSelectedSbrFromUtilsId(null);
+          setEditingSbrFromUtils(sbrToEdit);
+          setIsSbrCreateModalOpen(true);
+        }}
       />
     </div>
   );

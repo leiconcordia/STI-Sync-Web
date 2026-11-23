@@ -49,6 +49,7 @@ import {
   isStudentCollectionFunding,
 } from '../utils/liquidation-settlement.utils';
 import { isSasInstitutionalActivity } from '../../events/utils/event-lifecycle.utils';
+import { mergeBaseAndSupplementalAllocations } from '../../supplemental-budget/utils/sbr-validation.utils';
 import { softDeleteDocument, restoreDocument } from '../../workflow/services/soft-delete.service';
 import {
   getCachedWorkflowSettings,
@@ -519,12 +520,15 @@ export const createLiquidationReport = async (
     });
   }
 
+  const isSubmittingToAdviser = initialStatus === 'for_adviser_review';
   const initialRemark: LiquidationRemark = {
     id: `rem-${Date.now()}`,
     authorName: data.createdByName || 'Submitter',
-    authorRole: data.createdByRole || 'officer',
-    action: isSubmitting ? 'submitted' : 'draft_saved',
-    comment: isSubmitting
+    authorRole: (data.createdByRole as any) || 'officer',
+    action: isSubmittingToAdviser ? 'submitted_to_adviser' : isSubmitting ? 'submitted' : 'draft_saved',
+    comment: isSubmittingToAdviser
+      ? 'Liquidation report submitted by Student Officer for Club Adviser review.'
+      : isSubmitting
       ? 'Liquidation report submitted for institutional signatory review.'
       : 'Draft liquidation report created.',
     timestamp: new Date().toISOString(),
@@ -931,10 +935,11 @@ export async function withdrawLiquidationReport(
 
   const data = snap.data() as LiquidationDocument;
   const currentStatus = (data.status || '').toLowerCase().trim();
-  if (currentStatus !== 'under_review' && currentStatus !== 'pending') {
-    throw new Error('Only liquidation reports currently under review can be withdrawn.');
+  const isFromAdviserQueue = currentStatus === 'for_adviser_review';
+  if (currentStatus !== 'under_review' && currentStatus !== 'pending' && !isFromAdviserQueue) {
+    throw new Error('Only liquidation reports currently under review or awaiting adviser review can be withdrawn.');
   }
-  if (hasAnySignatorySigned(data)) {
+  if (!isFromAdviserQueue && hasAnySignatorySigned(data)) {
     throw new Error(
       'Cannot withdraw: At least one signatory has already digitally signed this liquidation report.'
     );
@@ -959,6 +964,7 @@ export async function withdrawLiquidationReport(
 
   await updateDoc(docRef, sanitizeFirestorePayload({
     status: 'draft',
+    ...(isFromAdviserQueue ? { adviserReview: null } : {}),
     currentStageIndex: 1,
     currentStepIndex: 0,
     approvalChain: chain,
@@ -1008,29 +1014,56 @@ export async function resolveLiquidationSourceAllocations(
     } catch {}
   }
 
+  const suppAllocs: ProposalBucketAllocation[] =
+    (Array.isArray(evData?.supplementalAllocations) && evData.supplementalAllocations.length > 0 && evData.supplementalAllocations) ||
+    (Array.isArray(propData?.supplementalAllocations) && propData.supplementalAllocations.length > 0 && propData.supplementalAllocations) ||
+    [];
+
   const parentAllocs =
     (Array.isArray(evData?.allocations) && evData.allocations.length > 0 && evData.allocations) ||
     (Array.isArray(propData?.allocations) && propData.allocations.length > 0 && propData.allocations) ||
     null;
-  if (parentAllocs) return parentAllocs as ProposalBucketAllocation[];
+  if (parentAllocs) {
+    return suppAllocs.length > 0
+      ? mergeBaseAndSupplementalAllocations(parentAllocs as ProposalBucketAllocation[], suppAllocs)
+      : (parentAllocs as ProposalBucketAllocation[]);
+  }
 
-  const allocatedBudget = Number(
-    data.allocatedBudget ?? data.amountAdvanced ?? evData?.totalApprovedBudget ?? propData?.financialProjections?.totalExpenses ?? 0
+  const baseBudget = Number(
+    evData?.originalApprovedBudget ??
+      evData?.totalApprovedBudget ??
+      propData?.financialProjections?.totalExpenses ??
+      data.allocatedBudget ??
+      data.amountAdvanced ??
+      0
   );
+  const allocatedBudget =
+    suppAllocs.length > 0
+      ? baseBudget
+      : Number(
+          data.allocatedBudget ??
+            data.amountAdvanced ??
+            evData?.effectiveApprovedBudget ??
+            evData?.totalApprovedBudget ??
+            propData?.financialProjections?.totalExpenses ??
+            0
+        );
   const fundingSource = String(
     data.fundingSource || evData?.fundingSource || propData?.fundingSource || ''
   ).trim();
   const orgId = String(data.organizationId || evData?.hostingOrgId || evData?.organizationId || propData?.organizationId || '').trim();
   const orgName = String(data.organizationName || evData?.organizationName || propData?.organizationName || 'Student Organization');
 
+  let baseResolved: ProposalBucketAllocation[] = [];
+
   // Legacy multi-bucket misc fee fallback
   const legacyMiscAllocs: any[] =
     (Array.isArray(evData?.miscFeeBucketAllocations) && evData.miscFeeBucketAllocations.length > 0 && evData.miscFeeBucketAllocations) ||
     (Array.isArray(propData?.miscFeeBucketAllocations) && propData.miscFeeBucketAllocations.length > 0 && propData.miscFeeBucketAllocations) ||
     [];
-  if (legacyMiscAllocs.length > 0) {
+  if (legacyMiscAllocs.length > 0 && baseBudget > 0) {
     const totalAvail = legacyMiscAllocs.reduce((s, m) => s + (Number(m.availableAmount) || 0), 0);
-    return legacyMiscAllocs.map((m) => ({
+    baseResolved = legacyMiscAllocs.map((m) => ({
       bucketId: String(m.bucketId),
       bucketName: String(m.bucketName || m.bucketId),
       fundType: 'misc_fee' as const,
@@ -1043,6 +1076,9 @@ export async function resolveLiquidationSourceAllocations(
       availableAmount: Number(m.availableAmount) || 0,
       poolAmount: Number(m.poolAmount) || 0,
     }));
+    return suppAllocs.length > 0
+      ? mergeBaseAndSupplementalAllocations(baseResolved, suppAllocs)
+      : baseResolved;
   }
 
   const singleBucketId = String(
@@ -1052,9 +1088,9 @@ export async function resolveLiquidationSourceAllocations(
     data.miscFeeBucketName || evData?.miscFeeBucketName || propData?.miscFeeBucketName || ''
   ).trim();
 
-  if (fundingSource === 'school_budget' || (singleBucketId && fundingSource !== 'organization_funds' && fundingSource !== 'student_contributions')) {
+  if (baseBudget > 0 && (fundingSource === 'school_budget' || (singleBucketId && fundingSource !== 'organization_funds' && fundingSource !== 'student_contributions'))) {
     if (singleBucketId || singleBucketName) {
-      return [
+      baseResolved = [
         {
           bucketId: singleBucketId || singleBucketName,
           bucketName: singleBucketName || singleBucketId,
@@ -1062,12 +1098,15 @@ export async function resolveLiquidationSourceAllocations(
           allocatedAmount: allocatedBudget,
         },
       ];
+      return suppAllocs.length > 0
+        ? mergeBaseAndSupplementalAllocations(baseResolved, suppAllocs)
+        : baseResolved;
     }
   }
 
-  if (fundingSource === 'student_contributions' || fundingSource === 'retained_sao_fund') {
+  if (baseBudget > 0 && (fundingSource === 'student_contributions' || fundingSource === 'retained_sao_fund')) {
     const isSasSentinel = !orgId || ['sas', 'sas_admin', 'sao', 'sao_admin', 'admin', 'institutional'].includes(orgId.toLowerCase());
-    return [
+    baseResolved = [
       {
         bucketId: isSasSentinel ? 'SAO_CAMPUS' : `ORG_${orgId}`,
         bucketName: isSasSentinel
@@ -1077,10 +1116,13 @@ export async function resolveLiquidationSourceAllocations(
         allocatedAmount: allocatedBudget,
       },
     ];
+    return suppAllocs.length > 0
+      ? mergeBaseAndSupplementalAllocations(baseResolved, suppAllocs)
+      : baseResolved;
   }
 
-  if (fundingSource === 'organization_funds' || (orgId && orgId !== 'sas' && orgId !== 'sas_admin')) {
-    return [
+  if (baseBudget > 0 && (fundingSource === 'organization_funds' || (orgId && orgId !== 'sas' && orgId !== 'sas_admin'))) {
+    baseResolved = [
       {
         bucketId: orgId ? `ORG_${orgId}` : 'ORG_TREASURY',
         bucketName: `${orgName} Treasury`,
@@ -1088,6 +1130,14 @@ export async function resolveLiquidationSourceAllocations(
         allocatedAmount: allocatedBudget,
       },
     ];
+    return suppAllocs.length > 0
+      ? mergeBaseAndSupplementalAllocations(baseResolved, suppAllocs)
+      : baseResolved;
+  }
+
+  // Zero-budget parent upgraded solely by approved supplemental budget(s)
+  if (suppAllocs.length > 0) {
+    return mergeBaseAndSupplementalAllocations([], suppAllocs);
   }
 
   return [];
@@ -2991,4 +3041,377 @@ export async function absorbRemainingCollectionDeficit(
       updatedAt: serverTimestamp(),
     })
   );
+}
+
+/**
+ * Notify an organization's Club Adviser when a Student Officer submits a Financial Liquidation for review.
+ */
+export async function notifyAdviserForLiquidationReview(params: {
+  liquidationId: string;
+  organizationId: string;
+  organizationName?: string;
+  eventTitle: string;
+  officerUid: string;
+  officerName: string;
+  isResubmission?: boolean;
+}): Promise<void> {
+  const targetOrgId = String(params.organizationId || '').trim();
+  if (!targetOrgId || targetOrgId === 'sas') return;
+  let orgAdviserEmail = '';
+  let orgAdviserUid = '';
+  try {
+    const orgSnap = await getDoc(doc(db, 'organizations', targetOrgId));
+    if (orgSnap.exists()) {
+      const oData = orgSnap.data() as any;
+      orgAdviserEmail = oData?.adviser?.email || oData?.adviserEmail || '';
+      orgAdviserUid = oData?.adviser?.uid || oData?.adviserUid || '';
+    }
+  } catch (_) {}
+
+  const adviserTokens = [`adviser:${targetOrgId}`, orgAdviserEmail, orgAdviserUid].filter(Boolean).join('|');
+  if (!adviserTokens) return;
+
+  try {
+    await createNotification({
+      recipientRole: 'officer',
+      recipientId: adviserTokens,
+      targetOrgId,
+      targetOrgName: params.organizationName || 'Student Organization',
+      type: 'document_submission',
+      category: 'liquidation',
+      title: params.isResubmission
+        ? `Revised Officer Liquidation for Review: ${params.eventTitle}`
+        : `New Officer Liquidation for Review: ${params.eventTitle}`,
+      message: `${params.officerName || 'A student officer'} submitted a Financial Liquidation report for your Club Adviser decision before forwarding to SAS.`,
+      resourceId: params.liquidationId,
+      resourceType: 'liquidation',
+      actionRoute: `/officer/liquidation?tab=officer_liquidations&id=${params.liquidationId}`,
+      senderId: params.officerUid,
+      senderName: params.officerName,
+      senderRoleTitle: 'Organization Officer',
+    });
+  } catch (err) {
+    console.warn('[notifyAdviserForLiquidationReview] Notification error:', err);
+  }
+}
+
+/**
+ * Club Adviser Action: Approve & Forward an officer-submitted Financial Liquidation to SAS
+ * (and Institutional Signatories if funded via School Budget / Miscellaneous Fee).
+ */
+export async function approveAndForwardLiquidationByAdviser(
+  liquidationId: string,
+  adviser: { uid: string; name: string; email: string; signatureUrl: string },
+  remarks = ''
+): Promise<{ success: boolean }> {
+  if (!adviser.signatureUrl || !adviser.signatureUrl.trim()) {
+    throw new Error('Club Adviser electronic signature is required to approve and forward this Financial Liquidation.');
+  }
+
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+  const data = snap.data() as LiquidationDocument;
+
+  const resolvedSource = String(data.fundingSource || 'organization_funds').toLowerCase();
+  const isOrgDirectSas =
+    resolvedSource === 'organization_funds' ||
+    resolvedSource === 'student_contributions' ||
+    resolvedSource === 'zero_budget';
+  const requiresSasPreApprovalGate = !isOrgDirectSas;
+
+  let chain: LiquidationApprovalStep[] = Array.isArray(data.approvalChain) ? data.approvalChain : [];
+  if (isOrgDirectSas) {
+    const sasCfg = getCachedSasSignatoryConfig();
+    chain = [
+      {
+        id: 'step_sas_approval',
+        step: 1,
+        stageIndex: 1,
+        stageName: 'SAS Approval',
+        role: 'sas_head',
+        roleTitle: sasCfg.roleTitle || 'Student Affairs & Services Head',
+        actionType: 'approve',
+        signatoryUid: sasCfg.employeeId || 'sas_admin',
+        signatoryName: sasCfg.name || 'Riselle Mae B. Lucanas',
+        signatoryEmail: sasCfg.email || 'sao@ormoc.sti.edu.ph',
+        department: sasCfg.department || 'Student Affairs & Services',
+        status: 'current',
+      },
+    ];
+  } else {
+    if (chain.length === 0) {
+      chain = await generateDefaultLiquidationChain(false);
+    }
+    chain = chain.map((step) => ({
+      ...step,
+      status: 'waiting' as const,
+      signedAt: undefined,
+      signatureUrl: undefined,
+      remarks: undefined,
+    }));
+  }
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'approved' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS.',
+    signatureUrl: adviser.signatureUrl.trim(),
+  };
+
+  const remarkEntry: LiquidationRemark = {
+    id: `rem-adv-approve-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_approved',
+    comment: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS for institutional audit.',
+    timestamp: nowIso,
+  };
+
+  await updateDoc(
+    docRef,
+    sanitizeFirestorePayload({
+      status: 'under_review',
+      isPendingSasVetting: requiresSasPreApprovalGate,
+      sasVettedAt: null,
+      sasVettedBy: null,
+      adviserReview,
+      submittedToSasAt: serverTimestamp(),
+      submittedAt: serverTimestamp(),
+      approvalChain: chain,
+      currentStageIndex: 1,
+      currentStepIndex: 0,
+      submittedBySignatureUrl: adviser.signatureUrl.trim(),
+      preparedBy: {
+        name: adviser.name || data.preparedBy?.name || 'Organization Adviser',
+        roleTitle: 'Organization Adviser',
+        email: adviser.email || '',
+        signatureUrl: adviser.signatureUrl.trim(),
+        signedAt: nowIso,
+      },
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        liquidationStatus: 'submitted',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    await createNotification({
+      recipientRole: 'admin',
+      type: 'document_submission',
+      category: 'liquidation',
+      title: `Liquidation Forwarded by Club Adviser: ${data.eventTitle || 'Activity Liquidation'}`,
+      message: `${adviser.name} (Club Adviser, ${data.organizationName || 'Student Org'}) approved and forwarded this Financial Liquidation for SAS review.`,
+      resourceId: liquidationId,
+      resourceType: 'liquidation',
+      actionRoute: `/home/financial-liquidations?id=${liquidationId}`,
+      targetOrgId: data.organizationId,
+      targetOrgName: data.organizationName,
+      senderId: adviser.uid,
+      senderName: adviser.name,
+      senderRoleTitle: 'Club Adviser',
+    });
+
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        type: 'document_approved',
+        category: 'liquidation',
+        title: `Liquidation Approved by Club Adviser: ${data.eventTitle}`,
+        message: `${adviser.name} approved your Financial Liquidation report and forwarded it to SAS.`,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: `/officer/liquidation?id=${liquidationId}`,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Return an officer-submitted Financial Liquidation for revision.
+ */
+export async function returnLiquidationByAdviser(
+  liquidationId: string,
+  adviser: { uid: string; name: string; email: string },
+  remarks: string,
+  stepRevisionRemarks?: Record<string, string>,
+  returnFlags?: string[],
+  returnDeadline?: string
+): Promise<{ success: boolean }> {
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+  const data = snap.data() as LiquidationDocument;
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'returned' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: remarks?.trim() || 'Returned by Club Adviser for revision.',
+  };
+
+  const remarkEntry: LiquidationRemark = {
+    id: `rem-adv-return-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_returned',
+    comment: remarks?.trim() || 'Returned by Club Adviser for revision.',
+    timestamp: nowIso,
+  };
+
+  await updateDoc(
+    docRef,
+    sanitizeFirestorePayload({
+      status: 'returned',
+      isPendingSasVetting: false,
+      adviserReview,
+      returnedByRole: 'adviser',
+      returnedBy: adviser.uid,
+      returnedByName: adviser.name || 'Club Adviser',
+      returnedByRoleTitle: 'Club Adviser',
+      returnedByEmail: adviser.email || '',
+      returnedAt: nowIso,
+      returnRemarks: remarks?.trim() || '',
+      stepRevisionRemarks: stepRevisionRemarks || {},
+      returnFlags: returnFlags || [],
+      returnDeadline: returnDeadline || null,
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        liquidationStatus: 'returned',
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        type: 'document_returned',
+        category: 'liquidation',
+        title: `Liquidation Returned by Club Adviser: ${data.eventTitle}`,
+        message: `${adviser.name} (Club Adviser): "${remarks}"`,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: `/officer/liquidation?tab=returned&id=${liquidationId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
+}
+
+/**
+ * Club Adviser Action: Reject an officer-submitted Financial Liquidation.
+ */
+export async function rejectLiquidationByAdviser(
+  liquidationId: string,
+  adviser: { uid: string; name: string; email: string },
+  reason: string
+): Promise<{ success: boolean }> {
+  const docRef = doc(db, LIQUIDATIONS_COLLECTION, liquidationId);
+  const snap = await getDoc(docRef);
+  if (!snap.exists()) throw new Error('Liquidation report not found.');
+  const data = snap.data() as LiquidationDocument;
+
+  const nowIso = new Date().toISOString();
+  const adviserReview = {
+    status: 'rejected' as const,
+    reviewedByUid: adviser.uid,
+    reviewedByName: adviser.name || 'Club Adviser',
+    reviewedByEmail: adviser.email || '',
+    reviewedAt: nowIso,
+    remarks: reason,
+  };
+
+  const remarkEntry: LiquidationRemark = {
+    id: `rem-adv-reject-${Date.now()}`,
+    authorName: adviser.name || 'Club Adviser',
+    authorRole: 'adviser',
+    action: 'adviser_rejected',
+    comment: reason,
+    timestamp: nowIso,
+  };
+
+  await updateDoc(
+    docRef,
+    sanitizeFirestorePayload({
+      status: 'rejected',
+      isPendingSasVetting: false,
+      adviserReview,
+      rejectedByRole: 'adviser',
+      rejectedByName: adviser.name || 'Club Adviser',
+      rejectionReason: reason,
+      rejectedAt: serverTimestamp(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(remarkEntry)),
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  if (data.eventId) {
+    try {
+      await updateDoc(doc(db, EVENTS_COLLECTION, data.eventId), {
+        liquidationStatus: 'pending',
+        liquidationReportId: null,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  try {
+    if (data.organizationId) {
+      await createNotification({
+        recipientRole: 'officer',
+        targetOrgId: data.organizationId,
+        targetOrgName: data.organizationName,
+        type: 'document_rejected',
+        category: 'liquidation',
+        title: `Liquidation Rejected by Club Adviser: ${data.eventTitle}`,
+        message: `${adviser.name} (Club Adviser) rejected this liquidation: "${reason}"`,
+        resourceId: liquidationId,
+        resourceType: 'liquidation',
+        actionRoute: `/officer/liquidation?tab=rejected&id=${liquidationId}`,
+        isUrgent: true,
+        senderId: adviser.uid,
+        senderName: adviser.name,
+        senderRoleTitle: 'Club Adviser',
+      });
+    }
+  } catch (_) {}
+
+  return { success: true };
 }

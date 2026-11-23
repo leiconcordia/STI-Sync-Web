@@ -680,6 +680,7 @@ export function Dashboard() {
               value={kpiCounts.pendingActivityProposals}
               icon={CalendarCheck}
               gradient="blue"
+              onClick={() => navigate("/home/event-approvals?tab=pending")}
             />
 
             {/* 2. Approved Activity Proposals */}
@@ -688,6 +689,7 @@ export function Dashboard() {
               value={kpiCounts.approvedActivityProposals}
               icon={CalendarDays}
               gradient="green"
+              onClick={() => navigate("/home/event-approvals?tab=approved")}
             />
 
             {/* 3. Pending Financial Liquidations */}
@@ -696,6 +698,7 @@ export function Dashboard() {
               value={kpiCounts.pendingFinancialLiquidations}
               icon={Receipt}
               gradient="gold"
+              onClick={() => navigate("/home/liquidations?tab=pending")}
             />
 
             {/* 4. Pending Post-Activity Reports */}
@@ -704,6 +707,7 @@ export function Dashboard() {
               value={kpiCounts.pendingPostActivityReports}
               icon={FileCheck2}
               gradient="red-orange"
+              onClick={() => navigate("/home/post-activity-reports?tab=pending")}
             />
           </div>
 
@@ -744,7 +748,8 @@ export function Dashboard() {
                     unifiedApprovalsQueue.map((item) => (
                       <div
                         key={item.id}
-                        className="flex items-center gap-3 p-2.5 hover:bg-gray-50/80 rounded-xl transition-colors border border-gray-100"
+                        onClick={() => navigate(item.route)}
+                        className="flex items-center gap-3 p-2.5 hover:bg-gray-50/80 rounded-xl transition-colors border border-gray-100 cursor-pointer"
                       >
                         <div className={`w-2.5 h-2.5 rounded-full ${item.badgeColor} flex-shrink-0`} />
                         <div className="flex-1 min-w-0">
@@ -777,7 +782,10 @@ export function Dashboard() {
                         {/* Action Button Routing Directly to Release to Signatories or SAS Approve */}
                         <Button
                           size="sm"
-                          onClick={() => navigate(item.route)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(item.route);
+                          }}
                           className={`${item.actionButtonClass} text-[11px] font-semibold h-7 px-2.5 flex-shrink-0 cursor-pointer whitespace-nowrap`}
                         >
                           {item.actionLabel}
@@ -807,7 +815,11 @@ export function Dashboard() {
                     </div>
                   ) : (
                     organizationActivityList.map((org) => (
-                      <div key={org.id} className="p-2.5 bg-gray-50/60 rounded-xl border border-gray-100 space-y-2">
+                      <div
+                        key={org.id}
+                        onClick={() => navigate("/home/organizations")}
+                        className="p-2.5 bg-gray-50/60 hover:bg-blue-50/40 rounded-xl border border-gray-100 hover:border-blue-200 space-y-2 cursor-pointer transition-colors"
+                      >
                         <div className="flex items-center gap-2.5">
                           <div className="w-8 h-8 bg-gradient-to-br from-[#001A4D] to-[#0E4EBD] rounded-lg flex items-center justify-center text-white font-bold text-xs uppercase overflow-hidden flex-shrink-0 shadow-xs">
                             {org.logoUrl ? (

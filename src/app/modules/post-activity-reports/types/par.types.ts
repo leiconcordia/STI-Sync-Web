@@ -3,9 +3,11 @@ import type { SoftDeletable, Archivable } from '../../workflow/types/approval.ty
 
 export type PostActivityReportStatus =
   | 'draft'
+  | 'for_adviser_review'
   | 'under_review'
   | 'approved'
   | 'returned'
+  | 'rejected'
   | 'archived';
 
 export type PARObjectiveStatus =
@@ -53,8 +55,8 @@ export interface PARApprovalStep {
 export interface PARRemark {
   id: string;
   authorName: string;
-  authorRole: 'admin' | 'officer' | 'signatory';
-  action: 'submitted' | 'returned' | 'approved' | 'draft_saved' | 'endorsed';
+  authorRole: 'admin' | 'officer' | 'adviser' | 'signatory';
+  action: 'submitted' | 'submitted_to_adviser' | 'adviser_approved' | 'adviser_returned' | 'adviser_rejected' | 'returned' | 'approved' | 'rejected' | 'draft_saved' | 'endorsed';
   comment: string;
   timestamp: string;
 }
@@ -205,6 +207,15 @@ export interface PostActivityReportDocument extends SoftDeletable, Archivable {
   // ─── Lifecycle & Clearance Status ───
   status: PostActivityReportStatus;
   isReturned?: boolean;
+  submittedByOfficer?: boolean;
+  submittedToAdviserAt?: Timestamp | any;
+  submittedToSasAt?: Timestamp | any;
+  adviserReview?: import('../../activity-proposals/types/proposal.types').AdviserReviewRecord | null;
+  returnedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectedByRole?: 'adviser' | 'sas' | 'signatory' | string;
+  rejectionReason?: string | null;
+  rejectedByName?: string;
+  rejectedAt?: Timestamp | any;
   submittedAt?: Timestamp | any;
   approvedAt?: Timestamp | any;
   approvedBy?: string;

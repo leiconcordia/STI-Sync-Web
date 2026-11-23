@@ -324,9 +324,11 @@ export function resolveCleanOrgAcronym(
 export function isEventLiquidationExempt(event: any): boolean {
   if (!event) return true;
 
-  // 2. Budget numbers on event root
+  // 2. Budget numbers on event root (including approved supplemental budgets)
   const rootBudget = Math.max(
-    Number(event.totalApprovedBudget || 0),
+    Number(event.effectiveApprovedBudget || 0),
+    Number(event.totalApprovedBudget || 0) + Number(event.supplementalBudgetTotal || 0),
+    Number(event.supplementalBudgetTotal || 0),
     Number(event.approvedBudget || 0),
     Number(event.totalBudget || 0),
     Number(event.budget || 0)

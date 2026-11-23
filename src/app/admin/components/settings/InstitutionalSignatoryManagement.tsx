@@ -72,6 +72,8 @@ import type {
 import { useAdviserProfile } from '../../../modules/auth';
 import { ResetPasswordModal } from '../../../modules/accounts/components/ResetPasswordModal';
 import { useDepartments } from '../../../modules/academic';
+import { useEmployees } from '../../../modules/employees';
+import { useOrganizationStream } from '../../../modules/organizations';
 import { SIGNATORY_LABEL_OPTIONS } from '../../../modules/signatories/utils/signatory-label.utils';
 import {
   useSignatoryLabelsStream,
@@ -132,7 +134,14 @@ export default function InstitutionalSignatoryManagement() {
   const { profile } = useAdviserProfile();
   const { roles: dbRoles, loading: rolesLoading } = useSignatoryRolesStream();
   const { data: departments = [] } = useDepartments();
+  const { data: employees = [] } = useEmployees();
+  const { data: allOrganizations = [] } = useOrganizationStream();
   const activeDepartments = React.useMemo(() => departments.filter((d) => !d.archived), [departments]);
+  const activeEmployees = React.useMemo(
+    () => employees.filter((e) => !e.archived && e.status === 'ACTIVE'),
+    [employees]
+  );
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
 
   // View Tabs: Directory vs Signatory Labels Maintenance
   const [activeTab, setActiveTab] = useState<'signatories' | 'labels'>('signatories');
@@ -229,6 +238,7 @@ export default function InstitutionalSignatoryManagement() {
   }, []);
 
   const handleOpenAddModal = () => {
+    setSelectedEmployeeId('');
     setFormData({
       name: '',
       firstName: '',
@@ -1397,70 +1407,93 @@ export default function InstitutionalSignatoryManagement() {
             <form onSubmit={handleAddSubmit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
               {/* Scrollable Form Body */}
               <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {/* Structured Signatory Name: First Name, Middle Name, Last Name */}
-                <div className="space-y-1.5">
-                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                    <div className="sm:col-span-4">
-                      <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                        First Name <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Rona Mira"
-                        value={formData.firstName || ''}
-                        onChange={(e) => {
-                          const firstName = e.target.value;
-                          const name = formatStructuredFullName(firstName, formData.lastName, formData.middleName);
-                          setFormData({ ...formData, firstName, name });
-                        }}
-                        className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                      />
-                    </div>
+                {/* Select Employee Dropdown (Replaces Manual Name Typing) */}
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider">
+                    Select Employee <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    required
+                    value={selectedEmployeeId}
+                    onChange={(e) => {
+                      const empDocId = e.target.value;
+                      setSelectedEmployeeId(empDocId);
+                      const emp = activeEmployees.find((item) => item.id === empDocId);
+                      if (!emp) {
+                        setFormData({
+                          ...formData,
+                          firstName: '',
+                          middleName: '',
+                          lastName: '',
+                          name: '',
+                          employeeId: '',
+                        });
+                        return;
+                      }
+                      const combinedName = formatStructuredFullName(emp.firstName, emp.lastName, emp.middleName);
+                      setFormData({
+                        ...formData,
+                        firstName: emp.firstName,
+                        middleName: emp.middleName || '',
+                        lastName: emp.lastName,
+                        name: combinedName || emp.fullName,
+                        employeeId: emp.employeeId,
+                        roleTitle: formData.roleTitle || emp.positionTitle || '',
+                      });
+                    }}
+                    className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
+                  >
+                    <option value="">
+                      {activeEmployees.length === 0
+                        ? 'No employees uploaded yet — go to Settings → Employee Maintenance'
+                        : 'Select an employee from master list...'}
+                    </option>
+                    {activeEmployees.map((emp) => {
+                      const empIdNorm = String(emp.employeeId || '').trim().toLowerCase();
+                      const empNameNorm = String(emp.fullName || '').trim().toLowerCase();
+                      const isAlreadySignatory = signatories.some(
+                        (s) =>
+                          s.isActive !== false &&
+                          ((empIdNorm && String((s as any).employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                            (empNameNorm && String(s.name || '').trim().toLowerCase() === empNameNorm))
+                      );
+                      const isAlreadyAdviser = allOrganizations.some(
+                        (o) =>
+                          o.status !== 'archived' &&
+                          o.adviser &&
+                          ((empIdNorm && String(o.adviser.employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                            (empNameNorm && String(o.adviser.name || '').trim().toLowerCase() === empNameNorm))
+                      );
+                      const disabledReason = isAlreadySignatory
+                        ? ' (Already Active Signatory)'
+                        : isAlreadyAdviser
+                          ? ' (Already Club Adviser)'
+                          : '';
+                      return (
+                        <option
+                          key={emp.id}
+                          value={emp.id}
+                          disabled={isAlreadySignatory || isAlreadyAdviser}
+                        >
+                          {emp.lastName}, {emp.firstName}{emp.middleName ? ` ${emp.middleName[0]}.` : ''} ({emp.employeeId})
+                          {emp.positionTitle ? ` — ${emp.positionTitle}` : ''}
+                          {disabledReason}
+                        </option>
+                      );
+                    })}
+                  </select>
 
-                    <div className="sm:col-span-4">
-                      <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1 text-center">
-                        Middle Name <span className="text-gray-400 font-normal lowercase">(Optional)</span>
-                      </label>
-                      <input
-                        type="text"
-                        autoComplete="additional-name"
-                        placeholder="e.g. Sigmund"
-                        aria-label="Middle name"
-                        value={formData.middleName || ''}
-                        onChange={(e) => {
-                          const middleName = e.target.value;
-                          const name = formatStructuredFullName(formData.firstName, formData.lastName, middleName);
-                          setFormData({ ...formData, middleName, name });
-                        }}
-                        className="w-full px-2 py-2 border border-gray-300 rounded-lg text-sm font-medium focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                      />
-                    </div>
-
-                    <div className="sm:col-span-4">
-                      <label className="block text-xs font-bold text-[#001A4D] uppercase tracking-wider mb-1">
-                        Last Name <span className="text-red-500">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder="e.g. Lucañas"
-                        value={formData.lastName || ''}
-                        onChange={(e) => {
-                          const lastName = e.target.value;
-                          const name = formatStructuredFullName(formData.firstName, lastName, formData.middleName);
-                          setFormData({ ...formData, lastName, name });
-                        }}
-                        className="w-full px-3.5 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-[#001A4D]/20 focus:border-[#001A4D] outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Combined Name Preview */}
                   {formData.name && (
-                    <div className="px-3 py-1.5 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
-                      <span className="font-semibold text-gray-500">Official Combined Name:</span>
-                      <span className="font-bold text-[#0E4EBD]">{formData.name}</span>
+                    <div className="px-3 py-2 bg-blue-50/70 border border-blue-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
+                      <div>
+                        <span className="font-semibold text-gray-500 block text-[10px] uppercase">Selected Signatory</span>
+                        <span className="font-bold text-[#0E4EBD]">{formData.name}</span>
+                      </div>
+                      {formData.employeeId && (
+                        <span className="px-2 py-0.5 bg-white border border-blue-200 rounded font-mono text-[11px] font-bold text-[#001A4D]">
+                          {formData.employeeId}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>

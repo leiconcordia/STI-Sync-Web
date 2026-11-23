@@ -46,8 +46,17 @@ import {
 } from '../../modules/events';
 import OfficerLiquidationModal from '../../officer/components/OfficerLiquidationModal';
 import DisbursementVoucherModal from '../../modules/finance/components/DisbursementVoucherModal';
+import {
+  EventSupplementalBudgetsSection,
+  SupplementalBudgetModal,
+  SupplementalBudgetDetailModal,
+  useEventSupplementalBudgets,
+  canRequestSupplementalBudget,
+  type SupplementalBudgetRequest,
+} from '../../modules/supplemental-budget';
 import { EventPayablesQRControl } from '../../modules/finance/components/EventPayablesQRControl';
 import { useEventPayablesStream } from '../../modules/finance/hooks/usePayableStream';
+import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
 import { useTargetAudienceStructure } from '../../modules/academic';
 import {
@@ -129,6 +138,19 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
 export default function EventProposalReview({ event, onClose }: EventProposalReviewProps) {
   const navigate = useNavigate();
   const { profile: adviserProfile } = useAdviserProfile();
+  const { liquidations: allLiquidations = [] } = useAllLiquidations();
+  const {
+    data: eventSbrs = [],
+    approvedTotal: sbrApprovedTotal,
+    pendingRequest: pendingSbrRequest,
+  } = useEventSupplementalBudgets(event?.id);
+  const [isSbrCreateModalOpen, setIsSbrCreateModalOpen] = useState(false);
+  const [editingSbrFromUtils, setEditingSbrFromUtils] = useState<SupplementalBudgetRequest | null>(null);
+  const [selectedSbrFromUtilsId, setSelectedSbrFromUtilsId] = useState<string | null>(null);
+  const liveSelectedSbrFromUtils = useMemo(
+    () => (selectedSbrFromUtilsId ? eventSbrs.find((s) => s.id === selectedSbrFromUtilsId) || null : null),
+    [selectedSbrFromUtilsId, eventSbrs]
+  );
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [isWithdrawing, setIsWithdrawing] = useState(false);
 
@@ -2018,6 +2040,116 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                       </button>
                     )}
 
+                    {/* 3b. Supplemental Budget (Request Additional Funds / SAS Review) */}
+                    {isApproved && (() => {
+                      const isSasEvent = isSasCreatedEvent(liveEvent);
+                      const sbrEligibility = canRequestSupplementalBudget(liveEvent, eventSbrs, allLiquidations);
+                      const sasVisiblePending =
+                        pendingSbrRequest && (isSasEvent || !['draft', 'for_adviser_review'].includes(pendingSbrRequest.status))
+                          ? pendingSbrRequest
+                          : null;
+                      const canSasCreateNow = isSasEvent && sbrEligibility.eligible;
+                      const hasVisibleSbr = Boolean(sasVisiblePending) || eventSbrs.some((s) => isSasEvent || !['draft', 'for_adviser_review'].includes(s.status));
+
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUtilsOpen(false);
+                            if (sasVisiblePending) {
+                              setSelectedSbrFromUtilsId(sasVisiblePending.id);
+                              return;
+                            }
+                            if (canSasCreateNow) {
+                              setEditingSbrFromUtils(null);
+                              setIsSbrCreateModalOpen(true);
+                              return;
+                            }
+                            const firstVisible = eventSbrs.find((s) => isSasEvent || !['draft', 'for_adviser_review'].includes(s.status));
+                            if (firstVisible) {
+                              setSelectedSbrFromUtilsId(firstVisible.id);
+                              return;
+                            }
+                            if (!isSasEvent) {
+                              toast.info('Club Supplemental Budgets are initiated by the Student Organization (Officer / Club Adviser).');
+                              return;
+                            }
+                            toast.error(sbrEligibility.reason || 'Supplemental budget window is currently closed.');
+                          }}
+                          className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
+                            !sasVisiblePending && !canSasCreateNow && !hasVisibleSbr
+                              ? 'opacity-65 hover:bg-gray-50 cursor-pointer'
+                              : 'hover:bg-amber-50/70 cursor-pointer active:scale-[0.99]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                              sasVisiblePending
+                                ? 'bg-indigo-50 text-indigo-600 border border-indigo-200'
+                                : canSasCreateNow
+                                ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                                : sbrApprovedTotal > 0
+                                ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
+                                : 'bg-gray-100 text-gray-500 border border-gray-200'
+                            }`}>
+                              {!sasVisiblePending && !canSasCreateNow && !hasVisibleSbr ? (
+                                <Lock className="w-4 h-4" />
+                              ) : (
+                                <Coins className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-bold text-gray-900 truncate">
+                                {sasVisiblePending
+                                  ? `Supplemental Budget (${sasVisiblePending.referenceCode})`
+                                  : isSasEvent
+                                  ? 'Request Additional Budget'
+                                  : 'Supplemental Budgets'}
+                              </div>
+                              <div className="text-[11px] text-gray-500 truncate">
+                                {sasVisiblePending
+                                  ? `${sasVisiblePending.status === 'for_sas_review' ? 'Awaiting SAS Action' : sasVisiblePending.status.replace(/_/g, ' ')} • +${formatPHP(sasVisiblePending.requestedAmount)}`
+                                  : sbrApprovedTotal > 0
+                                  ? `Approved +${formatPHP(sbrApprovedTotal)} • ${canSasCreateNow ? 'Click to add another' : 'Click to inspect / voucher'}`
+                                  : canSasCreateNow
+                                  ? 'Pre-implementation supplemental funds'
+                                  : !isSasEvent
+                                  ? 'No club supplemental requests submitted'
+                                  : sbrEligibility.code === 'EVENT_ALREADY_STARTED' || sbrEligibility.code === 'EVENT_CONCLUDED'
+                                  ? 'Closed • Event already started/concluded'
+                                  : sbrEligibility.code === 'LIQUIDATION_EXISTS'
+                                  ? 'Locked • Liquidation already initiated'
+                                  : 'Unavailable for this activity'}
+                              </div>
+                            </div>
+                          </div>
+                          <span
+                            className={`shrink-0 text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full border ${
+                              sasVisiblePending
+                                ? 'bg-indigo-100 text-indigo-800 border-indigo-300'
+                                : canSasCreateNow
+                                ? 'bg-[#001A4D] text-[#FFD41C] border-[#001A4D]'
+                                : sbrApprovedTotal > 0
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : 'bg-gray-100 text-gray-600 border-gray-200'
+                            }`}
+                          >
+                            {sasVisiblePending
+                              ? sasVisiblePending.status === 'for_sas_review'
+                                ? 'Review'
+                                : 'Pending'
+                              : canSasCreateNow
+                              ? 'Request'
+                              : sbrApprovedTotal > 0
+                              ? 'View'
+                              : !isSasEvent
+                              ? 'Club'
+                              : 'Closed'}
+                          </span>
+                        </button>
+                      );
+                    })()}
+
                     {/* 4. Financial Liquidation */}
                     {(() => {
                       const isFlDisabled =
@@ -3381,6 +3513,35 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                 </div>
               </div>
             </div>
+
+            {/* Supplemental Budget Requests (SAS Admin Review / Institutional Creation) */}
+            <EventSupplementalBudgetsSection
+              event={liveEvent}
+              isSasInstitutional={isSasCreatedEvent(liveEvent)}
+              organizationId={
+                isSasCreatedEvent(liveEvent)
+                  ? 'sas_admin'
+                  : liveEvent.hostingOrgId || (liveEvent as any).organizationId || ''
+              }
+              organizationName={
+                isSasCreatedEvent(liveEvent)
+                  ? 'Student Affairs & Services (SAS)'
+                  : resolveCleanOrgName(liveEvent, orgMap)
+              }
+              organizationAcronym={
+                isSasCreatedEvent(liveEvent) ? 'SAS' : resolveCleanOrgAcronym(liveEvent, orgMap)
+              }
+              viewerRole="admin"
+              actor={{
+                uid: adviserProfile?.uid || 'admin-user',
+                name: adviserProfile?.displayName || 'SAS Admin',
+                email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
+                role: 'admin',
+                signatureUrl:
+                  adviserProfile?.signatureUrl || (adviserProfile as any)?.signatureDataUrl || undefined,
+              }}
+              existingLiquidations={allLiquidations}
+            />
           </section>
 
           {/* SECTION 9 — SIGNATORIES & APPROVAL PIPELINE */}
@@ -4814,6 +4975,60 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
         previousSnapshot={latestSnapshot}
         customDiffs={proposalDiffs}
         revisionNumber={fullProposal.version || ((fullProposal.versionHistory?.length || 0) + 1)}
+      />
+
+      {/* Supplemental Budget Modals (From Utils Dropdown) */}
+      <SupplementalBudgetModal
+        isOpen={isSbrCreateModalOpen}
+        onClose={() => {
+          setIsSbrCreateModalOpen(false);
+          setEditingSbrFromUtils(null);
+        }}
+        event={liveEvent}
+        isSasInstitutional={isSasCreatedEvent(liveEvent)}
+        organizationId={
+          isSasCreatedEvent(liveEvent)
+            ? 'sas_admin'
+            : liveEvent.hostingOrgId || (liveEvent as any).organizationId || ''
+        }
+        organizationName={
+          isSasCreatedEvent(liveEvent)
+            ? 'Student Affairs & Services (SAS)'
+            : resolveCleanOrgName(liveEvent, orgMap)
+        }
+        organizationAcronym={
+          isSasCreatedEvent(liveEvent) ? 'SAS' : resolveCleanOrgAcronym(liveEvent, orgMap)
+        }
+        priorSupplementalTotal={sbrApprovedTotal}
+        actor={{
+          uid: adviserProfile?.uid || 'admin-user',
+          name: adviserProfile?.displayName || 'SAS Admin',
+          email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
+          role: 'admin',
+          signatureUrl:
+            adviserProfile?.signatureUrl || (adviserProfile as any)?.signatureDataUrl || undefined,
+        }}
+        existingSbr={editingSbrFromUtils}
+      />
+
+      <SupplementalBudgetDetailModal
+        isOpen={Boolean(liveSelectedSbrFromUtils)}
+        onClose={() => setSelectedSbrFromUtilsId(null)}
+        sbr={liveSelectedSbrFromUtils}
+        viewerRole="admin"
+        actor={{
+          uid: adviserProfile?.uid || 'admin-user',
+          name: adviserProfile?.displayName || 'SAS Admin',
+          email: adviserProfile?.email || 'sas@ormoc.sti.edu.ph',
+          role: 'admin',
+          signatureUrl:
+            adviserProfile?.signatureUrl || (adviserProfile as any)?.signatureDataUrl || undefined,
+        }}
+        onEditRequested={(sbrToEdit) => {
+          setSelectedSbrFromUtilsId(null);
+          setEditingSbrFromUtils(sbrToEdit);
+          setIsSbrCreateModalOpen(true);
+        }}
       />
     </div>
   );

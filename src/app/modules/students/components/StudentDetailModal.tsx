@@ -11,7 +11,7 @@ import { useStudentDetail } from '../hooks/useStudentDetail';
 import { useDepartments, useCourses } from '../../academic/hooks/useAcademicStream';
 import { formatTimestampDate } from '../utils/date.utils';
 import { formatCurrency } from '../../../utils/currency';
-import { formatAppDate } from '../../../utils/date';
+import { formatAppDate, formatShortDate } from '../../../utils/date';
 
 interface StudentDetailModalProps {
   student: StudentDocument;
@@ -376,7 +376,10 @@ export default function StudentDetailModal({
                       <span className="text-xs text-gray-500 font-medium block">Date of Birth</span>
                       <span className="font-medium text-gray-800 flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-                        {student.dateOfBirth || '—'}
+                        {formatShortDate(
+                          student.dateOfBirth || (student as any).birthDate || (student as any).dob,
+                          student.dateOfBirth || '—'
+                        )}
                       </span>
                     </div>
                     <div>

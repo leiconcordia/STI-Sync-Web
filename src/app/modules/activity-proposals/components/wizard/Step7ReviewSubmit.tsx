@@ -150,12 +150,14 @@ export default function Step7ReviewSubmit({
 
   const approvalChain: ProposalApprovalStep[] = formData.approvalChain || [];
 
-  // Synchronize isUrgent flag with ruleCheck:
-  // If under 15 days (event or initial task), automatically enable urgent mode.
-  // Do NOT wipe an explicit Urgent choice or justification made by the user in Step 4.
+  // Synchronize isUrgent flag with ruleCheck based strictly on Target Implementation / Session Date:
+  // - If under 15 days, enable urgent mode so justification is required.
+  // - If >= 15 days compliant, clear stale isUrgent flag so changing the date in Step 4 never gets stuck.
   useEffect(() => {
     if (!ruleCheck.isCompliant && !formData.isUrgent) {
       onChange({ isUrgent: true });
+    } else if (ruleCheck.isCompliant && formData.isUrgent) {
+      onChange({ isUrgent: false, urgentJustification: '' });
     }
   }, [ruleCheck.isCompliant, formData.isUrgent]);
 
@@ -206,7 +208,7 @@ export default function Step7ReviewSubmit({
               15-Calendar-Day Policy Rule: Compliant
             </h4>
             <p className="text-xs text-emerald-700 mt-0.5 leading-relaxed">
-              This proposal is scheduled <strong>{ruleCheck.daysDiff} calendar days</strong> before the initial task/session 
+              This proposal is scheduled <strong>{ruleCheck.daysDiff} calendar days</strong> before the target implementation date
               {ruleCheck.earliestDate && ` (${formatDateLong(ruleCheck.earliestDate)})`}, satisfying the required 15-day advance notice for institutional review.
             </p>
           </div>
@@ -818,15 +820,16 @@ export default function Step7ReviewSubmit({
         </div>
       )}
 
-      {/* ── OFFICER DRAFTING MODE NOTICE ── */}
+      {/* ── OFFICER CLUB ADVISER CHECKER GATE NOTICE ── */}
       {isOfficerOnly && (
-        <div className="p-4 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-start gap-3 text-amber-900 text-xs shadow-xs">
-          <Lock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+        <div className="p-4 bg-indigo-50/90 border border-indigo-200 rounded-2xl flex items-start gap-3 text-indigo-950 text-xs shadow-xs">
+          <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <span className="font-bold text-sm text-amber-950 block">Organization Officer Drafting Mode</span>
-            <p className="leading-relaxed text-amber-900">
-              As an Organization Officer, you can prepare activity details, logistics, and budget allocations, and <strong>Save as Draft</strong>.
-              Only your <strong>Organization Adviser</strong> has the formal authority to sign and submit this proposal for institutional review.
+            <span className="font-bold text-sm text-indigo-950 block">Club Adviser Checker Gate</span>
+            <p className="leading-relaxed text-indigo-900">
+              You can <strong>Save as Draft</strong> anytime or click <strong>Submit for Adviser Review</strong> below.
+              Your <strong>Club Adviser</strong> will review your proposal first, attach their official e-signature, and forward it to <strong>SAS</strong>
+              {formData.fundingSource === 'school_budget' ? ' and institutional signatories' : ''}.
             </p>
           </div>
         </div>
@@ -857,7 +860,7 @@ export default function Step7ReviewSubmit({
           </button>
         </div>
 
-        {!canSubmit && !isOfficerOnly && (
+        {!canSubmit && (
           <div
             className={`w-full sm:w-auto flex items-center gap-2 px-3.5 py-2 rounded-xl border text-xs font-medium ${
               hasRevenueDeficit

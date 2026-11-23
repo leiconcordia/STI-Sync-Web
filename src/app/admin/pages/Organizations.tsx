@@ -24,6 +24,12 @@ import { EditOrganizationModal } from '../components/EditOrganizationModal';
 import { OrganizationStatusModal } from '../components/OrganizationStatusModal';
 import { TablePagination } from '../../components/common/TablePagination';
 import { useDepartments } from '../../modules/academic';
+import {
+  getOrganizationAllowedDepartmentIds,
+  isOrganizationCrossDepartmental,
+  resolveOrgDepartmentDisplay,
+  resolveOrgDepartmentShortDisplay,
+} from '../../modules/organizations/utils/department-eligibility.utils';
 
 export function Organizations() {
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -102,12 +108,16 @@ export function Organizations() {
 
       const matchesType = filterType === 'All' || org.typeId === filterType;
       
-      const isCross = org.isCrossDepartmental || org.departmentId === 'cross-departmental' || !org.departmentId;
+      const isCross = isOrganizationCrossDepartmental(org);
+      const allowedIds = getOrganizationAllowedDepartmentIds(org);
       const matchesDept =
         filterDepartment === 'All' ||
         (filterDepartment === 'cross-departmental'
           ? isCross
-          : (!isCross && (org.departmentId === filterDepartment || org.department === filterDepartment)));
+          : (!isCross &&
+              (allowedIds.includes(filterDepartment) ||
+                org.departmentId === filterDepartment ||
+                org.department === filterDepartment)));
 
       let matchesTab = true;
       if (activeTab === 'active') {
@@ -391,16 +401,16 @@ export function Organizations() {
 
                       {/* Department / Scope */}
                       <td className="px-4 py-3.5 whitespace-nowrap">
-                        {org.isCrossDepartmental || org.departmentId === 'cross-departmental' || !org.departmentId ? (
+                        {isOrganizationCrossDepartmental(org) ? (
                           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                             🌐 Cross-Departmental
                           </span>
                         ) : (
                           <span
-                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200"
-                            title={org.departmentName || org.department || 'Departmental'}
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-800 border border-blue-200 max-w-[200px] truncate"
+                            title={resolveOrgDepartmentDisplay(org, departments)}
                           >
-                            🏛️ {org.departmentCode || org.departmentName || org.department || 'Departmental'}
+                            🏛️ {resolveOrgDepartmentShortDisplay(org, departments)}
                           </span>
                         )}
                       </td>

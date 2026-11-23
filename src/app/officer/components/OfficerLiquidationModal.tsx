@@ -50,9 +50,15 @@ import {
 } from '../../modules/events/utils/activity-compliance.utils';
 import { isEventLiquidationExempt } from '../../modules/events/utils/organization-display.utils';
 import {
+  getEventBaseApprovedBudget,
+  getEventEffectiveApprovedBudget,
+  hasBlockingPendingSbrForLiquidation,
+} from '../../modules/supplemental-budget/utils/sbr-validation.utils';
+import {
   attachCashierSettlementProofs,
   createLiquidationReport,
   generateDefaultLiquidationChain,
+  notifyAdviserForLiquidationReview,
   resolveLiquidationSourceAllocations,
   submitLiquidationReport,
   updateLiquidationReport,
@@ -350,6 +356,8 @@ export default function OfficerLiquidationModal({
 
   // Helper to calculate total budget from any budget property or budgetItems array
   const calculateEventBudget = (e: any): number => {
+    const eff = getEventEffectiveApprovedBudget(e);
+    if (eff > 0) return eff;
     if (typeof e.totalApprovedBudget === 'number' && e.totalApprovedBudget > 0) return e.totalApprovedBudget;
     if (typeof e.allocatedBudget === 'number' && e.allocatedBudget > 0) return e.allocatedBudget;
     if (typeof e.adminFeeOverride === 'number' && e.adminFeeOverride > 0) return e.adminFeeOverride;
@@ -633,7 +641,8 @@ export default function OfficerLiquidationModal({
     ) {
       return;
     }
-    const computedBasis = Math.round((actualContribCollected + retainedContribTopUp) * 100) / 100;
+    const suppTotal = Math.max(0, Number((selectedEvent as any)?.supplementalBudgetTotal) || 0);
+    const computedBasis = Math.round((actualContribCollected + retainedContribTopUp + suppTotal) * 100) / 100;
     setAllocatedBudget(computedBasis);
     setAmountAdvanced(computedBasis);
   }, [
@@ -730,7 +739,12 @@ export default function OfficerLiquidationModal({
     return isEventConcluded(selectedEvent);
   }, [selectedEvent]);
 
-  const canSubmitLiquidation = isConcluded;
+  const hasPendingSbr = useMemo(
+    () => hasBlockingPendingSbrForLiquidation(selectedEvent),
+    [selectedEvent]
+  );
+
+  const canSubmitLiquidation = isConcluded && !hasPendingSbr;
 
   const isSelectedEventExempt = useMemo(() => {
     return isEventLiquidationExempt(selectedEvent);
@@ -1883,16 +1897,16 @@ export default function OfficerLiquidationModal({
 
     // Strict validation ONLY on final submission; save-as-draft is completely functional & flexible
     if (shouldSubmit) {
+      if (hasPendingSbr) {
+        showValidationError('Cannot submit liquidation while a Supplemental Budget Request is still pending approval. Please resolve or withdraw the pending supplemental request first.');
+        return;
+      }
       if (!canSubmitLiquidation) {
         showValidationError('Cannot submit liquidation: This event has not yet concluded. You can record receipts and save drafts anytime during the event, and officially submit once the event concludes.');
         return;
       }
       if (isReturnedReport && !resubmissionNote.trim()) {
         showValidationError('Please provide an Officer Revision Summary explaining the adjustments made before resubmitting.');
-        return;
-      }
-      if (!effectiveIsAdviser && userRole !== 'admin') {
-        showValidationError('Only appointed Club Advisers are authorized to officially submit Financial Liquidations. Student officers can prepare and save drafts.');
         return;
       }
       if (meaningfulItems.length === 0) {
@@ -1966,13 +1980,15 @@ export default function OfficerLiquidationModal({
         return;
       }
 
-      // Mandatory Maker Signature Check for formal submission
-      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl;
-      if (!effectiveSignature) {
-        toast.error('Signature Required: No Registered Signature Found', {
-          description: 'Please upload or register your signature in Settings first before submitting this financial liquidation so that it is attached upon export.',
-        });
-        return;
+      // Mandatory Maker Signature Check for Advisers/SAS (Student Officers route to Club Adviser first)
+      if (effectiveIsAdviser || userRole === 'admin') {
+        const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl;
+        if (!effectiveSignature) {
+          toast.error('Signature Required: No Registered Signature Found', {
+            description: 'Please upload or register your signature in Settings first before submitting this financial liquidation so that it is attached upon export.',
+          });
+          return;
+        }
       }
     }
 
@@ -1980,8 +1996,15 @@ export default function OfficerLiquidationModal({
     setError(null);
 
     try {
-      const nextStatus = shouldSubmit ? 'under_review' : 'draft';
-      const effectiveSignature = makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl || '';
+      const isOfficerSubmitToAdviser = Boolean(shouldSubmit && !effectiveIsAdviser && userRole !== 'admin');
+      const nextStatus: LiquidationDocument['status'] = isOfficerSubmitToAdviser
+        ? 'for_adviser_review'
+        : shouldSubmit
+        ? 'under_review'
+        : 'draft';
+      const effectiveSignature = isOfficerSubmitToAdviser
+        ? ''
+        : (makerSignatureUrl || officerProfile?.signatureUrl || userSignatureUrl || '');
       const submitterRole = isSasCreator ? 'sas_admin' : effectiveIsAdviser ? 'adviser' : userRole;
       const submitterTitle = isSasCreator ? 'SAS Administrator' : effectiveIsAdviser ? 'Organization Adviser' : 'Student Officer';
       const submitterName =
@@ -2081,6 +2104,27 @@ export default function OfficerLiquidationModal({
             })()
           : {}),
         status: nextStatus,
+        ...(isOfficerSubmitToAdviser
+          ? {
+              submittedByOfficer: true,
+              submittedToAdviserAt: new Date(),
+              adviserReview: { status: 'pending' as const },
+              returnedByRole: null as any,
+            }
+          : shouldSubmit && effectiveIsAdviser && userRole !== 'admin'
+          ? {
+              submittedToSasAt: new Date(),
+              adviserReview: {
+                status: 'approved' as const,
+                reviewedByUid: userUid || 'adviser',
+                reviewedByName: submitterName,
+                reviewedByEmail: officerProfile?.email || '',
+                reviewedAt: new Date().toISOString(),
+                remarks: 'Submitted and endorsed by Organization Adviser.',
+                signatureUrl: effectiveSignature,
+              },
+            }
+          : {}),
         approvalChain: finalizedChain,
         currentStageIndex: 1,
         currentStepIndex: 0,
@@ -2111,7 +2155,7 @@ export default function OfficerLiquidationModal({
           ...(shouldSubmit
             ? {
                 submittedAt: new Date(),
-                isPendingSasVetting: requiresSasPreApprovalGate,
+                isPendingSasVetting: isOfficerSubmitToAdviser ? false : requiresSasPreApprovalGate,
                 sasVettedAt: null,
                 sasVettedBy: null,
               }
@@ -2120,8 +2164,21 @@ export default function OfficerLiquidationModal({
             ? { resubmissionNote: resubmissionNote.trim() }
             : {}),
         });
+        if (isOfficerSubmitToAdviser) {
+          await notifyAdviserForLiquidationReview({
+            liquidationId: effectiveReportId,
+            organizationId: payload.organizationId,
+            organizationName: payload.organizationName,
+            eventTitle: payload.eventTitle,
+            officerUid: userUid,
+            officerName: submitterName,
+            isResubmission: isReturnedReport,
+          });
+        }
         toast.success(
-          shouldSubmit
+          isOfficerSubmitToAdviser
+            ? 'Submitted to your Club Adviser for review and forwarding to SAS!'
+            : shouldSubmit
             ? isReturnedReport
               ? 'Liquidation report resubmitted successfully with your revision summary. Route reset to Stage 1.'
               : 'Liquidation report submitted successfully for institutional review.'
@@ -2131,9 +2188,22 @@ export default function OfficerLiquidationModal({
         const newId = await createLiquidationReport(sanitizedPayload);
         if (newId) {
           setActiveReportId(newId);
+          if (isOfficerSubmitToAdviser) {
+            await notifyAdviserForLiquidationReview({
+              liquidationId: newId,
+              organizationId: payload.organizationId,
+              organizationName: payload.organizationName,
+              eventTitle: payload.eventTitle,
+              officerUid: userUid,
+              officerName: submitterName,
+              isResubmission: false,
+            });
+          }
         }
         toast.success(
-          shouldSubmit
+          isOfficerSubmitToAdviser
+            ? 'Submitted to your Club Adviser for review and forwarding to SAS!'
+            : shouldSubmit
             ? 'Liquidation report submitted successfully for institutional review.'
             : 'Draft liquidation report saved successfully.'
         );
@@ -2398,6 +2468,25 @@ export default function OfficerLiquidationModal({
                       placeholder="0.00"
                     />
                   </div>
+                  {Number((selectedEvent as any)?.supplementalBudgetTotal || 0) > 0 && (
+                    <div className="mt-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] font-semibold text-emerald-800 flex items-center justify-between gap-2">
+                      <span>
+                        Base {formatCurrency(getEventBaseApprovedBudget(selectedEvent))} + Supplemental{' '}
+                        {formatCurrency(Number((selectedEvent as any)?.supplementalBudgetTotal || 0))}
+                      </span>
+                      <span className="font-extrabold">
+                        = {formatCurrency(getEventEffectiveApprovedBudget(selectedEvent))}
+                      </span>
+                    </div>
+                  )}
+                  {hasPendingSbr && (
+                    <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-800 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                      <span>
+                        A Supplemental Budget Request is pending approval. Resolve or withdraw it before submitting Financial Liquidation.
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -3863,28 +3952,24 @@ export default function OfficerLiquidationModal({
                 {canSubmitLiquidation ? (
                   <div className="flex items-center gap-2">
                     {!effectiveIsAdviser && userRole !== 'admin' && (
-                      <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 font-medium">
-                        <Lock className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        Adviser Required to Submit
+                      <span className="hidden sm:inline-flex text-xs text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-1.5 rounded-lg items-center gap-1.5 font-medium">
+                        <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                        Club Adviser Checker Gate
                       </span>
                     )}
                     <button
                       onClick={() => handleSave(true)}
-                      disabled={isSubmitting || uploadingItemId !== null || (!effectiveIsAdviser && userRole !== 'admin')}
-                      title={
-                        !effectiveIsAdviser && userRole !== 'admin'
-                          ? 'Only appointed Club Advisers can submit. You can prepare and save drafts.'
-                          : undefined
-                      }
-                      className={`px-5 py-2 rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 ${
-                        !effectiveIsAdviser && userRole !== 'admin'
-                          ? 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed'
-                          : 'bg-[#001A4D] hover:bg-[#0E4EBD] text-white cursor-pointer'
-                      }`}
+                      disabled={isSubmitting || uploadingItemId !== null}
+                      className="px-5 py-2 rounded-lg text-sm font-bold transition-colors shadow-xs flex items-center gap-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white cursor-pointer disabled:opacity-50"
                     >
                       {isSubmitting && <Loader2 className="w-4 h-4 animate-spin text-[#FFD41C]" />}
-                      {!effectiveIsAdviser && userRole !== 'admin' && <Lock className="w-4 h-4" />}
-                      {isReturnedReport ? 'Resubmit Financial Liquidation' : 'Submit Liquidation'}
+                      {!effectiveIsAdviser && userRole !== 'admin'
+                        ? isReturnedReport
+                          ? 'Resubmit for Adviser Review'
+                          : 'Submit for Adviser Review'
+                        : isReturnedReport
+                        ? 'Resubmit Financial Liquidation'
+                        : 'Submit Liquidation'}
                     </button>
                   </div>
                 ) : (

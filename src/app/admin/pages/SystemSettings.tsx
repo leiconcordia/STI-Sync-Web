@@ -8,6 +8,8 @@ import OrganizationSettings from '../components/settings/OrganizationSettings';
 import OfficerManagement from '../components/settings/OfficerManagement';
 import EventConfiguration from '../components/settings/EventConfiguration';
 import DocumentManagementSettings from '../components/settings/DocumentManagementSettings';
+import CertificateSettings from '../components/settings/CertificateSettings';
+import EmployeeMaintenance from '../components/settings/EmployeeMaintenance';
 import SasSignatoryMaintenance from '../components/settings/SasSignatoryMaintenance';
 import { Navigate, useSearchParams } from 'react-router';
 
@@ -39,6 +41,8 @@ export function SystemSettings() {
         return <AdviserProfile onUnsavedChange={handleUnsavedChange} />;
       case 'security-password':
         return <SecurityPassword onUnsavedChange={handleUnsavedChange} />;
+      case 'employees':
+        return <EmployeeMaintenance />;
       case 'course-department':
         return <CourseDepartment onUnsavedChange={handleUnsavedChange} />;
       case 'organization-settings':
@@ -51,6 +55,8 @@ export function SystemSettings() {
         return <EventConfiguration onUnsavedChange={handleUnsavedChange} />;
       case 'document-management':
         return <DocumentManagementSettings />;
+      case 'certificates':
+        return <CertificateSettings />;
       case 'approval-workflows':
         return <Navigate to="/home/workflows-signatories?tab=workflows" replace />;
       case 'institutional-signatories':

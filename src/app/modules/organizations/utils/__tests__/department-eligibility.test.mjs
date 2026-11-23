@@ -4,6 +4,7 @@ import {
   isOrganizationCrossDepartmental,
   resolveOrgDepartmentDisplay,
   checkStudentDepartmentEligibility,
+  findDepartmentScopeConflicts,
 } from '../department-eligibility.utils.ts';
 
 describe('Club Member Department Eligibility Enforcement', () => {
@@ -104,5 +105,87 @@ describe('Club Member Department Eligibility Enforcement', () => {
     };
     const res = checkStudentDepartmentEligibility(crossDeptOrg, baStudent, departments, courses);
     assert.equal(res.eligible, true);
+  });
+
+  test('enforces multi-department checkbox selection (allows any selected dept, blocks unselected depts)', () => {
+    const multiDeptOrg = {
+      id: 'biz_tech',
+      name: 'Business & Tech Guild',
+      isCrossDepartmental: false,
+      scope: 'departmental',
+      departmentId: 'dept_ict',
+      allowedDepartmentIds: ['dept_ict', 'dept_ba'],
+      allowedDepartmentNames: ['Information & Communications Technology', 'Business Administration'],
+      allowedDepartmentCodes: ['IT', 'BA'],
+    };
+
+    assert.equal(isOrganizationCrossDepartmental(multiDeptOrg), false);
+    assert.equal(
+      resolveOrgDepartmentDisplay(multiDeptOrg, departments),
+      'Information & Communications Technology (IT), Business Administration (BA)'
+    );
+
+    const itStudent = { studentId: 's_it', departmentId: 'dept_ict', courseCode: 'BSIT' };
+    const baStudent = { studentId: 's_ba', departmentId: 'dept_ba', courseCode: 'BSBA' };
+    const hmStudent = { studentId: 's_hm', departmentId: 'dept_hm', courseCode: 'BSHM' };
+
+    assert.equal(checkStudentDepartmentEligibility(multiDeptOrg, itStudent, departments, courses).eligible, true);
+    assert.equal(checkStudentDepartmentEligibility(multiDeptOrg, baStudent, departments, courses).eligible, true);
+
+    const hmRes = checkStudentDepartmentEligibility(multiDeptOrg, hmStudent, departments, courses);
+    assert.equal(hmRes.eligible, false);
+    assert.match(hmRes.reason || '', /Hospitality Management/);
+    assert.match(hmRes.reason || '', /Business Administration/);
+  });
+
+  test('detects active members from excluded departments when narrowing org scope', () => {
+    const restrictedItAndHmOrg = {
+      id: 'guild',
+      isCrossDepartmental: false,
+      scope: 'departmental',
+      departmentId: 'dept_ict',
+      allowedDepartmentIds: ['dept_ict', 'dept_hm'],
+      allowedDepartmentNames: ['Information & Communications Technology', 'Hospitality Management'],
+      allowedDepartmentCodes: ['IT', 'HM'],
+    };
+
+    const members = [
+      { id: 'm1', studentId: 's1', studentName: 'Alice IT', departmentId: 'dept_ict', course: 'BSIT', status: 'active' },
+      { id: 'm2', studentId: 's2', studentName: 'Bob HM', departmentId: 'dept_hm', course: 'BSHM', status: 'active' },
+      { id: 'm3', studentId: 's3', studentName: 'Cara BA', departmentId: 'dept_ba', course: 'BSBA', status: 'active' },
+      { id: 'm4', studentId: 's4', studentName: 'Dan BA Removed', departmentId: 'dept_ba', course: 'BSBA', status: 'removed' },
+      { id: 'm5', studentId: 's5', studentName: 'Eve BA Pending', departmentId: 'dept_ba', course: 'BSBA', status: 'pending' },
+    ];
+
+    const conflictResult = findDepartmentScopeConflicts({
+      proposedOrg: restrictedItAndHmOrg,
+      members,
+      departments,
+      courses,
+    });
+    assert.equal(conflictResult.hasConflicts, true);
+    assert.equal(conflictResult.totalConflictingMembers, 1);
+    assert.equal(conflictResult.conflictsByDepartment[0].departmentLabel, 'Business Administration');
+    assert.equal(conflictResult.conflictsByDepartment[0].count, 1);
+    assert.match(conflictResult.summaryMessage || '', /Business Administration/);
+
+    // Expanding to Cross-Departmental has zero conflicts
+    const crossResult = findDepartmentScopeConflicts({
+      proposedOrg: crossDeptOrg,
+      members,
+      departments,
+      courses,
+    });
+    assert.equal(crossResult.hasConflicts, false);
+
+    // Restricting to IT + HM when only IT + HM are active has zero conflicts
+    const compatibleMembers = members.filter((m) => m.studentId !== 's3');
+    const cleanResult = findDepartmentScopeConflicts({
+      proposedOrg: restrictedItAndHmOrg,
+      members: compatibleMembers,
+      departments,
+      courses,
+    });
+    assert.equal(cleanResult.hasConflicts, false);
   });
 });

@@ -497,6 +497,7 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
   semester?: string;
   chequeNumber?: string;
   performedBy?: string;
+  ledgerDocIdOverride?: string;
 }): Promise<void> {
   const { eventId, bucketId } = params;
   const amount = Math.max(0, Number(params.amount) || 0);
@@ -521,7 +522,7 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
 
   const isSecondSem = resolveEffectiveIsSecondSem(configDoc, params.semester);
 
-  const ledgerDocId = `disb_${eventId}`;
+  const ledgerDocId = params.ledgerDocIdOverride || `disb_${eventId}`;
   const ledgerRef = doc(db, MISC_FEE_LEDGER_COLLECTION, ledgerDocId);
   const existingLedgerSnap = await getDoc(ledgerRef);
   const existingLedgerData = existingLedgerSnap.exists() ? (existingLedgerSnap.data() as any) : null;

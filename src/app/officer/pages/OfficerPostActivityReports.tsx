@@ -52,8 +52,13 @@ import {
   resolveUnifiedActiveAcademicTerm,
 } from '../../modules/workflow/utils/table-priority-sort.utils';
 import { toast } from 'sonner';
+import {
+  isDocumentForAdviserReview,
+  isOfficerAuthoredRecord,
+  resolveDocumentTrackingState,
+} from '../../modules/activity-proposals/utils/proposal-status-tracker.utils';
 
-type FilterTab = 'all' | 'pending' | 'approved' | 'returned' | 'draft' | 'trash';
+type FilterTab = 'all' | 'officer_reports' | 'pending' | 'approved' | 'returned' | 'rejected' | 'draft' | 'trash';
 const ITEMS_PER_PAGE = 8;
 
 export default function OfficerPostActivityReports() {
@@ -208,13 +213,22 @@ export default function OfficerPostActivityReports() {
     );
   }, [eligibleEvents, semesters, filterSchoolYear, filterSemester, availableSchoolYears]);
 
+  const isAdviser = Boolean(
+    profile?.isAdviser ||
+    profile?.activeRoleId?.toLowerCase() === 'adviser' ||
+    profile?.role?.toLowerCase() === 'adviser'
+  );
+
   // Counts (scoped to active School Year / Semester filter)
   const counts = useMemo(() => {
     return {
       all: periodPars.length,
-      pending: periodPars.filter((p) => p.status === 'under_review').length,
+      officer_reports: periodPars.filter((p) => isDocumentForAdviserReview(p)).length,
+      officer_reports_total: periodPars.filter((p) => isOfficerAuthoredRecord(p) && p.status !== 'draft').length,
+      pending: periodPars.filter((p) => p.status === 'under_review' || isDocumentForAdviserReview(p)).length,
       approved: periodPars.filter((p) => p.status === 'approved').length,
       returned: periodPars.filter((p) => p.status === 'returned').length,
+      rejected: periodPars.filter((p) => p.status === 'rejected').length,
       draft: periodPars.filter((p) => p.status === 'draft').length,
     };
   }, [periodPars]);
@@ -222,9 +236,11 @@ export default function OfficerPostActivityReports() {
   // Filtered List
   const filteredPars = useMemo(() => {
     return periodPars.filter((p) => {
-      if (activeTab === 'pending' && p.status !== 'under_review') return false;
+      if (activeTab === 'officer_reports' && !(isOfficerAuthoredRecord(p) && p.status !== 'draft')) return false;
+      if (activeTab === 'pending' && p.status !== 'under_review' && !isDocumentForAdviserReview(p)) return false;
       if (activeTab === 'approved' && p.status !== 'approved') return false;
       if (activeTab === 'returned' && p.status !== 'returned') return false;
+      if (activeTab === 'rejected' && p.status !== 'rejected') return false;
       if (activeTab === 'draft' && p.status !== 'draft') return false;
 
       if (searchQuery.trim()) {
@@ -235,7 +251,14 @@ export default function OfficerPostActivityReports() {
         if (!matchesRef && !matchesTitle && !matchesVenue) return false;
       }
       return true;
-    }).sort((a, b) => comparePostActivityReports(a, b, eventsById));
+    }).sort((a, b) => {
+      if (activeTab === 'officer_reports') {
+        const aAdv = isDocumentForAdviserReview(a) ? 1 : 0;
+        const bAdv = isDocumentForAdviserReview(b) ? 1 : 0;
+        if (bAdv !== aAdv) return bAdv - aAdv;
+      }
+      return comparePostActivityReports(a, b, eventsById);
+    });
   }, [periodPars, activeTab, searchQuery, eventsById]);
 
   // Pagination
@@ -304,37 +327,19 @@ export default function OfficerPostActivityReports() {
     }
   };
 
-  const renderStatusBadge = (status: string) => {
-    switch (status) {
-      case 'approved':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-            Approved
-          </span>
-        );
-      case 'under_review':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200/80">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-            Pending Review
-          </span>
-        );
-      case 'returned':
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 border border-red-200/80">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
-            Returned
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-700 border border-gray-200">
-            <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-            Draft
-          </span>
-        );
-    }
+  const renderStatusBadge = (record: PostActivityReportDocument) => {
+    const track = resolveDocumentTrackingState(record, 'PAR');
+    return (
+      <div className="inline-flex flex-col items-center gap-0.5">
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${track.badgeClass}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${track.dotClass} ${track.isPulsing ? 'animate-pulse' : ''}`} />
+          {track.label}
+        </span>
+        {track.subLabel && (
+          <span className="text-[10px] text-gray-500 font-medium">{track.subLabel}</span>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -479,12 +484,19 @@ export default function OfficerPostActivityReports() {
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 lg:pb-0">
             {[
               { key: 'all', label: 'All', count: counts.all },
-              { key: 'pending', label: 'Pending Review', count: counts.pending },
+              {
+                key: 'officer_reports',
+                label: 'Officer Reports',
+                count: counts.officer_reports > 0 ? counts.officer_reports : counts.officer_reports_total,
+                highlight: counts.officer_reports > 0,
+              },
+              { key: 'pending', label: 'In Review', count: counts.pending },
               { key: 'approved', label: 'Approved', count: counts.approved },
-              { key: 'returned', label: 'Returned', count: counts.returned },
+              { key: 'returned', label: 'For Revision', count: counts.returned },
+              { key: 'rejected', label: 'Rejected', count: counts.rejected },
               { key: 'draft', label: 'Drafts', count: counts.draft },
               { key: 'trash', label: 'Trash', count: undefined },
-            ].map((tab) => {
+            ].map((tab: any) => {
               const isActive = activeTab === tab.key;
               return (
                 <button
@@ -492,13 +504,19 @@ export default function OfficerPostActivityReports() {
                   onClick={() => handleTabChange(tab.key as FilterTab)}
                   className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${isActive
                       ? 'bg-[#001A4D] text-white shadow-xs'
+                      : tab.highlight
+                      ? 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
                       : 'bg-gray-100/80 text-gray-600 hover:bg-gray-200/80 hover:text-gray-900'
                     }`}
                 >
                   <span>{tab.label}</span>
                   {tab.count !== undefined && (
                     <span
-                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive ? 'bg-white/20 text-white' : 'bg-gray-200/80 text-gray-700'
+                      className={`px-1.5 py-0.2 rounded-full text-[11px] font-bold ${isActive
+                          ? 'bg-white/20 text-white'
+                          : tab.highlight
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-gray-200/80 text-gray-700'
                         }`}
                     >
                       {tab.count}
@@ -654,7 +672,7 @@ export default function OfficerPostActivityReports() {
                           </td>
                           <td className="py-3 px-4 text-center">
                             <div className="flex flex-col items-center gap-1">
-                              {renderStatusBadge(r.status)}
+                              {renderStatusBadge(r)}
                               {(r.status === 'draft' || r.status === 'returned') && (() => {
                                 const dead = (r as any).submissionDeadline;
                                 if (!dead) return null;
@@ -673,13 +691,24 @@ export default function OfficerPostActivityReports() {
                               className="flex items-center justify-end gap-1.5"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <button
-                                onClick={() => setViewingReport(r)}
-                                title="View Report Details"
-                                className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 transition-colors"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </button>
+                              {isAdviser && isDocumentForAdviserReview(r) ? (
+                                <button
+                                  onClick={() => setViewingReport(r)}
+                                  title="Review & Decide as Club Adviser"
+                                  className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs inline-flex items-center gap-1 transition-colors cursor-pointer"
+                                >
+                                  <CheckCircle2 className="w-3.5 h-3.5" />
+                                  <span>Review</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => setViewingReport(r)}
+                                  title="View Report Details"
+                                  className="p-1.5 rounded-lg text-gray-500 hover:text-[#001A4D] hover:bg-gray-100 transition-colors"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                              )}
                               <button
                                 onClick={(e) => handleDownload(e, r)}
                                 disabled={downloadingId === r.id}
@@ -772,7 +801,9 @@ export default function OfficerPostActivityReports() {
           uid: userUid,
           name: userName,
           email: userEmail,
-          role: profile?.role || (profile?.isAdviser ? 'adviser' : 'officer'),
+          role: profile?.role || (isAdviser ? 'adviser' : 'officer'),
+          isAdviser,
+          signatureUrl: profile?.signatureUrl || null,
           organizationId: orgId,
         }}
         currentUserId={userUid}

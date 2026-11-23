@@ -48,6 +48,7 @@ import type {
 import {
   saveProposalDraft,
   submitProposalForReview,
+  submitProposalForAdviserReview,
   generateProposalReferenceNumber,
 } from '../services/proposal.service';
 import { getCachedSasSignatoryConfig } from '../../signatories/services/sas-signatory.service';
@@ -860,15 +861,11 @@ export default function CreateProposalModal({
             break;
           }
           if (t.completionDate < todayStr) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past.`;
-            break;
-          }
-          if (!isUrgent && t.completionDate < standardMinDate) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) violates the 15-calendar-day rule (earliest allowed: ${formatDateLong(standardMinDate)}). Enable Urgent Mode in Step 4 if filing expedited.`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot be in the past (earliest allowed: ${todayStr}).`;
             break;
           }
           if (maxTaskDate && t.completionDate > maxTaskDate) {
-            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot exceed ${maxTaskDate} (+${POST_EVENT_TASK_WINDOW_DAYS} calendar days after implementation date ${implementationEndDate}).`;
+            errs.tasks = `Task #${i + 1} (${t.taskName}) completion date cannot exceed the implementation date (${implementationEndDate}).`;
             break;
           }
           if (i > 0 && data.tasks[i - 1]?.completionDate && t.completionDate < data.tasks[i - 1].completionDate) {
@@ -1053,7 +1050,6 @@ export default function CreateProposalModal({
         ? buildOrgDirectSasApprovalChain()
         : formData.approvalChain;
 
-      const shouldNotifyAdviser = isOfficerForm && !isAdviserMaker && !hasNotifiedAdviserDraftRef.current;
       const result = await saveProposalDraft(
         {
           ...formData,
@@ -1074,11 +1070,8 @@ export default function CreateProposalModal({
         },
         currentUser,
         formData.id,
-        { notifyAdviser: shouldNotifyAdviser }
+        { notifyAdviser: false }
       );
-      if (shouldNotifyAdviser) {
-        hasNotifiedAdviserDraftRef.current = true;
-      }
       updateFormData({
         id: result.id,
         referenceNo: result.referenceNo,
@@ -1093,13 +1086,8 @@ export default function CreateProposalModal({
     }
   };
 
-  // Submit Proposal
+  // Submit Proposal (Officers submit to Club Adviser Checker Gate; Advisers/SAS submit to SAS/Signatories)
   const handleSubmitProposal = async () => {
-    if (isOfficerOnly) {
-      toast.error('Only the Organization Adviser can formally submit activity proposals for signatory review. Officers can Save as Draft.');
-      return;
-    }
-
     if (!editPermission.canEdit) {
       toast.error('Permission Denied', {
         description: editPermission.reason || 'Only the proponent organization has permission to edit and revise this proposal.',
@@ -1133,24 +1121,27 @@ export default function CreateProposalModal({
       }
     }
 
-    // Strict Verification: The Maker or Organization Adviser MUST have a registered e-signature in Settings
-    const effectiveSignature = (
-      (makerSignatureUrl && makerSignatureUrl.trim().length > 0 && !makerSignatureUrl.includes('[base64-'))
-        ? makerSignatureUrl.trim()
-        : (!isOfficerOnly && currentUser?.signatureUrl && currentUser.signatureUrl.trim().length > 0 && !currentUser.signatureUrl.includes('[base64-'))
-        ? currentUser.signatureUrl.trim()
-        : ''
-    );
+    // Strict Verification: Advisers and SAS Makers MUST have a registered e-signature in Settings.
+    // Student Officers do NOT need an e-signature — the Club Adviser attaches theirs on Approve & Forward.
+    if (!isOfficerOnly) {
+      const effectiveSignature = (
+        (makerSignatureUrl && makerSignatureUrl.trim().length > 0 && !makerSignatureUrl.includes('[base64-'))
+          ? makerSignatureUrl.trim()
+          : (currentUser?.signatureUrl && currentUser.signatureUrl.trim().length > 0 && !currentUser.signatureUrl.includes('[base64-'))
+          ? currentUser.signatureUrl.trim()
+          : ''
+      );
 
-    if (!effectiveSignature) {
-      const signerTitle = isAdviserMaker || isOfficerProp ? 'Organization Adviser' : 'Proposal Maker';
-      toast.error('Signature Required: No Registered Signature Found', {
-        description: `Please upload or register your ${signerTitle} signature in Settings first before submitting this activity proposal so that it is attached upon export.`,
-      });
-      return;
+      if (!effectiveSignature) {
+        const signerTitle = isAdviserMaker || isOfficerProp ? 'Organization Adviser' : 'Proposal Maker';
+        toast.error('Signature Required: No Registered Signature Found', {
+          description: `Please upload or register your ${signerTitle} signature in Settings first before submitting this activity proposal so that it is attached upon export.`,
+        });
+        return;
+      }
     }
 
-    // Open confirmation dialog before submission ONLY when all step validations and signature checks pass
+    // Open confirmation dialog before submission ONLY when all step validations pass
     setIsSubmitConfirmOpen(true);
   };
 
@@ -1158,7 +1149,6 @@ export default function CreateProposalModal({
     setIsSubmitting(true);
     try {
       const isOfficerForm = Boolean(isOfficerProp || formData.isOfficerProposal);
-      const drafterName = (formData.createdByName || currentUser.name || '').trim();
       const sanitizedSubmitOrganizers = isOfficerForm
         ? (formData.organizers || []).filter((o) => typeof o === 'string' && stripSasPhrases(o).length > 0)
         : (formData.organizers || []);
@@ -1181,6 +1171,27 @@ export default function CreateProposalModal({
       const effectiveApprovalChain = isOrgDirectSasApproval
         ? buildOrgDirectSasApprovalChain()
         : formData.approvalChain;
+
+      if (isOfficerOnly) {
+        // Officer routes to Club Adviser Checker Gate first
+        const result = await submitProposalForAdviserReview(
+          {
+            ...formData,
+            approvalChain: effectiveApprovalChain,
+            organizers: finalSubmitOrganizers,
+            proponents: finalSubmitProponents,
+            submittedBySignatureUrl: '',
+          },
+          currentUser,
+          formData.id
+        );
+        setSubmittedReferenceNo(result.referenceNo);
+        toast.success(`Submitted to Club Adviser for review! (${result.referenceNo})`);
+        if (onProposalCreated) {
+          onProposalCreated(result.id);
+        }
+        return;
+      }
 
       const effectiveSignature = makerSignatureUrl || currentUser?.signatureUrl || formData.submittedBySignatureUrl || '';
 
@@ -1536,10 +1547,12 @@ export default function CreateProposalModal({
               </div>
               <div>
                 <h3 className="text-xl font-bold text-slate-900">
-                  Proposal Submitted Successfully!
+                  {isOfficerOnly ? 'Submitted for Club Adviser Review!' : 'Proposal Submitted Successfully!'}
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">
-                  Your Activity Proposal has entered the institutional endorsement workflow.
+                  {isOfficerOnly
+                    ? 'Your Activity Proposal has been sent to your Club Adviser for checking and endorsement before forwarding to SAS.'
+                    : 'Your Activity Proposal has entered the institutional endorsement workflow.'}
                 </p>
               </div>
 
@@ -1553,8 +1566,10 @@ export default function CreateProposalModal({
                   <span className="font-semibold text-slate-800">{formData.title}</span>
                 </div>
                 <div className="flex justify-between py-1">
-                  <span className="text-slate-500">Initial Endorser:</span>
-                  <span className="font-semibold text-slate-800">SAS Coordinator (Reviewer)</span>
+                  <span className="text-slate-500">Next Checker:</span>
+                  <span className="font-semibold text-slate-800">
+                    {isOfficerOnly ? 'Organization Club Adviser' : 'SAS Coordinator (Reviewer)'}
+                  </span>
                 </div>
               </div>
 
@@ -1664,22 +1679,6 @@ export default function CreateProposalModal({
               <div className="px-4 py-2 rounded-xl bg-slate-100 text-slate-500 text-xs font-semibold border border-slate-200">
                 Read-Only (Non-Owner)
               </div>
-            ) : isOfficerOnly ? (
-              <div className="flex items-center gap-3">
-                <span className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5">
-                  <Lock className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Drafting Mode (Adviser Submits)</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={handleSaveDraft}
-                  disabled={isSavingDraft || isSubmitting}
-                  className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-2 shadow-sm shadow-blue-500/20 hover:shadow-blue-500/30 transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <Save className="w-4 h-4 text-white" />
-                  <span>{isSavingDraft ? 'Saving Draft...' : 'Save as Draft'}</span>
-                </button>
-              </div>
             ) : (
               <button
                 type="button"
@@ -1706,6 +1705,10 @@ export default function CreateProposalModal({
                     ? isReturnedProposal
                       ? 'Resubmitting...'
                       : 'Submitting...'
+                    : isOfficerOnly
+                    ? isReturnedProposal
+                      ? 'Resubmit for Adviser Review'
+                      : 'Submit for Adviser Review'
                     : isReturnedProposal
                     ? 'Resubmit Revised Proposal'
                     : 'Submit Proposal'}
@@ -1745,7 +1748,22 @@ export default function CreateProposalModal({
                   <Shield className="w-3.5 h-3.5 text-[#0E4EBD]" />
                   What happens upon submission:
                 </div>
-                {Boolean(isOfficerProp || formData.isOfficerProposal) &&
+                {isOfficerOnly ? (
+                  <ul className="list-disc list-inside space-y-1.5 text-xs text-slate-600">
+                    <li>
+                      This proposal will be routed first to your <strong>Club Adviser</strong> (status: <strong>For Adviser Review</strong>).
+                    </li>
+                    <li>
+                      Your Club Adviser can <strong>Approve &amp; Forward</strong> (attaching their official e-signature), <strong>Return for Revision</strong>, or <strong>Reject</strong>.
+                    </li>
+                    <li>
+                      Once approved by your Club Adviser, it will forward to <strong>Student Affairs &amp; Services (SAS)</strong>
+                      {formData.fundingSource === 'school_budget'
+                        ? ' and then to institutional signatories (School Budget / Misc Fee).'
+                        : ' for direct SAS approval.'}
+                    </li>
+                  </ul>
+                ) : Boolean(isOfficerProp || formData.isOfficerProposal) &&
                 (formData.fundingSource === 'organization_funds' ||
                   formData.fundingSource === 'student_contributions' ||
                   formData.fundingSource === 'zero_budget') ? (

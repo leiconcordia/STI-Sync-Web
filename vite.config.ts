@@ -53,5 +53,22 @@ export default defineConfig(({ mode }) => ({
 
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
+
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('firebase')) return 'vendor-firebase'
+            if (id.includes('pdfjs-dist') || id.includes('jspdf') || id.includes('html2canvas')) return 'vendor-pdf'
+            if (id.includes('xlsx') || id.includes('exceljs')) return 'vendor-excel'
+            if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts'
+            if (id.includes('lucide-react')) return 'vendor-icons'
+            return 'vendor'
+          }
+        },
+      },
+    },
+  },
 }))
 

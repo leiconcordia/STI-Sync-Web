@@ -8,6 +8,7 @@ export type TransactionSource =
   | 'manual_expense'
   | 'carry_over'
   | 'event_budget'
+  | 'supplemental_budget'
   | 'liquidation_surplus'
   | 'liquidation_deficit';
 
@@ -17,6 +18,7 @@ export interface SaoLedgerDocument {
   date: Timestamp;
   description: string;
   eventId: string | null;        // Optional FK → /events
+  sbrId?: string;                // Optional FK → /supplemental_budget_requests
   type: TransactionType;
   source: TransactionSource;
   amount: number;
@@ -35,6 +37,7 @@ export interface OrgLedgerDocument {
   date: Timestamp;
   description: string;
   eventId: string | null;        // Optional FK → /events
+  sbrId?: string;                // Optional FK → /supplemental_budget_requests
   type: TransactionType;
   source: TransactionSource | 'sponsorship';
   amount: number;

@@ -377,6 +377,14 @@ export function isEventEditable(
         allowedFieldTypes: 'none',
       };
 
+    case 'for_adviser_review':
+      return {
+        editable: false,
+        lockLevel: 'locked',
+        reason: 'Proposal is awaiting Club Adviser review. Click "Withdraw Proposal" to return it to Draft and edit.',
+        allowedFieldTypes: 'none',
+      };
+
     case 'pending':
     case 'pending_review':
       if (userRole === 'admin') {
@@ -720,16 +728,22 @@ export function canWithdrawProposal(
   }
 
   const status = (event.proposalStatus || (event as any).status || '').toLowerCase().trim();
-  if (status !== 'pending_review' && status !== 'pending' && status !== 'under_review') {
+  const isForAdviserReview = status === 'for_adviser_review';
+  if (
+    status !== 'pending_review' &&
+    status !== 'pending' &&
+    status !== 'under_review' &&
+    !isForAdviserReview
+  ) {
     return {
       canWithdraw: false,
-      reason: 'Only proposals currently under review can be withdrawn.',
+      reason: 'Only proposals awaiting adviser review or currently under review can be withdrawn.',
     };
   }
 
-  // Enforce signature lock rules before checking ownership
+  // Enforce signature lock rules before checking ownership (not applicable while awaiting Club Adviser)
   const chain: any[] = Array.isArray((event as any).approvalChain) ? (event as any).approvalChain : [];
-  const anySignatorySigned = chain.some(
+  const anySignatorySigned = !isForAdviserReview && chain.some(
     (s: any) =>
       s &&
       (s.status === 'endorsed' ||
@@ -739,7 +753,7 @@ export function canWithdrawProposal(
   );
   const isOrgFunds = (event as any).fundingSource === 'organization_funds';
 
-  if (isOrgFunds) {
+  if (!isForAdviserReview && isOrgFunds) {
     // Organization's own funds go straight to SAS for final approval & signature
     if (
       anySignatorySigned ||

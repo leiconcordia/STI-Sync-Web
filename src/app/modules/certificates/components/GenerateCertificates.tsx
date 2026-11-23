@@ -14,15 +14,22 @@ interface Props {
   isAdmin: boolean;
   organizationId?: string;
   eventId: string;
+  initialTemplateId?: string;
   onBack: () => void;
 }
 
-export default function GenerateCertificates({ isAdmin, organizationId, eventId, onBack }: Props) {
+export default function GenerateCertificates({
+  isAdmin,
+  organizationId,
+  eventId,
+  initialTemplateId,
+  onBack,
+}: Props) {
   const { event, loading: eventLoading } = useEventById(eventId);
   const { attendance, loading: attendanceLoading } = useAttendanceStream();
   const { templates, loading: templatesLoading } = useCertificateTemplatesStream(organizationId, isAdmin);
 
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>(initialTemplateId || "");
   const [recipients, setRecipients] = useState<CertificateRecipient[]>([]);
   const [filter, setFilter] = useState<"all" | "attendance" | "manual">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -36,13 +43,17 @@ export default function GenerateCertificates({ isAdmin, organizationId, eventId,
   const [showExport, setShowExport] = useState(false);
   const [previewRecipient, setPreviewRecipient] = useState(0);
 
-  // Set default template when templates load
+  // Set default template when templates load (preferring initialTemplateId if provided)
   useEffect(() => {
+    if (initialTemplateId && templates.some((t) => t.id === initialTemplateId)) {
+      setSelectedTemplateId(initialTemplateId);
+      return;
+    }
     if (templates.length > 0 && !selectedTemplateId) {
       const defaultT = templates.find(t => t.isDefault) || templates[0];
       setSelectedTemplateId(defaultT.id);
     }
-  }, [templates, selectedTemplateId]);
+  }, [templates, selectedTemplateId, initialTemplateId]);
 
   // Load attendance records for this event
   useEffect(() => {

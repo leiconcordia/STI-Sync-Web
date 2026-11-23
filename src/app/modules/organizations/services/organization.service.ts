@@ -15,6 +15,7 @@ import { db, createSecondaryAuthUser, rollbackSecondaryAuthUser } from '../../..
 import { generateTemporaryPassword } from '../../accounts/services/temporary-password.mjs';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { sendAdviserWelcomeCredentialsEmail } from '../../../../services/email.service';
+import { createNotification } from '../../notifications';
 import type { CreateOrganizationPayload, OrgAdviserData, OrgAutoPayableRule } from '../types/organization.types';
 import { structuredNameFields } from '../../../utils/name.utils';
 import {
@@ -23,6 +24,7 @@ import {
   type OrganizationAdviserRecord,
   type SignatoryEmailRecord,
 } from '../utils/adviser-validation.utils';
+import { findDepartmentScopeConflicts } from '../utils/department-eligibility.utils';
 
 const COLLECTION = 'organizations';
 
@@ -175,6 +177,23 @@ export const assignOrRevokeOrganizationAdviser = async (
     }
     throw error;
   }
+  if (adviser) {
+    void createNotification({
+      recipientRole: 'officer',
+      recipientId: [adviser.authUid, cleanEmail, `adviser:${orgId}`].filter(Boolean).join('|'),
+      targetOrgId: orgId,
+      targetOrgName: orgName,
+      type: 'role_assigned',
+      category: 'system',
+      title: 'Assigned as Club Adviser',
+      message: `You have been assigned as the Club Adviser for ${orgName}. Welcome to the Organization Portal!`,
+      resourceId: orgId,
+      resourceType: 'system',
+      actionRoute: '/officer/organization',
+      senderName: adminUser,
+      senderRoleTitle: 'SAS Administration',
+    }).catch((err) => console.warn('Failed to dispatch adviser assignment notification:', err));
+  }
   if (adviser && sendEmailNotice) {
     void sendAdviserWelcomeCredentialsEmail({
       to: cleanEmail,
@@ -212,22 +231,59 @@ export const createOrganization = async (
     logoUrl = secureUrl;
   }
 
+  const rawAllowedIds = Array.isArray(payload.allowedDepartmentIds)
+    ? payload.allowedDepartmentIds.map((id) => String(id || '').trim()).filter((id) => id && id !== 'cross-departmental')
+    : [];
+  const rawAllowedNames = Array.isArray(payload.allowedDepartmentNames)
+    ? payload.allowedDepartmentNames.map((n) => String(n || '').trim()).filter(Boolean)
+    : [];
+  const rawAllowedCodes = Array.isArray(payload.allowedDepartmentCodes)
+    ? payload.allowedDepartmentCodes.map((c) => String(c || '').trim()).filter(Boolean)
+    : [];
+
   const isCross =
-    !payload.departmentId ||
-    payload.departmentId === 'cross-departmental' ||
+    payload.isCrossDepartmental === true ||
     payload.scope === 'cross-departmental' ||
-    payload.isCrossDepartmental === true;
+    (rawAllowedIds.length === 0 && (!payload.departmentId || payload.departmentId === 'cross-departmental'));
+
+  const effectiveAllowedIds = isCross
+    ? []
+    : rawAllowedIds.length > 0
+      ? rawAllowedIds
+      : payload.departmentId && payload.departmentId !== 'cross-departmental'
+        ? [payload.departmentId]
+        : [];
+  const effectiveAllowedNames = isCross
+    ? []
+    : rawAllowedNames.length > 0
+      ? rawAllowedNames
+      : payload.departmentName
+        ? [payload.departmentName]
+        : [];
+  const effectiveAllowedCodes = isCross
+    ? []
+    : rawAllowedCodes.length > 0
+      ? rawAllowedCodes
+      : payload.departmentCode
+        ? [payload.departmentCode]
+        : [];
+
+  const combinedDeptName = isCross
+    ? (payload.departmentName || 'Cross-Departmental / All Students')
+    : (effectiveAllowedNames.join(', ') || payload.departmentName || 'Academic Department');
+  const combinedDeptCode = isCross
+    ? (payload.departmentCode || 'ALL')
+    : (effectiveAllowedCodes.join(', ') || payload.departmentCode || '');
 
   const normalizedPayload: CreateOrganizationPayload = {
     ...payload,
-    departmentId: isCross ? 'cross-departmental' : payload.departmentId,
-    departmentName: isCross
-      ? (payload.departmentName || 'Cross-Departmental / All Students')
-      : (payload.departmentName || 'Academic Department'),
-    departmentCode: isCross ? (payload.departmentCode || 'ALL') : (payload.departmentCode || ''),
-    department: isCross
-      ? (payload.departmentName || 'Cross-Departmental / All Students')
-      : (payload.departmentName || 'Academic Department'),
+    departmentId: isCross ? 'cross-departmental' : (effectiveAllowedIds[0] || payload.departmentId),
+    departmentName: combinedDeptName,
+    departmentCode: combinedDeptCode,
+    department: combinedDeptName,
+    allowedDepartmentIds: effectiveAllowedIds,
+    allowedDepartmentNames: effectiveAllowedNames,
+    allowedDepartmentCodes: effectiveAllowedCodes,
     scope: isCross ? 'cross-departmental' : 'departmental',
     isCrossDepartmental: isCross,
   };
@@ -297,6 +353,26 @@ export const createOrganization = async (
     }
 
     await batch.commit();
+
+    if (payload.adviser && payload.adviser.name && payload.adviser.email) {
+      const cleanEmail = payload.adviser.email.trim().toLowerCase();
+      void createNotification({
+        recipientRole: 'officer',
+        recipientId: [createdAdviserUid, cleanEmail, `adviser:${orgId}`].filter(Boolean).join('|'),
+        targetOrgId: orgId,
+        targetOrgName: payload.name,
+        type: 'role_assigned',
+        category: 'system',
+        title: 'Assigned as Club Adviser',
+        message: `You have been assigned as the Club Adviser for ${payload.name}. Welcome to the Organization Portal!`,
+        resourceId: orgId,
+        resourceType: 'system',
+        actionRoute: '/officer/organization',
+        senderName: createdBy || 'SAS Administration',
+        senderRoleTitle: 'SAS Administration',
+      }).catch((err) => console.warn('Failed to dispatch adviser assignment notification:', err));
+    }
+
     return orgId;
   } catch (error: any) {
     if (createdAdviserUid && payload.adviser?.email) {
@@ -331,20 +407,100 @@ export const updateOrganization = async (
       updatedAt: serverTimestamp(),
     };
 
-    if (payload.departmentId !== undefined) {
-      const isCross =
-        payload.departmentId === 'cross-departmental' ||
-        payload.scope === 'cross-departmental' ||
-        payload.isCrossDepartmental === true;
+    if (
+      payload.departmentId !== undefined ||
+      payload.allowedDepartmentIds !== undefined ||
+      payload.isCrossDepartmental !== undefined
+    ) {
+      const rawAllowedIds = Array.isArray(payload.allowedDepartmentIds)
+        ? payload.allowedDepartmentIds.map((id) => String(id || '').trim()).filter((id) => id && id !== 'cross-departmental')
+        : [];
+      const rawAllowedNames = Array.isArray(payload.allowedDepartmentNames)
+        ? payload.allowedDepartmentNames.map((n) => String(n || '').trim()).filter(Boolean)
+        : [];
+      const rawAllowedCodes = Array.isArray(payload.allowedDepartmentCodes)
+        ? payload.allowedDepartmentCodes.map((c) => String(c || '').trim()).filter(Boolean)
+        : [];
 
-      updateData.departmentId = isCross ? 'cross-departmental' : payload.departmentId;
-      updateData.departmentName = isCross
+      const isCross =
+        payload.isCrossDepartmental === true ||
+        payload.scope === 'cross-departmental' ||
+        (rawAllowedIds.length === 0 && (!payload.departmentId || payload.departmentId === 'cross-departmental'));
+
+      const effectiveAllowedIds = isCross
+        ? []
+        : rawAllowedIds.length > 0
+          ? rawAllowedIds
+          : payload.departmentId && payload.departmentId !== 'cross-departmental'
+            ? [payload.departmentId]
+            : [];
+      const effectiveAllowedNames = isCross
+        ? []
+        : rawAllowedNames.length > 0
+          ? rawAllowedNames
+          : payload.departmentName
+            ? [payload.departmentName]
+            : [];
+      const effectiveAllowedCodes = isCross
+        ? []
+        : rawAllowedCodes.length > 0
+          ? rawAllowedCodes
+          : payload.departmentCode
+            ? [payload.departmentCode]
+            : [];
+
+      const combinedDeptName = isCross
         ? (payload.departmentName || 'Cross-Departmental / All Students')
-        : (payload.departmentName || 'Academic Department');
-      updateData.departmentCode = isCross ? (payload.departmentCode || 'ALL') : (payload.departmentCode || '');
-      updateData.department = updateData.departmentName;
+        : (effectiveAllowedNames.join(', ') || payload.departmentName || 'Academic Department');
+      const combinedDeptCode = isCross
+        ? (payload.departmentCode || 'ALL')
+        : (effectiveAllowedCodes.join(', ') || payload.departmentCode || '');
+
+      updateData.departmentId = isCross ? 'cross-departmental' : (effectiveAllowedIds[0] || payload.departmentId);
+      updateData.departmentName = combinedDeptName;
+      updateData.departmentCode = combinedDeptCode;
+      updateData.department = combinedDeptName;
+      updateData.allowedDepartmentIds = effectiveAllowedIds;
+      updateData.allowedDepartmentNames = effectiveAllowedNames;
+      updateData.allowedDepartmentCodes = effectiveAllowedCodes;
       updateData.scope = isCross ? 'cross-departmental' : 'departmental';
       updateData.isCrossDepartmental = isCross;
+
+      // Enforce that narrowing Department / Audience Scope does not strand active members from excluded departments
+      if (!isCross) {
+        const [membersSnap, deptsSnap, coursesSnap] = await Promise.all([
+          getDocs(query(collection(db, 'organization_members'), where('organizationId', '==', orgId))),
+          getDocs(collection(db, 'departments')).catch(() => null),
+          getDocs(collection(db, 'courses')).catch(() => null),
+        ]);
+        const membersList = membersSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const deptsList = deptsSnap ? deptsSnap.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
+        const coursesList = coursesSnap ? coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() })) : [];
+
+        const conflictCheck = findDepartmentScopeConflicts({
+          proposedOrg: {
+            id: orgId,
+            departmentId: updateData.departmentId,
+            departmentName: updateData.departmentName,
+            departmentCode: updateData.departmentCode,
+            allowedDepartmentIds: updateData.allowedDepartmentIds,
+            allowedDepartmentNames: updateData.allowedDepartmentNames,
+            allowedDepartmentCodes: updateData.allowedDepartmentCodes,
+            scope: updateData.scope,
+            isCrossDepartmental: false,
+          },
+          members: membersList,
+          departments: deptsList,
+          courses: coursesList,
+        });
+
+        if (conflictCheck.hasConflicts) {
+          throw new Error(
+            conflictCheck.summaryMessage ||
+              'Cannot restrict department scope while active members from excluded departments are still enrolled.'
+          );
+        }
+      }
     }
 
     if (logoUrl !== undefined) {

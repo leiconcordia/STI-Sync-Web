@@ -330,6 +330,7 @@ export async function deductRetainedFundOnProposalApproval(params: {
   schoolYear?: string;
   semester?: string;
   performedBy?: string;
+  ledgerDocIdOverride?: string;
 }): Promise<void> {
   const period = await resolveEffectiveRetainedPeriod({
     schoolYear: params.schoolYear,
@@ -344,7 +345,7 @@ export async function deductRetainedFundOnProposalApproval(params: {
   });
 
   await postRetainedFundTransaction({
-    ledgerDocId: `event_${params.eventId}`,
+    ledgerDocId: params.ledgerDocIdOverride || `event_${params.eventId}`,
     identity,
     type: 'event_expense_deduction',
     amount: params.amount,
