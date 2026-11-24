@@ -225,13 +225,23 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
     }
   }
 
-  // 5. Check organization_advisers by UID or Email
+  // 5. Check organization_advisers by doc ID, authUid, or Email
   if (uid) {
     try {
       const advSnap = await getDoc(doc(db, 'organization_advisers', uid));
       if (advSnap.exists()) {
         const d = advSnap.data();
         const sig = cleanSigValue(d.signatureUrl) || cleanSigValue(d.signatureDataUrl);
+        if (sig) {
+          return sig;
+        }
+      }
+      const qAdvUid = query(collection(db, 'organization_advisers'), where('authUid', '==', uid));
+      const advUidSnap = await getDocs(qAdvUid);
+      for (const d of advUidSnap.docs) {
+        const data = d.data();
+        if (data.isActive === false) continue;
+        const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
         if (sig) {
           return sig;
         }
@@ -247,6 +257,7 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
       const advQuerySnap = await getDocs(qAdv);
       for (const d of advQuerySnap.docs) {
         const data = d.data();
+        if (data.isActive === false) continue;
         const sig = cleanSigValue(data.signatureUrl) || cleanSigValue(data.signatureDataUrl);
         if (sig) {
           return sig;
@@ -257,19 +268,28 @@ export async function resolveUserSignature(identifier: UserSignatureIdentifier):
     }
   }
 
-  // 6. Check embedded adviser in organizations collection
+  // 6. Check embedded primary adviser & co-adviser in organizations collection
   if (email || uid) {
     try {
-      const qOrg = email
-        ? query(collection(db, 'organizations'), where('adviser.email', '==', email))
-        : query(collection(db, 'organizations'), where('adviser.authUid', '==', uid));
-      const orgQuerySnap = await getDocs(qOrg);
-      for (const d of orgQuerySnap.docs) {
+      const orgQueries = email
+        ? [
+            getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', email))),
+            getDocs(query(collection(db, 'organizations'), where('coAdviser.email', '==', email))),
+          ]
+        : [
+            getDocs(query(collection(db, 'organizations'), where('adviser.authUid', '==', uid))),
+            getDocs(query(collection(db, 'organizations'), where('coAdviser.authUid', '==', uid))),
+          ];
+      const [primarySnap, coSnap] = await Promise.all(orgQueries);
+      for (const d of primarySnap.docs) {
         const adv = d.data()?.adviser;
         const sig = cleanSigValue(adv?.signatureUrl) || cleanSigValue(adv?.signatureDataUrl);
-        if (sig) {
-          return sig;
-        }
+        if (sig) return sig;
+      }
+      for (const d of coSnap.docs) {
+        const coAdv = d.data()?.coAdviser;
+        const sig = cleanSigValue(coAdv?.signatureUrl) || cleanSigValue(coAdv?.signatureDataUrl);
+        if (sig) return sig;
       }
     } catch (e) {
       console.warn('[SignatureResolver] organizations embedded adviser lookup warning:', e);
@@ -369,39 +389,82 @@ export async function syncUserSignatureAcrossProfiles(params: {
     console.warn('[SignatureResolver] Sync to institutional_signatories notice:', e);
   }
 
-  // 4. Update organization_advisers if adviser
-  if (effectiveUid) {
+  // 4. Update all matching organization_advisers docs (Primary Adviser & Secondary Co-Adviser)
+  if (effectiveEmail || effectiveUid) {
     try {
-      const advRef = doc(db, 'organization_advisers', effectiveUid);
-      await setDoc(advRef, {
-        signatureUrl,
-        signatureDataUrl: signatureUrl,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+      const advQueries: Promise<any>[] = [];
+      if (effectiveEmail) {
+        advQueries.push(getDocs(query(collection(db, 'organization_advisers'), where('email', '==', effectiveEmail))));
+      }
+      if (effectiveUid) {
+        advQueries.push(getDocs(query(collection(db, 'organization_advisers'), where('authUid', '==', effectiveUid))));
+      }
+      const advSnaps = await Promise.all(advQueries);
+      const matchedAdvDocIds = new Set<string>();
+      for (const snap of advSnaps) {
+        for (const d of snap.docs) {
+          if (matchedAdvDocIds.has(d.id)) continue;
+          matchedAdvDocIds.add(d.id);
+          await setDoc(
+            doc(db, 'organization_advisers', d.id),
+            {
+              signatureUrl,
+              signatureDataUrl: signatureUrl,
+              signatureUpdatedAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      }
     } catch (e) {
       console.warn('[SignatureResolver] Sync to organization_advisers notice:', e);
     }
   }
 
-  // 4b. Update embedded adviser in organizations collection
+  // 4b. Update embedded primary adviser & co-adviser in organizations collection
   if (effectiveEmail || effectiveUid) {
     try {
-      const qOrg = effectiveEmail
-        ? query(collection(db, 'organizations'), where('adviser.email', '==', effectiveEmail))
-        : query(collection(db, 'organizations'), where('adviser.authUid', '==', effectiveUid));
-      const orgQuerySnap = await getDocs(qOrg);
-      for (const d of orgQuerySnap.docs) {
+      const orgQueries = effectiveEmail
+        ? [
+            getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', effectiveEmail))),
+            getDocs(query(collection(db, 'organizations'), where('coAdviser.email', '==', effectiveEmail))),
+          ]
+        : [
+            getDocs(query(collection(db, 'organizations'), where('adviser.authUid', '==', effectiveUid))),
+            getDocs(query(collection(db, 'organizations'), where('coAdviser.authUid', '==', effectiveUid))),
+          ];
+      const [primarySnap, coSnap] = await Promise.all(orgQueries);
+      for (const d of primarySnap.docs) {
         const adv = d.data()?.adviser || {};
-        await setDoc(doc(db, 'organizations', d.id), {
-          adviser: {
-            ...adv,
-            signatureUrl,
-            signatureDataUrl: signatureUrl,
-          }
-        }, { merge: true });
+        await setDoc(
+          doc(db, 'organizations', d.id),
+          {
+            adviser: {
+              ...adv,
+              signatureUrl,
+              signatureDataUrl: signatureUrl,
+            },
+          },
+          { merge: true }
+        );
+      }
+      for (const d of coSnap.docs) {
+        const coAdv = d.data()?.coAdviser || {};
+        await setDoc(
+          doc(db, 'organizations', d.id),
+          {
+            coAdviser: {
+              ...coAdv,
+              signatureUrl,
+              signatureDataUrl: signatureUrl,
+            },
+          },
+          { merge: true }
+        );
       }
     } catch (e) {
-      console.warn('[SignatureResolver] Sync to embedded organizations adviser notice:', e);
+      console.warn('[SignatureResolver] Sync to embedded organizations adviser/coAdviser notice:', e);
     }
   }
 

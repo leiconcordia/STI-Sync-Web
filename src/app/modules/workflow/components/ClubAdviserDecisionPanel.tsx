@@ -37,6 +37,7 @@ import {
   syncUserSignatureAcrossProfiles,
 } from '../../signatories';
 import { formatAppDateTime } from '../../../utils/date';
+import { useOfficerProfile } from '../../../auth/hooks/useOfficerProfile';
 
 const ADVISER_REJECTION_REASONS = [
   'Incomplete or Missing Supporting Details',
@@ -91,6 +92,7 @@ export default function ClubAdviserDecisionPanel({
   const isForAdviserReview = isDocumentForAdviserReview(record);
   const adviserReview = record?.adviserReview || null;
   const needsSignatories = requiresInstitutionalSignatories(record);
+  const { adviserAuthority } = useOfficerProfile();
 
   const docLabel =
     documentType === 'PAR'
@@ -306,13 +308,30 @@ export default function ClubAdviserDecisionPanel({
               </div>
               <div>
                 <h4 className="text-[#001A4D] font-extrabold text-sm leading-tight">
-                  Club Adviser Decision
+                  {adviserAuthority.isCoAdviser ? 'Club Co-Adviser Decision' : 'Club Adviser Decision'}
                 </h4>
                 <p className="text-gray-500 text-[11px] leading-tight mt-0.5">
                   Check this officer submission before forwarding to SAS.
                 </p>
               </div>
             </div>
+
+            {adviserAuthority.statusBannerText && (
+              <div
+                className={`p-3 rounded-xl border text-[11px] leading-relaxed flex items-start gap-2 ${
+                  adviserAuthority.isAuthorityTransferredToCoAdviser
+                    ? 'bg-amber-50 border-amber-300 text-amber-950'
+                    : 'bg-indigo-50/70 border-indigo-200 text-indigo-900'
+                }`}
+              >
+                <ShieldCheck
+                  className={`w-4 h-4 shrink-0 mt-0.5 ${
+                    adviserAuthority.isAuthorityTransferredToCoAdviser ? 'text-amber-600' : 'text-indigo-600'
+                  }`}
+                />
+                <span>{adviserAuthority.statusBannerText}</span>
+              </div>
+            )}
 
             {/* Officer Submission Info */}
             <div className="bg-indigo-50/80 border border-indigo-200 rounded-xl p-3 text-xs space-y-1.5">
@@ -445,9 +464,15 @@ export default function ClubAdviserDecisionPanel({
                 )}
                 <span className="text-xs font-extrabold text-slate-900 uppercase tracking-wider">
                   {adviserReview.status === 'approved'
-                    ? 'Approved by Club Adviser'
+                    ? adviserReview.reviewedByAdviserRole === 'co_adviser'
+                      ? 'Approved by Club Co-Adviser'
+                      : 'Approved by Club Adviser'
                     : adviserReview.status === 'returned'
-                    ? 'Returned by Club Adviser'
+                    ? adviserReview.reviewedByAdviserRole === 'co_adviser'
+                      ? 'Returned by Club Co-Adviser'
+                      : 'Returned by Club Adviser'
+                    : adviserReview.reviewedByAdviserRole === 'co_adviser'
+                    ? 'Rejected by Club Co-Adviser'
                     : 'Rejected by Club Adviser'}
                 </span>
               </div>
@@ -456,8 +481,15 @@ export default function ClubAdviserDecisionPanel({
             <div className="text-xs text-slate-700 space-y-1">
               {adviserReview.reviewedByName && (
                 <p>
-                  <span className="text-slate-500">Adviser: </span>
+                  <span className="text-slate-500">
+                    {adviserReview.reviewedByAdviserRole === 'co_adviser' ? 'Co-Adviser: ' : 'Adviser: '}
+                  </span>
                   <strong className="text-slate-900">{adviserReview.reviewedByName}</strong>
+                  {adviserReview.actingOnBehalfOfName && (
+                    <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold">
+                      Acting for {adviserReview.actingOnBehalfOfName}
+                    </span>
+                  )}
                 </p>
               )}
               {adviserReview.reviewedAt && (

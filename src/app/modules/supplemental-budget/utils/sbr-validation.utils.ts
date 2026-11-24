@@ -8,9 +8,15 @@
  * - Effective approved budget computation & multi-bucket allocation merging for Liquidation
  */
 
-import type { ProposalBucketAllocation } from '../../activity-proposals/types/proposal.types';
+import type {
+  FinancialLineItem,
+  FinancialProjections,
+  ProposalApprovalStep,
+  ProposalBucketAllocation,
+} from '../../activity-proposals/types/proposal.types';
 import type {
   SupplementalBudgetRequest,
+  SupplementalEventExpenseItem,
   SupplementalExpenseItem,
   SupplementalFundingSource,
 } from '../types/sbr.types';
@@ -515,3 +521,452 @@ export function validateSbrFormPayload(params: {
     errors,
   };
 }
+
+const INTERNAL_SAS_OR_ADVISER_ROLES = new Set([
+  'sas_head',
+  'sas_admin',
+  'sas_coordinator',
+  'sao_head',
+  'sao_admin',
+  'adviser',
+  'club_adviser',
+  'officer',
+]);
+
+/**
+ * Copies the parent Activity Proposal's configured signatory pipeline for a Supplemental Budget Request:
+ * - Preserves the exact institutional signatories, stage grouping (`stageIndex`), and action labels.
+ * - Filters out internal SAS/Adviser placeholder rows (since Club Adviser & SAS Vetting already gate SBRs).
+ * - Re-indexes `stageIndex` cleanly from 1..N and resets every step to fresh `pending` state.
+ */
+export function cloneParentApSignatoryPipeline(
+  parentRecord: any
+): ProposalApprovalStep[] {
+  const rawChain: any[] = Array.isArray(parentRecord?.approvalChain)
+    ? parentRecord.approvalChain
+    : [];
+  if (rawChain.length === 0) return [];
+
+  const institutionalSteps = rawChain.filter((step) => {
+    if (!step) return false;
+    const role = String(step.role || '').trim().toLowerCase();
+    const roleTitle = String(step.roleTitle || '').trim().toLowerCase();
+    if (INTERNAL_SAS_OR_ADVISER_ROLES.has(role)) return false;
+    if (
+      !role &&
+      (roleTitle.includes('student affairs') ||
+        roleTitle === 'sas' ||
+        roleTitle === 'sao' ||
+        roleTitle.includes('club adviser'))
+    ) {
+      return false;
+    }
+    return Boolean(step.signatoryUid || step.signatoryEmail || step.signatoryName || step.roleTitle || step.role);
+  });
+
+  if (institutionalSteps.length === 0) return [];
+
+  // Preserve relative stage grouping from parent AP and renumber cleanly from Stage 1..K
+  const uniqueStageNumbers = Array.from(
+    new Set(
+      institutionalSteps.map((s, idx) =>
+        typeof s.stageIndex === 'number' && s.stageIndex > 0 ? s.stageIndex : idx + 1
+      )
+    )
+  ).sort((a, b) => a - b);
+
+  const stageRemap = new Map<number, number>();
+  uniqueStageNumbers.forEach((origStage, idx) => {
+    stageRemap.set(origStage, idx + 1);
+  });
+
+  return institutionalSteps.map((s, idx) => {
+    const origStage =
+      typeof s.stageIndex === 'number' && s.stageIndex > 0 ? s.stageIndex : idx + 1;
+    const mappedStage = stageRemap.get(origStage) || idx + 1;
+    return {
+      id: `sbr_step_${idx + 1}_${s.signatoryUid || s.id || idx}`,
+      step: idx + 1,
+      stageIndex: mappedStage,
+      stageName: `Stage ${mappedStage}`,
+      role: s.role || 'program_head',
+      roleTitle: s.roleTitle || s.role || 'Signatory',
+      actionType: s.actionType || (String(s.role || '').toLowerCase().includes('president') ? 'approve' : 'endorse'),
+      ...(s.signatoryLabel ? { signatoryLabel: s.signatoryLabel } : {}),
+      ...(s.signatoryUid ? { signatoryUid: s.signatoryUid } : {}),
+      ...(s.signatoryName ? { signatoryName: s.signatoryName } : {}),
+      ...(s.signatoryEmail ? { signatoryEmail: s.signatoryEmail } : {}),
+      ...(s.department ? { department: s.department } : {}),
+      status: 'pending' as const,
+    } as ProposalApprovalStep;
+  });
+}
+
+/**
+ * Normalizes a custom or copied SBR signatory chain (clean 1..K stageIndex & step numbers)
+ * and optionally marks Stage 1 steps as `'current'` when routing begins.
+ */
+export function normalizeSbrApprovalChain(
+  rawChain: ProposalApprovalStep[] = [],
+  activateStageOne = false
+): ProposalApprovalStep[] {
+  const cleaned = (rawChain || []).filter((s) => {
+    if (!s) return false;
+    const role = String(s.role || '').trim().toLowerCase();
+    return !INTERNAL_SAS_OR_ADVISER_ROLES.has(role);
+  });
+  if (cleaned.length === 0) return [];
+
+  const uniqueStages = Array.from(
+    new Set(
+      cleaned.map((s, idx) =>
+        typeof s.stageIndex === 'number' && s.stageIndex > 0 ? s.stageIndex : idx + 1
+      )
+    )
+  ).sort((a, b) => a - b);
+
+  const stageRemap = new Map<number, number>();
+  uniqueStages.forEach((orig, idx) => stageRemap.set(orig, idx + 1));
+
+  return cleaned.map((s, idx) => {
+    const origStage =
+      typeof s.stageIndex === 'number' && s.stageIndex > 0 ? s.stageIndex : idx + 1;
+    const mappedStage = stageRemap.get(origStage) || idx + 1;
+    const isStageOne = mappedStage === 1;
+    return {
+      ...s,
+      id: s.id || `sbr_step_${idx + 1}_${s.signatoryUid || idx}`,
+      step: idx + 1,
+      stageIndex: mappedStage,
+      stageName: `Stage ${mappedStage}`,
+      status: activateStageOne && isStageOne ? ('current' as any) : ('pending' as const),
+      signedAt: undefined,
+      signatureUrl: undefined,
+      remarks: undefined,
+    };
+  });
+}
+
+/**
+ * Checks whether a given signatory step matches the logged-in signatory identity.
+ */
+export function matchesSbrSignatoryStep(
+  step: any,
+  actor: { uid?: string; id?: string; email?: string; role?: string; roleTitle?: string }
+): boolean {
+  if (!step || !actor) return false;
+  const actorUids = [actor.uid, actor.id].map((v) => String(v || '').trim()).filter(Boolean);
+  const stepUid = String(step.signatoryUid || step.signedByUid || '').trim();
+  if (stepUid && actorUids.includes(stepUid)) return true;
+
+  const actorEmail = String(actor.email || '').trim().toLowerCase();
+  const stepEmail = String(step.signatoryEmail || step.signedByEmail || '').trim().toLowerCase();
+  if (actorEmail && stepEmail && actorEmail === stepEmail) return true;
+
+  if (!stepUid && !stepEmail) {
+    const aRole = String(actor.role || '').trim().toLowerCase();
+    const sRole = String(step.role || '').trim().toLowerCase();
+    if (aRole && sRole && aRole === sRole) return true;
+    const aTitle = String(actor.roleTitle || '').trim().toLowerCase();
+    const sTitle = String(step.roleTitle || '').trim().toLowerCase();
+    if (aTitle && sTitle && (aTitle === sTitle || sTitle.includes(aTitle) || aTitle.includes(sTitle))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Returns true if the logged-in signatory has an active unsigned step in the SBR's current stage
+ * (or an open co-sign/Noted slot after another approver granted final approval under Option A).
+ */
+export function isSignatoryTurnForSbr(
+  sbr: Pick<SupplementalBudgetRequest, 'status' | 'approvalChain' | 'currentStageIndex' | 'currentStepIndex'> | null | undefined,
+  actor: { uid?: string; id?: string; email?: string; role?: string; roleTitle?: string }
+): boolean {
+  if (!sbr) return false;
+  if (sbr.status !== 'pending_signatories' && sbr.status !== 'approved') return false;
+  const chain = Array.isArray(sbr.approvalChain) ? sbr.approvalChain : [];
+  if (chain.length === 0) return false;
+
+  const isSigned = (s: any) =>
+    s && (s.status === 'approved' || s.status === 'endorsed' || s.status === 'waived');
+
+  if (sbr.status === 'approved') {
+    // Allow remaining unsigned co-signers / demoted approvers whose step is active ('current') to affix Noted/Endorsed
+    return chain.some((s: any) => s && !isSigned(s) && s.status === 'current' && matchesSbrSignatoryStep(s, actor));
+  }
+
+  const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+  if (hasStages) {
+    const activeStage = sbr.currentStageIndex ?? 1;
+    return chain.some((s: any) => {
+      const inStage = (s.stageIndex ?? 1) === activeStage;
+      return inStage && !isSigned(s) && matchesSbrSignatoryStep(s, actor);
+    });
+  }
+
+  const currentStep = chain[sbr.currentStepIndex ?? 0];
+  return Boolean(currentStep && !isSigned(currentStep) && matchesSbrSignatoryStep(currentStep, actor));
+}
+
+export interface LiquidationBaselineCategoryItem {
+  id: string;
+  title: string;
+  baselineAmount: number;
+  isSupplemental?: boolean;
+  sbrId?: string;
+  sbrReferenceCode?: string;
+  qtyUnitLabel?: string;
+}
+
+/**
+ * Merges original AP baseline items with approved Supplemental Budget line items
+ * for Financial Liquidation's "Proposed Budget Baseline Categories (Reference Guide)".
+ * Deduplicates identical item titles by appending the SBR reference code only on collision.
+ */
+export function mergeLiquidationBaselineWithSupplementalItems(
+  baseItems: LiquidationBaselineCategoryItem[] = [],
+  approvedSbrs: SupplementalBudgetRequest[] = [],
+  fallbackRolledItems: SupplementalEventExpenseItem[] = []
+): LiquidationBaselineCategoryItem[] {
+  const result: LiquidationBaselineCategoryItem[] = (baseItems || []).map((b) => ({
+    ...b,
+    isSupplemental: Boolean(b.isSupplemental),
+  }));
+
+  const usedTitles = new Set(result.map((r) => r.title.trim().toLowerCase()));
+  const seenKey = new Set<string>();
+
+  const appendItem = (item: {
+    id: string;
+    sbrId: string;
+    sbrReferenceCode: string;
+    description: string;
+    quantity?: number;
+    unit?: string;
+    unitCost?: number;
+    totalAmount: number;
+  }) => {
+    const key = `${item.sbrId}::${item.id}`;
+    if (seenKey.has(key)) return;
+    seenKey.add(key);
+
+    const amt = Math.max(0, Math.round((Number(item.totalAmount) || 0) * 100) / 100);
+    const rawDesc = String(item.description || 'Supplemental Expense').trim();
+    const title = usedTitles.has(rawDesc.toLowerCase())
+      ? `${rawDesc} (${item.sbrReferenceCode})`
+      : rawDesc;
+    usedTitles.add(title.toLowerCase());
+
+    const qty = Number(item.quantity) || 0;
+    const unitCost = Number(item.unitCost) || 0;
+    const qtyUnitLabel =
+      qty > 0 && unitCost > 0
+        ? `${qty} ${item.unit || 'pcs'} × ₱${unitCost.toLocaleString()}`
+        : undefined;
+
+    result.push({
+      id: `sbr_base_${item.sbrId}_${item.id}`,
+      title,
+      baselineAmount: amt,
+      isSupplemental: true,
+      sbrId: item.sbrId,
+      sbrReferenceCode: item.sbrReferenceCode,
+      ...(qtyUnitLabel ? { qtyUnitLabel } : {}),
+    });
+  };
+
+  const approvedOnly = (approvedSbrs || []).filter((s) => s && !s.isDeleted && s.status === 'approved');
+  if (approvedOnly.length > 0) {
+    approvedOnly.forEach((sbr) => {
+      (sbr.additionalItems || []).forEach((it) => {
+        appendItem({
+          id: it.id,
+          sbrId: sbr.id,
+          sbrReferenceCode: sbr.referenceCode,
+          description: it.description,
+          quantity: it.quantity,
+          unit: it.unit,
+          unitCost: it.unitCost,
+          totalAmount: it.totalAmount,
+        });
+      });
+    });
+  } else if (Array.isArray(fallbackRolledItems) && fallbackRolledItems.length > 0) {
+    fallbackRolledItems.forEach((it) => appendItem(it));
+  }
+
+  return result;
+}
+
+/**
+ * Option A Accounting Standard:
+ * Builds merged Financial Projections for AP PDF & DOCX export WITHOUT mutating Firestore.
+ * - Keeps original AP rows intact (`thisYearProposed` strictly reflects original AP).
+ * - Appends each approved SBR expense item as an additional row under `adjustment` (+₱X) and `totalAmount` (₱X),
+ *   with `thisYearProposed: 0` and Remarks tagging the SBR reference code.
+ * - Appends a matching supplemental funding source row under Revenues (`adjustment: +₱X`, `totalAmount: ₱X`)
+ *   so Total Revenue, Total Expenses, and Balance remain reconciled.
+ */
+export function buildMergedFinancialProjectionsForExport(
+  proposal: any,
+  approvedSbrs: SupplementalBudgetRequest[] = []
+): {
+  financialProjections: FinancialProjections;
+  supplementalTotal: number;
+  hasSupplementalRows: boolean;
+} {
+  const baseFin: FinancialProjections = proposal?.financialProjections || {
+    revenues: [],
+    expenses: [],
+    totalRevenue: 0,
+    totalExpenses: 0,
+    balance: 0,
+  };
+
+  const isZeroBudgetBase = proposal?.fundingSource === 'zero_budget';
+  const baseRevs: FinancialLineItem[] =
+    !isZeroBudgetBase && Array.isArray(baseFin.revenues) ? [...baseFin.revenues] : [];
+  const baseExps: FinancialLineItem[] = Array.isArray(baseFin.expenses) ? [...baseFin.expenses] : [];
+
+  const approvedOnly = (approvedSbrs || []).filter((s) => s && !s.isDeleted && s.status === 'approved');
+
+  const suppExps: FinancialLineItem[] = [];
+  const suppRevs: FinancialLineItem[] = [];
+  let supplementalTotal = 0;
+
+  if (approvedOnly.length > 0) {
+    approvedOnly.forEach((sbr) => {
+      const sbrAmt = Math.max(0, Math.round((Number(sbr.requestedAmount) || 0) * 100) / 100);
+      supplementalTotal = Math.round((supplementalTotal + sbrAmt) * 100) / 100;
+
+      // Funding source row(s)
+      const sourceLabel =
+        sbr.fundingSource === 'organization_funds'
+          ? `${sbr.organizationName || 'Organization'} Treasury`
+          : sbr.fundingSource === 'retained_sao_fund'
+          ? 'SAO Retained Activity Fund'
+          : (sbr.allocations || []).map((a) => a.bucketName).filter(Boolean).join(' + ') ||
+            sbr.miscFeeBucketName ||
+            'School Budget (Misc Fees)';
+
+      suppRevs.push({
+        id: `sbr_rev_${sbr.id}`,
+        description: `Supplemental Funding – ${sourceLabel}`,
+        lastYearActual: 0,
+        thisYearProposed: 0,
+        adjustment: sbrAmt,
+        totalAmount: sbrAmt,
+        remarks: `Supplemental Budget (${sbr.referenceCode})`,
+      });
+
+      // Expense line items
+      (sbr.additionalItems || []).forEach((item, idx) => {
+        const lineAmt = Math.max(
+          0,
+          Math.round(
+            (Number(item.totalAmount) ||
+              Math.max(0, Number(item.quantity) || 0) * Math.max(0, Number(item.unitCost) || 0)) *
+              100
+          ) / 100
+        );
+        const qtySpec =
+          item.quantity && item.unitCost
+            ? ` (${item.quantity} ${item.unit || 'pcs'} @ P${Number(item.unitCost).toLocaleString()})`
+            : '';
+        const remParts = [`Supplemental (${sbr.referenceCode})`, item.remarks?.trim()].filter(Boolean);
+
+        suppExps.push({
+          id: `sbr_exp_${sbr.id}_${item.id || idx}`,
+          description: `${item.description || 'Supplemental Expense'}${qtySpec}`,
+          lastYearActual: 0,
+          thisYearProposed: 0,
+          adjustment: lineAmt,
+          totalAmount: lineAmt,
+          remarks: remParts.join(' • '),
+        });
+      });
+    });
+  } else if (
+    Array.isArray(proposal?.supplementalExpenseItems) &&
+    proposal.supplementalExpenseItems.length > 0
+  ) {
+    // Offline fallback using rolled-up supplementalExpenseItems on event/proposal doc
+    const bySbr = new Map<string, { ref: string; source: string; total: number }>();
+    (proposal.supplementalExpenseItems as SupplementalEventExpenseItem[]).forEach((item, idx) => {
+      const lineAmt = Math.max(0, Math.round((Number(item.totalAmount) || 0) * 100) / 100);
+      supplementalTotal = Math.round((supplementalTotal + lineAmt) * 100) / 100;
+      const cur = bySbr.get(item.sbrId) || {
+        ref: item.sbrReferenceCode,
+        source: item.fundingSource,
+        total: 0,
+      };
+      cur.total = Math.round((cur.total + lineAmt) * 100) / 100;
+      bySbr.set(item.sbrId, cur);
+
+      const qtySpec =
+        item.quantity && item.unitCost
+          ? ` (${item.quantity} ${item.unit || 'pcs'} @ P${Number(item.unitCost).toLocaleString()})`
+          : '';
+      suppExps.push({
+        id: `sbr_exp_${item.sbrId}_${item.id || idx}`,
+        description: `${item.description || 'Supplemental Expense'}${qtySpec}`,
+        lastYearActual: 0,
+        thisYearProposed: 0,
+        adjustment: lineAmt,
+        totalAmount: lineAmt,
+        remarks: `Supplemental (${item.sbrReferenceCode})`,
+      });
+    });
+
+    bySbr.forEach((meta, sbrId) => {
+      const srcLabel =
+        meta.source === 'organization_funds'
+          ? 'Club Treasury Funds'
+          : meta.source === 'retained_sao_fund'
+          ? 'SAO Retained Activity Fund'
+          : 'School Budget (Misc Fees)';
+      suppRevs.push({
+        id: `sbr_rev_${sbrId}`,
+        description: `Supplemental Funding – ${srcLabel}`,
+        lastYearActual: 0,
+        thisYearProposed: 0,
+        adjustment: meta.total,
+        totalAmount: meta.total,
+        remarks: `Supplemental Budget (${meta.ref})`,
+      });
+    });
+  }
+
+  const mergedRevs = [...baseRevs, ...suppRevs];
+  const mergedExps = [...baseExps, ...suppExps];
+
+  const baseRevTotal =
+    !isZeroBudgetBase
+      ? Number(baseFin.totalRevenue) ||
+        baseRevs.reduce((s, r) => s + (Number(r.totalAmount) || Number(r.thisYearProposed) || 0), 0)
+      : 0;
+  const baseExpTotal =
+    Number(baseFin.totalExpenses) ||
+    baseExps.reduce((s, e) => s + (Number(e.totalAmount) || Number(e.thisYearProposed) || 0), 0);
+
+  const totalRevenue = Math.round((baseRevTotal + supplementalTotal) * 100) / 100;
+  const totalExpenses = Math.round((baseExpTotal + supplementalTotal) * 100) / 100;
+  const balance = Math.round((totalRevenue - totalExpenses) * 100) / 100;
+
+  return {
+    financialProjections: {
+      revenues: mergedRevs,
+      expenses: mergedExps,
+      totalRevenue,
+      totalExpenses,
+      balance,
+    },
+    supplementalTotal,
+    hasSupplementalRows: suppExps.length > 0,
+  };
+}
+
+

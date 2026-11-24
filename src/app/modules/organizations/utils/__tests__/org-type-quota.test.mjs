@@ -2,6 +2,8 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkStudentOrgTypeQuota,
+  checkStudentGlobalOrgQuota,
+  checkStudentMembershipLimits,
   normalizeMaxMembershipsPerStudent,
 } from '../org-type-quota.utils.ts';
 
@@ -92,5 +94,70 @@ describe('Per-Organization-Type Membership Quota Enforcement', () => {
     });
     assert.equal(joinRes.allowed, true);
     assert.equal(joinRes.currentCount, 1);
+  });
+
+  test('enforces Global Maximum Organizations per Student across different org types', () => {
+    const membershipsAcrossTypes = [
+      { organizationId: 'org_jpcs', status: 'active' },
+      { organizationId: 'org_redcross', status: 'active' },
+    ];
+
+    // Global cap of 2 blocks joining a 3rd org even though civicType is unlimited and academicType allows 2
+    const blocked = checkStudentMembershipLimits({
+      targetOrg: allOrganizations[1], // ACM (Academic, 2nd Academic org, 3rd total)
+      orgType: academicType,
+      maxTotalOrganizationsPerStudent: 2,
+      allOrganizations,
+      studentMemberships: membershipsAcrossTypes,
+    });
+    assert.equal(blocked.allowed, false);
+    assert.equal(blocked.failedRule, 'global');
+    assert.equal(blocked.globalQuota.currentCount, 2);
+    assert.match(blocked.reason || '', /global maximum of 2 active organizations/i);
+
+    // Increasing global cap to 3 allows the join (2 < 3 total and 1 < 2 Academic)
+    const allowed = checkStudentMembershipLimits({
+      targetOrg: allOrganizations[1],
+      orgType: academicType,
+      maxTotalOrganizationsPerStudent: 3,
+      allOrganizations,
+      studentMemberships: membershipsAcrossTypes,
+    });
+    assert.equal(allowed.allowed, true);
+    assert.equal(allowed.globalQuota.currentCount, 2);
+    assert.equal(allowed.typeQuota.currentCount, 1);
+  });
+
+  test('global cap unlimited (null/0) defers to per-type cap and ignores archived orgs / self-org', () => {
+    const withArchivedAndSelf = [
+      { organizationId: 'org_jpcs', status: 'active' },
+      { organizationId: 'org_archived', status: 'active' },
+    ];
+    const orgsWithArchived = [
+      ...allOrganizations,
+      { id: 'org_archived', name: 'Old Club', acronym: 'OLD', typeId: 'type_civic', status: 'archived', archived: true },
+    ];
+
+    const globalCheck = checkStudentGlobalOrgQuota({
+      targetOrg: allOrganizations[0], // already member of JPCS
+      maxTotalOrganizationsPerStudent: 1,
+      allOrganizations: orgsWithArchived,
+      studentMemberships: withArchivedAndSelf,
+    });
+    assert.equal(globalCheck.allowed, true);
+    assert.equal(globalCheck.currentCount, 0);
+
+    const combined = checkStudentMembershipLimits({
+      targetOrg: allOrganizations[2], // IEEE (3rd Academic)
+      orgType: academicType,
+      maxTotalOrganizationsPerStudent: null,
+      allOrganizations,
+      studentMemberships: [
+        { organizationId: 'org_jpcs', status: 'active' },
+        { organizationId: 'org_acm', status: 'active' },
+      ],
+    });
+    assert.equal(combined.allowed, false);
+    assert.equal(combined.failedRule, 'org_type');
   });
 });

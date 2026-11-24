@@ -51,10 +51,21 @@ function matchesRecipientToken(
  */
 export async function createNotification(input: CreateNotificationInput): Promise<string> {
   try {
+    const derivedTokens = Array.from(
+      new Set(
+        [
+          ...(input.recipientTokens || []),
+          ...(input.recipientId ? input.recipientId.split(/[|,]+/) : []),
+        ]
+          .map((t) => String(t || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    );
     const notifsRef = collection(db, NOTIFICATIONS_COLLECTION);
     const newDoc = await addDoc(notifsRef, {
       recipientRole: input.recipientRole,
       recipientId: input.recipientId || null,
+      recipientTokens: derivedTokens,
       targetOrgId: input.targetOrgId || null,
       targetOrgName: input.targetOrgName || null,
       type: input.type,
@@ -64,6 +75,7 @@ export async function createNotification(input: CreateNotificationInput): Promis
       resourceId: input.resourceId,
       resourceType: input.resourceType,
       actionRoute: input.actionRoute,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
       isRead: false,
       readAt: null,
       isUrgent: Boolean(input.isUrgent),
@@ -136,6 +148,7 @@ const rawNotificationsStream = createSingletonStream<InAppNotification[]>({
             id: docSnap.id,
             recipientRole: data.recipientRole,
             recipientId: data.recipientId,
+            recipientTokens: Array.isArray(data.recipientTokens) ? data.recipientTokens : undefined,
             targetOrgId: data.targetOrgId,
             targetOrgName: data.targetOrgName,
             type: data.type,
@@ -145,6 +158,7 @@ const rawNotificationsStream = createSingletonStream<InAppNotification[]>({
             resourceId: data.resourceId,
             resourceType: data.resourceType,
             actionRoute: data.actionRoute,
+            metadata: data.metadata,
             isRead: Boolean(data.isRead),
             readAt: data.readAt,
             isUrgent: Boolean(data.isUrgent),

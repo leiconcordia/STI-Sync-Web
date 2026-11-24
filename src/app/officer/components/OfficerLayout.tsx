@@ -8,6 +8,8 @@ import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useNotificationStream } from '../../modules/notifications';
 import { FirstTimePasswordReminderModal } from './FirstTimePasswordReminderModal';
 import { RequiredPasswordChange } from './RequiredPasswordChange';
+import { RequiredAdviserSignatureSetup } from './RequiredAdviserSignatureSetup';
+import { resolveUserSignature } from '../../modules/signatories';
 
 const pageTitles: Record<string, string> = {
   '/officer/dashboard': 'Dashboard',
@@ -28,10 +30,70 @@ const pageTitles: Record<string, string> = {
 export function OfficerLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { profile, activeOrgStatus, activeOrgName, loading, logout } = useOfficerProfile();
+  const {
+    profile,
+    activeOrgStatus,
+    activeOrgName,
+    loading,
+    markSignatureRegistered,
+    logout,
+  } = useOfficerProfile();
   const title = pageTitles[location.pathname] || 'Officer Portal';
 
   const [showReminderModal, setShowReminderModal] = useState(false);
+  const [sigCheckedKey, setSigCheckedKey] = useState<string | null>(null);
+  const [resolvedAdviserSigUrl, setResolvedAdviserSigUrl] = useState<string>('');
+
+  const adviserSigKey = profile?.isAdviser
+    ? `${profile.authUid || profile.uid || ''}|${(profile.email || '').toLowerCase()}`
+    : '';
+
+  // Verify whether a logged-in Primary Adviser or Co-Adviser already has a registered e-signature
+  useEffect(() => {
+    if (!profile?.isAdviser || profile.requiresPasswordChange) {
+      return;
+    }
+    if (profile.signatureUrl) {
+      setResolvedAdviserSigUrl(profile.signatureUrl);
+      setSigCheckedKey(adviserSigKey);
+      return;
+    }
+    let cancelled = false;
+    resolveUserSignature({
+      uid: profile.authUid || profile.uid,
+      email: profile.email,
+      name: profile.studentName,
+      role: 'adviser',
+      profile,
+    })
+      .then((sig) => {
+        if (cancelled) return;
+        if (sig) {
+          setResolvedAdviserSigUrl(sig);
+          markSignatureRegistered(sig);
+        } else {
+          setResolvedAdviserSigUrl('');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setResolvedAdviserSigUrl('');
+      })
+      .finally(() => {
+        if (!cancelled) setSigCheckedKey(adviserSigKey);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    adviserSigKey,
+    profile?.isAdviser,
+    profile?.requiresPasswordChange,
+    profile?.signatureUrl,
+    profile?.authUid,
+    profile?.uid,
+    profile?.email,
+    profile?.studentName,
+  ]);
 
   const notificationUserId = useMemo(
     () =>
@@ -105,6 +167,33 @@ export function OfficerLayout() {
 
   if (profile.requiresPasswordChange) {
     return <RequiredPasswordChange profile={profile} orgName={activeOrgName} />;
+  }
+
+  // Mandatory electronic signature registration for newly assigned Primary Advisers & Co-Advisers
+  if (profile.isAdviser) {
+    const hasRegisteredAdviserSignature = Boolean(
+      profile.signatureUrl || resolvedAdviserSigUrl
+    );
+    if (!hasRegisteredAdviserSignature && sigCheckedKey !== adviserSigKey) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-[#F8F8F8]">
+          <div className="w-8 h-8 border-4 border-[#0E4EBD] border-t-transparent rounded-full animate-spin" />
+        </div>
+      );
+    }
+    if (!hasRegisteredAdviserSignature) {
+      return (
+        <RequiredAdviserSignatureSetup
+          profile={profile}
+          orgName={activeOrgName}
+          onComplete={(sigUrl) => {
+            setResolvedAdviserSigUrl(sigUrl);
+            setSigCheckedKey(adviserSigKey);
+            markSignatureRegistered(sigUrl);
+          }}
+        />
+      );
+    }
   }
 
   // Intercept layout if organization status is suspended, inactive, or archived

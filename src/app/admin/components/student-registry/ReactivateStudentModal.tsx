@@ -1,8 +1,20 @@
 import { formatPersonName } from '../../../utils/name.utils';
-import { useState } from 'react';
-import { X, RotateCcw, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
-import type { StudentDocument } from '../../../modules/students/types/student.types';
-import { updateStudentStatus } from '../../../modules/students/services/student.service';
+import { useState, useMemo, useEffect } from 'react';
+import { X, RotateCcw, CheckCircle2, Loader2 } from 'lucide-react';
+import type {
+  AcademicLevel,
+  StudentDocument,
+  StudentSemester,
+  StudentYearLevel,
+} from '../../../modules/students/types/student.types';
+import { reactivateStudentForTerm } from '../../../modules/students/services/student-lifecycle.service';
+import {
+  useActiveAcademicPeriods,
+  useCourses,
+  useDepartments,
+  useSections,
+} from '../../../modules/academic/hooks/useAcademicStream';
+import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile';
 import { toast } from 'sonner';
 
 interface ReactivateStudentModalProps {
@@ -12,21 +24,117 @@ interface ReactivateStudentModalProps {
   onSuccess: () => void;
 }
 
+const COLLEGE_YEARS: StudentYearLevel[] = ['1st Year', '2nd Year', '3rd Year', '4th Year'];
+const SHS_YEARS: StudentYearLevel[] = ['Grade 11', 'Grade 12'];
+
 export default function ReactivateStudentModal({
   student,
   isOpen,
   onClose,
   onSuccess,
 }: ReactivateStudentModalProps) {
+  const { user, profile } = useAdviserProfile();
+  const adminUid = user?.uid || profile?.uid || 'admin';
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
+  const { data: courses = [] } = useCourses();
+  const { data: departments = [] } = useDepartments();
+  const { data: sections = [] } = useSections();
+
+  const [academicLevel, setAcademicLevel] = useState<AcademicLevel>('COLLEGE');
+  const [courseId, setCourseId] = useState('');
+  const [yearLevel, setYearLevel] = useState<StudentYearLevel>('1st Year');
+  const [section, setSection] = useState('UNASSIGNED');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (!student || !isOpen) return;
+    const isShs =
+      student.academicLevel === 'SHS' ||
+      student.yearLevel === 'Grade 11' ||
+      student.yearLevel === 'Grade 12';
+    setAcademicLevel(isShs ? 'SHS' : 'COLLEGE');
+    setCourseId(student.courseId || '');
+    setYearLevel(student.yearLevel || (isShs ? 'Grade 11' : '1st Year'));
+    setSection(student.section || 'UNASSIGNED');
+  }, [student, isOpen]);
+
+  const activeCourses = useMemo(
+    () => courses.filter((c) => !c.archived && (c.academicLevel || 'COLLEGE') === academicLevel),
+    [courses, academicLevel]
+  );
+
+  useEffect(() => {
+    if (!student || activeCourses.length === 0) return;
+    if (!activeCourses.some((c) => c.id === courseId)) {
+      const byCode = activeCourses.find(
+        (c) => String(c.code || '').toLowerCase() === String(student.courseCode || '').toLowerCase()
+      );
+      setCourseId(byCode?.id || activeCourses[0].id);
+    }
+  }, [activeCourses, courseId, student]);
+
+  useEffect(() => {
+    if (academicLevel === 'SHS' && !SHS_YEARS.includes(yearLevel)) {
+      setYearLevel('Grade 11');
+    } else if (academicLevel === 'COLLEGE' && !COLLEGE_YEARS.includes(yearLevel)) {
+      setYearLevel('1st Year');
+    }
+  }, [academicLevel, yearLevel]);
+
+  const selectedCourse = useMemo(
+    () => activeCourses.find((c) => c.id === courseId) || null,
+    [activeCourses, courseId]
+  );
+
+  const selectedDept = useMemo(
+    () => departments.find((d) => d.id === selectedCourse?.departmentId) || null,
+    [departments, selectedCourse]
+  );
+
+  const availableSections = useMemo(() => {
+    if (!selectedCourse) return [];
+    return sections.filter((s) => !s.archived && s.courseId === selectedCourse.id);
+  }, [sections, selectedCourse]);
+
   if (!isOpen || !student) return null;
+
+  const activePeriod = academicLevel === 'SHS' ? activeShsPeriod : activeCollegePeriod;
+  const targetSchoolYear = activePeriod?.academicYear || student.schoolYear || '2026-2027';
+  const targetSemester = (activePeriod?.semester || student.semester || '1st Semester') as StudentSemester;
 
   const handleConfirm = async () => {
     setIsSubmitting(true);
     try {
-      await updateStudentStatus(student.id, 'ACTIVE');
-      toast.success(`Reactivated ${student.firstName} ${student.lastName} back to Active status.`);
+      const res = await reactivateStudentForTerm(student.id, {
+        schoolYear: targetSchoolYear,
+        semester: targetSemester,
+        academicLevel,
+        yearLevel,
+        section: section.trim() || 'UNASSIGNED',
+        courseId: selectedCourse?.id || student.courseId,
+        courseCode: selectedCourse?.code || student.courseCode,
+        courseName: selectedCourse?.name || student.courseName,
+        departmentId: selectedCourse?.departmentId || student.departmentId,
+        departmentName: selectedDept?.name || student.departmentName,
+        adminUid,
+      });
+
+      const notes: string[] = [];
+      if (res.restoredMembershipCount > 0) {
+        notes.push(`${res.restoredMembershipCount} eligible club membership(s) restored`);
+      }
+      if (res.flaggedIneligibleCount > 0) {
+        notes.push(`${res.flaggedIneligibleCount} ineligible club(s) flagged for officer removal`);
+      }
+      if (res.revokedOfficerCount > 0) {
+        notes.push(`${res.revokedOfficerCount} ineligible officer role(s) revoked`);
+      }
+
+      toast.success(
+        `Reactivated ${formatPersonName(student)} for A.Y. ${targetSchoolYear} (${targetSemester}).${
+          notes.length ? ` ${notes.join('; ')}.` : ''
+        }`
+      );
       onSuccess();
       onClose();
     } catch (err: any) {
@@ -39,7 +147,7 @@ export default function ReactivateStudentModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-green-200">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-green-200">
         {/* Header */}
         <div className="bg-gradient-to-r from-green-600 to-green-700 px-6 py-5 text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -47,8 +155,10 @@ export default function ReactivateStudentModal({
               <RotateCcw className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h3 className="font-bold text-lg">Reactivate Student Account</h3>
-              <p className="text-xs text-white/80">Restore active standing & portal access</p>
+              <h3 className="font-bold text-lg">Re-Enroll &amp; Reactivate Student</h3>
+              <p className="text-xs text-white/80">
+                Restore active standing for A.Y. {targetSchoolYear} ({targetSemester})
+              </p>
             </div>
           </div>
           <button
@@ -75,17 +185,75 @@ export default function ReactivateStudentModal({
                 {formatPersonName(student)}
               </p>
               <p className="text-xs text-gray-500 font-mono">
-                {student.studentId} · {student.courseCode} ({student.yearLevel})
+                {student.studentId} · Last Term: {student.schoolYear || '—'} {student.semester || ''}
               </p>
+            </div>
+          </div>
+
+          {/* Confirm / Update Current Standing on Re-Enrollment */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
+                Program / Course
+              </label>
+              <select
+                value={courseId}
+                onChange={(e) => setCourseId(e.target.value)}
+                disabled={isSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white"
+              >
+                {activeCourses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
+                Year Level
+              </label>
+              <select
+                value={yearLevel}
+                onChange={(e) => setYearLevel(e.target.value as StudentYearLevel)}
+                disabled={isSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white"
+              >
+                {(academicLevel === 'SHS' ? SHS_YEARS : COLLEGE_YEARS).map((yl) => (
+                  <option key={yl} value={yl}>
+                    {yl}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="block text-[11px] font-bold text-gray-600 uppercase mb-1">
+                Section
+              </label>
+              <select
+                value={section}
+                onChange={(e) => setSection(e.target.value)}
+                disabled={isSubmitting}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white"
+              >
+                <option value="UNASSIGNED">UNASSIGNED</option>
+                {availableSections.map((s) => (
+                  <option key={s.id} value={s.name}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
 
           <div className="bg-green-50 border border-green-200 rounded-xl p-3.5 flex items-start gap-3">
             <CheckCircle2 className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
             <div className="text-xs text-green-900 leading-relaxed space-y-1">
-              <span className="font-bold block">Reactivation Notice</span>
+              <span className="font-bold block">Re-Enrollment &amp; Reactivation Notice</span>
               <p>
-                Reactivating this student will set their status back to <strong>ACTIVE</strong>, restoring their student app access, event participation privileges, and club eligibility.
+                Sets status to <strong>ACTIVE</strong> for <strong>A.Y. {targetSchoolYear} ({targetSemester})</strong>, restores mobile app access, and automatically restores department-eligible club memberships. If the student shifted programs, ineligible clubs will be flagged for officer removal.
               </p>
             </div>
           </div>
@@ -115,7 +283,7 @@ export default function ReactivateStudentModal({
             ) : (
               <>
                 <RotateCcw className="w-3.5 h-3.5" />
-                Confirm Reactivate
+                Confirm Re-Enroll &amp; Reactivate
               </>
             )}
           </button>

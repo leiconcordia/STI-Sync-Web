@@ -9,6 +9,17 @@ export type OrganizationMemberStatus =
   | 'pending_removal'
   | 'removed';
 
+export interface CourseShiftIneligibilityFlag {
+  flagged: boolean;
+  reason: string;
+  fromCourseCode?: string;
+  toCourseCode?: string;
+  toDepartmentName?: string;
+  flaggedAt: string;
+  flaggedBy?: string;
+  source?: 'MANUAL_PENDING' | 'REGISTRAR_IMPORT' | 'RE_ENROLLMENT';
+}
+
 export interface OrganizationMemberDocument {
   id: string;
   organizationId: string;
@@ -36,6 +47,9 @@ export interface OrganizationMemberDocument {
   removalRequestedBy?: string;
   scheduledRemovalActivityIds?: string[];
   scheduledRemovalActivityTitles?: string[];
+  courseShiftIneligibility?: CourseShiftIneligibilityFlag | null;
+  deactivatedByEnrollment?: boolean;
+  deactivationReason?: string;
   createdAt: any;
   updatedAt: any;
   addedBy: string;

@@ -38,6 +38,37 @@ service cloud.firestore {
           'updatedAt', 'authUid', 'email'
         ]);
     }
+    function isOrgAdviser(orgId) {
+      let org = get(/databases/$(database)/documents/organizations/$(orgId)).data;
+      return isAuthenticated() && orgId is string && orgId.size() > 0 && (
+        ownsEdmsOrg(orgId) ||
+        (org != null && org.get('adviser', null) != null && (
+          org.adviser.get('authUid', '') == request.auth.uid ||
+          org.adviser.get('email', '') == request.auth.token.email
+        )) ||
+        (org != null && org.get('coAdviser', null) != null && (
+          org.coAdviser.get('authUid', '') == request.auth.uid ||
+          org.coAdviser.get('email', '') == request.auth.token.email
+        ))
+      );
+    }
+    function ownOfficerAppointmentResponse() {
+      return isAuthenticated() &&
+        (resource.data.get('email', '') == request.auth.token.email || resource.data.get('authUid', '') == request.auth.uid) &&
+        resource.data.get('appointmentStatus', '') == 'pending_acceptance' &&
+        request.resource.data.get('authUid', request.auth.uid) == request.auth.uid &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'appointmentStatus', 'acceptedAt', 'declinedAt', 'declineReason',
+          'isActive', 'hasWebPortalAccess', 'authUid', 'updatedAt'
+        ]) && (
+          (request.resource.data.appointmentStatus == 'accepted' &&
+            request.resource.data.get('isActive', true) == resource.data.get('isActive', true) &&
+            request.resource.data.get('hasWebPortalAccess', false) == resource.data.get('hasWebPortalAccess', false)) ||
+          (request.resource.data.appointmentStatus == 'declined' &&
+            request.resource.data.isActive == false &&
+            request.resource.data.hasWebPortalAccess == false)
+        );
+    }
     function sourceApproved(value) {
       return value.get('status', '') == 'approved' || value.get('proposalStatus', '') == 'approved' || value.get('isApproved', false) == true;
     }
@@ -91,8 +122,9 @@ service cloud.firestore {
     // 1. Organization Officers: allow public read so officers can log in with temporary passwords / studentId
     match /organization_officers/{docId} {
       allow read: if true;
-      allow create, delete: if isSasAdmin();
-      allow update: if isSasAdmin() || ownMembershipProfileUpdate();
+      allow create: if isSasAdmin() || isOrgAdviser(request.resource.data.organizationId);
+      allow delete: if isSasAdmin();
+      allow update: if isSasAdmin() || isOrgAdviser(resource.data.organizationId) || ownMembershipProfileUpdate() || ownOfficerAppointmentResponse();
     }
 
     match /organization_members/{docId} {

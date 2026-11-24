@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Archive, RotateCcw, Trash2, Edit2, X, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Plus, Archive, RotateCcw, Trash2, Edit2, X, AlertTriangle, CheckCircle2, ArrowRight, Lock, BookOpen, Layers, Users } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   useDepartments,
@@ -14,11 +14,14 @@ import {
   createSection,
   updateSection,
   deleteSection,
+  evaluateDepartmentArchivalEligibility,
   type DepartmentDocument,
   type CourseDocument,
   type SectionDocument,
-  type AcademicLevel
+  type AcademicLevel,
+  type DepartmentArchivalValidationResult,
 } from '../../../modules/academic';
+import { useStudents } from '../../../modules/students/hooks/useStudentStream';
 
 interface CourseDepartmentProps {
   onUnsavedChange: () => void;
@@ -129,6 +132,23 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
   const { data: departments, loading: loadingDepts } = useDepartments();
   const { data: courses, loading: loadingCourses } = useCourses();
   const { data: sections, loading: loadingSections } = useSections();
+  const { data: students = [] } = useStudents();
+
+  const deptArchivalMap = useMemo(() => {
+    const map = new Map<string, DepartmentArchivalValidationResult>();
+    for (const dept of departments) {
+      map.set(
+        dept.id,
+        evaluateDepartmentArchivalEligibility({
+          department: dept,
+          courses,
+          sections,
+          students,
+        })
+      );
+    }
+    return map;
+  }, [departments, courses, sections, students]);
 
   const [deptArchivedView, setDeptArchivedView] = useState(false);
   const [courseArchivedView, setCourseArchivedView] = useState(false);
@@ -435,14 +455,18 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Department Name</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Code</th>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Track</th>
-                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Associated Programs</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-gray-600">Active Contents</th>
                 <th className="px-4 py-3 text-right text-xs font-bold text-gray-600">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {(deptArchivedView ? archivedDepts : activeDepts).map(dept => {
                 const isShs = dept.academicLevel === 'SHS';
-                const associatedCount = courses.filter(c => c.departmentId === dept.id && !c.archived).length;
+                const validation = deptArchivalMap.get(dept.id);
+                const progCount = validation?.counts.programs ?? courses.filter(c => c.departmentId === dept.id && !c.archived).length;
+                const secCount = validation?.counts.sections ?? 0;
+                const stuCount = validation?.counts.students ?? 0;
+                const hasBlockers = validation ? !validation.canArchive : progCount > 0;
                 return (
                   <tr key={dept.id} className="hover:bg-gray-50 transition-colors"
                     onMouseEnter={() => setHoveredRow(dept.id)} onMouseLeave={() => setHoveredRow(null)}>
@@ -455,8 +479,18 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                         {isShs ? 'SHS' : 'College'}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-600">
-                      {associatedCount} active program{associatedCount !== 1 ? 's' : ''}
+                    <td className="px-4 py-3 text-xs text-gray-600">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded-full font-semibold ${progCount > 0 ? 'bg-blue-50 text-blue-800 border border-blue-100' : 'bg-gray-100 text-gray-500'}`}>
+                          {progCount} program{progCount !== 1 ? 's' : ''}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full font-semibold ${secCount > 0 ? 'bg-indigo-50 text-indigo-800 border border-indigo-100' : 'bg-gray-100 text-gray-500'}`}>
+                          {secCount} section{secCount !== 1 ? 's' : ''}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full font-semibold ${stuCount > 0 ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : 'bg-gray-100 text-gray-500'}`}>
+                          {stuCount} student{stuCount !== 1 ? 's' : ''}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className={`flex justify-end gap-1 transition-opacity ${hoveredRow === dept.id ? 'opacity-100' : 'opacity-0'}`}>
@@ -472,7 +506,19 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
                             }} className="p-1.5 rounded hover:bg-blue-50 text-[#1E70E8] cursor-pointer" title="Edit Department">
                               <Edit2 className="w-4 h-4" />
                             </button>
-                            <button onClick={() => setModal({ type: 'archive-dept', item: dept })} className="p-1.5 rounded hover:bg-amber-50 text-amber-500 cursor-pointer" title="Archive Department">
+                            <button
+                              onClick={() => setModal({ type: 'archive-dept', item: dept })}
+                              className={`p-1.5 rounded cursor-pointer ${
+                                hasBlockers
+                                  ? 'text-gray-400 hover:bg-rose-50 hover:text-rose-600'
+                                  : 'hover:bg-amber-50 text-amber-500'
+                              }`}
+                              title={
+                                hasBlockers && validation
+                                  ? validation.summaryMessage
+                                  : 'Archive Department'
+                              }
+                            >
                               <Archive className="w-4 h-4" />
                             </button>
                           </>
@@ -732,7 +778,143 @@ export default function CourseDepartment({ onUnsavedChange }: CourseDepartmentPr
           )}
 
           {/* DEPARTMENT CONFIRMS */}
-          {modal.type === 'archive-dept' && <ConfirmModal type="archive" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateDepartment(modal.item.id, { archived: true }))} onClose={close} />}
+          {modal.type === 'archive-dept' && (() => {
+            const deptValidation = deptArchivalMap.get(modal.item.id) || evaluateDepartmentArchivalEligibility({
+              department: modal.item,
+              courses,
+              sections,
+              students,
+            });
+            return (
+              <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+                <div className={`px-6 py-4 flex items-center justify-between ${deptValidation.canArchive ? 'bg-gradient-to-r from-amber-500 to-amber-600' : 'bg-gradient-to-r from-rose-600 to-red-600'}`}>
+                  <h3 className="text-white font-bold text-lg">
+                    {deptValidation.canArchive ? 'Archive Department' : 'Cannot Archive Department'}
+                  </h3>
+                  <button onClick={close} disabled={isSaving} className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 disabled:opacity-50 cursor-pointer">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="p-6 space-y-4">
+                  {!deptValidation.canArchive ? (
+                    <>
+                      <div className="flex items-start gap-3 p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900">
+                        <Lock className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="font-bold text-sm text-rose-800">
+                            {modal.item.name} ({modal.item.code}) cannot be archived yet
+                          </div>
+                          <p className="mt-1 text-rose-700">
+                            Remove, reassign, or archive all active dependencies below first before archiving this department.
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2.5 text-xs">
+                        {deptValidation.counts.programs > 0 && (
+                          <div className="p-3 rounded-xl border border-rose-100 bg-gray-50 flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <BookOpen className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-900">
+                                  {deptValidation.counts.programs} Active Program{deptValidation.counts.programs === 1 ? '' : 's'}
+                                </div>
+                                <div className="text-gray-600 truncate">
+                                  {deptValidation.activePrograms.slice(0, 4).map((p) => p.label).join(', ')}
+                                  {deptValidation.counts.programs > 4 ? ` +${deptValidation.counts.programs - 4} more` : ''}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSubTab('courses');
+                                close();
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 hover:bg-blue-50 text-[#0E4EBD] font-bold text-[11px] shrink-0 cursor-pointer"
+                            >
+                              View
+                            </button>
+                          </div>
+                        )}
+
+                        {deptValidation.counts.sections > 0 && (
+                          <div className="p-3 rounded-xl border border-rose-100 bg-gray-50 flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2 min-w-0">
+                              <Layers className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-900">
+                                  {deptValidation.counts.sections} Active Section{deptValidation.counts.sections === 1 ? '' : 's'}
+                                </div>
+                                <div className="text-gray-600 truncate">
+                                  {deptValidation.activeSections.slice(0, 4).map((s) => s.label).join(', ')}
+                                  {deptValidation.counts.sections > 4 ? ` +${deptValidation.counts.sections - 4} more` : ''}
+                                </div>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSubTab('sections');
+                                close();
+                              }}
+                              className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 hover:bg-indigo-50 text-indigo-700 font-bold text-[11px] shrink-0 cursor-pointer"
+                            >
+                              View
+                            </button>
+                          </div>
+                        )}
+
+                        {deptValidation.counts.students > 0 && (
+                          <div className="p-3 rounded-xl border border-rose-100 bg-gray-50 flex items-start gap-2">
+                            <Users className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                            <div className="min-w-0">
+                              <div className="font-bold text-gray-900">
+                                {deptValidation.counts.students} Active Student{deptValidation.counts.students === 1 ? '' : 's'}
+                              </div>
+                              <div className="text-gray-600 truncate">
+                                {deptValidation.activeStudents.slice(0, 3).map((s) => s.label).join(', ')}
+                                {deptValidation.counts.students > 3 ? ` +${deptValidation.counts.students - 3} more` : ''}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-2.5 p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>Verified: 0 active programs, 0 active sections, and 0 active students.</span>
+                      </div>
+                      <p className="text-sm text-gray-700">
+                        Archive <span className="font-bold">{modal.item.name}</span>? It can be restored later.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3 pt-1">
+                    <button
+                      type="button"
+                      onClick={close}
+                      disabled={isSaving}
+                      className="flex-1 py-2.5 border border-gray-300 text-gray-700 rounded-xl text-sm font-semibold hover:bg-gray-50 disabled:opacity-50 cursor-pointer"
+                    >
+                      {deptValidation.canArchive ? 'Cancel' : 'Close'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAction(() => updateDepartment(modal.item.id, { archived: true }))}
+                      disabled={isSaving || !deptValidation.canArchive}
+                      className="flex-1 py-2.5 text-white rounded-xl text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed bg-amber-500 hover:bg-amber-600 cursor-pointer"
+                    >
+                      {isSaving ? 'Processing...' : 'Archive'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           {modal.type === 'restore-dept' && <ConfirmModal type="restore" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => updateDepartment(modal.item.id, { archived: false }))} onClose={close} />}
           {modal.type === 'delete-dept' && <ConfirmModal type="delete" name={modal.item.name} isSaving={isSaving} onConfirm={() => handleAction(() => deleteDepartment(modal.item.id))} onClose={close} deleteText={deleteText} onDeleteTextChange={setDeleteText} />}
 

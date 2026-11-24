@@ -1153,16 +1153,28 @@ export default function OfficerEventDetailView({
                     </div>
 
                     {/* 3. Disbursement Voucher */}
-                    {isApproved && (
+                    {isApproved && (() => {
+                      const pendingSuppVoucherCount = eventSbrs.filter(
+                        (s) =>
+                          s.status === 'approved' &&
+                          (s.fundingSource === 'school_budget' || s.fundingSource === 'retained_sao_fund') &&
+                          !s.disbursementVoucher
+                      ).length;
+                      const hasAnyApprovedSbr = eventSbrs.some((s) => s.status === 'approved');
+                      const disablePrimaryVoucher =
+                        !hasAnyApprovedSbr &&
+                        (isSasCreated || isOrgDirectFundExempt) &&
+                        !hasDisbursementVoucher;
+                      return (
                       <button
                         type="button"
-                        disabled={(isSasCreated || isOrgDirectFundExempt) && !hasDisbursementVoucher}
+                        disabled={disablePrimaryVoucher}
                         onClick={() => {
-                          if (isSasCreated && !hasDisbursementVoucher) {
+                          if (disablePrimaryVoucher && isSasCreated && !hasDisbursementVoucher) {
                             toast.info('Institutional Activity: Official disbursement voucher is managed directly by Student Affairs & Services (SAS).');
                             return;
                           }
-                          if (isOrgDirectFundExempt && !hasDisbursementVoucher) {
+                          if (disablePrimaryVoucher && isOrgDirectFundExempt && !hasDisbursementVoucher) {
                             toast.info(
                               isStudentContributionEvent
                                 ? 'Student Contribution Activity: No school disbursement voucher is required. Record collections in Finance Center.'
@@ -1176,26 +1188,30 @@ export default function OfficerEventDetailView({
                           setIsDisbursementVoucherModalOpen(true);
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                          (isSasCreated || isOrgDirectFundExempt) && !hasDisbursementVoucher
+                          disablePrimaryVoucher
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                             : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                            hasDisbursementVoucher
+                            pendingSuppVoucherCount > 0
+                              ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                              : hasDisbursementVoucher
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
-                              : isSasCreated || isOrgDirectFundExempt
+                              : disablePrimaryVoucher
                               ? 'bg-gray-100 text-gray-600 border border-gray-200'
                               : isVoucherRequired
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
                               : 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
                           }`}>
-                            {hasDisbursementVoucher ? (
+                            {pendingSuppVoucherCount > 0 ? (
+                              <FileCheck className="w-4 h-4" />
+                            ) : hasDisbursementVoucher ? (
                               <CheckCircle2 className="w-4 h-4" />
-                            ) : isSasCreated ? (
+                            ) : isSasCreated && !hasAnyApprovedSbr ? (
                               <Lock className="w-4 h-4" />
-                            ) : isOrgDirectFundExempt ? (
+                            ) : isOrgDirectFundExempt && !hasAnyApprovedSbr ? (
                               <FileText className="w-4 h-4" />
                             ) : isVoucherRequired ? (
                               <FileCheck className="w-4 h-4" />
@@ -1210,7 +1226,9 @@ export default function OfficerEventDetailView({
                                 : (isSasCreated ? 'Voucher (SAS Managed)' : isOrgLedger ? 'Organization Treasury Slip' : 'Disbursement Voucher')}
                             </div>
                             <div className="text-[11px] text-gray-500 truncate">
-                              {hasDisbursementVoucher
+                              {pendingSuppVoucherCount > 0
+                                ? `${pendingSuppVoucherCount} Supplemental Voucher(s) awaiting upload`
+                                : hasDisbursementVoucher
                                 ? 'Official voucher/slip attached'
                                 : isSasCreated
                                 ? 'Managed by SAS Administration'
@@ -1227,7 +1245,11 @@ export default function OfficerEventDetailView({
                           </div>
                         </div>
                         <div className="shrink-0">
-                          {hasDisbursementVoucher ? (
+                          {pendingSuppVoucherCount > 0 ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                              Supp. Needed
+                            </span>
+                          ) : hasDisbursementVoucher ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
                               Attached
                             </span>
@@ -1250,7 +1272,8 @@ export default function OfficerEventDetailView({
                           )}
                         </div>
                       </button>
-                    )}
+                      );
+                    })()}
 
                     {/* 3b. View Paid Students & Contribution Progress */}
                     {isApproved && hasPayablesCollection && (

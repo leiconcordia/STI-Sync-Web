@@ -23,6 +23,8 @@ export function RequiredPasswordChange({
   const [cleanupPassword, setCleanupPassword] = useState('');
 
   const isAdviser = Boolean(profile.isAdviser);
+  const isCoAdviser = Boolean(profile.isCoAdviser || profile.adviserRole === 'co_adviser');
+  const adviserRoleLabel = isCoAdviser ? 'Club Co-Adviser' : 'Club Adviser';
 
   async function retryCleanup() {
     setBusy(true);
@@ -122,7 +124,7 @@ export function RequiredPasswordChange({
               </div>
               <h1 className="text-xl font-extrabold text-[#001A4D]">Change your password</h1>
               <p className="text-xs text-gray-500 mt-0.5">
-                {isAdviser ? 'Club Adviser Account' : 'Student Officer Account'} · {profile.email}
+                {isAdviser ? `${adviserRoleLabel} Account` : 'Student Officer Account'} · {profile.email}
               </p>
             </div>
           </div>
@@ -130,7 +132,7 @@ export function RequiredPasswordChange({
           <div className="text-xs text-blue-950 bg-blue-50/80 border border-blue-200 rounded-xl p-3.5 leading-relaxed space-y-1.5">
             <p className="font-bold text-[#001A4D]">
               {isAdviser
-                ? `You have been assigned as Club Adviser${orgName && orgName !== 'Organization' ? ` for ${orgName}` : ''}.`
+                ? `You have been assigned as ${adviserRoleLabel}${orgName && orgName !== 'Organization' ? ` for ${orgName}` : ''}.`
                 : `You have been granted Organization Web Portal access${orgName && orgName !== 'Organization' ? ` for ${orgName}` : ''}.`}
             </p>
             <p className="text-gray-600">

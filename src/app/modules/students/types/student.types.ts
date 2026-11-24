@@ -65,6 +65,13 @@ export interface StudentDocument {
     updatedAt: string;
   }>;
 
+  courseShiftHistory?: CourseShiftRecord[];
+
+  // ── Enrollment Deactivation / Reactivation Metadata ───────────────────────
+  deactivatedAt?: string | Timestamp;
+  deactivationReason?: string;
+  reactivatedAt?: string | Timestamp;
+
   // ── Archival ──────────────────────────────────────────────────────────────
   archiveReason?: string;     // e.g. "Graduated", "Transferred", "Dropped", "Manual"
   archivedAt?:    Timestamp;
@@ -73,6 +80,27 @@ export interface StudentDocument {
   // ── Timestamps ────────────────────────────────────────────────────────────
   createdAt:    Timestamp;
   updatedAt:    Timestamp;
+}
+
+export interface CourseShiftRecord {
+  fromCourseId?: string;
+  fromCourseCode: string;
+  fromCourseName?: string;
+  fromDepartmentId?: string;
+  fromDepartmentName?: string;
+  toCourseId?: string;
+  toCourseCode: string;
+  toCourseName?: string;
+  toDepartmentId?: string;
+  toDepartmentName?: string;
+  schoolYear?: string;
+  semester?: string;
+  shiftedAt: string;
+  shiftedBy: string;
+  source: 'MANUAL' | 'REGISTRAR_IMPORT' | 'RE_ENROLLMENT';
+  reason?: string;
+  revokedOfficerOrgIds?: string[];
+  flaggedOrgIds?: string[];
 }
 
 export interface StudentArchivalValidation {

@@ -1921,20 +1921,29 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                     </div>
 
                     {/* 3. Disbursement Voucher */}
-                    {isApproved && (
+                    {isApproved && (() => {
+                      const pendingSuppVoucherCount = eventSbrs.filter(
+                        (s) =>
+                          s.status === 'approved' &&
+                          (s.fundingSource === 'school_budget' || s.fundingSource === 'retained_sao_fund') &&
+                          !s.disbursementVoucher
+                      ).length;
+                      const hasAnyApprovedSbr = eventSbrs.some((s) => s.status === 'approved');
+                      const disablePrimaryVoucher =
+                        !hasAnyApprovedSbr &&
+                        (isZeroBudget ||
+                          (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) ||
+                          isVoucherLockedByCollectionGap);
+                      return (
                       <button
                         type="button"
-                        disabled={
-                          isZeroBudget ||
-                          (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) ||
-                          isVoucherLockedByCollectionGap
-                        }
+                        disabled={disablePrimaryVoucher}
                         onClick={() => {
-                          if (isZeroBudget) {
+                          if (disablePrimaryVoucher && isZeroBudget) {
                             toast.info('Non-Monetary Activity (₱0): No disbursement voucher is required.');
                             return;
                           }
-                          if (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) {
+                          if (disablePrimaryVoucher && isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) {
                             toast.info(
                               isStudentContributionEvent
                                 ? 'Club Student Contribution: Funds are collected via Finance Center without a school disbursement voucher.'
@@ -1942,7 +1951,7 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                             );
                             return;
                           }
-                          if (isVoucherLockedByCollectionGap) {
+                          if (disablePrimaryVoucher && isVoucherLockedByCollectionGap) {
                             toast.error(
                               `Disbursement Voucher Locked: Collected funds (${formatPHP(contribCashOverview.cashOnHand)}) must equal or exceed the proposed budget (${formatPHP(contribProposedBudget)}).`
                             );
@@ -1952,20 +1961,20 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           setIsDisbursementVoucherModalOpen(true);
                         }}
                         className={`w-full text-left p-2.5 rounded-xl flex items-center justify-between gap-3 transition-colors ${
-                          isZeroBudget ||
-                          (isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) && !hasDisbursementVoucher) ||
-                          isVoucherLockedByCollectionGap
+                          disablePrimaryVoucher
                             ? 'opacity-60 cursor-not-allowed hover:bg-gray-50'
                             : 'hover:bg-blue-50/60 cursor-pointer active:scale-[0.99]'
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                            isZeroBudget
+                            pendingSuppVoucherCount > 0
+                              ? 'bg-amber-50 text-amber-600 border border-amber-200'
+                              : isZeroBudget && !hasAnyApprovedSbr
                               ? 'bg-slate-100 text-slate-500 border border-slate-200'
                               : hasDisbursementVoucher
                               ? 'bg-emerald-50 text-emerald-600 border border-emerald-200'
-                              : isVoucherLockedByCollectionGap
+                              : isVoucherLockedByCollectionGap && !hasAnyApprovedSbr
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
                               : isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent)
                               ? 'bg-blue-50 text-[#0E4EBD] border border-blue-200'
@@ -1973,11 +1982,13 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                               ? 'bg-amber-50 text-amber-600 border border-amber-200'
                               : 'bg-gray-100 text-gray-600 border border-gray-200'
                           }`}>
-                            {isZeroBudget ? (
+                            {pendingSuppVoucherCount > 0 ? (
+                              <FileCheck className="w-4 h-4" />
+                            ) : isZeroBudget && !hasAnyApprovedSbr ? (
                               <FileText className="w-4 h-4" />
                             ) : hasDisbursementVoucher ? (
                               <CheckCircle2 className="w-4 h-4" />
-                            ) : isVoucherLockedByCollectionGap ? (
+                            ) : isVoucherLockedByCollectionGap && !hasAnyApprovedSbr ? (
                               <Lock className="w-4 h-4" />
                             ) : isOrgManagedEvent && (isOrgLedger || isStudentContributionEvent) ? (
                               <FileText className="w-4 h-4" />
@@ -1994,7 +2005,9 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                                 : (isOrgLedger ? 'Organization Treasury Slip' : 'Disbursement Voucher')}
                             </div>
                             <div className="text-[11px] text-gray-500 truncate">
-                              {isZeroBudget
+                              {pendingSuppVoucherCount > 0
+                                ? `${pendingSuppVoucherCount} Supplemental Voucher(s) awaiting upload`
+                                : isZeroBudget
                                 ? 'Exempt • Non-Monetary (₱0)'
                                 : hasDisbursementVoucher
                                 ? 'Official voucher/slip attached'
@@ -2011,7 +2024,11 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           </div>
                         </div>
                         <div className="shrink-0">
-                          {isZeroBudget ? (
+                          {pendingSuppVoucherCount > 0 ? (
+                            <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                              Supp. Needed
+                            </span>
+                          ) : isZeroBudget && !hasAnyApprovedSbr ? (
                             <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
                               Exempt
                             </span>
@@ -2038,7 +2055,8 @@ export default function EventProposalReview({ event, onClose }: EventProposalRev
                           )}
                         </div>
                       </button>
-                    )}
+                      );
+                    })()}
 
                     {/* 3b. Supplemental Budget (Request Additional Funds / SAS Review) */}
                     {isApproved && (() => {

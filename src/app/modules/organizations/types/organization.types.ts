@@ -12,8 +12,20 @@ export interface OrganizationTypeDocument {
   updatedAt: Timestamp;
 }
 
+export type OrgAdviserRole = 'primary' | 'co_adviser';
+
+export interface OrgAdviserAvailability {
+  primaryStatus: 'available' | 'unavailable';
+  unavailableReason?: string;
+  unavailableFrom?: string; // YYYY-MM-DD (inclusive)
+  unavailableUntil?: string; // YYYY-MM-DD (inclusive)
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
 export interface OrgAdviserData {
   authUid?: string;
+  adviserRole?: OrgAdviserRole;
   name: string;
   firstName?: string;
   lastName?: string;
@@ -22,7 +34,7 @@ export interface OrgAdviserData {
   employeeId?: string;
   email: string;
   departmentId: string;
-  title: string; // 'Club Adviser'
+  title: string; // 'Club Adviser' or 'Club Co-Adviser'
   temporaryPassword?: string;
   requiresPasswordChange?: boolean;
   tempPass?: string | null;
@@ -63,8 +75,10 @@ export interface OrganizationDocument {
   isCrossDepartmental?: boolean;
   description: string;
 
-  // ─── Adviser ───
+  // ─── Advisers (Primary + Optional Secondary Co-Adviser) ───
   adviser?: OrgAdviserData;
+  coAdviser?: OrgAdviserData;
+  adviserAvailability?: OrgAdviserAvailability;
 
   // ─── Academic Context ───
   academicYear: string;                        // e.g. "2025-2026"
@@ -102,11 +116,15 @@ export interface CreateOrganizationPayload {
   logoUrl: string | null;
   membershipFee?: number;
   adviser?: OrgAdviserData;
+  coAdviser?: OrgAdviserData;
+  adviserAvailability?: OrgAdviserAvailability;
 }
 
 export interface OrganizationRulesDocument {
-  minMembersRequired: number;
-  minOfficersRequired: number;
+  minMembersRequired?: number;
+  minOfficersRequired?: number;
+  /** Global maximum number of active organizations a single student can join across all types. null/0 = unlimited. */
+  maxTotalOrganizationsPerStudent?: number | null;
 
   updatedAt: Timestamp;
 }

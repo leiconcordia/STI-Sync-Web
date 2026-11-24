@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import { canSignatoryApproveDocument } from '../../modules/signatories/utils/signatory-label.utils';
+import { resolveSignatoryDecisionCapabilities } from '../../modules/workflow/utils/approver-resolution.utils';
 import {
   X,
   Receipt,
@@ -471,20 +471,18 @@ export default function LiquidationEndorsementModal({
   const myStepIndex = chain.findIndex((s) => matchesCurrentSigner(s));
   const myStep = myStepIndex >= 0 ? chain[myStepIndex] : currentStep;
 
-  // Dynamic approval authority permission check
+  // Unified Runtime Single-Approval Governance capabilities
   const isChecker = myStep?.actionType ? myStep.actionType === 'check' : signatorySession?.actionType === 'check';
-  const isStepEndorseOrCheck = myStep?.actionType === 'endorse' || myStep?.actionType === 'check';
-  const canApprove = !isStepEndorseOrCheck && canSignatoryApproveDocument(signatorySession, 'liquidation', myStep);
-
-  // Subsequent approvers after my step in the pipeline
-  const subsequentApproversCount = chain.filter((s, idx) => {
-    return idx > myStepIndex && (s.actionType === 'approve' || (s as any).canApproveLiquidation || (s as any).isFinalApprover);
-  }).length;
-
-  const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
-  const isFinalApprover =
-    !isStepEndorseOrCheck &&
-    (Boolean(signatorySession?.isFinalApprover) || (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0)));
+  const decisionCaps = resolveSignatoryDecisionCapabilities({
+    chain,
+    myStepIndex,
+    signatory: signatorySession,
+    docType: 'liquidation',
+  });
+  const canApprove = decisionCaps.canApprove;
+  const canEndorseInsteadOfApprove = decisionCaps.canEndorseInsteadOfApprove;
+  const isDemotedToEndorserOnly = decisionCaps.isDemotedToEndorserOnly;
+  const isFinalApprover = canApprove;
 
   const allocatedBudget = liquidation.allocatedBudget || 0;
   const totalActualSpending =
@@ -526,7 +524,11 @@ export default function LiquidationEndorsementModal({
         decision
       );
 
-      if (result.isFullyApproved) {
+      if (result.wasCoercedByPriorApproval) {
+        toast.info(
+          `Already approved by ${result.approvedBySignatoryName || 'another Approver'}. Your signature was recorded as Noted by:.`
+        );
+      } else if (result.isFullyApproved) {
         toast.success(`Liquidation fully approved! Financial ledger and event status updated.`);
       } else if (result.stageAdvanced) {
         toast.success(`Stage ${currentStage} completed! Liquidation forwarded to the next approval stage.`);
@@ -1632,6 +1634,17 @@ export default function LiquidationEndorsementModal({
           </div>
         </div>
 
+        {/* ── DEMOTED APPROVER / ALREADY APPROVED NOTICE BANNER ── */}
+        {isDemotedToEndorserOnly && canSignNow && (
+          <div className="bg-emerald-50 border-t border-emerald-200 px-6 py-2.5 flex items-center gap-2 text-xs text-emerald-900 flex-shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>
+              <strong>Already Approved by {decisionCaps.approvedBySignatoryName || 'Executive Approver'}.</strong>{' '}
+              Only one final approval is recorded per liquidation — your signature will be recorded as <strong>Noted by:</strong> (Endorser only).
+            </span>
+          </div>
+        )}
+
         {/* ── STICKY FOOTER ACTIONS ── */}
         <div className="bg-slate-50 border-t border-slate-200 px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
           <div className="flex items-center gap-2 flex-wrap">
@@ -1665,17 +1678,35 @@ export default function LiquidationEndorsementModal({
               Close
             </button>
 
-            {canApprove && isFinalApprover ? (
-              <button
-                type="button"
-                onClick={() => setPendingConfirmType('approve')}
-                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
-                className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                title="Grant executive approval and fully approve liquidation"
-              >
-                <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
-              </button>
+            {canApprove ? (
+              <>
+                {canEndorseInsteadOfApprove && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingConfirmType('endorse')}
+                    disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-sky-600 hover:bg-sky-700 text-white shadow-sky-600/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    title="Endorse & forward so another designated Approver can grant final approval"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : 'Endorse & Forward'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPendingConfirmType('approve')}
+                  disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                  className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title={
+                    canEndorseInsteadOfApprove
+                      ? 'Grant final approval immediately (other designated approvers will become Noted/Endorser only)'
+                      : 'Grant executive approval and fully approve liquidation'
+                  }
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                  <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -1693,6 +1724,8 @@ export default function LiquidationEndorsementModal({
                     ? 'Already Signed'
                     : isSubmitting
                     ? 'Processing...'
+                    : isDemotedToEndorserOnly || decisionCaps.primaryActionMode === 'note_only'
+                    ? 'Stamp E-Signature & Note'
                     : isChecker
                     ? 'Audit & Check Liquidation'
                     : 'Stamp E-Signature & Endorse'}
@@ -1745,6 +1778,11 @@ export default function LiquidationEndorsementModal({
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
                     <li>Your official digital signature will be sealed onto the Financial Liquidation report.</li>
+                    {decisionCaps.otherUnsignedApproversCount > 0 && (
+                      <li>
+                        Because only <strong>one Approver</strong> finalizes each document, the remaining designated approver(s) will automatically be updated to <strong>Noted by:</strong> (Endorser only).
+                      </li>
+                    )}
                     <li>The liquidation status transitions to <strong>Fully Approved & Concluded</strong>.</li>
                     <li>Financial disbursements and balances will be officially liquidated.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

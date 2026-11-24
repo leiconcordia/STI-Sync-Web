@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   getDocs,
   setDoc,
   serverTimestamp,
@@ -167,20 +168,23 @@ async function postRetainedFundTransaction(params: {
   const hasScopedId = params.identity.bucketId !== params.identity.baseBucketId;
   const legacyRef = hasScopedId ? doc(db, RETAINED_FUNDS_COLLECTION, params.identity.baseBucketId) : null;
 
-  await runTransaction(db, async (tx) => {
-    const existingLedger = await tx.get(ledgerRef);
+  const applyMutation = async (
+    reader: (r: ReturnType<typeof doc>) => Promise<any>,
+    writer: (r: ReturnType<typeof doc>, data: any, opts?: any) => Promise<void> | void
+  ) => {
+    const existingLedger = await reader(ledgerRef);
     if (existingLedger.exists()) {
       return;
     }
 
-    const bucketSnap = await tx.get(bucketRef);
+    const bucketSnap = await reader(bucketRef);
     let current: RetainedActivityFundDocument;
     let shouldMarkLegacyMigrated = false;
 
     if (bucketSnap.exists()) {
       current = { id: bucketSnap.id, ...(bucketSnap.data() as any) } as RetainedActivityFundDocument;
     } else if (legacyRef && cleanSy) {
-      const legacySnap = await tx.get(legacyRef);
+      const legacySnap = await reader(legacyRef);
       const legacyData = legacySnap.exists() ? (legacySnap.data() as RetainedActivityFundDocument) : null;
       if (legacyData && !legacyData.migratedToSchoolYear) {
         current = {
@@ -224,14 +228,14 @@ async function postRetainedFundTransaction(params: {
     );
 
     if (shouldMarkLegacyMigrated && legacyRef) {
-      tx.set(
+      await writer(
         legacyRef,
         { migratedToSchoolYear: cleanSy, updatedAt: serverTimestamp() },
         { merge: true }
       );
     }
 
-    tx.set(
+    await writer(
       bucketRef,
       sanitizeFirestorePayload({
         ...current,
@@ -268,8 +272,40 @@ async function postRetainedFundTransaction(params: {
       createdAt: serverTimestamp(),
     };
 
-    tx.set(ledgerRef, sanitizeFirestorePayload(entry));
-  });
+    await writer(ledgerRef, sanitizeFirestorePayload(entry));
+  };
+
+  try {
+    await runTransaction(db, async (tx) => {
+      await applyMutation(
+        (r) => tx.get(r),
+        (r, data, opts) => {
+          if (opts) tx.set(r, data, opts);
+          else tx.set(r, data);
+        }
+      );
+    });
+  } catch (err: any) {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    if (code !== 'resource-exhausted' && !msg.includes('quota exceeded')) {
+      throw err;
+    }
+    console.warn('[retained-fund.service] runTransaction hit Firestore quota; falling back to cache+setDoc:', err);
+    await applyMutation(
+      async (r) => {
+        try {
+          return await getDocFromCache(r);
+        } catch {
+          return { exists: () => false, id: r.id, data: () => undefined };
+        }
+      },
+      async (r, data, opts) => {
+        if (opts) await setDoc(r, data, opts);
+        else await setDoc(r, data);
+      }
+    );
+  }
 }
 
 /**

@@ -60,6 +60,7 @@ export default function SignatoryLayout() {
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return;
         const roleLower = String(parsed.role || '').trim().toLowerCase();
         if (
           parsed.id === 'sas_coordinator' ||

@@ -1,8 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import {
-  canSignatoryApproveDocument,
-  resolveSignatoryLabel,
-} from '../../modules/signatories/utils/signatory-label.utils';
+import { resolveSignatoryLabel } from '../../modules/signatories/utils/signatory-label.utils';
+import { resolveSignatoryDecisionCapabilities } from '../../modules/workflow/utils/approver-resolution.utils';
 import {
   X,
   FileCheck2,
@@ -456,14 +454,16 @@ export default function PAREndorsementModal({
   const isReadOnlyLocked = !canSignNow;
   const canReturnNow = canSignNow && !isPARApproved;
 
-  // Dynamic approval authority permission check (respect per-step Endorse/Check role)
-  const isStepEndorseOrCheck =
-    myStep?.actionType === 'endorse' ||
-    myStep?.actionType === 'check' ||
-    (myStep?.actionType as string) === 'note';
-  const canApprove =
-    !isStepEndorseOrCheck &&
-    canSignatoryApproveDocument(signatorySession, 'par', myStep);
+  // Unified Runtime Single-Approval Governance capabilities
+  const decisionCaps = resolveSignatoryDecisionCapabilities({
+    chain,
+    myStepIndex,
+    signatory: signatorySession,
+    docType: 'par',
+  });
+  const canApprove = decisionCaps.canApprove;
+  const canEndorseInsteadOfApprove = decisionCaps.canEndorseInsteadOfApprove;
+  const isDemotedToEndorserOnly = decisionCaps.isDemotedToEndorserOnly;
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (isReadOnlyLocked) {
@@ -498,7 +498,11 @@ export default function PAREndorsementModal({
         decision
       );
 
-      if (result.isFullyApproved) {
+      if (result.wasCoercedByPriorApproval) {
+        toast.info(
+          `Already approved by ${result.approvedBySignatoryName || 'another Approver'}. Your signature was recorded as Noted by:.`
+        );
+      } else if (result.isFullyApproved) {
         toast.success(`Post-Activity Report cleared & approved! Automatically archived to EDMS.`);
       } else if (result.stageAdvanced) {
         toast.success(`Endorsement recorded! Advanced to the next institutional clearance stage.`);
@@ -1699,8 +1703,19 @@ export default function PAREndorsementModal({
           </div>
         </div>
 
+        {/* Demoted Approver / Already Approved Notice Banner */}
+        {isDemotedToEndorserOnly && canSignNow && (
+          <div className="bg-emerald-50 border-t border-emerald-200 px-6 py-2.5 flex items-center gap-2 text-xs text-emerald-900 flex-shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>
+              <strong>Already Approved by {decisionCaps.approvedBySignatoryName || 'Executive Approver'}.</strong>{' '}
+              Only one final approval is recorded per report — your signature will be recorded as <strong>Noted by:</strong> (Endorser only).
+            </span>
+          </div>
+        )}
+
         {/* Footer */}
-        <div className="border-t border-slate-200 bg-slate-50 p-4 px-6 flex items-center justify-between">
+        <div className="border-t border-slate-200 bg-slate-50 p-4 px-6 flex items-center justify-between flex-wrap gap-2">
           <button
             type="button"
             disabled={isExporting}
@@ -1711,7 +1726,7 @@ export default function PAREndorsementModal({
             Export PDF
           </button>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
               disabled={isSubmitting || !canReturnNow}
@@ -1721,16 +1736,34 @@ export default function PAREndorsementModal({
               <RotateCcw className="w-4 h-4" /> Return for Revision
             </button>
             {canApprove ? (
-              <button
-                type="button"
-                disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
-                onClick={() => setPendingConfirmType('approve')}
-                className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                title="Grant executive clearance and fully approve PAR"
-              >
-                <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
-              </button>
+              <>
+                {canEndorseInsteadOfApprove && (
+                  <button
+                    type="button"
+                    disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                    onClick={() => setPendingConfirmType('endorse')}
+                    className="px-4 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-sm flex items-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                    title="Endorse & forward so another designated Approver can grant final approval"
+                  >
+                    <Send className="w-4 h-4" />
+                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Recording...' : 'Endorse & Forward'}</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                  onClick={() => setPendingConfirmType('approve')}
+                  className="px-5 py-2 text-xs font-bold text-[#FFD41C] bg-[#001A4D] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 rounded-lg shadow-md flex items-center gap-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  title={
+                    canEndorseInsteadOfApprove
+                      ? 'Grant final approval immediately (other designated approvers will become Noted/Endorser only)'
+                      : 'Grant executive clearance and fully approve PAR'
+                  }
+                >
+                  <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                  <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Recording...' : '✓ Sign & Fully Approve'}</span>
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -1750,7 +1783,9 @@ export default function PAREndorsementModal({
                 ) : (
                   <>
                     <Send className="w-4 h-4 text-[#FFD41C]" />
-                    Stamp E-Signature & Endorse
+                    {isDemotedToEndorserOnly || decisionCaps.primaryActionMode === 'note_only'
+                      ? 'Stamp E-Signature & Note'
+                      : 'Stamp E-Signature & Endorse'}
                   </>
                 )}
               </button>
@@ -1801,6 +1836,11 @@ export default function PAREndorsementModal({
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
                     <li>Your official digital signature will be sealed onto the Post-Activity Report.</li>
+                    {decisionCaps.otherUnsignedApproversCount > 0 && (
+                      <li>
+                        Because only <strong>one Approver</strong> finalizes each document, the remaining designated approver(s) will automatically be updated to <strong>Noted by:</strong> (Endorser only).
+                      </li>
+                    )}
                     <li>The report status transitions to <strong>Approved & Cleared</strong>.</li>
                     <li>The report is archived into the Institutional EDMS.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

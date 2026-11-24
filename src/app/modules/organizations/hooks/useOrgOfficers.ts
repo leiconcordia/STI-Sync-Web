@@ -2,19 +2,47 @@ import { useState, useEffect } from 'react';
 import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
 
+export type OfficerAppointmentStatus = 'pending_acceptance' | 'accepted' | 'declined';
+
 export interface OrganizationOfficerDocument {
   id: string;
   organizationId: string;
+  organizationName?: string;
+  memberDocId?: string | null;
   roleId: string;
   roleName?: string;
   studentId: string;
   studentName: string;
   email: string;
+  authUid?: string | null;
   isActive: boolean;
   hasWebPortalAccess?: boolean;
+  appointmentStatus?: OfficerAppointmentStatus;
+  appointedByUid?: string | null;
+  appointedByName?: string | null;
+  appointedByEmail?: string | null;
+  appointedAt?: any;
+  acceptedAt?: any;
+  declinedAt?: any;
+  declineReason?: string | null;
   temporaryPassword?: string;
   createdAt: any;
   updatedAt: any;
+}
+
+/** Legacy officer records without `appointmentStatus` are grandfathered as accepted. */
+export function isOfficerAppointmentConfirmed(
+  officer?: Pick<OrganizationOfficerDocument, 'appointmentStatus' | 'isActive'> | null
+): boolean {
+  if (!officer || officer.isActive === false) return false;
+  return !officer.appointmentStatus || officer.appointmentStatus === 'accepted';
+}
+
+export function isOfficerAppointmentPending(
+  officer?: Pick<OrganizationOfficerDocument, 'appointmentStatus' | 'isActive'> | null
+): boolean {
+  if (!officer || officer.isActive === false) return false;
+  return officer.appointmentStatus === 'pending_acceptance';
 }
 
 export function useOrgOfficers(orgId: string | null | undefined) {

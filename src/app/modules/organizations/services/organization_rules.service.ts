@@ -14,7 +14,9 @@ export const getOrganizationRules = async (): Promise<OrganizationRulesDocument 
   return null;
 };
 
-export const updateOrganizationRules = async (data: Omit<OrganizationRulesDocument, 'updatedAt'>) => {
+export const updateOrganizationRules = async (
+  data: Partial<Omit<OrganizationRulesDocument, 'updatedAt'>>
+) => {
   const docRef = doc(db, COLLECTION_NAME, DOC_ID);
   const payload = {
     ...data,

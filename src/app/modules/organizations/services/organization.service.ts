@@ -16,7 +16,13 @@ import { generateTemporaryPassword } from '../../accounts/services/temporary-pas
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { sendAdviserWelcomeCredentialsEmail } from '../../../../services/email.service';
 import { createNotification } from '../../notifications';
-import type { CreateOrganizationPayload, OrgAdviserData, OrgAutoPayableRule } from '../types/organization.types';
+import type {
+  CreateOrganizationPayload,
+  OrgAdviserAvailability,
+  OrgAdviserData,
+  OrgAdviserRole,
+  OrgAutoPayableRule,
+} from '../types/organization.types';
 import { structuredNameFields } from '../../../utils/name.utils';
 import {
   normalizeAdviserEmail,
@@ -25,11 +31,13 @@ import {
   type SignatoryEmailRecord,
 } from '../utils/adviser-validation.utils';
 import { findDepartmentScopeConflicts } from '../utils/department-eligibility.utils';
+import { resolveEffectiveAdviserAuthority } from '../utils/adviser-authority.utils';
 
 const COLLECTION = 'organizations';
 
 export interface AdviserUpdateOptions {
   action: 'keep' | 'assign' | 'unassign';
+  adviserRole?: OrgAdviserRole;
   currentAdviser?: OrgAdviserData | null;
   newAdviser?: {
     name: string;
@@ -58,11 +66,13 @@ export class AdviserValidationError extends Error {
 /**
  * Lightweight Signatory-style adviser uniqueness check using indexed single-field
  * queries (`limit(5)`) instead of full-collection scans or `/api/accounts/check-adviser`.
+ * Enforces the 1-organization rule across BOTH Primary Adviser and Co-Adviser roles.
  */
 export async function validateAdviserUniqueness(params: {
   email: string;
   employeeId?: string;
   excludeOrgId?: string;
+  excludeRole?: OrgAdviserRole;
 }): Promise<void> {
   const cleanEmail = normalizeAdviserEmail(params.email);
   const cleanEmpId = String(params.employeeId || '').trim();
@@ -93,6 +103,7 @@ export async function validateAdviserUniqueness(params: {
     adviserRecords,
     signatoryRecords,
     excludeOrgId: params.excludeOrgId,
+    excludeRole: params.excludeRole,
   });
 
   if (conflict) {
@@ -101,8 +112,9 @@ export async function validateAdviserUniqueness(params: {
 }
 
 /**
- * Assigns a new adviser or unassigns an adviser, revoking access to the current adviser if one was assigned.
- * If unassigned initially, no revocation is performed.
+ * Assigns a new Primary Adviser or Secondary Co-Adviser, or unassigns an existing slot,
+ * revoking access strictly for the targeted slot (`primary` vs `co_adviser`) so updating
+ * one slot never revokes the other.
  */
 export const assignOrRevokeOrganizationAdviser = async (
   orgId: string,
@@ -111,18 +123,23 @@ export const assignOrRevokeOrganizationAdviser = async (
 ): Promise<OrgAdviserData | null> => {
   const {
     action,
+    adviserRole = 'primary',
     currentAdviser,
     newAdviser,
     adminUser = 'SAS Administrator',
     sendEmailNotice = true,
   } = options;
 
+  const isCoAdviser = adviserRole === 'co_adviser';
+  const roleLabel = isCoAdviser ? 'Club Co-Adviser' : 'Club Adviser';
+  const orgFieldKey = isCoAdviser ? 'coAdviser' : 'adviser';
+
   if (action === 'keep') {
     return currentAdviser || null;
   }
 
   if (action === 'assign' && (!newAdviser?.name?.trim() || !newAdviser?.email?.trim())) {
-    throw new Error('Enter the new adviser name and email.');
+    throw new Error(`Enter the new ${roleLabel.toLowerCase()} name and email.`);
   }
   const cleanEmail = newAdviser?.email.trim().toLowerCase() || '';
   const tempPassword = newAdviser?.temporaryPassword || generateTemporaryPassword();
@@ -130,23 +147,25 @@ export const assignOrRevokeOrganizationAdviser = async (
   let createdAuthUid = '';
   let adviser: OrgAdviserData | null = null;
   try {
-    // Provision before revoking the current adviser. A duplicate/failed account
+    // Provision before revoking the current slot. A duplicate/failed account
     // creation must leave the existing adviser able to use the organization.
     if (action === 'assign' && newAdviser) {
       await validateAdviserUniqueness({
         email: cleanEmail,
         employeeId: newAdviser.employeeId,
         excludeOrgId: orgId,
+        excludeRole: adviserRole,
       });
       authUid = await createSecondaryAuthUser(cleanEmail, tempPassword);
       createdAuthUid = authUid;
       adviser = {
         authUid,
+        adviserRole,
         ...structuredNameFields(newAdviser),
         email: cleanEmail,
         employeeId: newAdviser.employeeId?.trim() || '',
         departmentId: newAdviser.departmentId || '',
-        title: 'Club Adviser',
+        title: roleLabel,
         temporaryPassword: tempPassword,
         tempPass: tempPassword,
         requiresPasswordChange: true,
@@ -157,23 +176,29 @@ export const assignOrRevokeOrganizationAdviser = async (
     const current = await getDocs(query(collection(db, 'organization_advisers'), where('organizationId', '==', orgId)));
     const batch = writeBatch(db);
     for (const item of current.docs) {
-      if (item.data().isActive === false) continue;
+      const itemData = item.data();
+      if (itemData.isActive === false) continue;
+      const itemRole: OrgAdviserRole = itemData.adviserRole === 'co_adviser' ? 'co_adviser' : 'primary';
+      if (itemRole !== adviserRole) continue;
       batch.update(item.ref, {
         isActive: false, status: 'revoked', revokedAt: serverTimestamp(),
-        revokedBy: adminUser, revocationReason: action === 'assign' ? `Replaced by new adviser: ${adviser?.name}` : 'Unassigned by administrator',
+        revokedBy: adminUser, revocationReason: action === 'assign' ? `Replaced by new ${roleLabel.toLowerCase()}: ${adviser?.name}` : 'Unassigned by administrator',
         updatedAt: serverTimestamp(),
       });
     }
     if (adviser) batch.set(doc(collection(db, 'organization_advisers')), {
-      ...adviser, organizationId: orgId, organizationName: orgName,
+      ...adviser, adviserRole, organizationId: orgId, organizationName: orgName,
       isActive: true, createdBy: adminUser, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
     });
-    batch.update(doc(db, COLLECTION, orgId), { adviser: adviser || deleteField(), updatedAt: serverTimestamp() });
+    batch.update(doc(db, COLLECTION, orgId), {
+      [orgFieldKey]: adviser || deleteField(),
+      updatedAt: serverTimestamp(),
+    });
     await batch.commit();
   } catch (error) {
     if (createdAuthUid) {
       try { await rollbackSecondaryAuthUser(cleanEmail, tempPassword, createdAuthUid); }
-      catch { console.warn('Could not roll back newly provisioned adviser. Account repair may be needed.'); }
+      catch { console.warn(`Could not roll back newly provisioned ${roleLabel.toLowerCase()}. Account repair may be needed.`); }
     }
     throw error;
   }
@@ -185,8 +210,10 @@ export const assignOrRevokeOrganizationAdviser = async (
       targetOrgName: orgName,
       type: 'role_assigned',
       category: 'system',
-      title: 'Assigned as Club Adviser',
-      message: `You have been assigned as the Club Adviser for ${orgName}. Welcome to the Organization Portal!`,
+      title: `Assigned as ${roleLabel}`,
+      message: isCoAdviser
+        ? `You have been assigned as the Secondary Club Co-Adviser for ${orgName}. You share full Club Adviser portal access and approval authority alongside the Primary Adviser.`
+        : `You have been assigned as the Club Adviser for ${orgName}. Welcome to the Organization Portal!`,
       resourceId: orgId,
       resourceType: 'system',
       actionRoute: '/officer/organization',
@@ -202,7 +229,7 @@ export const assignOrRevokeOrganizationAdviser = async (
       employeeId: adviser.employeeId || '',
       temporaryPassword: tempPassword,
       existingAccount: false,
-    }).catch(() => console.warn('Adviser created, but welcome email delivery failed.'));
+    }).catch(() => console.warn(`${roleLabel} created, but welcome email delivery failed.`));
   }
   return adviser;
 };
@@ -213,6 +240,11 @@ export const createOrganization = async (
   logoFile?: File | null
 ): Promise<string> => {
   const adviserProfile = payload.adviser ? { ...payload.adviser, ...structuredNameFields(payload.adviser) } : undefined;
+  const coAdviserProfile =
+    payload.coAdviser && payload.coAdviser.name && payload.coAdviser.email
+      ? { ...payload.coAdviser, ...structuredNameFields(payload.coAdviser) }
+      : undefined;
+
   if (adviserProfile?.name && adviserProfile.email) {
     await validateAdviserUniqueness({
       email: adviserProfile.email,
@@ -221,6 +253,26 @@ export const createOrganization = async (
     delete adviserProfile.existingAccountUid;
     delete adviserProfile.nameVerification;
     adviserProfile.accountProvisioning = 'created';
+  }
+
+  if (coAdviserProfile?.name && coAdviserProfile.email) {
+    const primaryEmail = normalizeAdviserEmail(adviserProfile?.email);
+    const coEmail = normalizeAdviserEmail(coAdviserProfile.email);
+    const primaryEmp = String(adviserProfile?.employeeId || '').trim().toLowerCase();
+    const coEmp = String(coAdviserProfile.employeeId || '').trim().toLowerCase();
+    if (primaryEmail && coEmail === primaryEmail) {
+      throw new AdviserValidationError('email', 'Primary Adviser and Co-Adviser cannot share the same email address.');
+    }
+    if (primaryEmp && coEmp && coEmp === primaryEmp) {
+      throw new AdviserValidationError('employeeId', 'Primary Adviser and Co-Adviser cannot be the same employee.');
+    }
+    await validateAdviserUniqueness({
+      email: coAdviserProfile.email,
+      employeeId: coAdviserProfile.employeeId,
+    });
+    delete coAdviserProfile.existingAccountUid;
+    delete coAdviserProfile.nameVerification;
+    coAdviserProfile.accountProvisioning = 'created';
   }
   // ── Logo upload → Cloudinary (app-wide upload standard; see services/cloudinary.ts) ──
   let logoUrl: string | null = null;
@@ -289,19 +341,27 @@ export const createOrganization = async (
   };
 
   let createdAdviserUid = '';
+  let createdCoAdviserUid = '';
   const adviserPassword = payload.adviser?.temporaryPassword || generateTemporaryPassword();
+  const coAdviserPassword = payload.coAdviser?.temporaryPassword || generateTemporaryPassword();
   try {
     if (adviserProfile?.name && adviserProfile.email) {
       createdAdviserUid = await createSecondaryAuthUser(adviserProfile.email, adviserPassword);
     }
+    if (coAdviserProfile?.name && coAdviserProfile.email) {
+      createdCoAdviserUid = await createSecondaryAuthUser(coAdviserProfile.email, coAdviserPassword);
+    }
     const docRef = doc(collection(db, COLLECTION));
     const batch = writeBatch(db);
+    const cleanOrgPayload: Record<string, any> = { ...normalizedPayload };
+    delete cleanOrgPayload.coAdviser;
     batch.set(docRef, {
-      ...normalizedPayload,
+      ...cleanOrgPayload,
       ...(adviserProfile?.email
         ? {
             adviser: {
               ...adviserProfile,
+              adviserRole: 'primary',
               email: adviserProfile.email.trim().toLowerCase(),
               authUid: createdAdviserUid,
               temporaryPassword: adviserPassword,
@@ -312,6 +372,25 @@ export const createOrganization = async (
             },
           }
         : {}),
+      ...(coAdviserProfile?.email
+        ? {
+            coAdviser: {
+              ...coAdviserProfile,
+              adviserRole: 'co_adviser',
+              title: 'Club Co-Adviser',
+              email: coAdviserProfile.email.trim().toLowerCase(),
+              authUid: createdCoAdviserUid,
+              temporaryPassword: coAdviserPassword,
+              tempPass: coAdviserPassword,
+              requiresPasswordChange: true,
+              accountProvisioning: 'created',
+              resetInProgress: false,
+            },
+          }
+        : {}),
+      adviserAvailability: {
+        primaryStatus: 'available',
+      },
       logoUrl,
       status: 'active',
       memberCount: 0,
@@ -329,10 +408,11 @@ export const createOrganization = async (
 
     const orgId = docRef.id;
 
-    // ── Create Real Firebase Auth Account & Document for Club Adviser ──
+    // ── Create Real Firebase Auth Account & Document for Primary Club Adviser ──
     if (payload.adviser && payload.adviser.name && payload.adviser.email) {
       batch.set(doc(collection(db, 'organization_advisers')), {
         authUid: createdAdviserUid,
+        adviserRole: 'primary',
         organizationId: orgId,
         organizationName: payload.name,
         ...structuredNameFields(payload.adviser),
@@ -342,6 +422,30 @@ export const createOrganization = async (
         title: payload.adviser.title || 'Club Adviser',
         temporaryPassword: adviserPassword,
         tempPass: adviserPassword,
+        accountProvisioning: 'created',
+        resetInProgress: false,
+        requiresPasswordChange: true,
+        isActive: true,
+        createdBy,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // ── Create Real Firebase Auth Account & Document for Secondary Club Co-Adviser ──
+    if (coAdviserProfile && coAdviserProfile.name && coAdviserProfile.email) {
+      batch.set(doc(collection(db, 'organization_advisers')), {
+        authUid: createdCoAdviserUid,
+        adviserRole: 'co_adviser',
+        organizationId: orgId,
+        organizationName: payload.name,
+        ...structuredNameFields(coAdviserProfile),
+        email: coAdviserProfile.email.trim().toLowerCase(),
+        employeeId: (coAdviserProfile.employeeId || '').trim(),
+        departmentId: coAdviserProfile.departmentId || '',
+        title: 'Club Co-Adviser',
+        temporaryPassword: coAdviserPassword,
+        tempPass: coAdviserPassword,
         accountProvisioning: 'created',
         resetInProgress: false,
         requiresPasswordChange: true,
@@ -373,11 +477,43 @@ export const createOrganization = async (
       }).catch((err) => console.warn('Failed to dispatch adviser assignment notification:', err));
     }
 
+    if (coAdviserProfile && coAdviserProfile.name && coAdviserProfile.email) {
+      const cleanCoEmail = coAdviserProfile.email.trim().toLowerCase();
+      void createNotification({
+        recipientRole: 'officer',
+        recipientId: [createdCoAdviserUid, cleanCoEmail, `adviser:${orgId}`].filter(Boolean).join('|'),
+        targetOrgId: orgId,
+        targetOrgName: payload.name,
+        type: 'role_assigned',
+        category: 'system',
+        title: 'Assigned as Club Co-Adviser',
+        message: `You have been assigned as the Secondary Club Co-Adviser for ${payload.name}. You share full Club Adviser portal access and approval authority alongside the Primary Adviser.`,
+        resourceId: orgId,
+        resourceType: 'system',
+        actionRoute: '/officer/organization',
+        senderName: createdBy || 'SAS Administration',
+        senderRoleTitle: 'SAS Administration',
+      }).catch((err) => console.warn('Failed to dispatch co-adviser assignment notification:', err));
+
+      void sendAdviserWelcomeCredentialsEmail({
+        to: cleanCoEmail,
+        adviserName: coAdviserProfile.name,
+        orgName: payload.name,
+        employeeId: coAdviserProfile.employeeId || '',
+        temporaryPassword: coAdviserPassword,
+        existingAccount: false,
+      }).catch(() => console.warn('Co-Adviser created, but welcome email delivery failed.'));
+    }
+
     return orgId;
   } catch (error: any) {
     if (createdAdviserUid && payload.adviser?.email) {
       try { await rollbackSecondaryAuthUser(payload.adviser.email, adviserPassword, createdAdviserUid); }
       catch { console.warn('Could not roll back newly provisioned adviser. Account repair may be needed.'); }
+    }
+    if (createdCoAdviserUid && coAdviserProfile?.email) {
+      try { await rollbackSecondaryAuthUser(coAdviserProfile.email, coAdviserPassword, createdCoAdviserUid); }
+      catch { console.warn('Could not roll back newly provisioned co-adviser. Account repair may be needed.'); }
     }
     console.error('Organization creation failed:', error);
     throw new Error(`Organization creation failed: ${error.message}`);
@@ -388,7 +524,8 @@ export const updateOrganization = async (
   orgId: string,
   payload: Partial<CreateOrganizationPayload>,
   logoFile?: File | null,
-  adviserUpdate?: AdviserUpdateOptions
+  adviserUpdate?: AdviserUpdateOptions,
+  coAdviserUpdate?: AdviserUpdateOptions
 ): Promise<void> => {
   let logoUrl: string | null | undefined = payload.logoUrl;
 
@@ -507,19 +644,35 @@ export const updateOrganization = async (
       updateData.logoUrl = logoUrl;
     }
 
-    // ── Handle Adviser Assignment / Revocation if specified ──
+    // ── Handle Primary Adviser Assignment / Revocation if specified ──
     if (adviserUpdate && adviserUpdate.action !== 'keep') {
       const orgName = payload.name || 'Organization';
       const updatedAdviser = await assignOrRevokeOrganizationAdviser(
         orgId,
         orgName,
-        adviserUpdate
+        { ...adviserUpdate, adviserRole: 'primary' }
       );
 
       if (adviserUpdate.action === 'assign' && updatedAdviser) {
         updateData.adviser = updatedAdviser;
       } else if (adviserUpdate.action === 'unassign') {
         updateData.adviser = deleteField();
+      }
+    }
+
+    // ── Handle Secondary Co-Adviser Assignment / Revocation if specified ──
+    if (coAdviserUpdate && coAdviserUpdate.action !== 'keep') {
+      const orgName = payload.name || 'Organization';
+      const updatedCoAdviser = await assignOrRevokeOrganizationAdviser(
+        orgId,
+        orgName,
+        { ...coAdviserUpdate, adviserRole: 'co_adviser' }
+      );
+
+      if (coAdviserUpdate.action === 'assign' && updatedCoAdviser) {
+        updateData.coAdviser = updatedCoAdviser;
+      } else if (coAdviserUpdate.action === 'unassign') {
+        updateData.coAdviser = deleteField();
       }
     }
 
@@ -620,4 +773,126 @@ export async function toggleOrgAutoPayableRule(orgId: string, ruleId: string, is
     autoPayableRules: nextRules,
     updatedAt: serverTimestamp(),
   });
+}
+
+/**
+ * Updates the Primary Club Adviser's availability status (Available vs Unavailable / On Leave)
+ * and automatically notifies the assigned Co-Adviser whenever full approval authority transfers.
+ */
+export async function updateOrganizationAdviserAvailability(
+  orgId: string,
+  availability: Omit<OrgAdviserAvailability, 'updatedAt' | 'updatedBy'>,
+  updatedBy: string
+): Promise<OrgAdviserAvailability> {
+  if (!orgId) throw new Error('Organization ID is required.');
+  const orgRef = doc(db, COLLECTION, orgId);
+  const orgSnap = await getDoc(orgRef);
+  if (!orgSnap.exists()) throw new Error('Organization not found.');
+  const orgData = orgSnap.data() as any;
+
+  const cleanAvailability: OrgAdviserAvailability = {
+    primaryStatus: availability.primaryStatus === 'unavailable' ? 'unavailable' : 'available',
+    ...(availability.unavailableReason?.trim() ? { unavailableReason: availability.unavailableReason.trim() } : {}),
+    ...(availability.unavailableFrom?.trim() ? { unavailableFrom: availability.unavailableFrom.trim() } : {}),
+    ...(availability.unavailableUntil?.trim() ? { unavailableUntil: availability.unavailableUntil.trim() } : {}),
+    updatedBy: updatedBy || 'SAS Administration',
+    updatedAt: new Date().toISOString(),
+  };
+
+  await updateDoc(orgRef, {
+    adviserAvailability: cleanAvailability,
+    updatedAt: serverTimestamp(),
+  });
+
+  // Notify Co-Adviser when Primary becomes unavailable or returns
+  const coAdviser = orgData.coAdviser;
+  if (coAdviser?.email || coAdviser?.authUid) {
+    const isNowUnavailable = cleanAvailability.primaryStatus === 'unavailable';
+    const dateRangeNote =
+      cleanAvailability.unavailableFrom || cleanAvailability.unavailableUntil
+        ? ` (${cleanAvailability.unavailableFrom || 'Now'} to ${cleanAvailability.unavailableUntil || 'Further notice'})`
+        : '';
+    void createNotification({
+      recipientRole: 'officer',
+      recipientId: [coAdviser.authUid, String(coAdviser.email || '').trim().toLowerCase(), `adviser:${orgId}`]
+        .filter(Boolean)
+        .join('|'),
+      targetOrgId: orgId,
+      targetOrgName: orgData.name || 'Organization',
+      type: 'system_alert',
+      category: 'system',
+      title: isNowUnavailable
+        ? `Approval Authority Transferred — ${orgData.acronym || orgData.name}`
+        : `Primary Adviser Returned — ${orgData.acronym || orgData.name}`,
+      message: isNowUnavailable
+        ? `${orgData.adviser?.name || 'The Primary Club Adviser'} is marked Unavailable${dateRangeNote}. Full Club Adviser authority has been automatically transferred to you as Secondary Co-Adviser.`
+        : `${orgData.adviser?.name || 'The Primary Club Adviser'} is now Available again. You retain Co-Adviser portal access and Officer submission review rights.`,
+      resourceId: orgId,
+      resourceType: 'system',
+      actionRoute: '/officer/events',
+      senderName: updatedBy || 'SAS Administration',
+      senderRoleTitle: 'Club Adviser Governance',
+    }).catch(() => {});
+  }
+
+  return cleanAvailability;
+}
+
+/**
+ * Lightweight audit-context resolver for Adviser Checker Gate actions (AP, FL, PAR, SBR).
+ * Determines whether the acting user is the Primary Club Adviser or Secondary Co-Adviser,
+ * and whether they are acting on behalf of an unavailable Primary Adviser.
+ */
+export async function resolveAdviserActorAuditContext(
+  orgId: string | null | undefined,
+  actor: { uid?: string; email?: string; name?: string; adviserRole?: OrgAdviserRole }
+): Promise<{
+  reviewedByAdviserRole: OrgAdviserRole;
+  actingOnBehalfOfName?: string;
+  roleTitleLabel: string;
+}> {
+  if (!orgId) {
+    const role: OrgAdviserRole = actor.adviserRole === 'co_adviser' ? 'co_adviser' : 'primary';
+    return {
+      reviewedByAdviserRole: role,
+      roleTitleLabel: role === 'co_adviser' ? 'Club Co-Adviser' : 'Club Adviser',
+    };
+  }
+  try {
+    const snap = await getDoc(doc(db, COLLECTION, orgId));
+    if (snap.exists()) {
+      const orgData = snap.data() as any;
+      const authority = resolveEffectiveAdviserAuthority({
+        organization: {
+          adviser: orgData.adviser || null,
+          coAdviser: orgData.coAdviser || null,
+          adviserAvailability: orgData.adviserAvailability || null,
+        },
+        viewerUid: actor.uid,
+        viewerEmail: actor.email,
+        viewerAdviserRole: actor.adviserRole,
+        isAdviserSession: true,
+      });
+      const role: OrgAdviserRole = authority.isCoAdviser ? 'co_adviser' : 'primary';
+      const actingOnBehalfOfName = authority.actingOnBehalfOfName;
+      const roleTitleLabel =
+        role === 'co_adviser'
+          ? actingOnBehalfOfName
+            ? `Club Co-Adviser (Acting for ${actingOnBehalfOfName})`
+            : 'Club Co-Adviser'
+          : 'Club Adviser';
+      return {
+        reviewedByAdviserRole: role,
+        ...(actingOnBehalfOfName ? { actingOnBehalfOfName } : {}),
+        roleTitleLabel,
+      };
+    }
+  } catch {
+    // Non-blocking fallback
+  }
+  const fallbackRole: OrgAdviserRole = actor.adviserRole === 'co_adviser' ? 'co_adviser' : 'primary';
+  return {
+    reviewedByAdviserRole: fallbackRole,
+    roleTitleLabel: fallbackRole === 'co_adviser' ? 'Club Co-Adviser' : 'Club Adviser',
+  };
 }

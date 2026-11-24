@@ -22,6 +22,7 @@ import {
   CalendarClock,
   RotateCcw,
   Shield,
+  AlertTriangle,
 } from 'lucide-react';
 import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
@@ -29,7 +30,12 @@ import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useOrgOfficers } from '../../modules/organizations/hooks/useOrgOfficers';
 import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
 import { useStudents } from '../../modules/students/hooks/useStudentStream';
-import { useCourses } from '../../modules/academic/hooks/useAcademicStream';
+import { useCourses, useDepartments, useActiveAcademicPeriods } from '../../modules/academic/hooks/useAcademicStream';
+import { checkStudentDepartmentEligibility } from '../../modules/organizations/utils/department-eligibility.utils';
+import {
+  inferStudentAcademicLevel,
+  isStudentEnrolledInPeriod,
+} from '../../modules/students/utils/enrollment-activation.utils';
 import {
   approveMemberApplication,
   rejectMemberApplication,
@@ -61,8 +67,35 @@ export default function MemberDirectory() {
   const { data: roles = [] } = useRoles();
   const { members = [], loading: loadingMembers } = useOrgMembers(activeOrgId);
   const { officers = [], loading: loadingOfficers } = useOrgOfficers(activeOrgId);
+  const { officers: allActiveOfficers = [] } = useOrgOfficers('all');
   const { data: allStudents = [] } = useStudents();
+
+  // Map studentId/email -> org name where they already hold Web Portal access in ANOTHER organization
+  const webAccessElsewhereMap = useMemo(() => {
+    const map = new Map<string, string>();
+    allActiveOfficers.forEach((o) => {
+      if (!o.isActive || o.appointmentStatus === 'declined') return;
+      if (o.organizationId === activeOrgId) return;
+      if (o.hasWebPortalAccess === false) return;
+      const label = o.organizationName || 'another organization';
+      if (o.studentId) map.set(o.studentId.trim().toLowerCase(), label);
+      if (o.email) map.set(o.email.trim().toLowerCase(), label);
+    });
+    return map;
+  }, [allActiveOfficers, activeOrgId]);
+
+  const pendingOfficerStudentIds = useMemo(() => {
+    const set = new Set<string>();
+    officers.forEach((o) => {
+      if (o.isActive && o.appointmentStatus === 'pending_acceptance' && o.studentId) {
+        set.add(o.studentId.trim().toLowerCase());
+      }
+    });
+    return set;
+  }, [officers]);
   const { data: dbCourses = [] } = useCourses();
+  const { data: dbDepartments = [] } = useDepartments();
+  const { activeCollegePeriod, activeShsPeriod } = useActiveAcademicPeriods();
 
 
   const [activeTab, setActiveTab] = useState<'members' | 'pending' | 'officers' | 'inactive' | 'removed'>(() => {
@@ -213,6 +246,72 @@ export default function MemberDirectory() {
     [members]
   );
   const rawPendingMembers = useMemo(() => members.filter((m) => m.status === 'pending'), [members]);
+
+  // Detect active members who are ineligible for this organization (flagged for course shift OR mismatched department)
+  const ineligibleActiveMembers = useMemo(() => {
+    if (!activeOrg) return [] as Array<{ member: OrganizationMemberDocument; fullName: string; reason: string }>;
+    const list: Array<{ member: OrganizationMemberDocument; fullName: string; reason: string }> = [];
+
+    for (const m of rawActiveMembers) {
+      const { fullName, studentDoc } = getMemberDetails(m);
+      if (m.courseShiftIneligibility?.flagged) {
+        list.push({
+          member: m,
+          fullName,
+          reason:
+            m.courseShiftIneligibility.reason ||
+            `Shifting to ${m.courseShiftIneligibility.toCourseCode || 'another program'} — no longer eligible for this organization.`,
+        });
+        continue;
+      }
+
+      const candidate = {
+        departmentId: studentDoc?.departmentId || m.departmentId || '',
+        departmentName: studentDoc?.departmentName || m.department || '',
+        department: studentDoc?.departmentName || m.department || '',
+        courseId: studentDoc?.courseId || '',
+        courseCode: studentDoc?.courseCode || m.course || '',
+        courseName: studentDoc?.courseName || '',
+      };
+      const eligibility = checkStudentDepartmentEligibility(activeOrg, candidate, dbDepartments, dbCourses);
+      if (!eligibility.eligible) {
+        list.push({
+          member: m,
+          fullName,
+          reason:
+            eligibility.reason ||
+            `Student belongs to ${eligibility.studentDeptLabel}, which is ineligible for ${activeOrg.acronym || activeOrg.name}.`,
+        });
+      }
+    }
+    return list;
+  }, [activeOrg, rawActiveMembers, studentMap, dbDepartments, dbCourses]);
+
+  const ineligibleMemberIdSet = useMemo(
+    () => new Set(ineligibleActiveMembers.map((x) => x.member.id)),
+    [ineligibleActiveMembers]
+  );
+
+  // Detect active members who are not yet enrolled for the current active academic period
+  const unenrolledActiveMembers = useMemo(() => {
+    if (!activeCollegePeriod && !activeShsPeriod) return [] as Array<{ member: OrganizationMemberDocument; fullName: string; recordedTerm: string }>;
+    const list: Array<{ member: OrganizationMemberDocument; fullName: string; recordedTerm: string }> = [];
+    for (const m of rawActiveMembers) {
+      const { fullName, studentDoc } = getMemberDetails(m);
+      if (!studentDoc) continue;
+      const level = inferStudentAcademicLevel(studentDoc);
+      const activePeriod = level === 'SHS' ? activeShsPeriod : activeCollegePeriod;
+      if (!activePeriod) continue;
+      if (!isStudentEnrolledInPeriod(studentDoc, activePeriod)) {
+        list.push({
+          member: m,
+          fullName,
+          recordedTerm: `${studentDoc.schoolYear || 'Prior'} ${studentDoc.semester || ''}`.trim(),
+        });
+      }
+    }
+    return list;
+  }, [rawActiveMembers, studentMap, activeCollegePeriod, activeShsPeriod]);
 
   // Check if current user is an Adviser or Executive Officer
   const isAdviser = Boolean(
@@ -464,6 +563,75 @@ export default function MemberDirectory() {
         </div>
       )}
 
+      {/* Course-Shift / Department Ineligibility Alert Banner */}
+      {ineligibleActiveMembers.length > 0 && (
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-xl space-y-3 shadow-xs">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-bold text-rose-900">
+                Ineligible for this Organization — Action Required ({ineligibleActiveMembers.length})
+              </h3>
+              <p className="text-xs text-rose-700 mt-0.5">
+                The following student(s) are shifting or have shifted to an academic program outside{' '}
+                <strong>{activeOrg?.acronym || activeOrg?.name || 'this organization'}</strong>&apos;s allowed department(s). Please remove them from the roster to complete clearance.
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-white border border-rose-100 rounded-lg divide-y divide-rose-100">
+            {ineligibleActiveMembers.map(({ member, fullName, reason }) => (
+              <div
+                key={member.id}
+                className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-[#001A4D]">{fullName}</span>
+                    <span className="text-[11px] font-mono text-gray-500">{member.studentId}</span>
+                    <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold">
+                      Ineligible
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-rose-700 mt-0.5">{reason}</p>
+                </div>
+
+                {member.status !== 'pending_removal' && (
+                  <button
+                    type="button"
+                    onClick={() => setMemberToRemove(member)}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shrink-0 self-start sm:self-center cursor-pointer"
+                  >
+                    <UserMinus className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Unenrolled Active Members Advisory Banner */}
+      {unenrolledActiveMembers.length > 0 && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row sm:items-start gap-3 shadow-xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="text-xs text-amber-900 space-y-1">
+            <div className="font-bold text-sm text-amber-900">
+              {unenrolledActiveMembers.length} Member(s) Not Yet Enrolled for Current Term
+            </div>
+            <p className="text-amber-800">
+              {unenrolledActiveMembers
+                .slice(0, 5)
+                .map((u) => `${u.fullName} (${u.recordedTerm})`)
+                .join(', ')}
+              {unenrolledActiveMembers.length > 5 ? ` +${unenrolledActiveMembers.length - 5} more` : ''}.
+              {' '}Remind them to complete enrollment before SAS Admin deactivates unenrolled accounts.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Navigation Tabs with Pending Application Badge */}
       <div className="flex items-center gap-6 border-b border-[#E0E0E0]">
         <button
@@ -708,7 +876,10 @@ export default function MemberDirectory() {
                               <Coins className="w-4 h-4 text-amber-600" /> Add Payable / Fine
                             </button>
                           )}
-                          {canAppointOfficers && !member.isOfficer && member.status === 'active' && (
+                          {canAppointOfficers &&
+                            !member.isOfficer &&
+                            !pendingOfficerStudentIds.has((member.studentId || '').trim().toLowerCase()) &&
+                            member.status === 'active' && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -767,6 +938,25 @@ export default function MemberDirectory() {
                           </strong>{' '}
                           ends. No access to new activities.
                         </p>
+                      </div>
+                    )}
+
+                    {ineligibleMemberIdSet.has(member.id) && member.status !== 'pending_removal' && (
+                      <div
+                        className="mt-3 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-[11px] text-rose-900 flex items-center justify-between gap-2"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex items-center gap-1.5 font-bold text-rose-800 min-w-0">
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                          <span className="truncate">Ineligible (Course Shift)</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setMemberToRemove(member)}
+                          className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-bold shrink-0 cursor-pointer"
+                        >
+                          Remove
+                        </button>
                       </div>
                     )}
                   </div>
@@ -920,14 +1110,22 @@ export default function MemberDirectory() {
                   const roleName = roleDoc?.name || officer.roleName || officer.roleId;
 
                   const { fullName, photoUrl } = getMemberDetails(officer);
+                  const isPendingAcceptance = officer.appointmentStatus === 'pending_acceptance';
+                  const studentKey = (officer.studentId || '').trim().toLowerCase();
+                  const emailKey = (officer.email || '').trim().toLowerCase();
+                  const webAccessElsewhereOrg =
+                    webAccessElsewhereMap.get(studentKey) ||
+                    (emailKey ? webAccessElsewhereMap.get(emailKey) : undefined);
 
                   return (
                     <div
                       key={officer.id}
-                      className="bg-white border border-[#E0E0E0] rounded-xl p-5 hover:shadow-lg transition-shadow flex flex-col justify-between"
+                      className={`bg-white border rounded-xl p-5 hover:shadow-lg transition-shadow flex flex-col justify-between ${
+                        isPendingAcceptance ? 'border-amber-300 bg-amber-50/20' : 'border-[#E0E0E0]'
+                      }`}
                     >
                       <div>
-                        <div className="flex items-start justify-between mb-4">
+                        <div className="flex items-start justify-between gap-2 mb-4 flex-wrap">
                           {/* Profile Picture with Fixed-Size Click-to-Enlarge */}
                           <div
                             onClick={() => {
@@ -947,18 +1145,24 @@ export default function MemberDirectory() {
                             )}
                           </div>
 
-                          <span className="px-3 py-1 bg-[#0E4EBD] text-white text-[11px] font-bold rounded-full uppercase tracking-wider">
-                            {roleName}
-                          </span>
-                          {officer.hasWebPortalAccess !== false ? (
-                            <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
-                              Web Portal
+                          <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            <span className="px-3 py-1 bg-[#0E4EBD] text-white text-[11px] font-bold rounded-full uppercase tracking-wider">
+                              {roleName}
                             </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded-full">
-                              In-Org Only
-                            </span>
-                          )}
+                            {isPendingAcceptance ? (
+                              <span className="px-2 py-0.5 bg-amber-100 text-amber-900 border border-amber-200 text-[10px] font-bold rounded-full inline-flex items-center gap-1">
+                                <Clock className="w-3 h-3" /> Pending Acceptance
+                              </span>
+                            ) : officer.hasWebPortalAccess !== false ? (
+                              <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-full">
+                                Web Portal
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-gray-100 text-gray-600 text-[10px] font-bold rounded-full">
+                                In-Org Only
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         <h3 className="text-[#001A4D] text-[16px] font-bold mb-1 truncate" title={fullName}>
@@ -966,42 +1170,69 @@ export default function MemberDirectory() {
                         </h3>
                         <p className="text-[#888780] font-mono text-[13px] mb-3">{officer.studentId}</p>
                         <p className="text-[#001A4D] text-[13px]">{officer.email}</p>
+                        {isPendingAcceptance && (
+                          <p className="mt-2.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded-lg px-2.5 py-1.5">
+                            Awaiting student confirmation in the STI Sync mobile app
+                            {officer.hasWebPortalAccess !== false ? ' (Web Portal access queued).' : '.'}
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t border-[#E0E0E0]">
                         <span className="text-xs text-gray-500">
                           Status:{' '}
-                          {officer.isActive ? (
-                            <span className="text-green-600 font-medium">Active</span>
-                          ) : (
+                          {!officer.isActive ? (
                             <span className="text-red-500 font-medium">Revoked</span>
+                          ) : isPendingAcceptance ? (
+                            <span className="text-amber-700 font-semibold">Pending Confirmation</span>
+                          ) : (
+                            <span className="text-green-600 font-medium">Accepted &amp; Active</span>
                           )}
                         </span>
                         {officer.isActive && canManageOfficerAccess && (
                           <div className="flex items-center gap-2">
-                            {officer.hasWebPortalAccess === false ? (
-                              <button
-                                onClick={() => handleToggleOfficerWebAccess(officer, true)}
-                                disabled={updatingAccessOfficerId === officer.id || revokingOfficerId === officer.id}
-                                className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
-                              >
-                                {updatingAccessOfficerId === officer.id ? 'Updating...' : 'Add Access'}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => handleToggleOfficerWebAccess(officer, false)}
-                                disabled={updatingAccessOfficerId === officer.id || revokingOfficerId === officer.id}
-                                className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
-                              >
-                                {updatingAccessOfficerId === officer.id ? 'Updating...' : 'Revoke Access'}
-                              </button>
+                            {!isPendingAcceptance && (
+                              officer.hasWebPortalAccess === false ? (
+                                <button
+                                  onClick={() => handleToggleOfficerWebAccess(officer, true)}
+                                  disabled={
+                                    Boolean(webAccessElsewhereOrg) ||
+                                    updatingAccessOfficerId === officer.id ||
+                                    revokingOfficerId === officer.id
+                                  }
+                                  title={
+                                    webAccessElsewhereOrg
+                                      ? `Already has Web Portal access in ${webAccessElsewhereOrg} (limited to one organization per student)`
+                                      : 'Grant Organization Web Portal access'
+                                  }
+                                  className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {updatingAccessOfficerId === officer.id
+                                    ? 'Updating...'
+                                    : webAccessElsewhereOrg
+                                      ? 'Web Access Used'
+                                      : 'Add Access'}
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleToggleOfficerWebAccess(officer, false)}
+                                  disabled={updatingAccessOfficerId === officer.id || revokingOfficerId === officer.id}
+                                  className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
+                                >
+                                  {updatingAccessOfficerId === officer.id ? 'Updating...' : 'Revoke Access'}
+                                </button>
+                              )
                             )}
                             <button
                               onClick={() => handleRevokeOfficer(officer)}
                               disabled={revokingOfficerId === officer.id || updatingAccessOfficerId === officer.id}
                               className="text-xs font-semibold text-red-600 hover:text-red-700 hover:underline cursor-pointer disabled:opacity-50"
                             >
-                              {revokingOfficerId === officer.id ? 'Revoking...' : 'Revoke Officer'}
+                              {revokingOfficerId === officer.id
+                                ? 'Updating...'
+                                : isPendingAcceptance
+                                  ? 'Cancel Offer'
+                                  : 'Revoke Officer'}
                             </button>
                           </div>
                         )}
@@ -1229,7 +1460,9 @@ export default function MemberDirectory() {
           officerRecord={officers.find((o) => o.studentId === selectedMember.studentId && o.isActive)}
           onClose={() => setSelectedMember(null)}
           onAppointOfficer={
-            canAppointOfficers && !selectedMember.isOfficer
+            canAppointOfficers &&
+            !selectedMember.isOfficer &&
+            !pendingOfficerStudentIds.has((selectedMember.studentId || '').trim().toLowerCase())
               ? () => {
                   setSelectedMember(null);
                   setAppointPreselected(selectedMember);

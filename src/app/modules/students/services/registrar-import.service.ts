@@ -893,6 +893,34 @@ export async function executeRegistrarBulkImport(
 
   const totalOps = operations.length;
   const CHUNK_SIZE = 400; // Safe Firestore limit per batch is 500
+  const inactivatedStudentsForSync: StudentDocument[] = [];
+  const graduatedStudentsForSync: StudentDocument[] = [];
+  const reactivatedForSync: Array<{
+    student: StudentDocument;
+    target: {
+      academicLevel: AcademicLevel;
+      yearLevel: StudentYearLevel;
+      section: string;
+      courseId: string;
+      courseCode: string;
+      courseName: string;
+      departmentId: string;
+      departmentName: string;
+    };
+  }> = [];
+  const courseShiftedForSync: Array<{
+    existing: StudentDocument;
+    target: {
+      academicLevel: AcademicLevel;
+      yearLevel: StudentYearLevel;
+      section: string;
+      courseId: string;
+      courseCode: string;
+      courseName: string;
+      departmentId: string;
+      departmentName: string;
+    };
+  }> = [];
 
   for (let i = 0; i < totalOps; i += CHUNK_SIZE) {
     const chunk = operations.slice(i, i + CHUNK_SIZE);
@@ -979,6 +1007,15 @@ export async function executeRegistrarBulkImport(
           updatedAt: new Date().toISOString(),
         };
 
+        const nextDeptId = courseInfo?.departmentId || resolvedDept.id || op.existing.departmentId || '';
+        const nextDeptName = studentDept?.name || resolvedDept.name || op.existing.departmentName || '';
+        const isCourseOrDeptChanged =
+          String(op.existing.courseCode || '').trim().toLowerCase() !==
+            String(op.incoming.courseCode || '').trim().toLowerCase() ||
+          (Boolean(nextDeptId) &&
+            String(op.existing.departmentId || '').trim().toLowerCase() !==
+              String(nextDeptId).trim().toLowerCase());
+
         batch.update(ref, {
           schoolYear: analysis.fileSummary.detectedSchoolYear,
           semester: analysis.fileSummary.detectedSemester,
@@ -988,23 +1025,45 @@ export async function executeRegistrarBulkImport(
           courseCode: op.incoming.courseCode,
           courseName: courseInfo?.name || op.incoming.courseName,
           courseId: courseInfo?.id || op.existing.courseId || '',
-          departmentId: courseInfo?.departmentId || op.existing.departmentId || resolvedDept.id,
-          departmentName: studentDept?.name || op.existing.departmentName || resolvedDept.name || '',
+          departmentId: nextDeptId,
+          departmentName: nextDeptName,
           academicLevel: op.incoming.academicLevel,
           status: 'ACTIVE',
           rejectionReason: '',
+          deactivationReason: '',
+          ...(op.existing.status === 'INACTIVE' ? { reactivatedAt: Timestamp.now() } : {}),
           enrollmentHistory: [...priorHistory, newHistoryItem],
           updatedAt: Timestamp.now(),
         });
 
+        const targetMeta = {
+          academicLevel: op.incoming.academicLevel,
+          yearLevel: op.incoming.yearLevel,
+          section: assignedSection,
+          courseId: courseInfo?.id || op.existing.courseId || '',
+          courseCode: op.incoming.courseCode,
+          courseName: courseInfo?.name || op.incoming.courseName,
+          departmentId: nextDeptId,
+          departmentName: nextDeptName,
+        };
+        if (op.existing.status === 'INACTIVE') {
+          reactivatedForSync.push({ student: op.existing, target: targetMeta });
+        } else if (isCourseOrDeptChanged) {
+          courseShiftedForSync.push({ existing: op.existing, target: targetMeta });
+        }
+
         promotedCount++;
         const secLabel = assignedSection && assignedSection !== 'UNASSIGNED' ? ` | Section: ${assignedSection}` : '';
+        const shiftLabel = isCourseOrDeptChanged
+          ? ` | Course Shift: ${op.existing.courseCode || 'Prior'} → ${op.incoming.courseCode}`
+          : '';
+        const reactivateLabel = op.existing.status === 'INACTIVE' ? ' | Reactivated' : '';
         auditLog.push({
           studentId: op.existing.studentId,
           studentName: `${op.existing.lastName}, ${op.existing.firstName}`,
           courseCode: op.incoming.courseCode,
           yearLevel: op.incoming.yearLevel,
-          action: `PROMOTED (from ${op.existing.yearLevel || 'Prior'} to ${op.incoming.yearLevel}${secLabel})`,
+          action: `PROMOTED (from ${op.existing.yearLevel || 'Prior'} to ${op.incoming.yearLevel}${secLabel}${shiftLabel}${reactivateLabel})`,
         });
       } else if (op.type === 'OVERWRITE') {
         const ref = doc(db, STUDENTS_COLLECTION, op.existing.id);
@@ -1014,6 +1073,15 @@ export async function executeRegistrarBulkImport(
         const studentDept = courseInfo?.departmentId
           ? analysis.existingDepartments.get(courseInfo.departmentId) || analysis.existingDepartments.get(courseInfo.departmentId.toUpperCase())
           : undefined;
+
+        const nextDeptId = courseInfo?.departmentId || resolvedDept.id || op.existing.departmentId || '';
+        const nextDeptName = studentDept?.name || resolvedDept.name || op.existing.departmentName || '';
+        const isCourseOrDeptChanged =
+          String(op.existing.courseCode || '').trim().toLowerCase() !==
+            String(op.incoming.courseCode || '').trim().toLowerCase() ||
+          (Boolean(nextDeptId) &&
+            String(op.existing.departmentId || '').trim().toLowerCase() !==
+              String(nextDeptId).trim().toLowerCase());
 
         batch.update(ref, {
           lastName: op.incoming.lastName,
@@ -1027,11 +1095,28 @@ export async function executeRegistrarBulkImport(
           courseCode: op.incoming.courseCode,
           courseName: courseInfo?.name || op.incoming.courseName,
           courseId: courseInfo?.id || op.existing.courseId || '',
-          departmentId: courseInfo?.departmentId || op.existing.departmentId || resolvedDept.id,
-          departmentName: studentDept?.name || op.existing.departmentName || resolvedDept.name || '',
+          departmentId: nextDeptId,
+          departmentName: nextDeptName,
           status: 'ACTIVE',
+          deactivationReason: '',
           updatedAt: Timestamp.now(),
         });
+
+        const targetMeta = {
+          academicLevel: op.incoming.academicLevel,
+          yearLevel: op.incoming.yearLevel,
+          section: op.existing.section || 'UNASSIGNED',
+          courseId: courseInfo?.id || op.existing.courseId || '',
+          courseCode: op.incoming.courseCode,
+          courseName: courseInfo?.name || op.incoming.courseName,
+          departmentId: nextDeptId,
+          departmentName: nextDeptName,
+        };
+        if (op.existing.status === 'INACTIVE') {
+          reactivatedForSync.push({ student: op.existing, target: targetMeta });
+        } else if (isCourseOrDeptChanged) {
+          courseShiftedForSync.push({ existing: op.existing, target: targetMeta });
+        }
 
         promotedCount++;
         auditLog.push({
@@ -1045,10 +1130,13 @@ export async function executeRegistrarBulkImport(
         const ref = doc(db, STUDENTS_COLLECTION, op.student.id);
         batch.update(ref, {
           status: 'INACTIVE',
+          deactivatedAt: Timestamp.now(),
+          deactivationReason: op.reason,
           rejectionReason: op.reason,
           updatedAt: Timestamp.now(),
         });
 
+        inactivatedStudentsForSync.push(op.student);
         inactivatedCount++;
         auditLog.push({
           studentId: op.student.studentId,
@@ -1067,6 +1155,7 @@ export async function executeRegistrarBulkImport(
           updatedAt: Timestamp.now(),
         });
 
+        graduatedStudentsForSync.push(op.student);
         graduatedCount++;
         auditLog.push({
           studentId: op.student.studentId,
@@ -1085,6 +1174,72 @@ export async function executeRegistrarBulkImport(
       totalOps,
       `Committing changes: ${currentProgress} / ${totalOps} records processed...`
     );
+  }
+
+  // Post-commit lifecycle sync: organization memberships, officer revocations, course-shift flags, Adviser notifications
+  const activeTermLabel = `A.Y. ${analysis.fileSummary.detectedSchoolYear} ${analysis.fileSummary.detectedSemester}`;
+  try {
+    const {
+      deactivateUnenrolledStudents,
+      executeStudentCourseShift,
+      reactivateStudentForTerm,
+    } = await import('./student-lifecycle.service');
+
+    if (inactivatedStudentsForSync.length > 0) {
+      onProgress?.(totalOps, totalOps, 'Syncing club memberships & notifying advisers for unenrolled students...');
+      await deactivateUnenrolledStudents(
+        inactivatedStudentsForSync,
+        `Not present in Registrar List for ${activeTermLabel}`,
+        adminUid,
+        activeTermLabel,
+        { skipStudentDocUpdate: true }
+      );
+    }
+
+    if (graduatedStudentsForSync.length > 0) {
+      await deactivateUnenrolledStudents(
+        graduatedStudentsForSync,
+        `Graduated / Archived in ${activeTermLabel}`,
+        adminUid,
+        activeTermLabel,
+        { skipStudentDocUpdate: true }
+      );
+    }
+
+    if (reactivatedForSync.length > 0) {
+      onProgress?.(totalOps, totalOps, 'Restoring eligible club memberships for reactivated students...');
+      for (const item of reactivatedForSync) {
+        await reactivateStudentForTerm(item.student.id, {
+          schoolYear: analysis.fileSummary.detectedSchoolYear,
+          semester: analysis.fileSummary.detectedSemester,
+          academicLevel: item.target.academicLevel,
+          yearLevel: item.target.yearLevel,
+          section: item.target.section,
+          courseId: item.target.courseId,
+          courseCode: item.target.courseCode,
+          courseName: item.target.courseName,
+          departmentId: item.target.departmentId,
+          departmentName: item.target.departmentName,
+          adminUid,
+          skipStudentDocUpdate: true,
+        });
+      }
+    }
+
+    if (courseShiftedForSync.length > 0) {
+      onProgress?.(totalOps, totalOps, 'Validating organization eligibility for course-shifting students...');
+      for (const item of courseShiftedForSync) {
+        await executeStudentCourseShift(item.existing, item.target, adminUid, {
+          source: 'REGISTRAR_IMPORT',
+          allowFlagInsteadOfBlock: true,
+          skipStudentDocUpdate: true,
+          schoolYear: analysis.fileSummary.detectedSchoolYear,
+          semester: analysis.fileSummary.detectedSemester,
+        });
+      }
+    }
+  } catch (syncErr) {
+    console.warn('[executeRegistrarBulkImport] Post-commit lifecycle sync notice:', syncErr);
   }
 
   return {

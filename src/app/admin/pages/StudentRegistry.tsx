@@ -105,7 +105,14 @@ export function StudentRegistry() {
   const renderView = () => {
     switch (activeView) {
       case 'active':
-        return <ActiveStudents students={active} />;
+        return (
+          <ActiveStudents
+            students={active}
+            allStudents={students}
+            activeCollegePeriod={activeCollegePeriod}
+            activeShsPeriod={activeShsPeriod}
+          />
+        );
       case 'inactive':
         return <InactiveSuspended inactiveStudents={inactive} suspendedStudents={[]} />;
       case 'archived':
@@ -122,7 +129,14 @@ export function StudentRegistry() {
           />
         );
       default:
-        return <ActiveStudents students={active} />;
+        return (
+          <ActiveStudents
+            students={active}
+            allStudents={students}
+            activeCollegePeriod={activeCollegePeriod}
+            activeShsPeriod={activeShsPeriod}
+          />
+        );
     }
   };
 

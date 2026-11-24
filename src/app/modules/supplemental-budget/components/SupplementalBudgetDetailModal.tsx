@@ -5,7 +5,7 @@
  * shared across Student Officer, Club Adviser, SAS Admin, and Institutional Signatory portals.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   CheckCircle2,
@@ -26,14 +26,26 @@ import {
   Send,
   AlertTriangle,
   PenTool,
+  Copy,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
 import { formatPHP } from '../../activity-proposals/utils/proposal-calculations';
 import { formatAppDateTime } from '../../../utils/date';
 import ProposalStatusStepper from '../../activity-proposals/components/workflow/ProposalStatusStepper';
+import ProposalFlowBuilder from '../../activity-proposals/components/workflow/ProposalFlowBuilder';
 import ClubAdviserDecisionPanel from '../../workflow/components/ClubAdviserDecisionPanel';
 import { resolveDocumentTrackingState } from '../../activity-proposals/utils/proposal-status-tracker.utils';
+import { resolveSignatoryDecisionCapabilities } from '../../workflow/utils/approver-resolution.utils';
+import { subscribeToSignatories } from '../../signatories/services/signatory.service';
+import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import type { ProposalApprovalStep } from '../../activity-proposals/types/proposal.types';
+import {
+  isSignatoryTurnForSbr,
+  matchesSbrSignatoryStep,
+  normalizeSbrApprovalChain,
+} from '../utils/sbr-validation.utils';
 import {
   approveAndForwardSbrByAdviser,
   returnSbrByAdviser,
@@ -43,6 +55,7 @@ import {
   returnSbrBySas,
   rejectSbrBySas,
   processSbrSignatoryDecision,
+  resolveDefaultSbrPipelineFromParentAp,
   withdrawSupplementalBudgetRequest,
   attachSupplementalDisbursementVoucher,
   type SbrActor,
@@ -109,6 +122,22 @@ export default function SupplementalBudgetDetailModal({
   const [voucherFileName, setVoucherFileName] = useState(sbr?.disbursementVoucher?.fileName || '');
   const [uploadingVoucher, setUploadingVoucher] = useState(false);
 
+  // SAS Vetting Signatory Pipeline Configurator state
+  const [showVettingFlowEditor, setShowVettingFlowEditor] = useState(false);
+  const [vettingSignatories, setVettingSignatories] = useState<InstitutionalSignatory[]>([]);
+  const [vettingChain, setVettingChain] = useState<ProposalApprovalStep[]>(sbr?.approvalChain || []);
+  const [copyingApChain, setCopyingApChain] = useState(false);
+
+  useEffect(() => {
+    setVettingChain(sbr?.approvalChain || []);
+  }, [sbr?.id, sbr?.approvalChain]);
+
+  useEffect(() => {
+    if (!isOpen || viewerRole !== 'admin' || !sbr?.requiresSignatories) return;
+    const unsub = subscribeToSignatories((list) => setVettingSignatories(list));
+    return () => unsub();
+  }, [isOpen, viewerRole, sbr?.requiresSignatories]);
+
   if (!isOpen || !sbr) return null;
 
   const tracking = resolveDocumentTrackingState(sbr, 'SBR');
@@ -131,20 +160,28 @@ export default function SupplementalBudgetDetailModal({
   const canAdviserDecide = viewerRole === 'adviser' && sbr.status === 'for_adviser_review';
   const canSasDecide = viewerRole === 'admin' && sbr.status === 'for_sas_review';
 
-  // Check if it is currently this Signatory's sequential turn
-  const currentStep = (sbr.approvalChain || [])[sbr.currentStepIndex ?? 0];
-  const isCurrentSignatoryTurn = (() => {
-    if (viewerRole !== 'signatory' || sbr.status !== 'pending_signatories' || !currentStep) {
-      return false;
-    }
-    const actorUid = String(actor.uid || '').trim();
-    const actorEmail = String(actor.email || '').trim().toLowerCase();
-    const stepUid = String((currentStep as any).signatoryUid || '').trim();
-    const stepEmail = String((currentStep as any).signatoryEmail || '').trim().toLowerCase();
-    if (actorUid && stepUid && actorUid === stepUid) return true;
-    if (actorEmail && stepEmail && actorEmail === stepEmail) return true;
-    return false;
-  })();
+  // Check if it is currently this Signatory's active turn (supports parallel multi-stage & post-approval co-sign)
+  const activeStage = sbr.currentStageIndex ?? 1;
+  const isCurrentSignatoryTurn =
+    viewerRole === 'signatory' && isSignatoryTurnForSbr(sbr, actor);
+  const sbrChain = sbr.approvalChain || [];
+  const currentStepIdx = sbrChain.findIndex(
+    (st: any) =>
+      st &&
+      st.status !== 'approved' &&
+      st.status !== 'endorsed' &&
+      st.status !== 'waived' &&
+      (sbr.status === 'approved' || (st.stageIndex ?? 1) === activeStage) &&
+      matchesSbrSignatoryStep(st, actor)
+  );
+  const resolvedStepIdx = currentStepIdx >= 0 ? currentStepIdx : (sbr.currentStepIndex ?? 0);
+  const currentStep = sbrChain[resolvedStepIdx];
+  const sbrDecisionCaps = resolveSignatoryDecisionCapabilities({
+    chain: sbrChain,
+    myStepIndex: resolvedStepIdx,
+    signatory: actor,
+    docType: 'proposal',
+  });
 
   const canManageVoucher =
     sbr.status === 'approved' &&
@@ -162,11 +199,17 @@ export default function SupplementalBudgetDetailModal({
     setBusy(true);
     try {
       if (sbr.requiresSignatories) {
-        await endorseAndForwardSbrBySas(sbr.id, actor, remarks || undefined);
+        const cleaned = normalizeSbrApprovalChain(vettingChain, false);
+        await endorseAndForwardSbrBySas(
+          sbr.id,
+          actor,
+          remarks || undefined,
+          cleaned.length > 0 ? cleaned : undefined
+        );
         toast.success(`${sbr.referenceCode} vetted by SAS and forwarded to Institutional Signatories.`);
       } else {
         await approveSbrBySasDirect(sbr.id, actor, remarks || undefined);
-        toast.success(`${sbr.referenceCode} approved and encumbered from Club Treasury!`);
+        toast.success(`${sbr.referenceCode} approved! The club can now acknowledge and deduct it in Finance Center.`);
       }
       onActionComplete?.();
       onClose();
@@ -174,6 +217,23 @@ export default function SupplementalBudgetDetailModal({
       toast.error(err?.message || 'Action failed');
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleCopyParentApChainInVetting = async () => {
+    setCopyingApChain(true);
+    try {
+      const res = await resolveDefaultSbrPipelineFromParentAp({
+        eventId: sbr.eventId,
+        isSasInstitutional: sbr.isSasInstitutional,
+        signatoriesOverride: vettingSignatories.length > 0 ? vettingSignatories : undefined,
+      });
+      setVettingChain(res.chain);
+      toast.success(`Copied ${res.chain.length} signatory step(s) from the Parent Activity Proposal.`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to copy Parent AP pipeline.');
+    } finally {
+      setCopyingApChain(false);
     }
   };
 
@@ -200,21 +260,31 @@ export default function SupplementalBudgetDetailModal({
     }
   };
 
-  const handleSignatoryAction = async (decision: 'approve' | 'return' | 'reject') => {
+  const handleSignatoryAction = async (decision: 'approve' | 'forward' | 'return' | 'reject') => {
     if ((decision === 'return' || decision === 'reject') && !remarks.trim()) {
       toast.error('Please provide remarks for returning or rejecting this request.');
       return;
     }
     setBusy(true);
     try {
-      await processSbrSignatoryDecision(sbr.id, actor, decision, remarks || undefined);
-      toast.success(
-        decision === 'approve'
-          ? `Signed and approved ${sbr.referenceCode}.`
-          : decision === 'return'
-          ? `Returned ${sbr.referenceCode} for revision.`
-          : `Rejected ${sbr.referenceCode}.`
-      );
+      const result = await processSbrSignatoryDecision(sbr.id, actor, decision, remarks || undefined);
+      if (result?.wasCoercedByPriorApproval) {
+        toast.info(
+          `Already approved by ${result.approvedBySignatoryName || 'another Approver'}. Your signature was recorded as Noted by:.`
+        );
+      } else {
+        toast.success(
+          decision === 'approve'
+            ? `Signed and approved ${sbr.referenceCode}.`
+            : decision === 'forward'
+            ? sbrDecisionCaps.isDemotedToEndorserOnly
+              ? `Recorded notation on ${sbr.referenceCode}.`
+              : `Endorsed and forwarded ${sbr.referenceCode}.`
+            : decision === 'return'
+            ? `Returned ${sbr.referenceCode} for revision.`
+            : `Rejected ${sbr.referenceCode}.`
+        );
+      }
       onActionComplete?.();
       onClose();
     } catch (err: any) {
@@ -477,13 +547,19 @@ export default function SupplementalBudgetDetailModal({
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {sbr.approvalChain.map((step: any, idx: number) => {
+                  const hasStages = sbr.approvalChain.some((s: any) => typeof s?.stageIndex === 'number');
+                  const isSigned = step.status === 'approved' || step.status === 'endorsed';
                   const isCurrent =
-                    sbr.status === 'pending_signatories' && idx === (sbr.currentStepIndex ?? 0);
+                    sbr.status === 'pending_signatories' &&
+                    !isSigned &&
+                    (hasStages
+                      ? (step.stageIndex ?? 1) === activeStage
+                      : idx === (sbr.currentStepIndex ?? 0));
                   return (
                     <div
                       key={step.id || idx}
                       className={`p-3 rounded-xl border text-xs ${
-                        step.status === 'approved'
+                        isSigned
                           ? 'bg-emerald-50/60 border-emerald-200'
                           : isCurrent
                           ? 'bg-blue-50/70 border-blue-300 ring-1 ring-blue-300'
@@ -492,18 +568,19 @@ export default function SupplementalBudgetDetailModal({
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span className="font-bold text-slate-800">
-                          {idx + 1}. {step.signatoryName || step.roleTitle}
+                          {hasStages ? `Stage ${step.stageIndex ?? 1} • ` : `${idx + 1}. `}
+                          {step.signatoryName || step.roleTitle}
                         </span>
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            step.status === 'approved'
+                            isSigned
                               ? 'bg-emerald-100 text-emerald-700'
                               : isCurrent
                               ? 'bg-blue-100 text-blue-700'
                               : 'bg-slate-200 text-slate-600'
                           }`}
                         >
-                          {step.status === 'approved' ? 'Signed' : isCurrent ? 'Current Turn' : 'Waiting'}
+                          {isSigned ? 'Signed' : isCurrent ? 'Current Turn' : 'Waiting'}
                         </span>
                       </div>
                       <div className="text-[11px] text-slate-500 mt-0.5">{step.roleTitle}</div>
@@ -569,10 +646,54 @@ export default function SupplementalBudgetDetailModal({
                 </h4>
                 <p className="text-xs text-slate-600 mt-0.5">
                   {sbr.requiresSignatories
-                    ? 'Verify Misc Fee bucket availability and forward to Institutional Signatories for final authorization.'
+                    ? 'Verify Misc Fee bucket availability, adjust the signatory pipeline if needed, and forward to Institutional Signatories.'
                     : 'Approve directly to immediately encumber the supplemental delta from the Club Treasury ledger.'}
                 </p>
               </div>
+
+              {sbr.requiresSignatories && (
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowVettingFlowEditor((v) => !v)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-blue-200 text-[#003366] hover:bg-blue-100/50 cursor-pointer"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      {showVettingFlowEditor
+                        ? 'Hide Signatory Pipeline Editor'
+                        : `Configure Signatory Pipeline (${vettingChain.length})`}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={copyingApChain}
+                      onClick={handleCopyParentApChainInVetting}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 cursor-pointer disabled:opacity-50"
+                    >
+                      {copyingApChain ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                      Copy Parent AP Pipeline
+                    </button>
+                  </div>
+
+                  {showVettingFlowEditor && (
+                    <div className="bg-white rounded-xl p-3 border border-blue-200">
+                      <ProposalFlowBuilder
+                        approvalChain={vettingChain}
+                        onChange={(nextChain) => setVettingChain(nextChain)}
+                        activeSignatories={vettingSignatories}
+                        creatorName={sbr.creatorName}
+                        creatorEmail={sbr.creatorEmail}
+                        creatorRole={sbr.isSasInstitutional ? 'sas_admin' : 'officer'}
+                        fundingSource={sbr.fundingSource}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               <textarea
                 rows={2}
@@ -629,9 +750,25 @@ export default function SupplementalBudgetDetailModal({
                   Signatory Decision ({currentStep?.roleTitle || 'Institutional Signatory'})
                 </h4>
                 <p className="text-xs text-indigo-800/80 mt-0.5">
-                  Review the supplemental budget delta (+{formatPHP(sbr.requestedAmount)}) and endorse, return, or reject.
+                  Review the supplemental budget delta (+{formatPHP(sbr.requestedAmount)}) and{' '}
+                  {sbrDecisionCaps.canApprove
+                    ? sbrDecisionCaps.canEndorseInsteadOfApprove
+                      ? 'choose to Approve immediately or Endorse & Forward to another designated Approver.'
+                      : 'approve, return, or reject.'
+                    : sbrDecisionCaps.isDemotedToEndorserOnly
+                    ? 'affix your notation signature (approval has already been granted).'
+                    : 'endorse or return.'}
                 </p>
               </div>
+              {sbrDecisionCaps.isDemotedToEndorserOnly && (
+                <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    <strong>Already Approved by {sbrDecisionCaps.approvedBySignatoryName || 'Executive Approver'}.</strong>{' '}
+                    Only one final approval is recorded — your signature will be recorded as <strong>Noted by:</strong>.
+                  </span>
+                </div>
+              )}
               <textarea
                 rows={2}
                 value={remarks}
@@ -640,31 +777,70 @@ export default function SupplementalBudgetDetailModal({
                 className="w-full rounded-xl border border-indigo-200 bg-white px-3.5 py-2 text-xs focus:border-indigo-500 focus:outline-none"
               />
               <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => handleSignatoryAction('approve')}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                  Sign & Approve Supplemental Budget
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => handleSignatoryAction('return')}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300 disabled:opacity-50"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" /> Return for Revision
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => handleSignatoryAction('reject')}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-rose-100 text-rose-800 hover:bg-rose-200 border border-rose-300 disabled:opacity-50"
-                >
-                  <XCircle className="w-3.5 h-3.5" /> Reject
-                </button>
+                {sbrDecisionCaps.canApprove ? (
+                  <>
+                    {sbrDecisionCaps.canEndorseInsteadOfApprove && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleSignatoryAction('forward')}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-50"
+                        title="Endorse & forward so another designated Approver can grant final approval"
+                      >
+                        {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                        Endorse & Forward
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleSignatoryAction('approve')}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-[#001A4D] text-[#FFD41C] hover:bg-[#0A2E6D] border border-[#FFD41C]/40 disabled:opacity-50"
+                      title={
+                        sbrDecisionCaps.canEndorseInsteadOfApprove
+                          ? 'Grant final approval immediately (other designated approvers will become Noted/Endorser only)'
+                          : 'Sign and grant final approval'
+                      }
+                    >
+                      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                      Sign & Approve Supplemental Budget
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleSignatoryAction('forward')}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                    {sbrDecisionCaps.isDemotedToEndorserOnly || sbrDecisionCaps.primaryActionMode === 'note_only'
+                      ? 'Sign & Note Supplemental Budget'
+                      : 'Sign & Endorse Supplemental Budget'}
+                  </button>
+                )}
+                {!sbrDecisionCaps.isAlreadyApproved && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleSignatoryAction('return')}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300 disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" /> Return for Revision
+                    </button>
+                    {sbrDecisionCaps.canApprove && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleSignatoryAction('reject')}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-rose-100 text-rose-800 hover:bg-rose-200 border border-rose-300 disabled:opacity-50"
+                      >
+                        <XCircle className="w-3.5 h-3.5" /> Reject
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
           )}

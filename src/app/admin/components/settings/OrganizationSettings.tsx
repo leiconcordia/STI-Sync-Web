@@ -5,9 +5,11 @@ import {
 import { toast } from 'sonner';
 import {
   useOrganizationTypes,
+  useOrganizationRules,
   createOrganizationType,
   updateOrganizationType,
   deleteOrganizationType,
+  updateOrganizationRules,
   type OrganizationTypeDocument
 } from '../../../modules/organizations';
 import {
@@ -153,9 +155,46 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
     }
   }, [initialSubTab]);
 
-  // ─── Types & Roles Streams ──────────────────────────────────────────────────
+  // ─── Types, Roles & Global Membership Rules Streams ─────────────────────────
   const { data: organizationTypes = [], loading: loadingTypes } = useOrganizationTypes();
+  const { data: orgRules, loading: loadingRules } = useOrganizationRules();
   const { data: roles = [], loading: loadingRoles } = useRoles();
+
+  // ─── Global Membership Limit State ──────────────────────────────────────────
+  const [globalMaxOrgsInput, setGlobalMaxOrgsInput] = useState('');
+  const [isSavingGlobalLimit, setIsSavingGlobalLimit] = useState(false);
+
+  useEffect(() => {
+    const val = orgRules?.maxTotalOrganizationsPerStudent;
+    setGlobalMaxOrgsInput(val && val > 0 ? String(val) : '');
+  }, [orgRules?.maxTotalOrganizationsPerStudent]);
+
+  const handleSaveGlobalMaxOrgs = async () => {
+    const raw = globalMaxOrgsInput.trim();
+    let parsedMax: number | null = null;
+    if (raw !== '') {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) {
+        toast.error('Global maximum organizations per student must be a whole number (0 or blank for unlimited).');
+        return;
+      }
+      parsedMax = n > 0 ? n : null;
+    }
+    setIsSavingGlobalLimit(true);
+    try {
+      await updateOrganizationRules({ maxTotalOrganizationsPerStudent: parsedMax });
+      toast.success(
+        parsedMax
+          ? `Global limit updated: students may join at most ${parsedMax} active organization${parsedMax === 1 ? '' : 's'} total.`
+          : 'Global limit removed: students have no total organization cap (per-type limits still apply).'
+      );
+      onUnsavedChange();
+    } catch (err: any) {
+      toast.error('Failed to save global membership limit: ' + (err?.message || 'Unexpected error'));
+    } finally {
+      setIsSavingGlobalLimit(false);
+    }
+  };
 
   // ─── Types & Roles State ───────────────────────────────────────────────────
   const [typeArchivedView, setTypeArchivedView] = useState(false);
@@ -326,10 +365,61 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════════════
-          TAB 2: ORGANIZATION TYPES
+          TAB 2: ORGANIZATION TYPES & CONFIGURABLE MEMBERSHIP LIMITS
          ═══════════════════════════════════════════════════════════════════════ */}
       {subTab === 'types' && (
-        <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
+        <div className="space-y-4">
+          {/* Global Configurable Student Membership Limit Card */}
+          <div className="bg-white border border-[#E0E0E0] rounded-xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Shield className="w-4 h-4 text-[#0E4EBD]" />
+                <h3 className="font-bold text-[#001A4D] text-sm">
+                  Global Maximum Organizations per Student
+                </h3>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                    orgRules?.maxTotalOrganizationsPerStudent && orgRules.maxTotalOrganizationsPerStudent > 0
+                      ? 'bg-blue-50 text-[#001A4D] border-blue-200'
+                      : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  }`}
+                >
+                  {loadingRules
+                    ? 'Loading...'
+                    : orgRules?.maxTotalOrganizationsPerStudent && orgRules.maxTotalOrganizationsPerStudent > 0
+                    ? `Max ${orgRules.maxTotalOrganizationsPerStudent} total / student`
+                    : 'Unlimited total'}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 max-w-2xl leading-relaxed">
+                Optional overall cap on how many active organizations a student can belong to across all types combined.
+                Leave blank or enter <strong>0</strong> for unlimited total memberships (individual Organization Type limits below still apply).
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <input
+                type="number"
+                min={0}
+                step={1}
+                value={globalMaxOrgsInput}
+                onChange={(e) => setGlobalMaxOrgsInput(e.target.value)}
+                disabled={loadingRules || isSavingGlobalLimit}
+                placeholder="Unlimited"
+                className="w-28 px-3 py-2 border border-gray-300 rounded-lg text-sm font-semibold text-[#001A4D] focus:ring-2 focus:ring-[#0E4EBD] outline-none disabled:opacity-50"
+              />
+              <button
+                type="button"
+                onClick={handleSaveGlobalMaxOrgs}
+                disabled={loadingRules || isSavingGlobalLimit}
+                className="px-4 py-2 bg-[#001A4D] hover:bg-[#0E4EBD] text-white text-xs font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50 shadow-xs"
+              >
+                {isSavingGlobalLimit ? 'Saving...' : 'Save Limit'}
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white border border-[#E0E0E0] rounded-xl overflow-hidden shadow-xs">
           <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
             <div className="flex items-center gap-3">
               <h3 className="font-bold text-[#001A4D]">Organization Classifications</h3>
@@ -432,6 +522,7 @@ export default function OrganizationSettings({ onUnsavedChange, initialSubTab = 
               ))}
             </div>
           )}
+        </div>
         </div>
       )}
 

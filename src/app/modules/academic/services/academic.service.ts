@@ -1,5 +1,9 @@
-import { doc, collection, setDoc, updateDoc, deleteDoc, Timestamp, query, where, getDocs } from 'firebase/firestore';
+import { doc, collection, setDoc, updateDoc, deleteDoc, Timestamp, query, where, getDocs, getDoc } from 'firebase/firestore';
 import { db } from '../../../../services/firebase';
+import {
+  evaluateDepartmentArchivalEligibility,
+  type DepartmentArchivalValidationResult,
+} from '../utils/department-archival-validation.utils';
 import type {
   DepartmentDocument,
   CourseDocument,
@@ -56,7 +60,44 @@ export async function createDepartment(data: Pick<DepartmentDocument, 'name' | '
   return newRef.id;
 }
 
+/**
+ * Live Firestore pre-archival check for a Department.
+ * Blocks archival if the department still contains active Programs (courses),
+ * active Sections, or active Students.
+ */
+export async function validateDepartmentArchival(
+  departmentOrId: DepartmentDocument | string
+): Promise<DepartmentArchivalValidationResult> {
+  let dept: Record<string, any> | null =
+    typeof departmentOrId === 'string' ? null : (departmentOrId as Record<string, any>);
+
+  if (!dept && typeof departmentOrId === 'string') {
+    const deptSnap = await getDoc(doc(db, DEPARTMENTS_COLLECTION, departmentOrId));
+    dept = deptSnap.exists() ? { id: deptSnap.id, ...deptSnap.data() } : { id: departmentOrId };
+  }
+
+  const [coursesSnap, sectionsSnap, activeStudentsSnap] = await Promise.all([
+    getDocs(collection(db, COURSES_COLLECTION)),
+    getDocs(query(collection(db, SECTIONS_COLLECTION), where('archived', '==', false))),
+    getDocs(query(collection(db, 'students'), where('status', '==', 'ACTIVE'))),
+  ]);
+
+  return evaluateDepartmentArchivalEligibility({
+    department: dept || { id: '' },
+    courses: coursesSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+    sections: sectionsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+    students: activeStudentsSnap.docs.map((d) => ({ id: d.id, ...d.data() })),
+  });
+}
+
 export async function updateDepartment(id: string, data: Partial<Pick<DepartmentDocument, 'name' | 'code' | 'academicLevel' | 'archived'>>): Promise<void> {
+  if (data.archived === true) {
+    const validation = await validateDepartmentArchival(id);
+    if (!validation.canArchive) {
+      throw new Error(validation.summaryMessage);
+    }
+  }
+
   const cleanCode = data.code ? data.code.trim().toUpperCase() : undefined;
   const cleanName = data.name ? data.name.trim() : undefined;
 
@@ -91,6 +132,10 @@ export async function updateDepartment(id: string, data: Partial<Pick<Department
 }
 
 export async function deleteDepartment(id: string): Promise<void> {
+  const validation = await validateDepartmentArchival(id);
+  if (!validation.canArchive) {
+    throw new Error(validation.summaryMessage.replace('Cannot archive', 'Cannot delete'));
+  }
   const ref = doc(db, DEPARTMENTS_COLLECTION, id);
   await deleteDoc(ref);
 }

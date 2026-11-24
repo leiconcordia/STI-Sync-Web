@@ -26,6 +26,8 @@ import {
   Info,
   ShieldCheck,
   ExternalLink,
+  RotateCcw,
+  Copy,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { uploadToCloudinary } from '../../../../services/cloudinary';
@@ -33,17 +35,25 @@ import { useOrgLedger } from '../../finance/hooks/useFinanceStream';
 import { useMiscFeeConfigs } from '../../finance/hooks/useMiscFeeStream';
 import { useRetainedActivityFunds } from '../../finance/hooks/useRetainedFundStream';
 import { formatPHP, rebalanceBucketAllocations } from '../../activity-proposals/utils/proposal-calculations';
-import type { ProposalBucketAllocation } from '../../activity-proposals/types/proposal.types';
+import type {
+  ProposalApprovalStep,
+  ProposalBucketAllocation,
+} from '../../activity-proposals/types/proposal.types';
+import { subscribeToSignatories } from '../../signatories/services/signatory.service';
+import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
+import ProposalFlowBuilder from '../../activity-proposals/components/workflow/ProposalFlowBuilder';
 import {
   computeSupplementalItemsTotal,
   doesSbrRequireSignatories,
   getEventBaseApprovedBudget,
   getEventStartDateTime,
   getPermittedSupplementalFundingSources,
+  normalizeSbrApprovalChain,
   validateSbrFormPayload,
 } from '../utils/sbr-validation.utils';
 import {
   createSupplementalBudgetRequest,
+  resolveDefaultSbrPipelineFromParentAp,
   updateSupplementalBudgetRequest,
   type SbrActor,
 } from '../services/sbr.service';
@@ -118,10 +128,50 @@ export default function SupplementalBudgetModal({
   const [allocations, setAllocations] = useState<ProposalBucketAllocation[]>(
     existingSbr?.allocations?.filter((a) => a.fundType === 'misc_fee') || []
   );
+  const [signatories, setSignatories] = useState<InstitutionalSignatory[]>([]);
+  const [approvalChain, setApprovalChain] = useState<ProposalApprovalStep[]>(
+    existingSbr?.approvalChain || []
+  );
+  const [pipelineSourceLabel, setPipelineSourceLabel] = useState<
+    'parent_ap' | 'default_ap_template' | 'custom'
+  >(existingSbr?.approvalChain?.length ? 'custom' : 'parent_ap');
+  const [loadingPipeline, setLoadingPipeline] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  // Reset state whenever modal opens for a different existingSbr
+  // Subscribe to institutional signatories for configurable pipeline editor
+  useEffect(() => {
+    if (!isOpen) return;
+    const unsub = subscribeToSignatories((list) => setSignatories(list));
+    return () => unsub();
+  }, [isOpen]);
+
+  const loadParentApPipeline = async (showToast = false) => {
+    setLoadingPipeline(true);
+    try {
+      const resolved = await resolveDefaultSbrPipelineFromParentAp({
+        eventId: event?.id,
+        parentEvent: event,
+        isSasInstitutional,
+        signatoriesOverride: signatories.length > 0 ? signatories : undefined,
+      });
+      setApprovalChain(resolved.chain);
+      setPipelineSourceLabel(resolved.source);
+      if (showToast) {
+        toast.success(
+          resolved.source === 'parent_ap'
+            ? `Copied ${resolved.chain.length} signatory step(s) from the parent Activity Proposal.`
+            : `Loaded ${resolved.chain.length} step(s) from the default Activity Proposal workflow.`
+        );
+      }
+    } catch (err) {
+      console.warn('[SupplementalBudgetModal] Could not resolve parent AP pipeline:', err);
+    } finally {
+      setLoadingPipeline(false);
+    }
+  };
+
+  // Reset state whenever modal opens for a different existingSbr / event
   useEffect(() => {
     if (!isOpen) return;
     setReasonCategory(existingSbr?.reasonCategory || 'price_increase');
@@ -136,7 +186,13 @@ export default function SupplementalBudgetModal({
         : permittedSources[0]
     );
     setAllocations(existingSbr?.allocations?.filter((a) => a.fundType === 'misc_fee') || []);
-  }, [isOpen, existingSbr, permittedSources]);
+    if (existingSbr?.approvalChain && existingSbr.approvalChain.length > 0) {
+      setApprovalChain(existingSbr.approvalChain);
+      setPipelineSourceLabel(existingSbr.pipelineSource || 'custom');
+    } else {
+      loadParentApPipeline(false);
+    }
+  }, [isOpen, existingSbr, event?.id, permittedSources]);
 
   // Live Financial Streams
   const { data: orgLedgerData = [] } = useOrgLedger(
@@ -198,39 +254,53 @@ export default function SupplementalBudgetModal({
     );
   };
 
-  const handleToggleMiscBucket = (bucket: any) => {
-    const exists = allocations.some((a) => a.bucketId === bucket.id);
+  const handleToggleMiscBucket = (cb: any) => {
+    const bucketId = cb?.bucket?.id || cb?.id;
+    const bucketName = cb?.bucket?.particular || cb?.particular || bucketId;
+    const avail = Number(cb?.currentAvailable ?? cb?.availableBalance ?? 0);
+    const pool = Number(cb?.currentPool ?? cb?.totalPool ?? 0);
+
+    const exists = allocations.some((a) => a.bucketId === bucketId);
     if (exists) {
-      const next = allocations.filter((a) => a.bucketId !== bucket.id);
+      const next = allocations.filter((a) => a.bucketId !== bucketId);
       setAllocations(
         next.length > 0 && requestedAmount > 0
-          ? rebalanceBucketAllocations(next, requestedAmount)
+          ? rebalanceBucketAllocations({ allocations: next, totalExpenses: requestedAmount })
           : next
       );
     } else {
       const added: ProposalBucketAllocation = {
-        bucketId: bucket.id,
-        bucketName: bucket.particular,
+        bucketId,
+        bucketName,
         fundType: 'misc_fee',
-        allocatedAmount: 0,
-        availableAmount: Number(bucket.availableBalance ?? bucket.available ?? 0),
-        poolAmount: Number(bucket.totalPool ?? bucket.poolAmount ?? 0),
+        allocatedAmount: requestedAmount > 0 ? requestedAmount : 0,
+        availableAmount: avail,
+        poolAmount: pool,
       };
       const next = [...allocations, added];
       setAllocations(
-        requestedAmount > 0 ? rebalanceBucketAllocations(next, requestedAmount) : next
+        requestedAmount > 0
+          ? rebalanceBucketAllocations({ allocations: next, totalExpenses: requestedAmount })
+          : next
       );
     }
   };
 
   const handleAllocationAmountChange = (bucketId: string, val: number) => {
-    setAllocations((prev) =>
-      prev.map((a) =>
-        a.bucketId === bucketId
-          ? { ...a, allocatedAmount: Math.max(0, Number(val) || 0) }
-          : a
-      )
-    );
+    const cleanVal = Math.max(0, Number(val) || 0);
+    setAllocations((prev) => {
+      if (prev.length > 1 && requestedAmount > 0) {
+        return rebalanceBucketAllocations({
+          allocations: prev,
+          totalExpenses: requestedAmount,
+          editedBucketId: bucketId,
+          editedAmount: cleanVal,
+        });
+      }
+      return prev.map((a) =>
+        a.bucketId === bucketId ? { ...a, allocatedAmount: cleanVal } : a
+      );
+    });
   };
 
   const handleUploadAttachment = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -291,6 +361,12 @@ export default function SupplementalBudgetModal({
       return;
     }
 
+    const cleanedChain = requiresSignatories ? normalizeSbrApprovalChain(approvalChain, false) : [];
+    if (submitImmediately && requiresSignatories && cleanedChain.length === 0) {
+      toast.error('Please configure at least one Institutional Signatory in Part 4 (or copy the Parent AP Pipeline).');
+      return;
+    }
+
     setSaving(true);
     try {
       const startDt = getEventStartDateTime(event);
@@ -307,6 +383,7 @@ export default function SupplementalBudgetModal({
             supportingAttachments: attachments,
             fundingSource,
             allocations: fundingSource === 'school_budget' ? allocations : [],
+            approvalChain: cleanedChain,
             submitImmediately,
           },
           actor
@@ -340,6 +417,7 @@ export default function SupplementalBudgetModal({
             supportingAttachments: attachments,
             fundingSource,
             allocations: fundingSource === 'school_budget' ? allocations : [],
+            approvalChain: cleanedChain,
             submitImmediately,
           },
           actor
@@ -363,9 +441,9 @@ export default function SupplementalBudgetModal({
   if (!isOpen) return null;
 
   const submitButtonLabel =
-    actor.role === 'officer'
+    actor?.role === 'officer'
       ? 'Submit to Club Adviser'
-      : actor.role === 'adviser'
+      : actor?.role === 'adviser'
       ? 'Endorse & Forward to SAS'
       : requiresSignatories
       ? 'Submit to Institutional Signatories'
@@ -778,13 +856,16 @@ export default function SupplementalBudgetModal({
                   </div>
                 ) : (
                   <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                    {saoEligibleBuckets.map((bucket) => {
-                      const chosen = allocations.find((a) => a.bucketId === bucket.id);
-                      const avail = Number((bucket as any).availableBalance ?? (bucket as any).available ?? 0);
+                    {saoEligibleBuckets.map((cb) => {
+                      const bId = cb.bucket.id;
+                      const bName = cb.bucket.particular;
+                      const chosen = allocations.find((a) => a.bucketId === bId);
+                      const avail = Number(cb.currentAvailable ?? 0);
+                      const pool = Number(cb.currentPool ?? 0);
                       const overLimit = chosen && chosen.allocatedAmount > avail + 0.009;
                       return (
                         <div
-                          key={bucket.id}
+                          key={bId}
                           className={`p-3 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-2 ${
                             chosen
                               ? overLimit
@@ -797,13 +878,20 @@ export default function SupplementalBudgetModal({
                             <input
                               type="checkbox"
                               checked={Boolean(chosen)}
-                              onChange={() => handleToggleMiscBucket(bucket)}
+                              onChange={() => handleToggleMiscBucket(cb)}
                               className="w-4 h-4 rounded text-[#003366]"
                             />
                             <div>
-                              <div className="text-xs font-bold text-slate-800">{bucket.particular}</div>
-                              <div className="text-[11px] text-slate-500">
-                                Available: <span className="font-semibold text-emerald-700">{formatPHP(avail)}</span>
+                              <div className="text-xs font-bold text-slate-800">{bName}</div>
+                              <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-2">
+                                <span>
+                                  Available:{' '}
+                                  <span className={`font-semibold ${avail > 0 ? 'text-emerald-700' : 'text-rose-600'}`}>
+                                    {formatPHP(avail)}
+                                  </span>
+                                </span>
+                                <span className="text-slate-300">•</span>
+                                <span>Pool: {formatPHP(pool)}</span>
                               </div>
                             </div>
                           </label>
@@ -816,7 +904,7 @@ export default function SupplementalBudgetModal({
                                 step="0.01"
                                 value={chosen.allocatedAmount}
                                 onChange={(e) =>
-                                  handleAllocationAmountChange(bucket.id, Number(e.target.value))
+                                  handleAllocationAmountChange(bId, Number(e.target.value))
                                 }
                                 className="w-32 text-right rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-bold focus:border-[#003366] focus:outline-none"
                               />
@@ -830,6 +918,66 @@ export default function SupplementalBudgetModal({
               </div>
             )}
           </section>
+
+          {/* PART 4: Signatory Approval Pipeline (Copied from Parent AP & Configurable) */}
+          {requiresSignatories && (
+            <section className="space-y-3 pt-2 border-t border-slate-200">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-[#003366] text-white text-xs font-bold flex items-center justify-center">
+                    4
+                  </span>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Signatory Approval Pipeline
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    {pipelineSourceLabel === 'parent_ap'
+                      ? 'Copied from Parent AP Pipeline'
+                      : pipelineSourceLabel === 'default_ap_template'
+                      ? 'Default AP Pipeline'
+                      : 'Custom Configured'}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={loadingPipeline}
+                  onClick={() => loadParentApPipeline(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-800 border border-slate-200 hover:border-indigo-300 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {loadingPipeline ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                  Copy Parent AP Pipeline
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Defaults to your original Activity Proposal&apos;s signatory pipeline. You can add, remove, or reorder stages and signatories below before submitting.
+              </p>
+
+              {loadingPipeline ? (
+                <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Copying Parent AP signatory pipeline...
+                </div>
+              ) : (
+                <ProposalFlowBuilder
+                  approvalChain={approvalChain}
+                  onChange={(newChain) => {
+                    setApprovalChain(newChain);
+                    setPipelineSourceLabel('custom');
+                  }}
+                  activeSignatories={signatories}
+                  creatorName={actor.name}
+                  creatorEmail={actor.email}
+                  creatorRole={isSasInstitutional ? 'sas_admin' : 'officer'}
+                  fundingSource={fundingSource}
+                />
+              )}
+            </section>
+          )}
         </div>
 
         {/* Footer */}

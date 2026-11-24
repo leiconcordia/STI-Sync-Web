@@ -168,18 +168,29 @@ export function useOfficerAuth() {
           }
         });
 
-        // Also check embedded adviser in organizations
+        // Also check embedded primary adviser & co-adviser in organizations
         if (adviserRecords.length === 0) {
-          const qOrg = query(
-            collection(db, 'organizations'),
-            where('adviser.email', '==', cleanId)
-          );
-          const orgSnap = await getDocs(qOrg);
-          orgSnap.docs.forEach((d) => {
+          const [primarySnap, coSnap] = await Promise.all([
+            getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', cleanId))),
+            getDocs(query(collection(db, 'organizations'), where('coAdviser.email', '==', cleanId))),
+          ]);
+          primarySnap.docs.forEach((d) => {
             const orgData = d.data();
             if (orgData.adviser) {
               adviserRecords.push({
                 ...orgData.adviser,
+                adviserRole: 'primary',
+                organizationId: d.id,
+                organizationName: orgData.name,
+              });
+            }
+          });
+          coSnap.docs.forEach((d) => {
+            const orgData = d.data();
+            if (orgData.coAdviser) {
+              adviserRecords.push({
+                ...orgData.coAdviser,
+                adviserRole: 'co_adviser',
                 organizationId: d.id,
                 organizationName: orgData.name,
               });
@@ -331,6 +342,13 @@ export function useOfficerAuth() {
         if (blockedSasAccount) {
           setError(
             'SAS accounts cannot sign in through the Organization / Signatory portal. Please sign in at /admin/login.'
+          );
+        } else if (
+          officerRecords.length > 0 &&
+          officerRecords.some((record) => record.appointmentStatus === 'pending_acceptance')
+        ) {
+          setError(
+            'Your officer appointment is still pending confirmation. Please open the STI Sync mobile app to accept your appointment first.'
           );
         } else if (officerRecords.length > 0 && officerRecords.every((record) => record.hasWebPortalAccess === false)) {
           setError('Your officer appointment does not include Web Portal access. Please contact your Club Adviser or SAS Administrator, or use the STI Sync mobile app.');

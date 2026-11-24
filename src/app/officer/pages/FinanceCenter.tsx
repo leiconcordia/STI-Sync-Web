@@ -4,6 +4,10 @@ import { toast } from 'sonner';
 
 import { useOrgLedger, parseTimestampMillis } from '../../modules/finance/hooks/useFinanceStream';
 import { addOrgLedgerTransaction, deductApprovedEventBudget } from '../../modules/finance/services/finance.service';
+import {
+  useOrgSupplementalBudgets,
+  acknowledgeAndDeductOrgSupplementalBudget,
+} from '../../modules/supplemental-budget';
 import { useSemesters } from '../../modules/academic/hooks/useAcademicStream';
 import { useOrgEvents } from '../../modules/events/hooks/useEventStream';
 import { useOrgLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
@@ -49,8 +53,25 @@ function ApprovedOrgActivitiesPanel({
   const actorName = fcBudgetProfile?.studentName || officerName;
   const { events: orgEvents = [] } = useOrgEvents(organizationId);
   const { liquidations: orgLiquidations = [] } = useOrgLiquidations(organizationId);
+  const { data: orgSbrs = [] } = useOrgSupplementalBudgets(organizationId);
   const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const [syncingEventId, setSyncingEventId] = useState<string | null>(null);
+  const [acknowledgingSbrId, setAcknowledgingSbrId] = useState<string | null>(null);
+
+  const approvedOrgSbrRows = useMemo(() => {
+    return orgSbrs
+      .filter((s) => s && !s.isDeleted && s.status === 'approved' && s.fundingSource === 'organization_funds')
+      .map((sbr) => {
+        const ledgerTx = ledgerData.find(
+          (tx: any) => tx.sbrId === sbr.id && tx.source === 'supplemental_budget'
+        );
+        return {
+          sbr,
+          ledgerTx,
+          isDeducted: Boolean(sbr.ledgerDeducted || ledgerTx),
+        };
+      });
+  }, [orgSbrs, ledgerData]);
 
   const activityRows = useMemo(() => {
     const approvedSet = new Set(['approved', 'completed']);
@@ -137,7 +158,8 @@ function ApprovedOrgActivitiesPanel({
       });
   }, [orgEvents, ledgerData, orgLiquidations]);
 
-  const missingSyncCount = activityRows.filter((r) => !r.allocTx).length;
+  const pendingSbrAckCount = approvedOrgSbrRows.filter((r) => !r.isDeducted).length;
+  const missingSyncCount = activityRows.filter((r) => !r.allocTx).length + pendingSbrAckCount;
   const pendingSettlementCount = activityRows.filter(
     (r) => r.fl && r.diff !== 0 && !r.settlementTx
   ).length;
@@ -146,7 +168,7 @@ function ApprovedOrgActivitiesPanel({
       ? userExpanded
       : missingSyncCount > 0 || pendingSettlementCount > 0;
 
-  if (activityRows.length === 0) return null;
+  if (activityRows.length === 0 && approvedOrgSbrRows.length === 0) return null;
 
   return (
     <div className="bg-white border border-blue-200 rounded-xl overflow-hidden shadow-xs">
@@ -231,6 +253,69 @@ function ApprovedOrgActivitiesPanel({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
+                {approvedOrgSbrRows.map(({ sbr, ledgerTx, isDeducted }) => (
+                  <tr key={`sbr_${sbr.id}`} className="bg-amber-50/35 hover:bg-amber-50/70">
+                    <td className="py-2.5 px-3">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-200 text-[10px] font-bold uppercase">
+                          Supplemental
+                        </span>
+                        <p className="font-bold text-[#001A4D]">{sbr.eventTitle}</p>
+                      </div>
+                      <p className="text-[11px] text-gray-500 font-mono mt-0.5">
+                        {sbr.referenceCode} • Club Treasury Top-Up
+                      </p>
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-bold text-amber-800">
+                      +{fcFormatCurrency(sbr.requestedAmount)}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {isDeducted ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold text-[11px]">
+                          <FcCheckCircle2 className="w-3.5 h-3.5" />
+                          Acknowledged &amp; Deducted ({fcFormatCurrency(ledgerTx?.amount ?? sbr.requestedAmount)})
+                        </span>
+                      ) : !isPast ? (
+                        <button
+                          type="button"
+                          disabled={acknowledgingSbrId === sbr.id}
+                          onClick={async () => {
+                            setAcknowledgingSbrId(sbr.id);
+                            try {
+                              await acknowledgeAndDeductOrgSupplementalBudget(sbr.id, {
+                                uid: fcBudgetProfile?.authUid || fcBudgetProfile?.uid || 'officer',
+                                name: actorName,
+                                email: fcBudgetProfile?.email || '',
+                                role: fcBudgetProfile?.isAdviser ? 'adviser' : 'officer',
+                              });
+                              fcToast.success(
+                                `Acknowledged ${sbr.referenceCode} and deducted ${fcFormatCurrency(sbr.requestedAmount)} from Club Treasury Ledger.`
+                              );
+                            } catch (err: any) {
+                              fcToast.error(
+                                err?.message || 'Failed to acknowledge & deduct supplemental budget.'
+                              );
+                            } finally {
+                              setAcknowledgingSbrId(null);
+                            }
+                          }}
+                          className="px-2.5 py-1 bg-[#001A4D] hover:bg-[#0E4EBD] text-[#FFD41C] rounded-md font-bold text-[11px] cursor-pointer disabled:opacity-50"
+                        >
+                          {acknowledgingSbrId === sbr.id
+                            ? 'Deducting...'
+                            : 'Acknowledge & Deduct to Club Ledger'}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-amber-700 font-semibold">
+                          Not Acknowledged in Term Ledger
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2.5 px-3 text-[11px] text-gray-500">
+                      Rolls into parent event&apos;s Financial Liquidation baseline
+                    </td>
+                  </tr>
+                ))}
                 {activityRows.map((row) => (
                   <tr key={row.event.id} className="hover:bg-gray-50/60">
                     <td className="py-2.5 px-3">

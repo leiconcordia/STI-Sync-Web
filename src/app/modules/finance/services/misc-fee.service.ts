@@ -2,7 +2,9 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromCache,
   getDocs,
+  getDocsFromCache,
   setDoc,
   deleteDoc,
   serverTimestamp,
@@ -429,7 +431,18 @@ async function resolveTargetMiscFeeConfig(params: {
   const targetIds = Array.isArray(params.targetBucketIds)
     ? params.targetBucketIds.filter(Boolean)
     : [];
-  const allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+  let allSnap;
+  try {
+    allSnap = await getDocs(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+  } catch (err: any) {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    if (code === 'resource-exhausted' || msg.includes('quota exceeded')) {
+      allSnap = await getDocsFromCache(collection(db, MISC_FEE_CONFIGS_COLLECTION));
+    } else {
+      throw err;
+    }
+  }
   if (allSnap.empty) {
     return params.schoolYear ? createDefaultMiscFeeConfig(params.schoolYear) : null;
   }
@@ -524,7 +537,22 @@ export async function deductMiscFeeBucketOnDisbursement(params: {
 
   const ledgerDocId = params.ledgerDocIdOverride || `disb_${eventId}`;
   const ledgerRef = doc(db, MISC_FEE_LEDGER_COLLECTION, ledgerDocId);
-  const existingLedgerSnap = await getDoc(ledgerRef);
+  let existingLedgerSnap: any;
+  try {
+    existingLedgerSnap = await getDoc(ledgerRef);
+  } catch (err: any) {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    if (code === 'resource-exhausted' || msg.includes('quota exceeded')) {
+      try {
+        existingLedgerSnap = await getDocFromCache(ledgerRef);
+      } catch {
+        existingLedgerSnap = { exists: () => false, data: () => null };
+      }
+    } else {
+      throw err;
+    }
+  }
   const existingLedgerData = existingLedgerSnap.exists() ? (existingLedgerSnap.data() as any) : null;
   const existingLedgerSyNorm = normalizeMiscSchoolYear(existingLedgerData?.schoolYear).toLowerCase();
   const resolvedSyNorm = normalizeMiscSchoolYear(configDoc.schoolYear).toLowerCase();

@@ -76,15 +76,23 @@ const INITIAL_STAGE_CONFIGS = [
 ];
 
 export default function ProposalFlowBuilder({
-  approvalChain,
+  approvalChain: rawApprovalChain,
   onChange,
-  activeSignatories,
+  activeSignatories: rawActiveSignatories,
   targetAudience,
   creatorName,
   creatorEmail,
   creatorRole,
   fundingSource,
 }: ProposalFlowBuilderProps) {
+  const approvalChain = useMemo(
+    () => (Array.isArray(rawApprovalChain) ? rawApprovalChain.filter(Boolean) : []),
+    [rawApprovalChain]
+  );
+  const activeSignatories = useMemo(
+    () => (Array.isArray(rawActiveSignatories) ? rawActiveSignatories.filter(Boolean) : []),
+    [rawActiveSignatories]
+  );
   const isOfficerProposal = useMemo(() => {
     if (creatorRole === 'officer') return true;
     if (creatorRole === 'sas_admin' || creatorRole === 'admin') return false;
@@ -272,11 +280,13 @@ export default function ProposalFlowBuilder({
 
   // Validation Checks
   const validation = useMemo(() => {
-    const hasApprover = approvalChain.some((s) => s.actionType === 'approve' || s.role === 'school_president');
+    const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    const hasApprover = approverCount >= 1 || approvalChain.some((s) => s.role === 'school_president');
     const emptyStages = stages.filter((stg) => stg.steps.length === 0);
     const totalSignatories = approvalChain.length;
 
     return {
+      approverCount,
       hasApprover,
       emptyStages,
       totalSignatories,
@@ -847,7 +857,7 @@ export default function ProposalFlowBuilder({
     onChange(updated);
   };
 
-  // 10. Set Action Type for a specific Step (Enforcing Single-Approver Mutex)
+  // 10. Set Action Type for a specific Step (Supports 1+ Approvers; Runtime Single-Approval Governance)
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: SignatoryActionType) => {
     const updated = approvalChain.map((s) => {
       const match = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
@@ -855,17 +865,12 @@ export default function ProposalFlowBuilder({
         return {
           ...s,
           actionType: newAction,
-          signatoryLabel: newAction === 'approve' ? 'Approved by:' : (s.signatoryLabel || resolveSignatoryLabel(s, 'proposal', false)),
-        };
-      }
-      // If setting this step to 'approve', demote any other existing approver in the pipeline to 'endorse'
-      if (newAction === 'approve' && s.actionType === 'approve') {
-        return {
-          ...s,
-          actionType: 'endorse' as const,
-          signatoryLabel: s.signatoryLabel && s.signatoryLabel.toLowerCase().includes('approved')
-            ? resolveSignatoryLabel(s, 'proposal', false)
-            : s.signatoryLabel,
+          signatoryLabel:
+            newAction === 'approve'
+              ? 'Approved by:'
+              : s.signatoryLabel && !/approved\s*by/i.test(s.signatoryLabel)
+              ? s.signatoryLabel
+              : resolveSignatoryLabel(s, 'proposal', false),
         };
       }
       return s;
@@ -928,7 +933,9 @@ export default function ProposalFlowBuilder({
             {validation.hasApprover ? (
               <span className="text-emerald-400 text-[11px] font-semibold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                Final Approver Configured
+                {validation.approverCount >= 2
+                  ? `${validation.approverCount} Approvers Configured (First to Approve Wins)`
+                  : 'Final Approver Configured'}
               </span>
             ) : (
               <span className="text-amber-300 text-[11px] font-semibold flex items-center gap-1">
@@ -1123,11 +1130,7 @@ export default function ProposalFlowBuilder({
                         step.role === 'school_president' ||
                         step.role === 'school_administrator'
                       );
-                      const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
-                      const pipelineAlreadyHasApprover = Boolean(
-                        existingApprover && (step.id ? existingApprover.id !== step.id : existingApprover.step !== step.step)
-                      );
-                      const canSignerApprove = hasDocumentApprovalAuthority && !pipelineAlreadyHasApprover;
+                      const canSignerApprove = hasDocumentApprovalAuthority;
 
                       return (
                         <div
@@ -1204,9 +1207,7 @@ export default function ProposalFlowBuilder({
                                 title={
                                   !hasDocumentApprovalAuthority
                                     ? 'This signatory is an Endorser Only in institutional settings and cannot be designated as Approver.'
-                                    : pipelineAlreadyHasApprover
-                                    ? `Only 1 approver is allowed per pipeline. ${existingApprover?.signatoryName || 'Another signer'} is already the designated Approver.`
-                                    : 'Designate as executive Approver'
+                                    : 'Designate as executive Approver (when 2+ approvers are configured, first to Approve finalizes and remaining approvers become Noted/Endorser only)'
                                 }
                               >
                                 Approve

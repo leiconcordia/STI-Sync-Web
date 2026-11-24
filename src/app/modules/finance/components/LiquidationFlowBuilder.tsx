@@ -234,13 +234,17 @@ export default function LiquidationFlowBuilder({
 
   // Validation Checks
   const validation = useMemo(() => {
-    const hasApprover = approvalChain.some(
-      (s) => s.actionType === 'approve' || s.role === 'school_president' || s.role === 'school_administrator'
-    );
+    const approverCount = approvalChain.filter((s) => s.actionType === 'approve').length;
+    const hasApprover =
+      approverCount >= 1 ||
+      approvalChain.some(
+        (s) => s.role === 'school_president' || s.role === 'school_administrator'
+      );
     const emptyStages = stages.filter((stg) => stg.steps.length === 0);
     const totalSignatories = approvalChain.length;
 
     return {
+      approverCount,
       hasApprover,
       emptyStages,
       totalSignatories,
@@ -473,18 +477,23 @@ export default function LiquidationFlowBuilder({
     onChange([]);
   };
 
-  // Set Action Type (endorse vs approve) for a specific step (Enforcing Single Approver Mutex)
+  // Set Action Type (endorse vs approve) for a specific step (Supports 1+ Approvers; Runtime Single-Approval Governance)
   const handleSetActionType = (stepIdOrIndex: string | number, newAction: 'endorse' | 'approve') => {
     const updatedStages = stages.map((stg) => ({
       ...stg,
       steps: stg.steps.map((s) => {
         const matches = s.id ? s.id === stepIdOrIndex : s.step === stepIdOrIndex;
         if (matches) {
-          return { ...s, actionType: newAction };
-        }
-        // If setting this step to approve, demote any other existing approver in the pipeline
-        if (newAction === 'approve' && s.actionType === 'approve') {
-          return { ...s, actionType: 'endorse' as const };
+          return {
+            ...s,
+            actionType: newAction,
+            signatoryLabel:
+              newAction === 'approve'
+                ? 'Approved by:'
+                : s.signatoryLabel && !/approved\s*by/i.test(s.signatoryLabel)
+                ? s.signatoryLabel
+                : resolveSignatoryLabel(s, 'liquidation', false),
+          };
         }
         return s;
       }),
@@ -550,7 +559,9 @@ export default function LiquidationFlowBuilder({
             {validation.hasApprover ? (
               <span className="text-emerald-400 text-[11px] font-semibold flex items-center gap-1">
                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                Final Approver Configured
+                {validation.approverCount >= 2
+                  ? `${validation.approverCount} Approvers Configured (First to Approve Wins)`
+                  : 'Final Approver Configured'}
               </span>
             ) : (
               <span className="text-amber-300 text-[11px] font-semibold flex items-center gap-1">
@@ -703,11 +714,7 @@ export default function LiquidationFlowBuilder({
                           step.role === 'school_administrator' ||
                           (matchedSig?.actionType === 'approver' && matchedSig?.canApproveLiquidation !== false)
                         );
-                        const existingApprover = approvalChain.find((s) => s.actionType === 'approve');
-                        const pipelineHasOtherApprover = Boolean(
-                          existingApprover && (step.id ? existingApprover.id !== step.id : existingApprover.step !== step.step)
-                        );
-                        const canSignerApprove = hasApprovalAuth && !pipelineHasOtherApprover;
+                        const canSignerApprove = hasApprovalAuth;
 
                         return (
                           <div
@@ -772,9 +779,7 @@ export default function LiquidationFlowBuilder({
                                   title={
                                     !hasApprovalAuth
                                       ? 'This signatory is an Endorser Only for Financial Liquidations and cannot be set as Approver.'
-                                      : pipelineHasOtherApprover
-                                      ? `Only 1 approver is allowed per pipeline. ${existingApprover?.signatoryName || 'Another signer'} is already the designated Approver.`
-                                      : 'Set as Approver'
+                                      : 'Set as Approver (when 2+ approvers are configured, first to Approve finalizes and remaining approvers become Noted/Endorser only)'
                                   }
                                   className={`px-2.5 py-1 text-[11px] font-bold rounded-md transition-all ${
                                     step.actionType === 'approve'

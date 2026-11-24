@@ -13,7 +13,7 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
   const navigate = useNavigate();
   const [showUserMenu, setShowUserMenu] = useState(false);
 
-  const { profile, logout } = useOfficerProfile();
+  const { profile, adviserAuthority, logout } = useOfficerProfile();
 
   const handleLogout = () => {
     setShowUserMenu(false);
@@ -84,7 +84,11 @@ export function OfficerTopNav({ title }: OfficerTopNavProps) {
                 <div className="p-3 border-b border-[#E0E0E0]">
                   <p className="text-sm font-bold text-[#001A4D]">{profile?.studentName || 'Officer'}</p>
                   <p className="text-xs text-[#888780]">
-                    {profile?.isAdviser ? 'Club Adviser' : 'Organization Officer'}
+                    {profile?.isAdviser
+                      ? adviserAuthority.isCoAdviser
+                        ? 'Club Co-Adviser'
+                        : 'Club Adviser'
+                      : 'Organization Officer'}
                   </p>
                 </div>
                 <div className="py-2">

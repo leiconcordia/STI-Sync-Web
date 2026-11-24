@@ -43,28 +43,49 @@ export function stripStagePrefix(name?: string): string {
 }
 
 /**
- * Ensures that an approval chain has AT MOST one approver across the entire pipeline.
- * If multiple approvers exist, only the last eligible approver remains 'approve',
- * and all prior approvers are converted to 'endorse'.
+ * Counts how many steps in the approval chain are designated with `actionType === 'approve'`.
+ */
+export function countApprovers<T extends { actionType?: string }>(
+  chain: T[] | null | undefined
+): number {
+  if (!Array.isArray(chain)) return 0;
+  return chain.filter((s) => Boolean(s) && s?.actionType === 'approve').length;
+}
+
+/**
+ * Returns true if the approval chain has at least one designated Approver.
+ */
+export function hasAtLeastOneApprover<T extends { actionType?: string }>(
+  chain: T[] | null | undefined
+): boolean {
+  return countApprovers(chain) >= 1;
+}
+
+/**
+ * Legacy helper kept for explicit opt-in callers only.
+ * Under Flexible Multi-Approver Runtime Governance, pipelines may configure 1 or more
+ * approvers at design time; the single-approval invariant is enforced atomically at runtime
+ * ("First-to-Approve wins; remaining approvers auto-demote to Endorser/Noted only").
  */
 export function enforceSingleApprover<T extends { actionType?: string }>(
   chain: T[]
 ): T[] {
-  if (!chain || chain.length === 0) return chain;
+  const safeChain = Array.isArray(chain) ? chain.filter(Boolean) : [];
+  if (safeChain.length === 0) return [];
 
   const approverIndices: number[] = [];
-  chain.forEach((s, idx) => {
-    if (s.actionType === 'approve') {
+  safeChain.forEach((s, idx) => {
+    if (s?.actionType === 'approve') {
       approverIndices.push(idx);
     }
   });
 
-  if (approverIndices.length <= 1) return chain;
+  if (approverIndices.length <= 1) return safeChain;
 
   // Keep only the last approver as 'approve', demote earlier ones to 'endorse'
   const lastApproverIdx = approverIndices[approverIndices.length - 1];
-  return chain.map((s, idx) => {
-    if (idx !== lastApproverIdx && s.actionType === 'approve') {
+  return safeChain.map((s, idx) => {
+    if (idx !== lastApproverIdx && s?.actionType === 'approve') {
       return { ...s, actionType: 'endorse' };
     }
     return s;
@@ -73,26 +94,24 @@ export function enforceSingleApprover<T extends { actionType?: string }>(
 
 /**
  * Normalizes an arbitrary approval chain:
- * 1. Groups steps by their existing stage order
- * 2. Renumbers all stages strictly sequentially 1..M (eliminates duplicate stage numbers)
- * 3. Sets step.stageIndex = sequential stage index
- * 4. Sets step.stageName = formatStageTitle(sequentialStageIndex, countInStage)
- * 5. Re-indexes step numbers 1..N
- * 6. Enforces that at most 1 approver exists across the pipeline
+ * 1. Filters null/undefined entries defensively
+ * 2. Groups steps by their existing stage order (preserving all configured Approvers)
+ * 3. Renumbers all stages strictly sequentially 1..M (eliminates duplicate stage numbers)
+ * 4. Sets step.stageIndex = sequential stage index
+ * 5. Sets step.stageName = formatStageTitle(sequentialStageIndex, countInStage)
+ * 6. Re-indexes step numbers 1..N
  */
 export function normalizeApprovalStages<T extends { stageIndex?: number; stageName?: string; step?: number; actionType?: string }>(
   chain: T[]
 ): T[] {
-  if (!chain || chain.length === 0) return [];
+  const safeChain = Array.isArray(chain) ? chain.filter(Boolean) : [];
+  if (safeChain.length === 0) return [];
 
-  // Enforce single approver invariant across the pipeline
-  const singleApproverChain = enforceSingleApprover(chain);
-
-  // Group steps preserving stage appearance order
+  // Group steps preserving stage appearance order and all configured approvers
   const stageMap = new Map<number, T[]>();
   const seenIndices: number[] = [];
 
-  singleApproverChain.forEach((step) => {
+  safeChain.forEach((step) => {
     const rawIdx = Math.max(1, Math.floor(step.stageIndex || 1));
     if (!stageMap.has(rawIdx)) {
       stageMap.set(rawIdx, []);
@@ -127,16 +146,18 @@ export function normalizeApprovalStages<T extends { stageIndex?: number; stageNa
 }
 
 export function findMatchedSignatoryForStep(
-  step: { signatoryUid?: string; signatoryEmail?: string },
+  step: { signatoryUid?: string; signatoryEmail?: string } | null | undefined,
   signatories: InstitutionalSignatory[]
 ): InstitutionalSignatory | undefined {
+  if (!step || !Array.isArray(signatories)) return undefined;
   const cleanEmail = (step.signatoryEmail || '').trim().toLowerCase();
   const cleanUid = (step.signatoryUid || '').trim();
   if (!cleanUid && !cleanEmail) return undefined;
   return signatories.find(
     (s) =>
-      (cleanUid && (s.id === cleanUid || s.uid === cleanUid)) ||
-      (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail)
+      Boolean(s) &&
+      ((cleanUid && (s.id === cleanUid || s.uid === cleanUid)) ||
+        (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail))
   );
 }
 
@@ -168,6 +189,7 @@ export function filterTemplateStepsBySignatoryScope<
   }
 
   const filtered = steps.filter((step) => {
+    if (!step) return false;
     if (
       options?.preserveBuiltinSasGate &&
       (step.role === 'sas_head' || step.role === 'sas_coordinator')

@@ -3,6 +3,8 @@ import { X, Search, Crown, Loader2, AlertCircle } from 'lucide-react';
 import { useRoles } from '../../modules/roles/hooks/useRoles';
 import { useOrgMembers } from '../../modules/organizations/hooks/useOrgMembers';
 import { useOrgOfficers, type OrganizationOfficerDocument } from '../../modules/organizations/hooks/useOrgOfficers';
+import { useOrganizationStream } from '../../modules/organizations/hooks/useOrganizationStream';
+import { useOfficerProfile } from '../../auth/hooks/useOfficerProfile';
 import { appointAsOfficer } from '../../modules/organizations/services/member.service';
 import { sendOfficerAppointmentEmail } from '../../../services/email.service';
 import type { OrganizationMemberDocument } from '../../modules/organizations/types/member.types';
@@ -39,6 +41,13 @@ export function AppointOfficerModal({
   const { data: roles, loading: loadingRoles } = useRoles();
   const { members, loading: loadingMembers } = useOrgMembers(organizationId);
   const { officers: allActiveOfficers = [], loading: loadingAllOfficers } = useOrgOfficers('all');
+  const { data: allOrgs = [] } = useOrganizationStream();
+  const { profile: adviserProfile } = useOfficerProfile();
+
+  const currentOrgName = useMemo(() => {
+    const found = allOrgs.find((o) => o.id === organizationId);
+    return found?.name || 'Student Organization';
+  }, [allOrgs, organizationId]);
 
   const [selectedCandidate, setSelectedCandidate] = useState<AppointCandidate | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -74,31 +83,61 @@ export function AppointOfficerModal({
     }
   }, [isOpen, preselectedMember]);
 
-  // Categorize active officer keys for exclusivity checks:
-  // - blockedOfficerKeys: already an active officer in THIS org, OR has Web Portal access in ANOTHER org
-  // - otherOrgOfficerKeys: already an active officer in ANOTHER org (without Web Portal access)
-  const { blockedOfficerKeys, otherOrgOfficerKeys } = useMemo(() => {
-    const blocked = new Set<string>();
+  // Categorize active/pending officer keys for exclusivity checks:
+  // - sameOrgOfficerKeys: already an active or pending officer in THIS org (cannot appoint twice here)
+  // - webAccessElsewhereMap: already granted Web Portal access in ANOTHER org (CAN still be appointed
+  //   here as In-Org Only, but CANNOT be granted Web Portal access again)
+  // - otherOrgOfficerKeys: holds an officer role in another org (informational)
+  const { sameOrgOfficerKeys, webAccessElsewhereMap, otherOrgOfficerKeys } = useMemo(() => {
+    const sameOrg = new Set<string>();
+    const webElsewhere = new Map<string, string>();
     const otherOrg = new Set<string>();
-    const addKeys = (target: Set<string>, o: OrganizationOfficerDocument) => {
+
+    const addKeySet = (target: Set<string>, o: OrganizationOfficerDocument) => {
       if (o.studentId) target.add(o.studentId.trim().toLowerCase());
       if (o.email) target.add(o.email.trim().toLowerCase());
     };
+    const addWebMap = (o: OrganizationOfficerDocument) => {
+      const label = o.organizationName || 'another organization';
+      if (o.studentId) webElsewhere.set(o.studentId.trim().toLowerCase(), label);
+      if (o.email) webElsewhere.set(o.email.trim().toLowerCase(), label);
+    };
+
     currentOfficers.forEach((o) => {
-      if (o.isActive) addKeys(blocked, o);
-    });
-    allActiveOfficers.forEach((o) => {
-      if (!o.isActive) return;
-      if (o.organizationId === organizationId) {
-        addKeys(blocked, o);
-      } else if (o.hasWebPortalAccess !== false) {
-        addKeys(blocked, o);
-      } else {
-        addKeys(otherOrg, o);
+      if (o.isActive && o.appointmentStatus !== 'declined') {
+        addKeySet(sameOrg, o);
       }
     });
-    return { blockedOfficerKeys: blocked, otherOrgOfficerKeys: otherOrg };
+    allActiveOfficers.forEach((o) => {
+      if (!o.isActive || o.appointmentStatus === 'declined') return;
+      if (o.organizationId === organizationId) {
+        addKeySet(sameOrg, o);
+      } else {
+        addKeySet(otherOrg, o);
+        if (o.hasWebPortalAccess !== false) {
+          addWebMap(o);
+        }
+      }
+    });
+    return {
+      sameOrgOfficerKeys: sameOrg,
+      webAccessElsewhereMap: webElsewhere,
+      otherOrgOfficerKeys: otherOrg,
+    };
   }, [allActiveOfficers, currentOfficers, organizationId]);
+
+  const selectedWebAccessElsewhereOrg = useMemo(() => {
+    if (!selectedCandidate) return null;
+    const sId = (selectedCandidate.studentId || '').trim().toLowerCase();
+    const sEmail = (selectedCandidate.email || '').trim().toLowerCase();
+    return (
+      webAccessElsewhereMap.get(sId) ||
+      (sEmail ? webAccessElsewhereMap.get(sEmail) : null) ||
+      null
+    );
+  }, [selectedCandidate, webAccessElsewhereMap]);
+
+  const selectedHasWebPortalElsewhere = Boolean(selectedWebAccessElsewhereOrg);
 
   const selectedIsOfficerElsewhere = useMemo(() => {
     if (!selectedCandidate) return false;
@@ -106,6 +145,13 @@ export function AppointOfficerModal({
     const sEmail = (selectedCandidate.email || '').trim().toLowerCase();
     return otherOrgOfficerKeys.has(sId) || (Boolean(sEmail) && otherOrgOfficerKeys.has(sEmail));
   }, [selectedCandidate, otherOrgOfficerKeys]);
+
+  // Auto-uncheck Web Portal access if a candidate who already holds it elsewhere is selected
+  useEffect(() => {
+    if (selectedHasWebPortalElsewhere && hasWebPortalAccess) {
+      setHasWebPortalAccess(false);
+    }
+  }, [selectedHasWebPortalElsewhere, hasWebPortalAccess]);
 
   const activeRoles = useMemo(() => roles.filter((r) => !r.archived), [roles]);
 
@@ -141,17 +187,16 @@ export function AppointOfficerModal({
       return;
     }
 
-    // 2. Enforce officer exclusivity rules:
-    // - Cannot be already active in this organization or hold Web Portal access in another organization
-    if (blockedOfficerKeys.has(sId) || (sEmail && blockedOfficerKeys.has(sEmail))) {
+    // 2. Enforce officer exclusivity & once-per-student Web Portal access rules:
+    if (sameOrgOfficerKeys.has(sId) || (sEmail && sameOrgOfficerKeys.has(sEmail))) {
       setError(
-        `${selectedCandidate.studentName} is already an active officer in this organization or holds Web Portal access in another organization.`
+        `${selectedCandidate.studentName} already has an active or pending officer appointment in this organization.`
       );
       return;
     }
-    if (hasWebPortalAccess && selectedIsOfficerElsewhere) {
+    if (hasWebPortalAccess && selectedHasWebPortalElsewhere) {
       setError(
-        `${selectedCandidate.studentName} already holds an officer role in another organization and cannot be granted exclusive Web Portal access here.`
+        `${selectedCandidate.studentName} already has Web Portal access in ${selectedWebAccessElsewhereOrg}. One student can be an officer in multiple organizations, but Web Portal access can only be granted once.`
       );
       return;
     }
@@ -159,15 +204,19 @@ export function AppointOfficerModal({
     const selectedRole = activeRoles.find((r) => r.id === roleId);
     const roleName = selectedRole?.name || '';
 
-    // 3. Enforce that only one active officer can hold each role in this organization
+    // 3. Enforce that only one active or pending officer can hold each role in this organization
     const activeOfficerForRole = currentOfficers.find(
       (o) =>
         o.isActive &&
+        o.appointmentStatus !== 'declined' &&
         (o.roleId === roleId || (roleName && o.roleName?.trim().toLowerCase() === roleName.trim().toLowerCase()))
     );
     if (activeOfficerForRole) {
+      const pendingSuffix = activeOfficerForRole.appointmentStatus === 'pending_acceptance'
+        ? ' (Pending Acceptance)'
+        : '';
       setError(
-        `The role "${roleName}" is already occupied by ${activeOfficerForRole.studentName}. Please choose another position or revoke the existing appointment first.`
+        `The role "${roleName}" is already occupied by ${activeOfficerForRole.studentName}${pendingSuffix}. Please choose another position or revoke/cancel the existing appointment first.`
       );
       return;
     }
@@ -189,9 +238,15 @@ export function AppointOfficerModal({
           year: selectedCandidate.year,
           department: selectedCandidate.department,
           contactNumber: selectedCandidate.contactNumber,
-          hasWebPortalAccess: !selectedIsOfficerElsewhere && hasWebPortalAccess,
+          hasWebPortalAccess: !selectedHasWebPortalElsewhere && hasWebPortalAccess,
         },
-        { isAdviser }
+        {
+          isAdviser,
+          uid: adviserProfile?.uid || adviserProfile?.authUid,
+          name: adviserProfile?.studentName || 'Club Adviser',
+          email: adviserProfile?.email,
+          organizationName: currentOrgName,
+        }
       );
 
       // Send appointment notification email asynchronously
@@ -199,7 +254,7 @@ export function AppointOfficerModal({
         sendOfficerAppointmentEmail({
           to: selectedCandidate.email,
           officerName: selectedCandidate.studentName,
-          orgName: 'Student Organization',
+          orgName: currentOrgName,
           roleName: roleName || 'Executive Officer',
           studentId: selectedCandidate.studentId,
         }).catch((err) => {
@@ -271,7 +326,7 @@ export function AppointOfficerModal({
                     (() => {
                       const q = searchQuery.toLowerCase().trim();
 
-                      // Only registered members of THIS organization who are NOT active officers in ANY organization
+                      // Only registered active members of THIS organization who are NOT already officers/pending here
                       const eligibleClubMembers: AppointCandidate[] = members
                         .filter((m) => {
                           if (m.status && m.status !== 'active') return false;
@@ -279,8 +334,8 @@ export function AppointOfficerModal({
                           const sId = (m.studentId || '').trim().toLowerCase();
                           const sEmail = (m.email || '').trim().toLowerCase();
 
-                          // Exclude if already an active officer in THIS organization or has Web Portal access in ANOTHER organization
-                          if (blockedOfficerKeys.has(sId) || (sEmail && blockedOfficerKeys.has(sEmail))) {
+                          // Exclude if already an active or pending officer in THIS organization
+                          if (sameOrgOfficerKeys.has(sId) || (sEmail && sameOrgOfficerKeys.has(sEmail))) {
                             return false;
                           }
 
@@ -395,12 +450,17 @@ export function AppointOfficerModal({
                   const assignedOfficer = currentOfficers.find(
                     (o) =>
                       o.isActive &&
+                      o.appointmentStatus !== 'declined' &&
                       (o.roleId === role.id || o.roleName?.trim().toLowerCase() === role.name?.trim().toLowerCase())
                   );
                   const isFilled = Boolean(assignedOfficer);
+                  const pendingLabel =
+                    assignedOfficer?.appointmentStatus === 'pending_acceptance'
+                      ? 'Pending Acceptance'
+                      : 'Occupied';
                   return (
                     <option key={role.id} value={role.id} disabled={isFilled}>
-                      {role.name} {isFilled ? `(Occupied - ${assignedOfficer?.studentName})` : ''}
+                      {role.name} {isFilled ? `(${pendingLabel} - ${assignedOfficer?.studentName})` : ''}
                     </option>
                   );
                 })}
@@ -413,18 +473,18 @@ export function AppointOfficerModal({
             {selectedCandidate && (
               <div className="space-y-3">
                 <label
-                  className={`flex items-start gap-3 p-3.5 rounded-xl border cursor-pointer transition-colors ${
-                    selectedIsOfficerElsewhere
+                  className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors ${
+                    selectedHasWebPortalElsewhere
                       ? 'bg-gray-50 border-gray-200 opacity-75 cursor-not-allowed'
                       : hasWebPortalAccess
-                        ? 'bg-[#001A4D]/5 border-[#001A4D]'
-                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100/70'
+                        ? 'bg-[#001A4D]/5 border-[#001A4D] cursor-pointer'
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100/70 cursor-pointer'
                   }`}
                 >
                   <input
                     type="checkbox"
-                    checked={!selectedIsOfficerElsewhere && hasWebPortalAccess}
-                    disabled={selectedIsOfficerElsewhere || isSubmitting}
+                    checked={!selectedHasWebPortalElsewhere && hasWebPortalAccess}
+                    disabled={selectedHasWebPortalElsewhere || isSubmitting}
                     onChange={(e) => {
                       setHasWebPortalAccess(e.target.checked);
                       setError(null);
@@ -436,17 +496,19 @@ export function AppointOfficerModal({
                       Grant Organization Web Portal Access (Optional)
                     </span>
                     <span className="block text-gray-600 mt-0.5">
-                      {selectedIsOfficerElsewhere
-                        ? 'Disabled: this student already holds an officer role in another organization and cannot be granted Web Portal access here.'
+                      {selectedHasWebPortalElsewhere
+                        ? `Disabled: ${selectedCandidate.studentName} already has Web Portal access in ${selectedWebAccessElsewhereOrg}. One student may be an officer in multiple organizations, but Web Portal access can only be granted once.`
                         : hasWebPortalAccess
-                          ? 'Yes — this officer can log in to the Organization Web Portal for this organization and cannot be assigned as an officer to any other organization.'
-                          : 'No — this officer will not have Web Portal login access for this organization and may hold non-web-access officer roles in other organizations.'}
+                          ? 'Yes — once accepted, this officer can log in to the Organization Web Portal for this organization (Web Portal access can only be granted in one organization per student).'
+                          : selectedIsOfficerElsewhere
+                            ? 'No — this student holds an In-Org Only officer role elsewhere. You may still grant Web Portal access here if needed, or keep this appointment In-Org Only.'
+                            : 'No — this officer will serve In-Org Only without Web Portal login access.'}
                     </span>
                   </div>
                 </label>
 
                 <div className="p-3.5 bg-blue-50/60 border border-blue-200/80 rounded-xl text-xs text-blue-900 leading-relaxed">
-                  Appointing <strong>{selectedCandidate.studentName}</strong> to this executive position.
+                  Appointing <strong>{selectedCandidate.studentName}</strong> to this executive position. A mobile app notification will be sent, and the officer must accept the appointment before privileges activate.
                 </div>
               </div>
             )}

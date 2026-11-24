@@ -93,6 +93,7 @@ export interface EventDocument extends SoftDeletable, Archivable {
   supplementalBudgetTotal?: number;
   effectiveApprovedBudget?: number;
   supplementalAllocations?: import('../../supplemental-budget/types/sbr.types').SupplementalEventAllocation[];
+  supplementalExpenseItems?: import('../../supplemental-budget/types/sbr.types').SupplementalEventExpenseItem[];
   approvedSupplementalCount?: number;
   hasPendingSupplementalRequest?: boolean;
   hasSupplementalSchoolBudget?: boolean;

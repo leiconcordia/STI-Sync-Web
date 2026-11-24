@@ -15,20 +15,33 @@ import {
   AlertTriangle,
   ShieldCheck,
   UserCheck,
+  UserMinus,
   Loader2,
   FileSpreadsheet,
+  Lock,
+  FileWarning,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { auth } from '../../../../services/firebase';
 import {
   useEmployees,
   createEmployee,
   updateEmployee,
-  deleteEmployee,
+  archiveEmployeeSafely,
+  deleteEmployeeSafely,
+  checkEmployeeAssignmentBlockers,
+  checkEmployeeDeleteEligibilityLive,
+  unassignEmployeeRole,
+  resolveEmployeeAssignments,
+  evaluateArchiveEligibility,
   parseEmployeeExcelFile,
   bulkImportEmployees,
   buildSampleEmployeeWorkbook,
   type EmployeeDocument,
   type EmployeeExcelParseResult,
+  type EmployeeRoleAssignment,
+  type EmployeeBlockerReport,
+  type EmployeeLifecycleEligibility,
 } from '../../../modules/employees';
 import { useOrganizationStream } from '../../../modules/organizations';
 import { subscribeToSignatories, type InstitutionalSignatory } from '../../../modules/signatories';
@@ -67,37 +80,36 @@ export default function EmployeeMaintenance() {
     result: EmployeeExcelParseResult;
   } | null>(null);
 
-  // Confirm Delete Modal
+  // Unassign Modal + Live Blocker Inspection
+  const [unassignState, setUnassignState] = useState<{
+    employee: EmployeeDocument;
+    assignments: EmployeeRoleAssignment[];
+    selectedAssignment: EmployeeRoleAssignment;
+    checking: boolean;
+    report: EmployeeBlockerReport | null;
+    error: string | null;
+  } | null>(null);
+
+  // Confirm Delete Modal + Live Eligibility Inspection
   const [deleteTarget, setDeleteTarget] = useState<EmployeeDocument | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleteCheckState, setDeleteCheckState] = useState<{
+    checking: boolean;
+    eligibility: EmployeeLifecycleEligibility | null;
+    error: string | null;
+  }>({ checking: false, eligibility: null, error: null });
 
-  // Map currently assigned roles by employeeId / fullName
-  const assignedRolesMap = useMemo(() => {
-    const map = new Map<string, { role: 'adviser' | 'signatory'; label: string }>();
-
-    organizations.forEach((org) => {
-      if (org.status === 'archived' || !org.adviser) return;
-      const empId = String(org.adviser.employeeId || '').trim().toLowerCase();
-      const name = String(org.adviser.name || '').trim().toLowerCase();
-      if (empId) map.set(`id:${empId}`, { role: 'adviser', label: `Adviser · ${org.acronym || org.name}` });
-      if (name) map.set(`name:${name}`, { role: 'adviser', label: `Adviser · ${org.acronym || org.name}` });
-    });
-
-    signatories.forEach((sig) => {
-      if (sig.isActive === false) return;
-      const empId = String((sig as any).employeeId || '').trim().toLowerCase();
-      const name = String(sig.name || '').trim().toLowerCase();
-      if (empId) map.set(`id:${empId}`, { role: 'signatory', label: `Signatory · ${sig.roleTitle || 'Officer'}` });
-      if (name) map.set(`name:${name}`, { role: 'signatory', label: `Signatory · ${sig.roleTitle || 'Officer'}` });
-    });
-
+  // Resolve ALL active role assignments per employee (Primary Adviser, Co-Adviser, Institutional Signatory)
+  const assignmentsByEmployeeId = useMemo(() => {
+    const map = new Map<string, EmployeeRoleAssignment[]>();
+    for (const emp of employees) {
+      map.set(emp.id, resolveEmployeeAssignments(emp, organizations, signatories));
+    }
     return map;
-  }, [organizations, signatories]);
+  }, [employees, organizations, signatories]);
 
-  const getAssignedBadge = (emp: EmployeeDocument) => {
-    const empKey = `id:${String(emp.employeeId || '').trim().toLowerCase()}`;
-    const nameKey = `name:${String(emp.fullName || '').trim().toLowerCase()}`;
-    return assignedRolesMap.get(empKey) || assignedRolesMap.get(nameKey) || null;
+  const getEmployeeAssignments = (emp: EmployeeDocument): EmployeeRoleAssignment[] => {
+    return assignmentsByEmployeeId.get(emp.id) || [];
   };
 
   const activeEmployees = useMemo(
@@ -149,13 +161,18 @@ export default function EmployeeMaintenance() {
     if (!excelPreview || excelPreview.result.validRows.length === 0) return;
     setIsSaving(true);
     try {
-      const { created, updated } = await bulkImportEmployees(
+      const { created, updated, skippedArchiveCount } = await bulkImportEmployees(
         excelPreview.result.validRows,
         employees
       );
       toast.success(
         `Employee Master List imported: ${created} added, ${updated} updated.`
       );
+      if (skippedArchiveCount > 0) {
+        toast.warning(
+          `${skippedArchiveCount} actively assigned employee(s) were kept Active. Unassign their active role(s) before archiving.`
+        );
+      }
       setExcelPreview(null);
     } catch (err: any) {
       toast.error(err?.message || 'Failed to import employees.');
@@ -208,11 +225,93 @@ export default function EmployeeMaintenance() {
     }
   };
 
-  const handleArchiveToggle = async (emp: EmployeeDocument, archive: boolean) => {
+  const inspectAssignmentBlockers = async (
+    emp: EmployeeDocument,
+    allAssignments: EmployeeRoleAssignment[],
+    selected: EmployeeRoleAssignment
+  ) => {
+    setUnassignState({
+      employee: emp,
+      assignments: allAssignments,
+      selectedAssignment: selected,
+      checking: true,
+      report: null,
+      error: null,
+    });
+    try {
+      const report = await checkEmployeeAssignmentBlockers(emp, selected);
+      setUnassignState((prev) =>
+        prev && prev.employee.id === emp.id && prev.selectedAssignment.id === selected.id
+          ? { ...prev, checking: false, report, error: null }
+          : prev
+      );
+    } catch (err: any) {
+      setUnassignState((prev) =>
+        prev && prev.employee.id === emp.id && prev.selectedAssignment.id === selected.id
+          ? {
+              ...prev,
+              checking: false,
+              report: null,
+              error: err?.message || 'Failed to inspect pending signatures and activities.',
+            }
+          : prev
+      );
+    }
+  };
+
+  const openUnassignModal = (emp: EmployeeDocument) => {
+    const assignments = getEmployeeAssignments(emp);
+    if (assignments.length === 0) {
+      toast.info(`${emp.fullName} currently has no active role assignment.`);
+      return;
+    }
+    void inspectAssignmentBlockers(emp, assignments, assignments[0]);
+  };
+
+  const handleConfirmUnassign = async () => {
+    if (!unassignState || unassignState.checking || !unassignState.report?.canProceed) return;
+    const { employee, selectedAssignment, assignments } = unassignState;
+    const adminName = auth.currentUser?.displayName || auth.currentUser?.email || 'SAS Administrator';
+
     setIsSaving(true);
     try {
-      await updateEmployee(emp.id, { archived: archive });
-      toast.success(archive ? 'Employee archived.' : 'Employee restored.');
+      await unassignEmployeeRole(employee, selectedAssignment, adminName);
+      toast.success(`Unassigned ${employee.fullName} from ${selectedAssignment.label}.`);
+
+      const remaining = assignments.filter((a) => a.id !== selectedAssignment.id);
+      if (remaining.length > 0) {
+        await inspectAssignmentBlockers(employee, remaining, remaining[0]);
+      } else {
+        setUnassignState(null);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to unassign role.');
+      // Refresh live blockers in case a pending item appeared concurrently
+      await inspectAssignmentBlockers(employee, assignments, selectedAssignment);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleArchiveToggle = async (emp: EmployeeDocument, archive: boolean) => {
+    if (archive) {
+      const assignments = getEmployeeAssignments(emp);
+      const eligibility = evaluateArchiveEligibility(emp, assignments);
+      if (!eligibility.allowed) {
+        toast.error(eligibility.reason || 'Unassign this employee’s active role(s) before archiving.');
+        return;
+      }
+    }
+
+    setIsSaving(true);
+    try {
+      if (archive) {
+        await archiveEmployeeSafely(emp);
+        toast.success('Employee archived.');
+      } else {
+        await updateEmployee(emp.id, { archived: false });
+        toast.success('Employee restored.');
+      }
     } catch (err: any) {
       toast.error(err?.message || 'Failed to update employee status.');
     } finally {
@@ -220,16 +319,48 @@ export default function EmployeeMaintenance() {
     }
   };
 
+  const openDeleteModal = async (emp: EmployeeDocument) => {
+    setDeleteTarget(emp);
+    setDeleteConfirmText('');
+    setDeleteCheckState({ checking: true, eligibility: null, error: null });
+
+    try {
+      const eligibility = await checkEmployeeDeleteEligibilityLive(emp);
+      setDeleteCheckState({ checking: false, eligibility, error: null });
+    } catch (err: any) {
+      setDeleteCheckState({
+        checking: false,
+        eligibility: null,
+        error: err?.message || 'Could not verify delete eligibility.',
+      });
+    }
+  };
+
   const handleConfirmDelete = async () => {
-    if (!deleteTarget || deleteConfirmText !== 'DELETE') return;
+    if (
+      !deleteTarget ||
+      deleteConfirmText !== 'DELETE' ||
+      deleteCheckState.checking ||
+      !deleteCheckState.eligibility?.allowed
+    ) {
+      return;
+    }
     setIsSaving(true);
     try {
-      await deleteEmployee(deleteTarget.id);
+      await deleteEmployeeSafely(deleteTarget);
       toast.success('Employee deleted permanently.');
       setDeleteTarget(null);
       setDeleteConfirmText('');
+      setDeleteCheckState({ checking: false, eligibility: null, error: null });
     } catch (err: any) {
       toast.error(err?.message || 'Failed to delete employee.');
+      // Re-run eligibility check to display updated blocker state
+      try {
+        const eligibility = await checkEmployeeDeleteEligibilityLive(deleteTarget);
+        setDeleteCheckState({ checking: false, eligibility, error: null });
+      } catch {
+        // Keep modal open with toast error
+      }
     } finally {
       setIsSaving(false);
     }
@@ -339,7 +470,8 @@ export default function EmployeeMaintenance() {
         ) : (
           <div className="divide-y divide-gray-100">
             {displayedEmployees.map((emp) => {
-              const assigned = getAssignedBadge(emp);
+              const assignments = getEmployeeAssignments(emp);
+              const isAssigned = assignments.length > 0;
               return (
                 <div
                   key={emp.id}
@@ -357,22 +489,23 @@ export default function EmployeeMaintenance() {
                         <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-700 font-mono text-[11px] font-semibold">
                           {emp.employeeId}
                         </span>
-                        {assigned && (
+                        {assignments.map((assigned) => (
                           <span
+                            key={assigned.id}
                             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                              assigned.role === 'adviser'
+                              assigned.badgeTone === 'adviser'
                                 ? 'bg-purple-50 text-purple-800 border-purple-200'
                                 : 'bg-amber-50 text-amber-800 border-amber-200'
                             }`}
                           >
-                            {assigned.role === 'adviser' ? (
+                            {assigned.badgeTone === 'adviser' ? (
                               <UserCheck className="w-3 h-3" />
                             ) : (
                               <ShieldCheck className="w-3 h-3" />
                             )}
                             {assigned.label}
                           </span>
-                        )}
+                        ))}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
                         {emp.positionTitle || 'Faculty / Staff'}
@@ -383,6 +516,18 @@ export default function EmployeeMaintenance() {
                   <div className="flex items-center gap-1.5 self-end sm:self-center">
                     {!emp.archived && emp.status !== 'ARCHIVED' ? (
                       <>
+                        {isAssigned && (
+                          <button
+                            type="button"
+                            onClick={() => openUnassignModal(emp)}
+                            disabled={isSaving}
+                            className="px-2.5 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Unassign active role(s)"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                            Unassign
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => openEditModal(emp)}
@@ -395,14 +540,35 @@ export default function EmployeeMaintenance() {
                           type="button"
                           onClick={() => handleArchiveToggle(emp, true)}
                           disabled={isSaving}
-                          className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 cursor-pointer"
-                          title="Archive Employee"
+                          aria-disabled={isAssigned}
+                          className={`p-1.5 rounded-lg transition-colors ${
+                            isAssigned
+                              ? 'text-gray-300 bg-gray-50 cursor-not-allowed'
+                              : 'hover:bg-amber-50 text-amber-600 cursor-pointer'
+                          }`}
+                          title={
+                            isAssigned
+                              ? 'Cannot archive while assigned — click Unassign first'
+                              : 'Archive Employee'
+                          }
                         >
                           <Archive className="w-4 h-4" />
                         </button>
                       </>
                     ) : (
                       <>
+                        {isAssigned && (
+                          <button
+                            type="button"
+                            onClick={() => openUnassignModal(emp)}
+                            disabled={isSaving}
+                            className="px-2.5 py-1.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Unassign active role(s) before deleting"
+                          >
+                            <UserMinus className="w-3.5 h-3.5" />
+                            Unassign
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => handleArchiveToggle(emp, false)}
@@ -414,10 +580,8 @@ export default function EmployeeMaintenance() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            setDeleteTarget(emp);
-                            setDeleteConfirmText('');
-                          }}
+                          onClick={() => void openDeleteModal(emp)}
+                          disabled={isSaving}
                           className="p-1.5 rounded-lg hover:bg-red-50 text-red-600 cursor-pointer"
                           title="Delete Permanently"
                         >
@@ -650,14 +814,192 @@ export default function EmployeeMaintenance() {
         </div>
       )}
 
+      {/* Unassign Employee Role Modal with Live Blocker Audit */}
+      {unassignState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-xs"
+            onClick={() => !isSaving && setUnassignState(null)}
+          />
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden z-10 flex flex-col max-h-[85vh]">
+            <div className="bg-[#001A4D] px-6 py-4 flex items-center justify-between text-white">
+              <div className="flex items-center gap-2.5">
+                <UserMinus className="w-5 h-5 text-[#FFD41C]" />
+                <div>
+                  <h3 className="font-bold text-base">Unassign Employee Role</h3>
+                  <p className="text-[11px] text-white/75">
+                    {unassignState.employee.fullName} ({unassignState.employee.employeeId})
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => !isSaving && setUnassignState(null)}
+                className="text-white/70 hover:text-white p-1.5 rounded-lg hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto space-y-4 flex-1">
+              {/* Role Selector (handles 1 or multiple active roles cleanly) */}
+              <div>
+                <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wide mb-2">
+                  Active Assignment{unassignState.assignments.length > 1 ? 's (Select one to unassign)' : ''}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {unassignState.assignments.map((role) => {
+                    const isSelected = role.id === unassignState.selectedAssignment.id;
+                    return (
+                      <button
+                        key={role.id}
+                        type="button"
+                        disabled={isSaving}
+                        onClick={() => {
+                          if (!isSelected) {
+                            void inspectAssignmentBlockers(
+                              unassignState.employee,
+                              unassignState.assignments,
+                              role
+                            );
+                          }
+                        }}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
+                          isSelected
+                            ? role.badgeTone === 'adviser'
+                              ? 'bg-purple-600 text-white border-purple-700 shadow-xs'
+                              : 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                            : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
+                        }`}
+                      >
+                        {role.badgeTone === 'adviser' ? (
+                          <UserCheck className="w-3.5 h-3.5" />
+                        ) : (
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                        )}
+                        {role.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Blocker Inspection Results */}
+              {unassignState.checking ? (
+                <div className="p-6 rounded-xl bg-blue-50/70 border border-blue-100 flex flex-col items-center justify-center gap-2 text-center">
+                  <Loader2 className="w-6 h-6 text-[#0E4EBD] animate-spin" />
+                  <p className="text-xs font-semibold text-[#001A4D]">
+                    Checking pending signatures and active club activities...
+                  </p>
+                </div>
+              ) : unassignState.error ? (
+                <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold">Validation Check Failed</div>
+                    <p className="mt-0.5">{unassignState.error}</p>
+                  </div>
+                </div>
+              ) : unassignState.report && !unassignState.report.canProceed ? (
+                <div className="space-y-3">
+                  <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-900 flex items-start gap-2.5">
+                    <Lock className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-sm text-rose-800">
+                        Cannot Unassign — Pending Items Found ({unassignState.report.blockers.length})
+                      </div>
+                      <p className="mt-0.5 text-rose-700">
+                        All pending signatures, reviews, and active/unconcluded activities below must be resolved first before unassigning{' '}
+                        <strong>{unassignState.selectedAssignment.label}</strong>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="border border-rose-100 rounded-xl divide-y divide-rose-100 max-h-60 overflow-y-auto bg-white">
+                    {unassignState.report.blockers.map((blocker, idx) => (
+                      <div key={`${blocker.documentId}-${idx}`} className="p-3 flex items-start gap-2.5">
+                        <FileWarning className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 text-[10px] font-bold">
+                              {blocker.documentType}
+                            </span>
+                            {blocker.referenceNo && (
+                              <span className="font-mono text-[10px] font-semibold text-gray-500">
+                                {blocker.referenceNo}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-bold text-gray-900 mt-0.5 truncate">
+                            {blocker.title}
+                          </div>
+                          <div className="text-[11px] text-rose-700 mt-0.5">
+                            {blocker.reason}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : unassignState.report?.canProceed ? (
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-900 flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-bold text-sm text-emerald-800">
+                      Ready to Unassign — Zero Blockers Found
+                    </div>
+                    <p className="text-emerald-800">
+                      No pending signatures or active club activities were found for{' '}
+                      <strong>{unassignState.selectedAssignment.label}</strong>.
+                    </p>
+                    <p className="text-emerald-700/90">
+                      Confirming will immediately revoke portal access for this role and allow archiving this employee once all active roles are unassigned.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setUnassignState(null)}
+                disabled={isSaving}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-100 cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmUnassign}
+                disabled={
+                  isSaving ||
+                  unassignState.checking ||
+                  !unassignState.report?.canProceed
+                }
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-2"
+              >
+                {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                {isSaving ? 'Unassigning...' : 'Confirm Unassign'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Confirm Permanent Delete Modal */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-xs" onClick={() => !isSaving && setDeleteTarget(null)} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden z-10">
+          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden z-10">
             <div className="bg-gradient-to-r from-red-500 to-orange-600 px-6 py-4 flex items-center justify-between text-white">
-              <h3 className="font-bold text-lg">Delete Employee</h3>
-              <button onClick={() => setDeleteTarget(null)} disabled={isSaving} className="text-white/70 hover:text-white cursor-pointer">
+              <h3 className="font-bold text-lg">Delete Employee Permanently</h3>
+              <button
+                type="button"
+                onClick={() => setDeleteTarget(null)}
+                disabled={isSaving}
+                className="text-white/70 hover:text-white cursor-pointer"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -665,17 +1007,60 @@ export default function EmployeeMaintenance() {
               <p className="text-sm text-gray-700">
                 Permanently delete <strong>{deleteTarget.fullName}</strong> ({deleteTarget.employeeId})?
               </p>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1">
-                  Type <span className="font-mono font-bold">DELETE</span> to confirm
-                </label>
-                <input
-                  type="text"
-                  value={deleteConfirmText}
-                  onChange={(e) => setDeleteConfirmText(e.target.value)}
-                  className="w-full px-3 py-2 border border-red-300 rounded-lg text-sm font-mono"
-                />
-              </div>
+
+              {deleteCheckState.checking ? (
+                <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 flex items-center gap-2.5 text-xs text-gray-600">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#0E4EBD]" />
+                  Verifying active assignments and pending workflow items...
+                </div>
+              ) : deleteCheckState.error ? (
+                <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span>{deleteCheckState.error}</span>
+                </div>
+              ) : deleteCheckState.eligibility && !deleteCheckState.eligibility.allowed ? (
+                <div className="space-y-2.5">
+                  <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-900 flex items-start gap-2">
+                    <Lock className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="font-bold text-rose-800">Deletion Blocked</div>
+                      <p className="mt-0.5">{deleteCheckState.eligibility.reason}</p>
+                    </div>
+                  </div>
+                  {deleteCheckState.eligibility.blockers && deleteCheckState.eligibility.blockers.length > 0 && (
+                    <div className="border border-rose-100 rounded-xl divide-y divide-rose-100 max-h-44 overflow-y-auto">
+                      {deleteCheckState.eligibility.blockers.map((b, idx) => (
+                        <div key={`${b.documentId}-${idx}`} className="p-2.5 text-[11px]">
+                          <div className="font-bold text-gray-900">
+                            {b.documentType}: {b.title}
+                          </div>
+                          <div className="text-rose-700">{b.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : deleteCheckState.eligibility?.allowed ? (
+                <>
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                    Verified: Unassigned with zero pending signatures or activities.
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">
+                      Type <span className="font-mono font-bold">DELETE</span> to confirm
+                    </label>
+                    <input
+                      type="text"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      disabled={isSaving}
+                      className="w-full px-3 py-2 border border-red-300 rounded-lg text-sm font-mono"
+                    />
+                  </div>
+                </>
+              ) : null}
+
               <div className="flex gap-3">
                 <button
                   type="button"
@@ -688,9 +1073,15 @@ export default function EmployeeMaintenance() {
                 <button
                   type="button"
                   onClick={handleConfirmDelete}
-                  disabled={isSaving || deleteConfirmText !== 'DELETE'}
-                  className="flex-1 py-2 bg-red-600 text-white rounded-xl text-xs font-bold disabled:opacity-40 cursor-pointer"
+                  disabled={
+                    isSaving ||
+                    deleteCheckState.checking ||
+                    !deleteCheckState.eligibility?.allowed ||
+                    deleteConfirmText !== 'DELETE'
+                  }
+                  className="flex-1 py-2 bg-red-600 text-white rounded-xl text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center justify-center gap-1.5"
                 >
+                  {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                   Delete Forever
                 </button>
               </div>

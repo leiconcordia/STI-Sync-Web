@@ -32,6 +32,7 @@ import {
   getCachedSasSignatoryConfig,
   getSasSignatoryConfig,
 } from '../../signatories/services/sas-signatory.service';
+import SupplementalDisbursementVoucherPanel from '../../supplemental-budget/components/SupplementalDisbursementVoucherPanel';
 
 const GENERIC_ADMIN_PLACEHOLDERS = new Set([
   'sas administrator',
@@ -603,10 +604,10 @@ export default function DisbursementVoucherModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs overflow-y-auto">
-      <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-8 animate-in fade-in zoom-in-95 duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-xs">
+      <div className="relative w-full max-w-2xl max-h-[90vh] flex flex-col bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         {/* Header Bar */}
-        <div className="bg-[#001A4D] text-white px-6 py-4 flex items-center justify-between border-b border-blue-900/60">
+        <div className="bg-[#001A4D] text-white px-6 py-4 flex items-center justify-between border-b border-blue-900/60 shrink-0">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-[#FFD41C] flex items-center justify-center border border-blue-400/30">
               <FileCheck className="w-5 h-5" />
@@ -648,7 +649,8 @@ export default function DisbursementVoucherModal({
         </div>
 
         {/* Modal Body */}
-        <form onSubmit={handleSave} className="p-6 space-y-5">
+        <form onSubmit={handleSave} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="p-6 space-y-5 overflow-y-auto flex-1 min-h-0">
           {/* Approved Budget Context Bar */}
           <div className="p-3.5 bg-gradient-to-r from-blue-50/80 via-white to-slate-50 border border-blue-200 rounded-2xl flex items-center justify-between text-xs">
             <div className="flex items-center gap-2 text-slate-700">
@@ -1025,10 +1027,29 @@ export default function DisbursementVoucherModal({
               />
               <span className="text-[10px] text-slate-400">Special remarks or release instructions</span>
             </div>
+
+            {/* Dedicated Supplemental Budget Disbursement Voucher Input(s) for Approved SBRs */}
+            <SupplementalDisbursementVoucherPanel
+              eventId={event.id}
+              canManage={!readOnly && !isOfficer && !isSasAdminOnOrgEvent}
+              isLiquidationLocked={isSubmittedOrApproved}
+              actor={{
+                uid: userProfile?.uid || (isAdmin ? 'admin-user' : 'adviser-user'),
+                name:
+                  userProfile?.displayName ||
+                  userProfile?.fullName ||
+                  userProfile?.name ||
+                  (isAdmin ? 'SAS Admin' : 'Club Adviser'),
+                email: userProfile?.email || '',
+                role: isAdmin ? 'admin' : 'adviser',
+              }}
+            />
+          </div>
+
           </div>
 
           {/* Action Footer */}
-          <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
+          <div className="px-6 py-4 border-t border-slate-200 bg-slate-50/80 flex items-center justify-end gap-2 shrink-0">
             <button
               type="button"
               onClick={onClose}
@@ -1061,8 +1082,8 @@ export default function DisbursementVoucherModal({
       {/* Submission Confirmation Modal */}
       {showConfirmModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-xs">
-          <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="bg-[#001A4D] text-white px-5 py-4 flex items-center justify-between">
+          <div className="w-full max-w-md max-h-[90vh] flex flex-col bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-[#001A4D] text-white px-5 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-lg bg-amber-400/20 text-[#FFD41C] flex items-center justify-center">
                   <AlertTriangle className="w-4 h-4" />
@@ -1082,7 +1103,7 @@ export default function DisbursementVoucherModal({
               </button>
             </div>
 
-            <div className="p-5 space-y-4 text-xs">
+            <div className="p-5 space-y-4 text-xs overflow-y-auto flex-1 min-h-0">
               <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-950 flex items-start gap-2">
                 <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
                 <span>

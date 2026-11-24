@@ -162,7 +162,23 @@ export function NotificationDropdown({
       );
     }
 
-    if (type === 'role_assigned') {
+    if (type === 'officer_appointment_declined') {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-rose-500/10 text-rose-600 border border-rose-500/20 flex items-center justify-center flex-shrink-0">
+          <AlertTriangle className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    if (type === 'officer_appointment_accepted') {
+      return (
+        <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center justify-center flex-shrink-0">
+          <CheckCircle2 className="w-4 h-4" />
+        </div>
+      );
+    }
+
+    if (type === 'role_assigned' || type === 'officer_appointment') {
       return (
         <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-600 border border-indigo-500/20 flex items-center justify-center flex-shrink-0">
           <Sparkles className="w-4 h-4" />

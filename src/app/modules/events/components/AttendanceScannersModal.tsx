@@ -166,7 +166,13 @@ export default function AttendanceScannersModal({
       : 'all';
   const { officers: officerRoster = [], loading: loadingOfficers } = useOrgOfficers(orgIdToQuery);
   const { officers: allCampusOfficers = [] } = useOrgOfficers('all');
-  const availableOfficers = officerRoster.length > 0 ? officerRoster : allCampusOfficers;
+  const confirmedRoster = officerRoster.filter(
+    (o) => !o.appointmentStatus || o.appointmentStatus === 'accepted'
+  );
+  const confirmedCampus = allCampusOfficers.filter(
+    (o) => !o.appointmentStatus || o.appointmentStatus === 'accepted'
+  );
+  const availableOfficers = confirmedRoster.length > 0 ? confirmedRoster : confirmedCampus;
 
   // Real-time campus-wide activities for cross-event scanner conflict detection
   const { events: allCampusEvents = [] } = useAllEvents();

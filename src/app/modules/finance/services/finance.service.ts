@@ -2,6 +2,7 @@ import {
   collection,
   addDoc,
   getDocs,
+  getDocsFromCache,
   query,
   where,
   deleteDoc,
@@ -207,7 +208,18 @@ export async function deductSupplementalBudget(params: {
     where('sbrId', '==', params.sbrId),
     where('source', '==', 'supplemental_budget')
   );
-  const existingSnap = await getDocs(qDup);
+  let existingSnap;
+  try {
+    existingSnap = await getDocs(qDup);
+  } catch (err: any) {
+    const code = String(err?.code || '').toLowerCase();
+    const msg = String(err?.message || '').toLowerCase();
+    if (code === 'resource-exhausted' || msg.includes('quota exceeded')) {
+      existingSnap = await getDocsFromCache(qDup);
+    } else {
+      throw err;
+    }
+  }
   if (!existingSnap.empty) {
     return existingSnap.docs[0].id;
   }

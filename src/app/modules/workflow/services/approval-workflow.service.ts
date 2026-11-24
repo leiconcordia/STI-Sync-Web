@@ -472,6 +472,7 @@ export function isStepConfiguredPermanent(
   settings?: DefaultWorkflowSettings | null,
   isOfficerAp = false
 ): boolean {
+  if (!step) return false;
   // 1. Proponent-added custom signers are strictly NEVER permanent and can ALWAYS be removed
   if (
     step.isUserAdded ||

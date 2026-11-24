@@ -2,14 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildMergedFinancialProjectionsForExport,
   canRequestSupplementalBudget,
+  cloneParentApSignatoryPipeline,
   doesSbrRequireSignatories,
   getEventBaseApprovedBudget,
   getEventEffectiveApprovedBudget,
   getPermittedSupplementalFundingSources,
   hasBlockingPendingSbrForLiquidation,
   isFundingSourcePermittedForSbr,
+  isSignatoryTurnForSbr,
   mergeBaseAndSupplementalAllocations,
+  mergeLiquidationBaselineWithSupplementalItems,
+  normalizeSbrApprovalChain,
   validateSbrFormPayload,
 } from '../sbr-validation.utils.ts';
 import {
@@ -230,4 +235,140 @@ test('SBR plugs into 7-stage status tracker and enforces strict SAS/Signatory qu
   assert.equal(sigTrack.canonical, 'for_sas_review');
   assert.equal(sigTrack.label, 'In Signatory Routing');
   assert.equal(sigTrack.requiresSignatories, true);
+});
+
+test('clones parent AP signatory pipeline (stripping internal SAS steps, preserving parallel stages, resetting status)', () => {
+  const parentAp = {
+    approvalChain: [
+      {
+        step: 1,
+        stageIndex: 1,
+        role: 'sas_head',
+        roleTitle: 'SAS Head',
+        signatoryUid: 'sas1',
+        signatoryName: 'Riselle',
+        status: 'approved',
+        signedAt: '2026-11-20T00:00:00Z',
+      },
+      {
+        step: 2,
+        stageIndex: 2,
+        role: 'program_head',
+        roleTitle: 'IT Program Head',
+        signatoryUid: 'ph1',
+        signatoryName: 'Rona Mira Lucanas',
+        signatoryEmail: 'rona@sti.edu',
+        status: 'approved',
+        signedAt: '2026-11-21T00:00:00Z',
+      },
+      {
+        step: 3,
+        stageIndex: 2,
+        role: 'academic_head',
+        roleTitle: 'SHS Asst. Principal',
+        signatoryUid: 'shs1',
+        signatoryName: 'Cybele Nudalo',
+        signatoryEmail: 'cybele@sti.edu',
+        status: 'approved',
+      },
+      {
+        step: 4,
+        stageIndex: 3,
+        role: 'school_admin',
+        roleTitle: 'School Administrator',
+        signatoryUid: 'sa1',
+        signatoryName: 'Sheena Joy Muyuela',
+        signatoryEmail: 'sheena@sti.edu',
+        status: 'approved',
+      },
+    ],
+  };
+
+  const cloned = cloneParentApSignatoryPipeline(parentAp);
+  assert.equal(cloned.length, 3);
+  assert.equal(cloned[0].signatoryName, 'Rona Mira Lucanas');
+  assert.equal(cloned[0].stageIndex, 1);
+  assert.equal(cloned[1].signatoryName, 'Cybele Nudalo');
+  assert.equal(cloned[1].stageIndex, 1); // parallel Stage 1 preserved!
+  assert.equal(cloned[2].signatoryName, 'Sheena Joy Muyuela');
+  assert.equal(cloned[2].stageIndex, 2);
+  assert.equal(cloned.every((s) => s.status === 'pending'), true);
+
+  // Stage-locked turn checks for parallel Stage 1 vs waiting Stage 2
+  const activated = normalizeSbrApprovalChain(cloned, true);
+  const mockSbr = {
+    status: 'pending_signatories',
+    approvalChain: activated,
+    currentStageIndex: 1,
+    currentStepIndex: 0,
+  };
+  assert.equal(isSignatoryTurnForSbr(mockSbr, { uid: 'ph1', email: 'rona@sti.edu' }), true);
+  assert.equal(isSignatoryTurnForSbr(mockSbr, { uid: 'shs1', email: 'cybele@sti.edu' }), true);
+  assert.equal(isSignatoryTurnForSbr(mockSbr, { uid: 'sa1', email: 'sheena@sti.edu' }), false);
+});
+
+test('merges approved SBR items into Liquidation Reference Guide categories and Option A AP Export Financial Projections', () => {
+  const baseCategories = [
+    { id: 'bi_1', title: 'Food & Snacks', baselineAmount: 5000 },
+    { id: 'bi_2', title: 'Sound System', baselineAmount: 3000 },
+  ];
+
+  const approvedSbr = {
+    id: 'sbr_99',
+    referenceCode: 'SBR-2026-SAS-001',
+    status: 'approved',
+    fundingSource: 'school_budget',
+    requestedAmount: 4500,
+    allocations: [
+      { bucketId: 'b1', bucketName: 'Cultural & Sports Misc Fee', fundType: 'misc_fee', allocatedAmount: 4500 },
+    ],
+    additionalItems: [
+      { id: 'it1', description: 'Food & Snacks', quantity: 20, unit: 'pax', unitCost: 100, totalAmount: 2000 },
+      { id: 'it2', description: 'Stage Lighting', quantity: 1, unit: 'set', unitCost: 2500, totalAmount: 2500 },
+    ],
+  };
+
+  // 1. Liquidation Reference Guide baseline merging (deduplicates colliding title with SBR code)
+  const mergedBaseline = mergeLiquidationBaselineWithSupplementalItems(baseCategories, [approvedSbr]);
+  assert.equal(mergedBaseline.length, 4);
+  assert.equal(mergedBaseline[2].title, 'Food & Snacks (SBR-2026-SAS-001)');
+  assert.equal(mergedBaseline[2].isSupplemental, true);
+  assert.equal(mergedBaseline[2].baselineAmount, 2000);
+  assert.equal(mergedBaseline[3].title, 'Stage Lighting');
+  assert.equal(mergedBaseline[3].isSupplemental, true);
+  assert.equal(mergedBaseline[3].baselineAmount, 2500);
+
+  // 2. Option A AP Export Financial Projections: keeps This Year Proposed strictly for original AP,
+  //    places supplemental rows in Adjustment (+amount) and Total Amount, and reconciles totals.
+  const proposal = {
+    fundingSource: 'school_budget',
+    financialProjections: {
+      revenues: [
+        { id: 'rev1', description: 'Misc Fee Allocation', lastYearActual: 0, thisYearProposed: 8000, adjustment: 0, totalAmount: 8000, remarks: '' },
+      ],
+      expenses: [
+        { id: 'exp1', description: 'Food & Snacks', lastYearActual: 0, thisYearProposed: 5000, adjustment: 0, totalAmount: 5000, remarks: '' },
+        { id: 'exp2', description: 'Sound System', lastYearActual: 0, thisYearProposed: 3000, adjustment: 0, totalAmount: 3000, remarks: '' },
+      ],
+      totalRevenue: 8000,
+      totalExpenses: 8000,
+      balance: 0,
+    },
+  };
+
+  const exported = buildMergedFinancialProjectionsForExport(proposal, [approvedSbr]);
+  assert.equal(exported.hasSupplementalRows, true);
+  assert.equal(exported.supplementalTotal, 4500);
+  assert.equal(exported.financialProjections.expenses.length, 4);
+  assert.equal(exported.financialProjections.revenues.length, 2);
+  assert.equal(exported.financialProjections.totalExpenses, 12500);
+  assert.equal(exported.financialProjections.totalRevenue, 12500);
+  assert.equal(exported.financialProjections.balance, 0);
+
+  // Supplemental rows strictly have thisYearProposed = 0 and adjustment = +lineAmt
+  const suppRow = exported.financialProjections.expenses[3];
+  assert.equal(suppRow.thisYearProposed, 0);
+  assert.equal(suppRow.adjustment, 2500);
+  assert.equal(suppRow.totalAmount, 2500);
+  assert.match(suppRow.remarks, /SBR-2026-SAS-001/);
 });

@@ -8,7 +8,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { canSignatoryApproveDocument } from '../../modules/signatories/utils/signatory-label.utils';
+import { resolveSignatoryDecisionCapabilities } from '../../modules/workflow/utils/approver-resolution.utils';
 import {
   X,
   FileText,
@@ -253,25 +253,17 @@ export default function ProposalEndorsementModal({
   const isReadOnlyLocked = !canSignNow;
   const canReturnOrRejectNow = canSignNow && !isProposalApproved;
 
-  // Dynamic approval authority permission check (respect per-step Endorse/Check role)
-  const isStepEndorseOrCheck =
-    myStep?.actionType === 'endorse' ||
-    myStep?.actionType === 'check' ||
-    (myStep?.actionType as string) === 'note';
-  const canApprove =
-    !isStepEndorseOrCheck &&
-    canSignatoryApproveDocument(signatorySession, 'proposal', myStep);
-
-  // Subsequent approvers after my step in the pipeline
-  const subsequentApproversCount = chain.filter((s, idx) => {
-    return idx > myStepIndex && (s.actionType === 'approve' || (s as any).canApproveProposal || (s as any).isFinalApprover);
-  }).length;
-
-  const hasSubsequentApprover = canApprove && subsequentApproversCount > 0;
-  const isFinalApprover =
-    !isStepEndorseOrCheck &&
-    (Boolean(signatorySession?.isFinalApprover) ||
-      (canApprove && (subsequentApproversCount === 0 || myStepIndex < 0)));
+  // Unified Runtime Single-Approval Governance capabilities
+  const decisionCaps = resolveSignatoryDecisionCapabilities({
+    chain,
+    myStepIndex,
+    signatory: signatorySession,
+    docType: 'proposal',
+  });
+  const canApprove = decisionCaps.canApprove;
+  const canEndorseInsteadOfApprove = decisionCaps.canEndorseInsteadOfApprove;
+  const isDemotedToEndorserOnly = decisionCaps.isDemotedToEndorserOnly;
+  const isFinalApprover = canApprove;
 
   const handleEndorse = async (decision: 'approve' | 'forward' = 'forward') => {
     if (isReadOnlyLocked) {
@@ -306,7 +298,11 @@ export default function ProposalEndorsementModal({
         decision
       );
 
-      if (result.isFullyApproved) {
+      if (result.wasCoercedByPriorApproval) {
+        toast.info(
+          `Already approved by ${result.approvedBySignatoryName || 'another Approver'}. Your signature was recorded as Noted by:.`
+        );
+      } else if (result.isFullyApproved) {
         toast.success(`Proposal fully approved! Final authorization recorded for ${proposal.referenceNo}`);
       } else if (result.stageAdvanced) {
         toast.success(`Stage ${currentStage} completed! Proposal forwarded to the next approval stage.`);
@@ -976,9 +972,9 @@ export default function ProposalEndorsementModal({
               </div>
             )}
 
-            {!isReadOnlyLocked && hasSubsequentApprover && (
+            {!isReadOnlyLocked && canEndorseInsteadOfApprove && (
               <p className="text-[11px] text-blue-800 bg-blue-50/80 border border-blue-200/70 rounded-xl px-3 py-2 leading-relaxed">
-                <span className="font-bold">Multi-Approver Route:</span> Stamping your approval will advance this proposal to the subsequent approver in the dynamic pipeline.
+                <span className="font-bold">Flexible Multi-Approver Route:</span> You may <strong>Approve</strong> immediately (which finalizes approval and changes other approvers to <em>Noted by:</em>) or choose <strong>Endorse &amp; Forward</strong> to let another designated Approver grant final approval.
               </p>
             )}
 
@@ -1020,6 +1016,17 @@ export default function ProposalEndorsementModal({
             )}
           </div>
         </div>
+
+        {/* ── DEMOTED APPROVER / ALREADY APPROVED NOTICE BANNER ── */}
+        {isDemotedToEndorserOnly && canSignNow && (
+          <div className="bg-emerald-50 border-t border-emerald-200 px-6 py-2.5 flex items-center gap-2 text-xs text-emerald-900 flex-shrink-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <span>
+              <strong>Already Approved by {decisionCaps.approvedBySignatoryName || 'Executive Approver'}.</strong>{' '}
+              Only one final approval is recorded per document — your signature will be recorded as <strong>Noted by:</strong> (Endorser only).
+            </span>
+          </div>
+        )}
 
         {/* ── MODAL FOOTER ACTIONS ── */}
         <div className="bg-slate-50 border-t border-slate-200 px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-3 flex-shrink-0">
@@ -1094,16 +1101,34 @@ export default function ProposalEndorsementModal({
                 </button>
 
                 {canApprove ? (
-                  <button
-                    type="button"
-                    onClick={() => setPendingConfirmType('approve')}
-                    disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                    title="Grant executive approval and fully approve proposal"
-                  >
-                    <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
-                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
-                  </button>
+                  <>
+                    {canEndorseInsteadOfApprove && (
+                      <button
+                        type="button"
+                        onClick={() => setPendingConfirmType('endorse')}
+                        disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                        className="w-full sm:w-auto px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-sky-600 hover:bg-sky-700 text-white shadow-sky-600/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                        title="Endorse & forward so another designated Approver can grant final approval"
+                      >
+                        <Send className="w-4 h-4" />
+                        <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : 'Endorse & Forward'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setPendingConfirmType('approve')}
+                      disabled={isReadOnlyLocked || isSubmitting || !hasSignature}
+                      className="w-full sm:w-auto px-5 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-[#001A4D] hover:bg-[#0A2E6D] text-[#FFD41C] border border-[#FFD41C]/40 shadow-blue-900/25 ring-2 ring-[#FFD41C]/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                      title={
+                        canEndorseInsteadOfApprove
+                          ? 'Grant final approval immediately (other designated approvers will become Noted/Endorser only)'
+                          : 'Grant executive approval and fully approve proposal'
+                      }
+                    >
+                      <ShieldCheck className="w-4 h-4 text-[#FFD41C]" />
+                      <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : '✓ Sign & Fully Approve'}</span>
+                    </button>
+                  </>
                 ) : (
                   <button
                     type="button"
@@ -1112,7 +1137,15 @@ export default function ProposalEndorsementModal({
                     className="w-full sm:w-auto px-6 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <Send className="w-4 h-4" />
-                    <span>{alreadySignedByMe ? 'Already Signed' : isSubmitting ? 'Processing...' : 'Stamp E-Signature & Endorse'}</span>
+                    <span>
+                      {alreadySignedByMe
+                        ? 'Already Signed'
+                        : isSubmitting
+                        ? 'Processing...'
+                        : isDemotedToEndorserOnly || decisionCaps.primaryActionMode === 'note_only'
+                        ? 'Stamp E-Signature & Note'
+                        : 'Stamp E-Signature & Endorse'}
+                    </span>
                   </button>
                 )}
               </>
@@ -1163,6 +1196,11 @@ export default function ProposalEndorsementModal({
                 {pendingConfirmType === 'approve' ? (
                   <ul className="list-disc list-inside space-y-1 text-[11px] text-slate-600">
                     <li>Your official digital signature will be sealed onto the Activity Proposal.</li>
+                    {decisionCaps.otherUnsignedApproversCount > 0 && (
+                      <li>
+                        Because only <strong>one Approver</strong> finalizes each document, the remaining designated approver(s) will automatically be updated to <strong>Noted by:</strong> (Endorser only).
+                      </li>
+                    )}
                     <li>The proposal transitions to <strong>Fully Approved</strong>.</li>
                     <li>Operational permissions (attendance scanner, publishing, allocations) will unlock.</li>
                     <li>The student organization and all stakeholders will be notified.</li>

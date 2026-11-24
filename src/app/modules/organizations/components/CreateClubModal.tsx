@@ -208,6 +208,9 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     [employees]
   );
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [includeCoAdviser, setIncludeCoAdviser] = useState(false);
+  const [selectedCoEmployeeId, setSelectedCoEmployeeId] = useState('');
+  const [coAdviserErrors, setCoAdviserErrors] = useState<Step2Errors>({});
 
   const activeOrgTypes = orgTypes.filter(t => !t.archived);
   const activeDepartments = useMemo(() => departments.filter(d => !d.archived), [departments]);
@@ -231,7 +234,7 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     logo: null as File | null,
   });
 
-  // Step 2 Adviser State (Fixed title: "Club Adviser")
+  // Step 2 Primary Adviser State (Fixed title: "Club Adviser")
   const [adviserData, setAdviserData] = useState<OrgAdviserData>({
     name: '',
     firstName: '',
@@ -242,6 +245,21 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
     departmentId: '',
     title: 'Club Adviser',
     temporaryPassword: 'Adv-' + Math.floor(1000 + Math.random() * 9000) + '!#',
+    requiresPasswordChange: true,
+  });
+
+  // Step 2 Optional Secondary Co-Adviser State
+  const [coAdviserData, setCoAdviserData] = useState<OrgAdviserData>({
+    name: '',
+    firstName: '',
+    lastName: '',
+    middleName: '',
+    employeeId: '',
+    email: '',
+    departmentId: '',
+    title: 'Club Co-Adviser',
+    adviserRole: 'co_adviser',
+    temporaryPassword: 'CoAdv-' + Math.floor(1000 + Math.random() * 9000) + '!#',
     requiresPasswordChange: true,
   });
 
@@ -260,8 +278,23 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
 
   const handleNextFromStep2 = async () => {
     const errors = validateStep2(adviserData);
-    if (Object.keys(errors).length) {
+    const coErrors: Step2Errors = includeCoAdviser ? validateStep2(coAdviserData) : {};
+
+    if (includeCoAdviser && !Object.keys(coErrors).length) {
+      const pEmail = adviserData.email.trim().toLowerCase();
+      const cEmail = coAdviserData.email.trim().toLowerCase();
+      const pEmp = String(adviserData.employeeId || '').trim().toLowerCase();
+      const cEmp = String(coAdviserData.employeeId || '').trim().toLowerCase();
+      if (pEmail && cEmail === pEmail) {
+        coErrors.email = 'Co-Adviser cannot use the same email as the Primary Adviser.';
+      } else if (pEmp && cEmp && pEmp === cEmp) {
+        coErrors.employeeId = 'Co-Adviser cannot be the same employee as the Primary Adviser.';
+      }
+    }
+
+    if (Object.keys(errors).length || Object.keys(coErrors).length) {
       setStep2Errors(errors);
+      setCoAdviserErrors(coErrors);
       return;
     }
 
@@ -275,13 +308,41 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       return;
     }
 
+    if (includeCoAdviser) {
+      const coInMemoryConflict = findAdviserConflictInOrganizations({
+        email: coAdviserData.email,
+        employeeId: coAdviserData.employeeId,
+        organizations: allOrganizations,
+      });
+      if (coInMemoryConflict) {
+        setCoAdviserErrors({ [coInMemoryConflict.field]: coInMemoryConflict.message });
+        return;
+      }
+    }
+
     setIsCheckingAdviser(true);
     try {
       await validateAdviserUniqueness({
         email: adviserData.email,
         employeeId: adviserData.employeeId,
       });
+      if (includeCoAdviser) {
+        try {
+          await validateAdviserUniqueness({
+            email: coAdviserData.email,
+            employeeId: coAdviserData.employeeId,
+          });
+        } catch (coErr: any) {
+          if (coErr instanceof AdviserValidationError) {
+            setCoAdviserErrors({ [coErr.field]: coErr.message });
+          } else {
+            setCoAdviserErrors({ email: coErr?.message || 'Unable to verify Co-Adviser email.' });
+          }
+          return;
+        }
+      }
       setStep2Errors({});
+      setCoAdviserErrors({});
       setCurrentStep(3);
     } catch (error: any) {
       if (error instanceof AdviserValidationError) {
@@ -329,10 +390,22 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
       logoUrl: null,
       adviser: {
         ...adviserData,
+        adviserRole: 'primary',
         departmentId: adviserData.departmentId || (isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental')),
         title: 'Club Adviser',
         requiresPasswordChange: true,
       },
+      ...(includeCoAdviser && coAdviserData.name && coAdviserData.email
+        ? {
+            coAdviser: {
+              ...coAdviserData,
+              adviserRole: 'co_adviser',
+              departmentId: coAdviserData.departmentId || (isCross ? 'cross-departmental' : (selectedIds[0] || 'cross-departmental')),
+              title: 'Club Co-Adviser',
+              requiresPasswordChange: true,
+            },
+          }
+        : {}),
     };
 
     const result = await create(payload, createdBy, formData.logo, []);
@@ -704,13 +777,17 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
             {activeEmployees.map((emp) => {
               const empIdNorm = String(emp.employeeId || '').trim().toLowerCase();
               const empNameNorm = String(emp.fullName || '').trim().toLowerCase();
-              const isAlreadyAdviser = allOrganizations.some(
-                (o) =>
-                  o.status !== 'archived' &&
-                  o.adviser &&
-                  ((empIdNorm && String(o.adviser.employeeId || '').trim().toLowerCase() === empIdNorm) ||
-                    (empNameNorm && String(o.adviser.name || '').trim().toLowerCase() === empNameNorm))
-              );
+              const isAlreadyAdviser = allOrganizations.some((o) => {
+                if (o.status === 'archived') return false;
+                const matchSlot = (slot?: { employeeId?: string; name?: string } | null) =>
+                  Boolean(
+                    slot &&
+                      ((empIdNorm && String(slot.employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                        (empNameNorm && String(slot.name || '').trim().toLowerCase() === empNameNorm))
+                  );
+                return matchSlot(o.adviser) || matchSlot(o.coAdviser);
+              });
+              const isSelectedAsCoAdviser = Boolean(includeCoAdviser && selectedCoEmployeeId === emp.id);
               const isAlreadySignatory = signatories.some(
                 (s) =>
                   s.isActive !== false &&
@@ -718,15 +795,17 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
                     (empNameNorm && String(s.name || '').trim().toLowerCase() === empNameNorm))
               );
               const disabledReason = isAlreadyAdviser
-                ? ' (Already Club Adviser)'
-                : isAlreadySignatory
-                  ? ' (Already Institutional Signatory)'
-                  : '';
+                ? ' (Already Club Adviser / Co-Adviser)'
+                : isSelectedAsCoAdviser
+                  ? ' (Selected as Co-Adviser below)'
+                  : isAlreadySignatory
+                    ? ' (Already Institutional Signatory)'
+                    : '';
               return (
                 <option
                   key={emp.id}
                   value={emp.id}
-                  disabled={isAlreadyAdviser || isAlreadySignatory}
+                  disabled={isAlreadyAdviser || isSelectedAsCoAdviser || isAlreadySignatory}
                 >
                   {emp.lastName}, {emp.firstName}{emp.middleName ? ` ${emp.middleName[0]}.` : ''} ({emp.employeeId})
                   {emp.positionTitle ? ` — ${emp.positionTitle}` : ''}
@@ -797,6 +876,194 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
               <span className="text-[10px] text-amber-700 font-sans font-semibold">Auto-Generated</span>
             </div>
           </div>
+        </div>
+
+        {/* ─── Optional Secondary Club Adviser / Co-Adviser Section (Employee Maintenance Sourced) ─── */}
+        <div className="mt-5 pt-5 border-t border-gray-200 space-y-4">
+          <label className="flex items-start gap-3 p-3.5 rounded-2xl border border-indigo-200 bg-indigo-50/50 cursor-pointer hover:bg-indigo-50/80 transition-colors">
+            <input
+              type="checkbox"
+              checked={includeCoAdviser}
+              onChange={(e) => {
+                setIncludeCoAdviser(e.target.checked);
+                if (!e.target.checked) {
+                  setCoAdviserErrors({});
+                }
+              }}
+              className="mt-0.5 w-4 h-4 rounded text-[#0E4EBD] focus:ring-[#0E4EBD]"
+            />
+            <div className="flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-[#001A4D]">
+                  Assign Secondary Club Adviser / Co-Adviser
+                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                  OPTIONAL
+                </span>
+              </div>
+              <p className="text-xs text-gray-600 mt-0.5 leading-relaxed">
+                Co-Advisers receive their own portal access and share the same Club Adviser approval &amp; management authority alongside the Primary Adviser.
+              </p>
+            </div>
+          </label>
+
+          {includeCoAdviser && (
+            <div className="p-4 rounded-2xl border border-indigo-200/80 bg-white space-y-4 shadow-2xs">
+              <div className="space-y-1.5">
+                <label className="block text-sm font-semibold text-[#001A4D]">
+                  Select Co-Adviser from Employee Maintenance <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={selectedCoEmployeeId}
+                  onChange={(e) => {
+                    const empDocId = e.target.value;
+                    setSelectedCoEmployeeId(empDocId);
+                    const emp = activeEmployees.find((item) => item.id === empDocId);
+                    if (!emp) {
+                      setCoAdviserData({
+                        ...coAdviserData,
+                        firstName: '',
+                        middleName: '',
+                        lastName: '',
+                        name: '',
+                        employeeId: '',
+                      });
+                      return;
+                    }
+                    const name = formatStructuredFullName(emp.firstName, emp.lastName, emp.middleName) || emp.fullName;
+                    setCoAdviserData({
+                      ...coAdviserData,
+                      firstName: emp.firstName,
+                      middleName: emp.middleName || '',
+                      lastName: emp.lastName,
+                      name,
+                      employeeId: emp.employeeId,
+                    });
+                    setCoAdviserErrors((prev) => {
+                      const n = { ...prev };
+                      delete n.firstName;
+                      delete n.lastName;
+                      delete n.name;
+                      delete n.employeeId;
+                      return n;
+                    });
+                  }}
+                  className={`w-full px-3.5 py-2.5 border rounded-xl text-sm bg-white focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                    coAdviserErrors.firstName || coAdviserErrors.lastName || coAdviserErrors.name
+                      ? 'border-red-400 bg-red-50'
+                      : 'border-[#E0E0E0]'
+                  }`}
+                >
+                  <option value="">
+                    {activeEmployees.length === 0
+                      ? 'No employees found — upload Excel in Settings → Employee Maintenance'
+                      : 'Select an employee to assign as Secondary Co-Adviser...'}
+                  </option>
+                  {activeEmployees.map((emp) => {
+                    const empIdNorm = String(emp.employeeId || '').trim().toLowerCase();
+                    const empNameNorm = String(emp.fullName || '').trim().toLowerCase();
+                    const isPrimarySelected = selectedEmployeeId === emp.id;
+                    const isAlreadyAdviser = allOrganizations.some((o) => {
+                      if (o.status === 'archived') return false;
+                      const matchSlot = (slot?: { employeeId?: string; name?: string } | null) =>
+                        Boolean(
+                          slot &&
+                            ((empIdNorm && String(slot.employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                              (empNameNorm && String(slot.name || '').trim().toLowerCase() === empNameNorm))
+                        );
+                      return matchSlot(o.adviser) || matchSlot(o.coAdviser);
+                    });
+                    const isAlreadySignatory = signatories.some(
+                      (s) =>
+                        s.isActive !== false &&
+                        ((empIdNorm && String((s as any).employeeId || '').trim().toLowerCase() === empIdNorm) ||
+                          (empNameNorm && String(s.name || '').trim().toLowerCase() === empNameNorm))
+                    );
+                    const disabledReason = isPrimarySelected
+                      ? ' (Selected as Primary Adviser)'
+                      : isAlreadyAdviser
+                        ? ' (Already Club Adviser / Co-Adviser)'
+                        : isAlreadySignatory
+                          ? ' (Already Institutional Signatory)'
+                          : '';
+                    return (
+                      <option
+                        key={emp.id}
+                        value={emp.id}
+                        disabled={isPrimarySelected || isAlreadyAdviser || isAlreadySignatory}
+                      >
+                        {emp.lastName}, {emp.firstName}{emp.middleName ? ` ${emp.middleName[0]}.` : ''} ({emp.employeeId})
+                        {emp.positionTitle ? ` — ${emp.positionTitle}` : ''}
+                        {disabledReason}
+                      </option>
+                    );
+                  })}
+                </select>
+                {coAdviserData.name && (
+                  <div className="px-3 py-2 bg-indigo-50/70 border border-indigo-200/80 rounded-lg text-xs text-[#001A4D] flex items-center justify-between">
+                    <div>
+                      <span className="font-semibold text-gray-500 block text-[10px] uppercase">Selected Co-Adviser</span>
+                      <span className="font-bold text-indigo-800">{coAdviserData.name}</span>
+                    </div>
+                    {coAdviserData.employeeId && (
+                      <span className="px-2 py-0.5 bg-white border border-indigo-200 rounded font-mono text-[11px] font-bold text-[#001A4D]">
+                        {coAdviserData.employeeId}
+                      </span>
+                    )}
+                  </div>
+                )}
+                <FieldError msg={coAdviserErrors.firstName || coAdviserErrors.lastName || coAdviserErrors.name} />
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-[#001A4D] mb-1.5">
+                  Co-Adviser Institutional Email <span className="text-red-500">*</span>
+                </label>
+                <div className="relative">
+                  <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="email"
+                    value={coAdviserData.email}
+                    onChange={(e) => {
+                      setCoAdviserData({ ...coAdviserData, email: e.target.value });
+                      setCoAdviserErrors((prev) => {
+                        const n = { ...prev };
+                        delete n.email;
+                        return n;
+                      });
+                    }}
+                    placeholder="e.g. maria.santos@ormoc.sti.edu.ph"
+                    className={`w-full pl-10 pr-4 py-2.5 border rounded-xl text-sm focus:ring-2 focus:ring-[#0E4EBD] focus:border-transparent ${
+                      coAdviserErrors.email ? 'border-red-400 bg-red-50' : 'border-[#E0E0E0]'
+                    }`}
+                  />
+                </div>
+                <FieldError msg={coAdviserErrors.email} />
+                <FieldError msg={coAdviserErrors.employeeId} />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    Designation Title
+                  </label>
+                  <div className="px-4 py-2.5 bg-indigo-50/60 border border-indigo-200 rounded-xl text-sm font-bold text-indigo-950 flex items-center justify-between">
+                    <span>Club Co-Adviser</span>
+                    <span className="px-2 py-0.5 bg-indigo-700 text-white text-[10px] rounded font-bold">SECONDARY</span>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                    Initial Temporary Password
+                  </label>
+                  <div className="px-4 py-2.5 bg-amber-50/80 border border-amber-200 rounded-xl font-mono text-sm font-bold text-amber-900 flex items-center justify-between">
+                    <span>{coAdviserData.temporaryPassword}</span>
+                    <span className="text-[10px] text-amber-700 font-sans font-semibold">Auto-Generated</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -894,6 +1161,36 @@ export default function CreateClubModal({ isOpen, onClose, createdBy = 'system',
           )}
         </div>
       </div>
+
+      {/* Co-Adviser Card (if configured) */}
+      {includeCoAdviser && coAdviserData.name && (
+        <div className="border border-indigo-200 bg-indigo-50/40 rounded-2xl p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-5 h-5 text-indigo-600" />
+              <h4 className="text-[#001A4D] font-bold text-sm">Assigned Secondary Club Co-Adviser</h4>
+            </div>
+            <span className="px-2 py-0.5 bg-indigo-700 text-white text-[10px] font-bold rounded">CO-ADVISER</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-1">
+            <div>
+              <div className="text-gray-500">Name</div>
+              <div className="text-[#001A4D] font-bold">{coAdviserData.name}</div>
+            </div>
+            <div>
+              <div className="text-gray-500">Email</div>
+              <div className="text-indigo-700 font-semibold">{coAdviserData.email}</div>
+            </div>
+            {coAdviserData.employeeId && (
+              <div>
+                <div className="text-gray-500">Employee ID</div>
+                <div className="text-gray-700 font-medium">{coAdviserData.employeeId}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Officer Policy Notice */}
       <div className="border border-emerald-200 bg-emerald-50/50 rounded-2xl p-4 flex items-start gap-3">

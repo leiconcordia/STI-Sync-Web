@@ -4,7 +4,7 @@ import {
   X, User, Building2, CreditCard, CalendarCheck, 
   Mail, Phone, Calendar, Clock, ShieldCheck, CheckCircle2, 
   AlertCircle, Archive, FileText, ChevronRight, Hash, DollarSign,
-  Shield, Check, Users
+  Shield, Check, Users, ArrowRightLeft
 } from 'lucide-react';
 import type { StudentDocument } from '../types/student.types';
 import { useStudentDetail } from '../hooks/useStudentDetail';
@@ -17,6 +17,7 @@ interface StudentDetailModalProps {
   student: StudentDocument;
   onClose: () => void;
   onArchive?: (student: StudentDocument) => void;
+  onShiftCourse?: (student: StudentDocument) => void;
   readOnly?: boolean;
 }
 
@@ -26,6 +27,7 @@ export default function StudentDetailModal({
   student: initialStudent,
   onClose,
   onArchive,
+  onShiftCourse,
   readOnly = false,
 }: StudentDetailModalProps) {
   const [activeTab, setActiveTab] = useState<TabType>('profile');
@@ -391,10 +393,22 @@ export default function StudentDetailModal({
 
                 {/* Academic Enrollment */}
                 <div className="bg-white rounded-xl p-5 border border-[#E0E0E0] shadow-sm space-y-4">
-                  <h3 className="font-bold text-[#001A4D] text-base flex items-center gap-2 border-b border-gray-100 pb-3">
-                    <Building2 className="w-4 h-4 text-[#0E4EBD]" />
-                    Academic & Enrollment
-                  </h3>
+                  <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                    <h3 className="font-bold text-[#001A4D] text-base flex items-center gap-2">
+                      <Building2 className="w-4 h-4 text-[#0E4EBD]" />
+                      Academic & Enrollment
+                    </h3>
+                    {!readOnly && student.status === 'ACTIVE' && onShiftCourse && (
+                      <button
+                        type="button"
+                        onClick={() => onShiftCourse(student)}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                        Shift Course
+                      </button>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
                     <div>
                       <span className="text-xs text-gray-500 font-medium block">Department</span>
@@ -426,6 +440,40 @@ export default function StudentDetailModal({
                   </div>
                 </div>
               </div>
+
+              {/* Course Shift History Timeline */}
+              {Array.isArray(student.courseShiftHistory) && student.courseShiftHistory.length > 0 && (
+                <div className="bg-white rounded-xl p-5 border border-[#E0E0E0] shadow-sm space-y-3">
+                  <h3 className="font-bold text-[#001A4D] text-base flex items-center gap-2 border-b border-gray-100 pb-2.5">
+                    <ArrowRightLeft className="w-4 h-4 text-indigo-600" />
+                    Course Shift History ({student.courseShiftHistory.length})
+                  </h3>
+                  <div className="divide-y divide-gray-100">
+                    {[...student.courseShiftHistory].reverse().map((shift, idx) => (
+                      <div key={idx} className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <div>
+                          <div className="font-bold text-[#001A4D]">
+                            {shift.fromCourseCode || 'Previous'} → {shift.toCourseCode}
+                            {shift.toDepartmentName ? ` (${shift.toDepartmentName})` : ''}
+                          </div>
+                          <div className="text-gray-500 mt-0.5">
+                            {shift.schoolYear ? `${shift.schoolYear} ${shift.semester || ''}` : ''}
+                            {shift.reason ? ` · ${shift.reason}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 font-semibold text-[10px]">
+                            {shift.source}
+                          </span>
+                          <span className="text-gray-400 font-mono text-[11px]">
+                            {formatShortDate(shift.shiftedAt, shift.shiftedAt)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

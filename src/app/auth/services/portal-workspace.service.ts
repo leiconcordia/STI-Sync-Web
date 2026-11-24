@@ -33,18 +33,31 @@ export function buildPortalWorkspaces(data: { signatories: any[]; advisers: any[
       signatureUrl: record.signatureUrl || record.signatureDataUrl || null, isSignatory: true, requiresPasswordChange: Boolean(needsPasswordChange),
     },
   }));
-  for (const [kind, records] of [['adviser', data.advisers], ['officer', data.officers.filter((record) => record.hasWebPortalAccess !== false)]] as const) {
+  for (const [kind, records] of [
+    ['adviser', data.advisers],
+    [
+      'officer',
+      data.officers.filter(
+        (record) =>
+          record.hasWebPortalAccess !== false &&
+          (!record.appointmentStatus || record.appointmentStatus === 'accepted')
+      ),
+    ],
+  ] as const) {
     records.filter((record) => active(record) && (owned(record) || (kind === 'officer' && student && record.studentId === student.studentId && (!record.authUid || record.authUid === identity.uid)))).forEach((record) => {
       const organization = data.organizations.find((org) => org.id === record.organizationId);
       if (!organization || !active(organization)) return;
-      workspaces.push({ id: `${kind}:${record.id}`, kind, label: kind === 'adviser' ? 'Club Adviser' : 'Organization Officer', organizationName: organization.name, path: '/officer/dashboard', session: {
+      const isCoAdv = kind === 'adviser' && record.adviserRole === 'co_adviser';
+      workspaces.push({ id: `${kind}:${record.id}`, kind, label: kind === 'adviser' ? (isCoAdv ? 'Club Co-Adviser' : 'Club Adviser') : 'Organization Officer', organizationName: organization.name, path: '/officer/dashboard', session: {
         uid: identity.uid,
         authUid: identity.uid,
         role: kind === 'adviser' ? 'adviser' : 'officer',
+        adviserRole: kind === 'adviser' ? (isCoAdv ? 'co_adviser' : 'primary') : undefined,
+        isCoAdviser: isCoAdv,
         studentId: record.studentId || record.employeeId || record.email,
         studentName: formatPersonName(kind === 'officer' && student ? student : record), email: identity.email,
         activeOrganizationId: record.organizationId, activeRoleId: kind === 'adviser' ? 'adviser' : record.roleId,
-        isAdviser: kind === 'adviser', isSignatory: false, signatureUrl: record.signatureUrl || null, requiresPasswordChange: Boolean(needsPasswordChange),
+        isAdviser: kind === 'adviser', isSignatory: false, signatureUrl: record.signatureUrl || record.signatureDataUrl || null, requiresPasswordChange: Boolean(needsPasswordChange),
       } });
     });
   }
@@ -80,17 +93,25 @@ export async function loadPortalWorkspaces(): Promise<PortalWorkspace[]> {
     return [...new Map(snapshots.flatMap((snapshot) => snapshot.docs.map((record) => [record.id, { ...record.data(), id: record.id }] as const))).values()];
   };
   const [signatories, advisers, initialOfficers, students] = await Promise.all(['institutional_signatories', 'organization_advisers', 'organization_officers', 'students'].map(load));
-  // Keep legacy organizations usable while their adviser exists only in the embedded profile.
+  // Keep legacy organizations usable while their primary or co-adviser exists only in the embedded profile.
   const embedded = await Promise.all([
     getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', user.email.trim().toLowerCase()))),
     getDocs(query(collection(db, 'organizations'), where('adviser.authUid', '==', user.uid))),
+    getDocs(query(collection(db, 'organizations'), where('coAdviser.email', '==', user.email.trim().toLowerCase()))),
+    getDocs(query(collection(db, 'organizations'), where('coAdviser.authUid', '==', user.uid))),
   ]);
-  const adviserOrganizations = new Set(advisers.map((record: any) => record.organizationId));
-  for (const snapshot of embedded) for (const record of snapshot.docs) {
-    const organization = record.data();
-    if (!organization.adviser || adviserOrganizations.has(record.id)) continue;
-    advisers.push({ ...organization.adviser, id: `embedded:${record.id}`, organizationId: record.id });
-    adviserOrganizations.add(record.id);
+  const adviserOrganizations = new Set(advisers.map((record: any) => `${record.organizationId}:${record.adviserRole === 'co_adviser' ? 'co_adviser' : 'primary'}`));
+  for (let i = 0; i < embedded.length; i++) {
+    const isCoQuery = i >= 2;
+    const roleTag = isCoQuery ? 'co_adviser' : 'primary';
+    for (const record of embedded[i].docs) {
+      const organization = record.data();
+      const embeddedProfile = isCoQuery ? organization.coAdviser : organization.adviser;
+      const key = `${record.id}:${roleTag}`;
+      if (!embeddedProfile || adviserOrganizations.has(key)) continue;
+      advisers.push({ ...embeddedProfile, adviserRole: roleTag, id: `embedded:${roleTag}:${record.id}`, organizationId: record.id });
+      adviserOrganizations.add(key);
+    }
   }
   const officerMap = new Map(initialOfficers.map((record: any) => [record.id, record]));
   for (const student of students as any[]) {

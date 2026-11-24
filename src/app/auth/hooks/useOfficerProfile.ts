@@ -4,11 +4,21 @@ import { db, auth } from '../../../services/firebase';
 import { signOut } from 'firebase/auth';
 import { clearPortalSessions } from '../services/portal-workspace.service';
 import { registerSingletonResetter } from '../../utils/createSingletonStream';
+import type {
+  OrgAdviserAvailability,
+  OrgAdviserData,
+  OrgAdviserRole,
+} from '../../modules/organizations/types/organization.types';
+import {
+  resolveEffectiveAdviserAuthority,
+  type EffectiveAdviserAuthority,
+} from '../../modules/organizations/utils/adviser-authority.utils';
 
 export interface OfficerRole {
   id: string; // Document ID
   organizationId: string;
   roleId: string;
+  adviserRole?: OrgAdviserRole;
   isActive: boolean;
 }
 
@@ -16,6 +26,8 @@ export interface OfficerProfile {
   uid?: string;
   authUid?: string;
   role?: string;
+  adviserRole?: OrgAdviserRole;
+  isCoAdviser?: boolean;
   studentId: string;
   studentName: string;
   email: string;
@@ -36,6 +48,9 @@ interface OfficerProfileStoreState {
   roles: OfficerRole[];
   activeOrgStatus: string;
   activeOrgName: string;
+  activeOrgAdviser: OrgAdviserData | null;
+  activeOrgCoAdviser: OrgAdviserData | null;
+  activeOrgAdviserAvailability: OrgAdviserAvailability | null;
   loading: boolean;
 }
 
@@ -44,6 +59,9 @@ let storeState: OfficerProfileStoreState = {
   roles: [],
   activeOrgStatus: 'active',
   activeOrgName: 'Organization',
+  activeOrgAdviser: null,
+  activeOrgCoAdviser: null,
+  activeOrgAdviserAvailability: null,
   loading: true,
 };
 
@@ -81,7 +99,13 @@ function ensureOrgDocListener(activeOrgId: string | null | undefined) {
   stopOrgDocListener();
 
   if (!targetId) {
-    setStoreState((prev) => ({ ...prev, activeOrgStatus: 'active' }));
+    setStoreState((prev) => ({
+      ...prev,
+      activeOrgStatus: 'active',
+      activeOrgAdviser: null,
+      activeOrgCoAdviser: null,
+      activeOrgAdviserAvailability: null,
+    }));
     return;
   }
 
@@ -95,9 +119,18 @@ function ensureOrgDocListener(activeOrgId: string | null | undefined) {
           ...prev,
           activeOrgStatus: data.status || 'active',
           activeOrgName: data.name || 'Organization',
+          activeOrgAdviser: data.adviser || null,
+          activeOrgCoAdviser: data.coAdviser || null,
+          activeOrgAdviserAvailability: data.adviserAvailability || null,
         }));
       } else {
-        setStoreState((prev) => ({ ...prev, activeOrgStatus: 'archived' }));
+        setStoreState((prev) => ({
+          ...prev,
+          activeOrgStatus: 'archived',
+          activeOrgAdviser: null,
+          activeOrgCoAdviser: null,
+          activeOrgAdviserAvailability: null,
+        }));
       }
     },
     (err) => {
@@ -185,6 +218,9 @@ function startOrSyncOfficerStore() {
       roles: [],
       activeOrgStatus: 'active',
       activeOrgName: 'Organization',
+      activeOrgAdviser: null,
+      activeOrgCoAdviser: null,
+      activeOrgAdviserAvailability: null,
       loading: false,
     };
     notifyStore();
@@ -207,6 +243,9 @@ function startOrSyncOfficerStore() {
       roles: [],
       activeOrgStatus: 'active',
       activeOrgName: 'Organization',
+      activeOrgAdviser: null,
+      activeOrgCoAdviser: null,
+      activeOrgAdviserAvailability: null,
       loading: false,
     };
     notifyStore();
@@ -223,6 +262,8 @@ function startOrSyncOfficerStore() {
     uid,
     authUid,
     role,
+    adviserRole,
+    isCoAdviser,
     studentId,
     studentName,
     email,
@@ -236,14 +277,20 @@ function startOrSyncOfficerStore() {
 
   const computedIsAdviser = Boolean(
     isAdviser ||
+      isCoAdviser ||
       activeRoleId?.toLowerCase() === 'adviser' ||
       role?.toLowerCase() === 'adviser'
   );
+  const computedAdviserRole: OrgAdviserRole | undefined = computedIsAdviser
+    ? (adviserRole === 'co_adviser' || isCoAdviser ? 'co_adviser' : 'primary')
+    : undefined;
 
   const initialProfile: OfficerProfile = {
     uid: uid || authUid || auth.currentUser?.uid || '',
     authUid: authUid || uid || auth.currentUser?.uid || '',
     role: computedIsAdviser ? 'adviser' : (role || 'officer'),
+    adviserRole: computedAdviserRole,
+    isCoAdviser: computedAdviserRole === 'co_adviser',
     studentId: studentId || '',
     studentName: studentName || '',
     email: email || '',
@@ -269,35 +316,58 @@ function startOrSyncOfficerStore() {
   }
 
   if (computedIsAdviser) {
-    const qAdviserOrgs = query(
-      collection(db, 'organizations'),
-      where('adviser.email', '==', cleanEmail)
+    // Subscribe to organization_advisers so BOTH Primary Adviser and Secondary Co-Adviser resolve cleanly
+    const qAdviserRecords = query(
+      collection(db, 'organization_advisers'),
+      where('email', '==', cleanEmail)
     );
 
     activeRolesUnsub = onSnapshot(
-      qAdviserOrgs,
+      qAdviserRecords,
       (snapshot) => {
-        const adviserRoles = snapshot.docs.map((d) => ({
-          id: d.id,
-          organizationId: d.id,
-          roleId: 'adviser',
-          isActive: true,
-        }));
+        const activeDocs = snapshot.docs.filter((d) => d.data()?.isActive !== false);
+        const adviserRoles: OfficerRole[] = activeDocs.map((d) => {
+          const rec = d.data();
+          return {
+            id: d.id,
+            organizationId: rec.organizationId,
+            roleId: 'adviser',
+            adviserRole: rec.adviserRole === 'co_adviser' ? 'co_adviser' : 'primary',
+            isActive: true,
+          };
+        });
+        const liveSignatureUrl =
+          activeDocs
+            .map((d) => d.data()?.signatureUrl || d.data()?.signatureDataUrl || '')
+            .find((val) => Boolean(String(val || '').trim())) || null;
 
         setStoreState((prev) => {
           let nextProfile = prev.profile;
-          if (adviserRoles.length > 0 && nextProfile && !nextProfile.activeOrganizationId) {
-            nextProfile = {
-              ...nextProfile,
-              activeOrganizationId: adviserRoles[0].organizationId,
-              activeRoleId: 'adviser',
-              isAdviser: true,
-              role: 'adviser',
-            };
-            const serialized = JSON.stringify(nextProfile);
-            activeSessionSignature = serialized;
-            localStorage.setItem(SESSION_KEY, serialized);
-            ensureOrgDocListener(nextProfile.activeOrganizationId);
+          if (adviserRoles.length > 0 && nextProfile) {
+            const matchedRole =
+              adviserRoles.find((r) => r.organizationId === nextProfile!.activeOrganizationId) ||
+              adviserRoles[0];
+            const resolvedSig = liveSignatureUrl || nextProfile.signatureUrl || null;
+            const needsOrgOrRoleUpdate =
+              !nextProfile.activeOrganizationId ||
+              nextProfile.adviserRole !== matchedRole.adviserRole ||
+              (resolvedSig && nextProfile.signatureUrl !== resolvedSig);
+            if (needsOrgOrRoleUpdate) {
+              nextProfile = {
+                ...nextProfile,
+                activeOrganizationId: nextProfile.activeOrganizationId || matchedRole.organizationId,
+                activeRoleId: 'adviser',
+                isAdviser: true,
+                role: 'adviser',
+                adviserRole: matchedRole.adviserRole,
+                isCoAdviser: matchedRole.adviserRole === 'co_adviser',
+                signatureUrl: resolvedSig,
+              };
+              const serialized = JSON.stringify(nextProfile);
+              activeSessionSignature = serialized;
+              localStorage.setItem(SESSION_KEY, serialized);
+              ensureOrgDocListener(nextProfile.activeOrganizationId);
+            }
           }
           return {
             ...prev,
@@ -316,20 +386,24 @@ function startOrSyncOfficerStore() {
   }
 
   if (cleanEmail) {
-    const qAdviserCheck = query(
-      collection(db, 'organizations'),
-      where('adviser.email', '==', cleanEmail)
-    );
-    getDocs(qAdviserCheck)
-      .then((snap) => {
-        if (!snap.empty) {
-          const advOrgId = snap.docs[0].id;
+    Promise.all([
+      getDocs(query(collection(db, 'organizations'), where('adviser.email', '==', cleanEmail))),
+      getDocs(query(collection(db, 'organizations'), where('coAdviser.email', '==', cleanEmail))),
+    ])
+      .then(([primarySnap, coSnap]) => {
+        const isPrimaryMatch = !primarySnap.empty;
+        const isCoMatch = !coSnap.empty;
+        if (isPrimaryMatch || isCoMatch) {
+          const advOrgId = isPrimaryMatch ? primarySnap.docs[0].id : coSnap.docs[0].id;
+          const resolvedAdvRole: OrgAdviserRole = isPrimaryMatch ? 'primary' : 'co_adviser';
           setStoreState((prev) => {
             if (!prev.profile || prev.profile.isAdviser) return prev;
             const updated: OfficerProfile = {
               ...prev.profile,
               isAdviser: true,
               role: 'adviser',
+              adviserRole: resolvedAdvRole,
+              isCoAdviser: resolvedAdvRole === 'co_adviser',
               activeRoleId: 'adviser',
               activeOrganizationId: prev.profile.activeOrganizationId || advOrgId,
             };
@@ -461,6 +535,15 @@ export function useOfficerProfile() {
     setStoreState((prev) => ({ ...prev, profile: newProfile }));
   };
 
+  const markSignatureRegistered = (signatureUrl: string) => {
+    if (!storeState.profile || !signatureUrl) return;
+    const newProfile = { ...storeState.profile, signatureUrl };
+    const serialized = JSON.stringify(newProfile);
+    activeSessionSignature = serialized;
+    localStorage.setItem(SESSION_KEY, serialized);
+    setStoreState((prev) => ({ ...prev, profile: newProfile }));
+  };
+
   const logout = () => {
     clearPortalSessions();
     void signOut(auth);
@@ -472,6 +555,9 @@ export function useOfficerProfile() {
       roles: [],
       activeOrgStatus: 'active',
       activeOrgName: 'Organization',
+      activeOrgAdviser: null,
+      activeOrgCoAdviser: null,
+      activeOrgAdviserAvailability: null,
       loading: false,
     };
     notifyStore();
@@ -479,14 +565,31 @@ export function useOfficerProfile() {
 
   const pendingSessionSync = !state.profile && hasStoredOfficerSession();
 
+  const adviserAuthority: EffectiveAdviserAuthority = resolveEffectiveAdviserAuthority({
+    organization: {
+      adviser: state.activeOrgAdviser,
+      coAdviser: state.activeOrgCoAdviser,
+      adviserAvailability: state.activeOrgAdviserAvailability,
+    },
+    viewerUid: state.profile?.authUid || state.profile?.uid,
+    viewerEmail: state.profile?.email,
+    viewerAdviserRole: state.profile?.adviserRole,
+    isAdviserSession: Boolean(state.profile?.isAdviser),
+  });
+
   return {
     profile: state.profile,
     roles: state.roles,
     activeOrgStatus: state.activeOrgStatus,
     activeOrgName: state.activeOrgName,
+    activeOrgAdviser: state.activeOrgAdviser,
+    activeOrgCoAdviser: state.activeOrgCoAdviser,
+    activeOrgAdviserAvailability: state.activeOrgAdviserAvailability,
+    adviserAuthority,
     loading: state.loading || pendingSessionSync,
     switchOrganization,
     markPasswordChanged,
+    markSignatureRegistered,
     logout,
   };
 }

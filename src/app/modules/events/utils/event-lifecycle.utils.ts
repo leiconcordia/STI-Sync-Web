@@ -1086,7 +1086,7 @@ export function getSignatoryProgress(event?: Partial<EventDocument> | any | null
     };
   }
 
-  let signedCount = chain.filter((s: any) =>
+  const signedCount = chain.filter((s: any) =>
     s && (
       s.status === 'endorsed' ||
       s.status === 'approved' ||
@@ -1094,10 +1094,6 @@ export function getSignatoryProgress(event?: Partial<EventDocument> | any | null
       Boolean(s.signatureUrl)
     )
   ).length;
-
-  if (isApproved && signedCount < totalCount) {
-    signedCount = totalCount;
-  }
 
   const isComplete = signedCount >= totalCount && totalCount > 0;
   const percentage = totalCount > 0 ? Math.round((signedCount / totalCount) * 100) : 0;

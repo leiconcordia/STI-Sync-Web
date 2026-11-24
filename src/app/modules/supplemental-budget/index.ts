@@ -5,3 +5,4 @@ export * from './hooks/useSupplementalBudgetStream';
 export { default as SupplementalBudgetModal } from './components/SupplementalBudgetModal';
 export { default as SupplementalBudgetDetailModal } from './components/SupplementalBudgetDetailModal';
 export { default as EventSupplementalBudgetsSection } from './components/EventSupplementalBudgetsSection';
+export { default as SupplementalDisbursementVoucherPanel } from './components/SupplementalDisbursementVoucherPanel';

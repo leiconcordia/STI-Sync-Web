@@ -22,6 +22,8 @@ export interface AdviserReviewRecord {
   reviewedByUid?: string;
   reviewedByName?: string;
   reviewedByEmail?: string;
+  reviewedByAdviserRole?: 'primary' | 'co_adviser';
+  actingOnBehalfOfName?: string;
   reviewedAt?: string;
   remarks?: string;
   signatureUrl?: string;
@@ -171,6 +173,11 @@ export interface ProposalApprovalStep {
   isMandatory?: boolean;
   isPermanent?: boolean;
   isUserAdded?: boolean;
+  /** Runtime governance: set true when an Approver was demoted to Endorser/Noted (either self-endorsed or another approver approved first) */
+  demotedFromApprover?: boolean;
+  demotedReason?: 'already_approved' | 'self_endorsed';
+  demotedByStepId?: string;
+  demotedBySignatoryName?: string;
 }
 
 export interface ProposalSectionRemark {

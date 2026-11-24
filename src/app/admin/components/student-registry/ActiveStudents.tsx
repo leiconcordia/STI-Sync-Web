@@ -1,13 +1,17 @@
 import { formatPersonName } from '../../../utils/name.utils';
 import { useState, useMemo, useEffect } from 'react';
-import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet } from 'lucide-react';
+import { Search, Plus, Download, Eye, Archive, MoreVertical, Building2, Filter, FileSpreadsheet, ArrowRightLeft, UserX } from 'lucide-react';
 import AddStudentManuallyModal from './AddStudentManuallyModal';
 import BulkImportRegistrarModal from './BulkImportRegistrarModal';
 import ExportStudentsModal from './ExportStudentsModal';
+import UnenrolledStudentsModal from './UnenrolledStudentsModal';
 import StudentDetailModal from '../../../modules/students/components/StudentDetailModal';
 import ArchiveStudentModal from '../../../modules/students/components/ArchiveStudentModal';
+import CourseShiftModal from '../../../modules/students/components/CourseShiftModal';
 import { StudentDocument } from '../../../modules/students/types/student.types';
+import type { SemesterDocument } from '../../../modules/academic/types/academic.types';
 import { formatTimestampDate } from '../../../modules/students/utils/date.utils';
+import { findUnenrolledActiveStudents } from '../../../modules/students/utils/enrollment-activation.utils';
 import { useCourses, useSections } from '../../../modules/academic/hooks/useAcademicStream';
 import { useOrganizationStream } from '../../../modules/organizations/hooks/useOrganizationStream';
 import { useAllActiveMemberships } from '../../../modules/organizations/hooks/useOrgMemberCountsStream';
@@ -16,6 +20,9 @@ import { useAdviserProfile } from '../../../modules/auth/hooks/useAdviserProfile
 
 interface ActiveStudentsProps {
   students: StudentDocument[];
+  allStudents?: StudentDocument[];
+  activeCollegePeriod?: SemesterDocument;
+  activeShsPeriod?: SemesterDocument;
 }
 
 const YEAR_NUM_MAP: Record<string, number> = {
@@ -36,13 +43,25 @@ const NUM_TO_YEAR_STR: Record<number, string> = {
   4: '4th Year',
 };
 
-export default function ActiveStudents({ students: activeStudents }: ActiveStudentsProps) {
+export default function ActiveStudents({
+  students: activeStudents,
+  allStudents,
+  activeCollegePeriod,
+  activeShsPeriod,
+}: ActiveStudentsProps) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBulkImportModal, setShowBulkImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showUnenrolledModal, setShowUnenrolledModal] = useState(false);
   const [selectedStudentForDetail, setSelectedStudentForDetail] = useState<StudentDocument | null>(null);
   const [selectedStudentForArchive, setSelectedStudentForArchive] = useState<StudentDocument | null>(null);
+  const [selectedStudentForShift, setSelectedStudentForShift] = useState<StudentDocument | null>(null);
   const [activeMenuStudentId, setActiveMenuStudentId] = useState<string | null>(null);
+
+  const unenrolledCount = useMemo(
+    () => findUnenrolledActiveStudents(activeStudents, activeCollegePeriod, activeShsPeriod).length,
+    [activeStudents, activeCollegePeriod, activeShsPeriod]
+  );
 
   // Filters State
   const [searchQuery, setSearchQuery] = useState('');
@@ -257,7 +276,20 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
         <div>
           <h2 className="text-2xl font-bold text-[#001A4D]">Active Students</h2>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => setShowUnenrolledModal(true)}
+            className="px-4 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg font-bold flex items-center gap-2 shadow-xs transition-all cursor-pointer text-sm"
+            title="Check active students not enrolled for the current term and notify advisers or deactivate"
+          >
+            <UserX className="w-4 h-4 text-amber-700" />
+            Unenrolled Check
+            {unenrolledCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-600 text-white text-xs font-mono font-bold">
+                {unenrolledCount}
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setShowBulkImportModal(true)}
             className="px-5 py-2.5 bg-gradient-to-r from-blue-700 to-indigo-600 text-white rounded-lg font-bold hover:opacity-90 flex items-center gap-2 shadow-sm transition-all cursor-pointer"
@@ -472,7 +504,7 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
                                     setActiveMenuStudentId(null);
                                     setSelectedStudentForDetail(student);
                                   }}
-                                  className="w-full px-4 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                                  className="w-full px-4 py-2 text-left text-xs font-medium text-gray-700 hover:bg-gray-50 flex items-center gap-2 cursor-pointer"
                                 >
                                   <Eye className="w-3.5 h-3.5 text-[#0E4EBD]" />
                                   View Full Info
@@ -480,9 +512,19 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
                                 <button
                                   onClick={() => {
                                     setActiveMenuStudentId(null);
+                                    setSelectedStudentForShift(student);
+                                  }}
+                                  className="w-full px-4 py-2 text-left text-xs font-medium text-indigo-700 hover:bg-indigo-50 flex items-center gap-2 cursor-pointer"
+                                >
+                                  <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-600" />
+                                  Shift Course
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setActiveMenuStudentId(null);
                                     setSelectedStudentForArchive(student);
                                   }}
-                                  className="w-full px-4 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2"
+                                  className="w-full px-4 py-2 text-left text-xs font-medium text-red-600 hover:bg-red-50 flex items-center gap-2 cursor-pointer"
                                 >
                                   <Archive className="w-3.5 h-3.5 text-red-500" />
                                   Archive Student
@@ -522,12 +564,22 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
       {/* Bulk Import from Registrar Modal */}
       {showBulkImportModal && (
         <BulkImportRegistrarModal
-          existingStudents={activeStudents}
+          existingStudents={allStudents || activeStudents}
           adminUid={adminUid}
           onClose={() => setShowBulkImportModal(false)}
           onSuccess={() => setShowBulkImportModal(false)}
         />
       )}
+
+      {/* Unenrolled Students Manual Check & Adviser Notification Modal */}
+      <UnenrolledStudentsModal
+        isOpen={showUnenrolledModal}
+        onClose={() => setShowUnenrolledModal(false)}
+        activeStudents={activeStudents}
+        activeCollegePeriod={activeCollegePeriod}
+        activeShsPeriod={activeShsPeriod}
+        adminUid={adminUid}
+      />
 
       {/* Dynamic Export Modal (Section rosters / Credentials) */}
       {showExportModal && (
@@ -544,10 +596,24 @@ export default function ActiveStudents({ students: activeStudents }: ActiveStude
         <StudentDetailModal
           student={selectedStudentForDetail}
           onClose={() => setSelectedStudentForDetail(null)}
+          onShiftCourse={(stu) => {
+            setSelectedStudentForDetail(null);
+            setSelectedStudentForShift(stu);
+          }}
           onArchive={(stu) => {
             setSelectedStudentForDetail(null);
             setSelectedStudentForArchive(stu);
           }}
+        />
+      )}
+
+      {/* Course Shift Modal */}
+      {selectedStudentForShift && (
+        <CourseShiftModal
+          student={selectedStudentForShift}
+          adminUid={adminUid}
+          onClose={() => setSelectedStudentForShift(null)}
+          onSuccess={() => setSelectedStudentForShift(null)}
         />
       )}
 

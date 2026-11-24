@@ -107,6 +107,19 @@ export interface SupplementalEventAllocation extends ProposalBucketAllocation {
   sbrReferenceCode?: string;
 }
 
+export interface SupplementalEventExpenseItem {
+  id: string;
+  sbrId: string;
+  sbrReferenceCode: string;
+  description: string;
+  quantity: number;
+  unit: string;
+  unitCost: number;
+  totalAmount: number;
+  fundingSource: SupplementalFundingSource;
+  remarks?: string;
+}
+
 export interface SupplementalBudgetRequest {
   id: string;
   referenceCode: string;
@@ -164,6 +177,8 @@ export interface SupplementalBudgetRequest {
   } | null;
   approvalChain: ProposalApprovalStep[];
   currentStepIndex: number;
+  currentStageIndex?: number;
+  pipelineSource?: 'parent_ap' | 'default_ap_template' | 'custom';
 
   // Return / Rejection tracking
   isReturned?: boolean;
@@ -183,6 +198,9 @@ export interface SupplementalBudgetRequest {
 
   // Ledger & Disbursement Voucher Settlement
   ledgerDeducted: boolean;
+  requiresClubLedgerAcknowledgment?: boolean;
+  ledgerAcknowledgedBy?: string;
+  ledgerAcknowledgedAt?: any;
   ledgerDeductionKeys?: string[];
   disbursementVoucher?: SupplementalVoucherRecord | null;
 

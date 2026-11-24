@@ -36,15 +36,17 @@ import {
   resolveCanonicalDepartment,
 } from '../utils/department-eligibility.utils';
 import {
-  checkStudentOrgTypeQuota,
+  checkStudentMembershipLimits,
   normalizeMaxMembershipsPerStudent,
 } from '../utils/org-type-quota.utils';
+import { getOrganizationRules } from './organization_rules.service';
 import { createNotification } from '../../notifications';
 
 const COLLECTION = 'organization_members';
 
 /**
- * Enforces the organization type's `maxMembershipsPerStudent` quota (if configured)
+ * Enforces BOTH the global maximum organizations per student (`system_settings/organization_rules`)
+ * AND the organization type's `maxMembershipsPerStudent` quota (if configured)
  * before adding or approving a student into an organization.
  */
 async function verifyStudentOrgTypeMembershipQuota(
@@ -52,13 +54,18 @@ async function verifyStudentOrgTypeMembershipQuota(
   studentIdentifiers: { studentId?: string; authUid?: string }
 ): Promise<void> {
   const typeId = String(orgData?.typeId || '').trim();
-  if (!typeId) return;
 
-  const typeSnap = await getDoc(doc(db, 'organization_types', typeId)).catch(() => null);
-  if (!typeSnap || !typeSnap.exists()) return;
+  const [rulesDoc, typeSnap] = await Promise.all([
+    getOrganizationRules().catch(() => null),
+    typeId ? getDoc(doc(db, 'organization_types', typeId)).catch(() => null) : Promise.resolve(null),
+  ]);
 
-  const orgType = { id: typeSnap.id, ...(typeSnap.data() as any) };
-  if (normalizeMaxMembershipsPerStudent(orgType.maxMembershipsPerStudent) === null) {
+  const globalMax = normalizeMaxMembershipsPerStudent(rulesDoc?.maxTotalOrganizationsPerStudent);
+  const orgType = typeSnap && typeSnap.exists() ? { id: typeSnap.id, ...(typeSnap.data() as any) } : null;
+  const typeMax = normalizeMaxMembershipsPerStudent(orgType?.maxMembershipsPerStudent);
+
+  // Short-circuit with 0 extra reads when both Global and Per-Type limits are unlimited
+  if (globalMax === null && typeMax === null) {
     return;
   }
 
@@ -97,17 +104,20 @@ async function verifyStudentOrgTypeMembershipQuota(
     ? orgsSnap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }))
     : [];
 
-  const quota = checkStudentOrgTypeQuota({
+  const result = checkStudentMembershipLimits({
     targetOrg: orgData,
     orgType,
+    maxTotalOrganizationsPerStudent: globalMax,
     allOrganizations,
     studentMemberships: Array.from(membershipDocsMap.values()),
   });
 
-  if (!quota.allowed) {
+  if (!result.allowed) {
     throw new Error(
-      quota.reason ||
-        `Student has reached the maximum allowed memberships for "${quota.orgTypeName}" organizations.`
+      result.reason ||
+        (result.failedRule === 'global'
+          ? 'Student has reached the global maximum allowed active organizations.'
+          : `Student has reached the maximum allowed memberships for "${result.typeQuota.orgTypeName}" organizations.`)
     );
   }
 }
@@ -1079,6 +1089,10 @@ export const appointAsOfficer = async (
   },
   actor?: {
     isAdviser?: boolean;
+    uid?: string;
+    name?: string;
+    email?: string;
+    organizationName?: string;
   }
 ): Promise<void> => {
   if (actor && actor.isAdviser === false) {
@@ -1086,7 +1100,10 @@ export const appointAsOfficer = async (
   }
   const wantWebAccess = Boolean(studentDetails?.hasWebPortalAccess);
 
-  // Enforce officer appointment & Web Portal access exclusivity across organizations
+  // Enforce officer appointment & once-per-student Web Portal access validation:
+  // 1) A student cannot hold duplicate active/pending appointments in the SAME organization.
+  // 2) A student MAY serve as an officer in multiple organizations,
+  //    but Web Portal access can only be granted ONCE across all organizations.
   const existingActiveOfficersSnap = await getDocs(
     query(
       collection(db, 'organization_officers'),
@@ -1094,21 +1111,24 @@ export const appointAsOfficer = async (
       where('isActive', '==', true)
     )
   );
-  const existingOtherOrgOfficers = existingActiveOfficersSnap.docs
+  const activeOrPendingRecords = existingActiveOfficersSnap.docs
     .map((d) => d.data())
-    .filter((o) => o.organizationId !== organizationId);
+    .filter((o) => o.appointmentStatus !== 'declined');
 
-  if (existingActiveOfficersSnap.docs.some((d) => d.data().organizationId === organizationId)) {
-    throw new Error('This student is already an active officer in this organization.');
+  const existingOtherOrgOfficers = activeOrPendingRecords.filter(
+    (o) => o.organizationId !== organizationId
+  );
+
+  if (activeOrPendingRecords.some((o) => o.organizationId === organizationId)) {
+    throw new Error('This student already has an active or pending officer appointment in this organization.');
   }
-  if (existingOtherOrgOfficers.some((o) => o.hasWebPortalAccess !== false)) {
+  if (wantWebAccess && existingOtherOrgOfficers.some((o) => o.hasWebPortalAccess !== false)) {
+    const conflictingOrg = existingOtherOrgOfficers.find((o) => o.hasWebPortalAccess !== false);
+    const conflictingOrgLabel = conflictingOrg?.organizationName
+      ? ` (${conflictingOrg.organizationName})`
+      : '';
     throw new Error(
-      'This student already has Web Portal access as an officer in another organization and cannot be appointed to another organization.'
-    );
-  }
-  if (wantWebAccess && existingOtherOrgOfficers.length > 0) {
-    throw new Error(
-      'This student already holds an officer role in another organization and cannot be granted exclusive Web Portal access here.'
+      `This student already has Web Portal access as an officer in another organization${conflictingOrgLabel}. A student can hold officer roles in multiple organizations, but Web Portal access can only be granted once.`
     );
   }
 
@@ -1141,26 +1161,34 @@ export const appointAsOfficer = async (
     targetMemberRef = existingSnap.docs[0].ref;
   }
 
-  batch.update(targetMemberRef, {
-    isOfficer: true,
-    updatedAt: serverTimestamp(),
-  });
-  
-  // 2. Create the officer doc in organization_officers
+  // Note: organization_members.isOfficer and organizations.presidentName are updated
+  // once the student accepts the appointment on the Mobile app.
+
+  const orgSnap = await getDoc(doc(db, 'organizations', organizationId)).catch(() => null);
+  const orgName =
+    actor?.organizationName?.trim() ||
+    (orgSnap?.exists() ? (orgSnap.data()?.name || 'Student Organization') : 'Student Organization');
+
+  // 2. Create the officer doc in organization_officers with pending_acceptance status
   const officersCollectionRef = collection(db, 'organization_officers');
   const officerDocRef = doc(officersCollectionRef);
   const studentProfiles = await getDocs(query(collection(db, 'students'), where('studentId', '==', studentId)));
   if (studentProfiles.size > 1) throw new Error('Several student profiles have this ID. Resolve the duplicate before appointing an officer.');
   const student = studentProfiles.docs[0]?.data();
+  const cleanEmail = (email || student?.email || '').trim().toLowerCase();
+  const cleanStudentName = formatPersonName(student, studentName);
+  const resolvedRoleName = roleName || 'Officer';
   
   batch.set(officerDocRef, {
     id: officerDocRef.id,
     organizationId,
+    organizationName: orgName,
+    memberDocId: targetMemberRef.id,
     roleId,
-    roleName: roleName || '',
+    roleName: resolvedRoleName,
     studentId,
-    studentName: formatPersonName(student, studentName),
-    email: email || '',
+    studentName: cleanStudentName,
+    email: cleanEmail,
     authUid: student?.authUid || null,
     tempPass: student?.tempPass || null,
     requiresPasswordChange: Boolean(student?.tempPass || student?.requiresPasswordChange || student?.requiresChangePassword),
@@ -1169,18 +1197,17 @@ export const appointAsOfficer = async (
     useStudentCredentials: true,
     hasWebPortalAccess: wantWebAccess,
     isActive: true,
+    appointmentStatus: 'pending_acceptance',
+    appointedByUid: actor?.uid || null,
+    appointedByName: actor?.name || 'Club Adviser',
+    appointedByEmail: actor?.email ? actor.email.trim().toLowerCase() : null,
+    appointedAt: serverTimestamp(),
+    acceptedAt: null,
+    declinedAt: null,
+    declineReason: null,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
-
-  // 3. If role is President, keep organization doc presidentName in sync
-  if (roleName && roleName.trim().toLowerCase() === 'president') {
-    const orgRef = doc(db, 'organizations', organizationId);
-    batch.update(orgRef, {
-      presidentName: studentName,
-      updatedAt: serverTimestamp(),
-    });
-  }
   
   const commitPromise = batch.commit();
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -1190,25 +1217,40 @@ export const appointAsOfficer = async (
   try {
     await Promise.race([commitPromise, timeoutPromise]);
 
-    if (wantWebAccess) {
-      const orgSnap = await getDoc(doc(db, 'organizations', organizationId)).catch(() => null);
-      const orgName = orgSnap?.exists() ? (orgSnap.data()?.name || 'your organization') : 'your organization';
-      const cleanEmail = (email || student?.email || '').trim().toLowerCase();
-      void createNotification({
-        recipientRole: 'officer',
-        recipientId: [studentId, student?.authUid, cleanEmail].filter(Boolean).join('|'),
-        targetOrgId: organizationId,
-        targetOrgName: orgName,
-        type: 'role_assigned',
-        category: 'system',
-        title: 'Web Portal Access Granted',
-        message: `You have been appointed as ${roleName || 'Officer'} of ${orgName} with Organization Web Portal access. Welcome!`,
-        resourceId: organizationId,
-        resourceType: 'system',
-        actionRoute: '/officer/dashboard',
-        senderRoleTitle: 'Club Adviser',
-      }).catch((err) => console.warn('Failed to dispatch officer web-access notification:', err));
-    }
+    // Always notify the appointed student on Mobile so they can review & confirm
+    const recipientTokens = [studentId, student?.authUid, cleanEmail]
+      .filter(Boolean)
+      .map((t) => String(t).trim().toLowerCase());
+
+    void createNotification({
+      recipientRole: 'student',
+      recipientId: [studentId, student?.authUid, cleanEmail].filter(Boolean).join('|'),
+      recipientTokens,
+      targetOrgId: organizationId,
+      targetOrgName: orgName,
+      type: 'officer_appointment',
+      category: 'system',
+      title: 'Officer Appointment Offer',
+      message: `You have been appointed as ${resolvedRoleName} of ${orgName}${wantWebAccess ? ' (with Web Portal access)' : ''}. Open to confirm or decline your appointment.`,
+      resourceId: officerDocRef.id,
+      resourceType: 'officer_appointment',
+      actionRoute: '/dashboard',
+      isUrgent: true,
+      metadata: {
+        officerDocId: officerDocRef.id,
+        organizationId,
+        organizationName: orgName,
+        roleId,
+        roleName: resolvedRoleName,
+        hasWebPortalAccess: wantWebAccess,
+        appointedByUid: actor?.uid || null,
+        appointedByName: actor?.name || 'Club Adviser',
+        appointedByEmail: actor?.email ? actor.email.trim().toLowerCase() : null,
+      },
+      senderId: actor?.uid || undefined,
+      senderName: actor?.name || 'Club Adviser',
+      senderRoleTitle: 'Club Adviser',
+    }).catch((err) => console.warn('Failed to dispatch mobile officer appointment notification:', err));
   } catch (error: any) {
     console.error("Appoint officer failed:", error);
     throw new Error(`Appoint officer failed: ${error.message}`);
@@ -1291,6 +1333,14 @@ export const updateOfficerWebPortalAccess = async (
   if (officerData.isActive === false) {
     throw new Error('Cannot modify Web Portal access for a revoked officer.');
   }
+  if (officerData.appointmentStatus === 'pending_acceptance') {
+    throw new Error(
+      'This officer has not accepted their appointment yet. Wait for them to confirm in the STI Sync mobile app before modifying Web Portal access.'
+    );
+  }
+  if (officerData.appointmentStatus === 'declined') {
+    throw new Error('Cannot modify Web Portal access for a declined appointment.');
+  }
 
   if (grantAccess && officerData.studentId) {
     const existingActiveOfficersSnap = await getDocs(
@@ -1300,12 +1350,19 @@ export const updateOfficerWebPortalAccess = async (
         where('isActive', '==', true)
       )
     );
-    const hasOtherOrgAssignment = existingActiveOfficersSnap.docs.some(
-      (d) => d.id !== officerDocId && d.data().organizationId !== organizationId
-    );
-    if (hasOtherOrgAssignment) {
+    const conflictingWebAccessDoc = existingActiveOfficersSnap.docs.find((d) => {
+      if (d.id === officerDocId) return false;
+      const other = d.data();
+      return (
+        other.organizationId !== organizationId &&
+        other.appointmentStatus !== 'declined' &&
+        other.hasWebPortalAccess !== false
+      );
+    });
+    if (conflictingWebAccessDoc) {
+      const otherOrgName = conflictingWebAccessDoc.data()?.organizationName;
       throw new Error(
-        'This student already holds an active officer role in another organization and cannot be granted exclusive Web Portal access here.'
+        `This student already has Web Portal access in another organization${otherOrgName ? ` (${otherOrgName})` : ''}. One student can be an officer in multiple organizations, but Web Portal access can only be granted once.`
       );
     }
   }

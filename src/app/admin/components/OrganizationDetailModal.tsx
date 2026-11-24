@@ -232,37 +232,62 @@ export function OrganizationDetailModal({ organization, isOpen, onClose }: Organ
                   </p>
                 </div>
 
-                {/* Appointed Club Adviser Card */}
-                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
-                      <Shield className="w-5 h-5 text-[#FFD41C]" />
+                {/* Appointed Club Advisers (Primary + Optional Secondary Co-Adviser) */}
+                <div className="space-y-3">
+                  <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-[#001A4D] text-[#FFD41C] flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
+                        <Shield className="w-5 h-5 text-[#FFD41C]" />
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                          Primary Club Adviser
+                        </span>
+                        {organization.adviser?.name ? (
+                          <>
+                            <p className="font-bold text-[#001A4D] text-sm">{organization.adviser.name}</p>
+                            <p className="text-xs text-gray-500 font-mono">
+                              {organization.adviser.email}
+                              {organization.adviser.employeeId ? ` • ID: ${organization.adviser.employeeId}` : ''}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-xs text-gray-400 italic">No adviser currently assigned to this organization.</p>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
-                        Appointed Club Adviser
+                    {organization.adviser?.name ? (
+                      <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 font-bold text-[11px] rounded-full border border-emerald-200 shrink-0">
+                        Active Adviser
                       </span>
-                      {organization.adviser?.name ? (
-                        <>
-                          <p className="font-bold text-[#001A4D] text-sm">{organization.adviser.name}</p>
-                          <p className="text-xs text-gray-500 font-mono">
-                            {organization.adviser.email}
-                            {organization.adviser.employeeId ? ` • ID: ${organization.adviser.employeeId}` : ''}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-xs text-gray-400 italic">No adviser currently assigned to this organization.</p>
-                      )}
-                    </div>
+                    ) : (
+                      <span className="px-2.5 py-1 bg-gray-200 text-gray-700 font-bold text-[11px] rounded-full shrink-0">
+                        Unassigned
+                      </span>
+                    )}
                   </div>
-                  {organization.adviser?.name ? (
-                    <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 font-bold text-[11px] rounded-full border border-emerald-200 shrink-0">
-                      Active Adviser
-                    </span>
-                  ) : (
-                    <span className="px-2.5 py-1 bg-gray-200 text-gray-700 font-bold text-[11px] rounded-full shrink-0">
-                      Unassigned
-                    </span>
+
+                  {organization.coAdviser?.name && (
+                    <div className="rounded-xl p-4 flex items-center justify-between gap-3 border bg-indigo-50/50 border-indigo-200">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-700 text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs">
+                          <Shield className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600 block">
+                            Secondary Club Adviser / Co-Adviser
+                          </span>
+                          <p className="font-bold text-[#001A4D] text-sm">{organization.coAdviser.name}</p>
+                          <p className="text-xs text-gray-600 font-mono">
+                            {organization.coAdviser.email}
+                            {organization.coAdviser.employeeId ? ` • ID: ${organization.coAdviser.employeeId}` : ''}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="px-2.5 py-1 font-bold text-[11px] rounded-full border shrink-0 bg-indigo-100 text-indigo-800 border-indigo-200">
+                        Active Co-Adviser
+                      </span>
+                    </div>
                   )}
                 </div>
 

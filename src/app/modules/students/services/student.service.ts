@@ -237,6 +237,24 @@ export async function promoteOrUpdateStudentStanding(
   if (!snap.exists()) throw new Error('Student document not found.');
 
   const existing = snap.data() as StudentDocument;
+
+  if (existing.status === 'INACTIVE') {
+    const { reactivateStudentForTerm } = await import('./student-lifecycle.service');
+    await reactivateStudentForTerm(studentDocId, {
+      schoolYear: updates.schoolYear,
+      semester: updates.semester,
+      academicLevel: updates.academicLevel || existing.academicLevel || 'COLLEGE',
+      yearLevel: updates.yearLevel,
+      section: updates.section || existing.section || 'UNASSIGNED',
+      courseId: updates.courseId,
+      courseCode: updates.courseCode,
+      courseName: updates.courseName,
+      departmentId: updates.departmentId || existing.departmentId || '',
+      departmentName: updates.departmentName || existing.departmentName || '',
+    });
+    return;
+  }
+
   const priorHistory = existing.enrollmentHistory || [];
   const historyItem = {
     schoolYear: existing.schoolYear || 'PRIOR',
@@ -262,9 +280,47 @@ export async function promoteOrUpdateStudentStanding(
     academicLevel: updates.academicLevel || existing.academicLevel || 'COLLEGE',
     status: 'ACTIVE',
     rejectionReason: '',
+    deactivationReason: '',
     enrollmentHistory: [...priorHistory, historyItem],
     updatedAt: Timestamp.now(),
   });
+
+  // If course or department changed during standing update, run Course Shift org/officer sync
+  try {
+    const isCourseChanging =
+      String(existing.courseCode || '').trim().toLowerCase() !==
+        String(updates.courseCode || '').trim().toLowerCase() ||
+      (Boolean(updates.departmentId) &&
+        String(existing.departmentId || '').trim().toLowerCase() !==
+          String(updates.departmentId || '').trim().toLowerCase());
+
+    if (isCourseChanging) {
+      const { executeStudentCourseShift } = await import('./student-lifecycle.service');
+      await executeStudentCourseShift(
+        { id: studentDocId, ...existing },
+        {
+          academicLevel: updates.academicLevel || existing.academicLevel || 'COLLEGE',
+          courseId: updates.courseId,
+          courseCode: updates.courseCode,
+          courseName: updates.courseName,
+          departmentId: updates.departmentId || existing.departmentId || '',
+          departmentName: updates.departmentName || existing.departmentName || '',
+          yearLevel: updates.yearLevel,
+          section: updates.section || existing.section || 'UNASSIGNED',
+        },
+        'admin',
+        {
+          source: 'RE_ENROLLMENT',
+          allowFlagInsteadOfBlock: true,
+          skipStudentDocUpdate: true,
+          schoolYear: updates.schoolYear,
+          semester: updates.semester,
+        }
+      );
+    }
+  } catch (lifecycleErr) {
+    console.warn('[promoteOrUpdateStudentStanding] Post-promotion course-shift sync notice:', lifecycleErr);
+  }
 }
 
 /** Returns true if an email is already registered across any user role (students, sas_admins, organization_advisers, organization_officers). */
@@ -588,16 +644,24 @@ export async function bulkReEnrollStudents(
   }
 }
 
-export async function inactivateOverdueStudents(studentIds: string[]): Promise<void> {
-  const batch = (await import('firebase/firestore')).writeBatch(db);
+export async function inactivateOverdueStudents(
+  studentIds: string[],
+  reason: string = 'Not enrolled for the active academic period',
+  adminUid: string = 'admin'
+): Promise<void> {
+  if (!studentIds || studentIds.length === 0) return;
+
+  const docs: StudentDocument[] = [];
   for (const id of studentIds) {
-    const ref = doc(db, STUDENTS_COLLECTION, id);
-    batch.update(ref, {
-      status: 'INACTIVE',
-      updatedAt: Timestamp.now(),
-    });
+    const snap = await getDoc(doc(db, STUDENTS_COLLECTION, id));
+    if (snap.exists()) {
+      docs.push({ id: snap.id, ...snap.data() } as StudentDocument);
+    }
   }
-  await batch.commit();
+
+  if (docs.length === 0) return;
+  const { deactivateUnenrolledStudents } = await import('./student-lifecycle.service');
+  await deactivateUnenrolledStudents(docs, reason, adminUid);
 }
 
 // ─── Archival & Deletion ───────────────────────────────────────────────────────

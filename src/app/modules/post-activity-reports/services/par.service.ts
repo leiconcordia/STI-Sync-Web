@@ -6,6 +6,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  runTransaction,
   query,
   where,
   orderBy,
@@ -33,6 +34,14 @@ import {
 } from '../../workflow/services/approval-workflow.service';
 import { createNotification } from '../../notifications';
 import { formatStageTitle, normalizeApprovalStages } from '../../workflow/utils/stage-normalization.utils';
+import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
+import {
+  resolveSignatoryDecisionCapabilities,
+  applySingleApprovalDemotion,
+  applySelfEndorseDemotion,
+  restoreDemotedApproversOnRevision,
+  findApprovedStep,
+} from '../../workflow/utils/approver-resolution.utils';
 import type {
   PostActivityReportDocument,
   PARApprovalStep,
@@ -157,32 +166,42 @@ export async function fetchLinkedActivityProposal(
 }
 
 /**
- * Enforces the single-approver invariant for Post-Activity Report signatory pipelines:
- * strictly 1 signatory has actionType === 'approve'; all other steps are 'endorse'.
+ * Ensures a Post-Activity Report signatory pipeline has AT LEAST ONE approver
+ * while preserving 2+ configured approvers for Runtime Single-Approval Governance
+ * ("First-to-Approve wins; remaining approvers auto-demote to Noted/Endorser only").
  */
 export function enforceSinglePARApprover(steps: PARApprovalStep[]): PARApprovalStep[] {
   if (!Array.isArray(steps) || steps.length === 0) return [];
 
   const copy = steps.map((s) => ({ ...s }));
-  let chosenIdx = -1;
+  const hasAnyApprover = copy.some((s) => s.actionType === 'approve');
 
-  // Prefer the last executive/existing approver in the chain
+  if (hasAnyApprover) {
+    return copy.map((step) => {
+      const isApprover = step.actionType === 'approve';
+      const actionType: 'endorse' | 'approve' = isApprover ? 'approve' : 'endorse';
+      const nextLabel = isApprover
+        ? step.signatoryLabel && !/endorsed by/i.test(step.signatoryLabel)
+          ? step.signatoryLabel
+          : resolveSignatoryLabel({ ...step, actionType } as any, 'par', true)
+        : step.signatoryLabel && !/approved by/i.test(step.signatoryLabel)
+        ? step.signatoryLabel
+        : resolveSignatoryLabel({ ...step, actionType } as any, 'par', false);
+      return {
+        ...step,
+        actionType,
+        signatoryLabel: nextLabel,
+      };
+    });
+  }
+
+  let chosenIdx = -1;
   for (let i = copy.length - 1; i >= 0; i--) {
-    if (copy[i].actionType === 'approve') {
+    if (copy[i].role === 'school_administrator' || copy[i].role === 'school_president') {
       chosenIdx = i;
       break;
     }
   }
-
-  if (chosenIdx === -1) {
-    for (let i = copy.length - 1; i >= 0; i--) {
-      if (copy[i].role === 'school_administrator' || copy[i].role === 'school_president') {
-        chosenIdx = i;
-        break;
-      }
-    }
-  }
-
   if (chosenIdx === -1) {
     chosenIdx = copy.length - 1;
   }
@@ -450,15 +469,9 @@ export async function generateDefaultPARSignatoryChain(
     });
   }
 
-  // Ensure there is strictly one approver
-  let foundApprover = false;
-  for (let i = stageSigners.length - 1; i >= 0; i--) {
-    if (stageSigners[i].action === 'approve') {
-      if (!foundApprover) foundApprover = true;
-      else stageSigners[i].action = 'endorse';
-    }
-  }
-  if (!foundApprover && stageSigners.length > 0) {
+  // Ensure there is at least one approver (preserving multiple executive approvers if configured)
+  const hasApprover = stageSigners.some((item) => item.action === 'approve');
+  if (!hasApprover && stageSigners.length > 0) {
     stageSigners[stageSigners.length - 1].action = 'approve';
   }
 
@@ -979,19 +992,42 @@ export async function endorsePARStep(
   },
   remarks = '',
   approvalDecision?: 'approve' | 'forward'
-): Promise<{ success: boolean; isFullyApproved: boolean; stageAdvanced?: boolean }> {
+): Promise<{
+  success: boolean;
+  isFullyApproved: boolean;
+  stageAdvanced?: boolean;
+  wasCoercedByPriorApproval?: boolean;
+  approvedBySignatoryName?: string;
+}> {
   const parRef = doc(db, PAR_COLLECTION, parId);
-  const snap = await getDoc(parRef);
-  if (!snap.exists()) throw new Error('Post-Activity Report not found.');
+  const preSnap = await getDoc(parRef);
+  if (!preSnap.exists()) throw new Error('Post-Activity Report not found.');
+  const preData = preSnap.data() as PostActivityReportDocument;
 
-  const data = snap.data() as PostActivityReportDocument;
-  const chain = [...(data.approvalChain || [])];
-  if (chain.length === 0) throw new Error('No approval steps found on this report.');
+  // Pre-evaluate PAR liquidation gate outside transaction (requires reading parent event & liquidation docs)
+  let parLiquidationGateError: string | null = null;
+  if (preData.status !== 'approved' && preData.eventId) {
+    let parentEventData: any = null;
+    try {
+      const evSnap = await getDoc(doc(db, EVENTS_COLLECTION, preData.eventId));
+      if (evSnap.exists()) parentEventData = evSnap.data();
+    } catch {}
+    if (parentEventData) {
+      const activeLiqDoc = await fetchActiveEventLiquidation(preData.eventId, preData.liquidationId);
+      const gate = evaluatePARLiquidationGate({
+        event: parentEventData,
+        liquidation: activeLiqDoc,
+        isExempt: isEventLiquidationExempt(parentEventData),
+      });
+      if (!gate.allowedToApprove) {
+        parLiquidationGateError = gate.approveReason || 'Liquidation must be approved before approving this Post-Activity Report.';
+      }
+    }
+  }
 
   const signerUid = signatory.id || signatory.uid || '';
   const signerEmail = (signatory.email || '').toLowerCase();
-  const currentStage = data.currentStageIndex ?? 1;
-  const wasAlreadyApproved = data.status === 'approved';
+  const decision = approvalDecision || signatory.approvalDecision;
 
   const matchesSignatory = (s: any) => {
     if (signerUid && s.signatoryUid === signerUid) return true;
@@ -1000,157 +1036,195 @@ export async function endorsePARStep(
     return false;
   };
 
-  let targetStepIdx = chain.findIndex((s) => {
-    const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
-    const isPending = s.status === 'current' || s.status === 'waiting';
-    return stageMatches && isPending && matchesSignatory(s);
-  });
+  const txResult = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(parRef);
+    if (!snap.exists()) throw new Error('Post-Activity Report not found.');
 
-  if (targetStepIdx === -1 && wasAlreadyApproved) {
-    targetStepIdx = chain.findIndex(
-      (s) => (s.status === 'current' || s.status === 'waiting') && matchesSignatory(s)
-    );
-  }
+    const data = snap.data() as PostActivityReportDocument;
+    const chain = [...(data.approvalChain || [])];
+    if (chain.length === 0) throw new Error('No approval steps found on this report.');
 
-  if (targetStepIdx === -1) {
-    targetStepIdx = data.currentStepIndex ?? 0;
-  }
+    const currentStage = data.currentStageIndex ?? 1;
+    const priorApprovedStep = findApprovedStep(chain);
+    const wasAlreadyApproved = Boolean(priorApprovedStep) || data.status === 'approved';
 
-  if (targetStepIdx < 0 || targetStepIdx >= chain.length) {
-    throw new Error('No pending approval step found for your account on this Post-Activity Report.');
-  }
+    let targetStepIdx = chain.findIndex((s) => {
+      const stageMatches = s.stageIndex ? s.stageIndex === currentStage : true;
+      const isPending = s.status === 'current' || s.status === 'waiting';
+      return stageMatches && isPending && matchesSignatory(s);
+    });
 
-  const targetStep = chain[targetStepIdx];
-  const stepAction = String(targetStep.actionType || '').toLowerCase().trim();
-  const isStepEndorseOrCheck =
-    stepAction === 'endorse' || stepAction === 'check' || stepAction === 'note';
-  const isSchoolAdmin = targetStep.role === 'school_administrator' || signatory.role === 'school_administrator';
-  const isPresident = targetStep.role === 'school_president' || signatory.role === 'school_president';
-  const canApprove =
-    !isStepEndorseOrCheck && canSignatoryApproveDocument(signatory as any, 'par', targetStep);
-  const decision = approvalDecision || signatory.approvalDecision;
+    if (targetStepIdx === -1 && wasAlreadyApproved) {
+      targetStepIdx = chain.findIndex(
+        (s) => (s.status === 'current' || s.status === 'waiting') && matchesSignatory(s)
+      );
+    }
 
-  const isExecutiveApprover =
-    !isStepEndorseOrCheck &&
-    (isPresident ||
-      isSchoolAdmin ||
-      canApprove ||
-      targetStep.actionType === 'approve' ||
-      signatory.actionType === 'approve');
+    if (targetStepIdx === -1) {
+      targetStepIdx = data.currentStepIndex ?? 0;
+    }
 
-  let newStatus: 'endorsed' | 'approved' = 'endorsed';
-  if (isStepEndorseOrCheck) {
-    newStatus = 'endorsed';
-  } else if (decision === 'approve') {
-    newStatus = 'approved';
-  } else if (decision === 'forward') {
-    newStatus = 'endorsed';
-  } else if (canApprove) {
-    if (signatory.actionType === 'approve' || targetStep.actionType === 'approve') {
-      newStatus = 'approved';
+    if (targetStepIdx < 0 || targetStepIdx >= chain.length) {
+      throw new Error('No pending approval step found for your account on this Post-Activity Report.');
+    }
+
+    const targetStep = chain[targetStepIdx];
+    const capabilities = resolveSignatoryDecisionCapabilities({
+      chain,
+      myStepIndex: targetStepIdx,
+      signatory,
+      docType: 'par',
+    });
+
+    let newStatus: 'endorsed' | 'approved' = 'endorsed';
+    let wasCoercedByPriorApproval = false;
+
+    if (capabilities.isAlreadyApproved || wasAlreadyApproved) {
+      newStatus = 'endorsed';
+      wasCoercedByPriorApproval = decision === 'approve';
+    } else if (capabilities.canApprove) {
+      if (decision === 'forward') {
+        if (!capabilities.canEndorseInsteadOfApprove) {
+          throw new Error(
+            'You are the last remaining Approver in this pipeline and cannot endorse without granting approval. Please click Approve.'
+          );
+        }
+        newStatus = 'endorsed';
+      } else if (decision === 'approve' || targetStep.actionType === 'approve' || signatory.actionType === 'approve') {
+        newStatus = 'approved';
+      } else {
+        newStatus = 'endorsed';
+      }
     } else {
       newStatus = 'endorsed';
     }
-  } else {
-    newStatus = 'endorsed';
-  }
 
-  // Stamp digital signature on step
-  chain[targetStepIdx] = {
-    ...chain[targetStepIdx],
-    status: newStatus,
-    signatoryUid: signerUid || chain[targetStepIdx].signatoryUid || '',
-    signedByUid: signerUid || chain[targetStepIdx].signatoryUid || '',
-    signatoryName: signatory.name || chain[targetStepIdx].signatoryName || '',
-    signedByName: signatory.name || chain[targetStepIdx].signatoryName || '',
-    signatoryEmail: signatory.email || chain[targetStepIdx].signatoryEmail || '',
-    signedByEmail: signerEmail || chain[targetStepIdx].signatoryEmail || '',
-    signatureUrl: signatory.signatureUrl || chain[targetStepIdx].signatureUrl,
-    signedAt: new Date().toISOString(),
-    remarks: remarks || chain[targetStepIdx].remarks,
-  };
+    let updatedStep: any = {
+      ...chain[targetStepIdx],
+      status: newStatus,
+      signatoryUid: signerUid || chain[targetStepIdx].signatoryUid || '',
+      signedByUid: signerUid || chain[targetStepIdx].signatoryUid || '',
+      signatoryName: signatory.name || chain[targetStepIdx].signatoryName || '',
+      signedByName: signatory.name || chain[targetStepIdx].signatoryName || '',
+      signatoryEmail: signatory.email || chain[targetStepIdx].signatoryEmail || '',
+      signedByEmail: signerEmail || chain[targetStepIdx].signatoryEmail || '',
+      signatureUrl: signatory.signatureUrl || chain[targetStepIdx].signatureUrl,
+      signedAt: new Date().toISOString(),
+      remarks: remarks || chain[targetStepIdx].remarks,
+    };
 
-  // When executive approver signs off, keep remaining unsigned signatories active ('current') without waiving them
-  if (newStatus === 'approved') {
-    chain.forEach((s, idx) => {
-      if (idx !== targetStepIdx && s.status === 'waiting') {
-        chain[idx] = {
-          ...s,
-          status: 'current',
-        };
+    if (newStatus === 'approved') {
+      updatedStep.actionType = 'approve';
+      updatedStep.signatoryLabel = 'Approved by:';
+    } else if (capabilities.canApprove && decision === 'forward') {
+      updatedStep = applySelfEndorseDemotion(updatedStep, 'Endorsed by:');
+    } else if ((capabilities.isAlreadyApproved || wasAlreadyApproved) && targetStep.actionType === 'approve') {
+      updatedStep.actionType = 'endorse';
+      updatedStep.signatoryLabel = 'Noted by:';
+      updatedStep.demotedFromApprover = true;
+      updatedStep.demotedReason = 'already_approved';
+      if (capabilities.approvedBySignatoryName) {
+        updatedStep.demotedBySignatoryName = capabilities.approvedBySignatoryName;
       }
+    }
+
+    chain[targetStepIdx] = updatedStep;
+
+    let workingChain = chain;
+    if (newStatus === 'approved') {
+      workingChain = applySingleApprovalDemotion(chain, targetStepIdx, {
+        demotedLabel: 'Noted by:',
+        activateWaitingSteps: true,
+      });
+    } else if (newStatus === 'endorsed' && capabilities.canApprove) {
+      workingChain = chain.map((s, idx) =>
+        (s.stageIndex ?? 1) === currentStage && idx !== targetStepIdx && s.status === 'waiting'
+          ? { ...s, status: 'current' as const }
+          : s
+      );
+    }
+
+    const currentStageSteps = workingChain.filter((s) => (s.stageIndex ?? 1) === currentStage);
+    const allStageStepsCompleted = currentStageSteps.every(
+      (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
+    );
+
+    let isFullyApproved = wasAlreadyApproved || newStatus === 'approved';
+    let nextStageIndex = currentStage;
+    let stageAdvanced = false;
+
+    if (allStageStepsCompleted) {
+      const futureStages = workingChain
+        .map((s) => s.stageIndex ?? 1)
+        .filter((stg) => stg > currentStage)
+        .sort((a, b) => a - b);
+
+      if (futureStages.length > 0) {
+        nextStageIndex = futureStages[0];
+        stageAdvanced = true;
+        workingChain = workingChain.map((s) =>
+          (s.stageIndex ?? 1) === nextStageIndex && s.status === 'waiting'
+            ? { ...s, status: 'current' as const }
+            : s
+        );
+      } else {
+        isFullyApproved = true;
+      }
+    }
+
+    if (isFullyApproved && !wasAlreadyApproved && parLiquidationGateError) {
+      throw new Error(parLiquidationGateError);
+    }
+
+    const endorsementRemark: PARRemark = {
+      id: `rem-${Date.now()}`,
+      authorName: signatory.name || 'Signatory',
+      authorRole: 'signatory',
+      action: newStatus === 'approved' ? 'approved' : 'endorsed',
+      comment:
+        remarks ||
+        (isFullyApproved && !wasAlreadyApproved
+          ? 'Post-Activity Report fully cleared and approved.'
+          : capabilities.isDemotedToEndorserOnly || wasCoercedByPriorApproval
+          ? `Noted by ${signatory.name || 'Signatory'} (already approved).`
+          : `Endorsed stage ${currentStage}.`),
+      timestamp: new Date().toISOString(),
+    };
+
+    const updates: any = cleanPayload({
+      approvalChain: workingChain,
+      currentStepIndex: targetStepIdx + 1,
+      currentStageIndex: nextStageIndex,
+      status: isFullyApproved ? 'approved' : 'under_review',
+      updatedAt: serverTimestamp(),
+      remarksHistory: arrayUnion(sanitizeFirestorePayload(endorsementRemark)),
+      ...(isFullyApproved && !wasAlreadyApproved
+        ? { approvedAt: serverTimestamp(), approvedBy: signerUid || signatory.email }
+        : {}),
     });
-  }
 
-  const currentStageSteps = chain.filter((s) => (s.stageIndex ?? 1) === currentStage);
-  const allStageStepsCompleted = currentStageSteps.every(
-    (s) => s.status === 'endorsed' || s.status === 'approved' || s.status === 'waived'
-  );
+    tx.update(parRef, sanitizeFirestorePayload(updates));
 
-  let isFullyApproved = wasAlreadyApproved || newStatus === 'approved';
-  let nextStageIndex = currentStage;
-  let stageAdvanced = false;
-
-  if (allStageStepsCompleted) {
-    const futureStages = chain
-      .map((s) => s.stageIndex ?? 1)
-      .filter((stg) => stg > currentStage)
-      .sort((a, b) => a - b);
-
-    if (futureStages.length > 0) {
-      nextStageIndex = futureStages[0];
-      stageAdvanced = true;
-      chain.forEach((s, idx) => {
-        if ((s.stageIndex ?? 1) === nextStageIndex && s.status === 'waiting') {
-          chain[idx] = { ...s, status: 'current' };
-        }
-      });
-    } else {
-      isFullyApproved = true;
-    }
-  }
-
-  if (isFullyApproved && !wasAlreadyApproved && data.eventId) {
-    let parentEventData: any = null;
-    try {
-      const evSnap = await getDoc(doc(db, EVENTS_COLLECTION, data.eventId));
-      if (evSnap.exists()) parentEventData = evSnap.data();
-    } catch {}
-    if (parentEventData) {
-      const activeLiqDoc = await fetchActiveEventLiquidation(data.eventId, data.liquidationId);
-      const gate = evaluatePARLiquidationGate({
-        event: parentEventData,
-        liquidation: activeLiqDoc,
-        isExempt: isEventLiquidationExempt(parentEventData),
-      });
-      if (!gate.allowedToApprove) {
-        throw new Error(gate.approveReason);
-      }
-    }
-  }
-
-  const endorsementRemark: PARRemark = {
-    id: `rem-${Date.now()}`,
-    authorName: signatory.name || 'Signatory',
-    authorRole: 'signatory',
-    action: newStatus === 'approved' ? 'approved' : 'endorsed',
-    comment: remarks || (isFullyApproved && !wasAlreadyApproved ? 'Post-Activity Report fully cleared and approved.' : `Endorsed stage ${currentStage}.`),
-    timestamp: new Date().toISOString(),
-  };
-
-  const updates: any = cleanPayload({
-    approvalChain: chain,
-    currentStepIndex: targetStepIdx + 1,
-    currentStageIndex: nextStageIndex,
-    status: isFullyApproved ? 'approved' : 'under_review',
-    updatedAt: serverTimestamp(),
-    remarksHistory: arrayUnion(sanitizeFirestorePayload(endorsementRemark)),
-    ...(isFullyApproved && !wasAlreadyApproved
-      ? { approvedAt: serverTimestamp(), approvedBy: signerUid || signatory.email }
-      : {}),
+    return {
+      data,
+      updates,
+      isFullyApproved,
+      wasAlreadyApproved,
+      stageAdvanced,
+      wasCoercedByPriorApproval,
+      approvedBySignatoryName: capabilities.approvedBySignatoryName,
+    };
   });
 
-  await updateDoc(parRef, sanitizeFirestorePayload(updates));
+  const {
+    data,
+    updates,
+    isFullyApproved,
+    wasAlreadyApproved,
+    stageAdvanced,
+    wasCoercedByPriorApproval,
+    approvedBySignatoryName,
+  } = txResult;
 
   // Sync event document
   try {
@@ -1173,7 +1247,13 @@ export async function endorsePARStep(
     }
   }
 
-  return { success: true, isFullyApproved, stageAdvanced };
+  return {
+    success: true,
+    isFullyApproved,
+    stageAdvanced,
+    wasCoercedByPriorApproval,
+    approvedBySignatoryName,
+  };
 }
 
 /**
@@ -1241,6 +1321,7 @@ export async function returnPAR(
     returnedByRoleTitle: adminRoleTitle || 'Signatory',
     returnedByEmail: adminEmail || null,
     returnedAt: serverTimestamp(),
+    approvalChain: restoreDemotedApproversOnRevision(data.approvalChain || []),
     updatedAt: serverTimestamp(),
     previousSnapshot: fullSnapshot,
     remarksHistory: arrayUnion(sanitizeFirestorePayload(returnRemark)),
@@ -1530,13 +1611,16 @@ export async function approveAndForwardPARByAdviser(
   }));
 
   const nowIso = new Date().toISOString();
+  const auditCtx = await resolveAdviserActorAuditContext(data.organizationId, adviser);
   const adviserReview = {
     status: 'approved' as const,
     reviewedByUid: adviser.uid,
     reviewedByName: adviser.name || 'Club Adviser',
     reviewedByEmail: adviser.email || '',
+    reviewedByAdviserRole: auditCtx.reviewedByAdviserRole,
+    ...(auditCtx.actingOnBehalfOfName ? { actingOnBehalfOfName: auditCtx.actingOnBehalfOfName } : {}),
     reviewedAt: nowIso,
-    remarks: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS.',
+    remarks: remarks?.trim() || `Approved by ${auditCtx.roleTitleLabel} and forwarded to SAS.`,
     signatureUrl: adviser.signatureUrl.trim(),
   };
 
@@ -1545,7 +1629,7 @@ export async function approveAndForwardPARByAdviser(
     authorName: adviser.name || 'Club Adviser',
     authorRole: 'adviser',
     action: 'adviser_approved',
-    comment: remarks?.trim() || 'Approved by Club Adviser and forwarded to SAS for institutional clearance.',
+    comment: remarks?.trim() || `Approved by ${auditCtx.roleTitleLabel} and forwarded to SAS for institutional clearance.`,
     timestamp: nowIso,
   };
 

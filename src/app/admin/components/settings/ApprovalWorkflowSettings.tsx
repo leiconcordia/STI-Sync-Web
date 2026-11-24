@@ -182,10 +182,14 @@ export default function ApprovalWorkflowSettings() {
     }));
   }, [currentSteps]);
 
-  // Validation: Check if there is an executive approver
-  const hasApprover = useMemo(() => {
-    return currentSteps.some((s) => s.actionType === 'approve' || s.role === 'school_president');
+  // Validation: Check if there is at least one executive approver
+  const approverCount = useMemo(() => {
+    return currentSteps.filter((s) => s.actionType === 'approve').length;
   }, [currentSteps]);
+
+  const hasApprover = useMemo(() => {
+    return approverCount >= 1 || currentSteps.some((s) => s.role === 'school_president');
+  }, [approverCount, currentSteps]);
 
   // ── Stage & Step Handlers ──
 
@@ -332,10 +336,6 @@ export default function ApprovalWorkflowSettings() {
       if (step.id === stepId) {
         return { ...step, ...updates };
       }
-      // If setting this step to 'approve', demote any other existing approver in the pipeline to 'endorse'
-      if (updates.actionType === 'approve' && step.actionType === 'approve') {
-        return { ...step, actionType: 'endorse' as const };
-      }
       return step;
     });
     handleUpdateSteps(updated);
@@ -379,8 +379,7 @@ export default function ApprovalWorkflowSettings() {
           : sig.canApprovePar
     ) || sig.role === 'school_president' || sig.role === 'school_administrator';
 
-    const existingApprover = currentSteps.find((s) => s.id !== stepId && s.actionType === 'approve');
-    const validAction: 'endorse' | 'approve' = (canApprove && !existingApprover) ? 'approve' : 'endorse';
+    const validAction: 'endorse' | 'approve' = canApprove ? 'approve' : 'endorse';
 
     handleUpdateStep(stepId, {
       signatoryUid: sig.id,
@@ -402,16 +401,10 @@ export default function ApprovalWorkflowSettings() {
       preserveBuiltinSasGate: activePipelineKey === 'adviser_ap',
       normalize: true,
     });
-    const approverCount = stepsToSave.filter((s) => s.actionType === 'approve').length;
-    if (approverCount === 0) {
+    const approverCountToSave = stepsToSave.filter((s) => s.actionType === 'approve').length;
+    if (approverCountToSave === 0) {
       toast.error(
-        `Validation Error: Cannot save ${activeMeta.label}. Every workflow MUST include exactly one executive Approver ("Approve" action). Please designate an approver first.`
-      );
-      return;
-    }
-    if (approverCount > 1) {
-      toast.error(
-        `Validation Error: Cannot save ${activeMeta.label}. Every workflow pipeline must have strictly ONE executive Approver. Current workflow has ${approverCount} approvers.`
+        `Validation Error: Cannot save ${activeMeta.label}. Every workflow MUST include at least one executive Approver ("Approve" action). Please designate an approver first.`
       );
       return;
     }
@@ -579,12 +572,16 @@ export default function ApprovalWorkflowSettings() {
           </p>
         </div>
 
-        {!hasApprover && (
+        {!hasApprover ? (
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-50 border border-rose-300 text-rose-900 rounded-xl text-[11px] font-bold flex-shrink-0 shadow-2xs">
             <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0" />
             <span>Missing Executive Approver (Cannot Save)</span>
           </div>
-        )}
+        ) : approverCount >= 2 ? (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-300 text-emerald-900 rounded-xl text-[11px] font-bold flex-shrink-0 shadow-2xs">
+            <span>{approverCount} Approvers Configured • First to Approve Finalizes (Others Become Noted/Endorser Only)</span>
+          </div>
+        ) : null}
       </div>
 
       {/* ── Pipeline Stages Visual Builder ── */}
@@ -675,11 +672,7 @@ export default function ApprovalWorkflowSettings() {
                             : selectedSig.canApprovePar
                       ) || selectedSig.role === 'school_president' || selectedSig.role === 'school_administrator' : false;
 
-                      const existingApproverInSettings = currentSteps.find((s) => s.actionType === 'approve');
-                      const pipelineAlreadyHasApproverInSettings = Boolean(
-                        existingApproverInSettings && existingApproverInSettings.id !== step.id
-                      );
-                      const canSignerApprove = hasDocApprovalAuthority && !pipelineAlreadyHasApproverInSettings;
+                      const canSignerApprove = hasDocApprovalAuthority;
 
                       // Find other signatories already assigned in this pipeline so they are excluded from this step's dropdown
                       const otherAssignedIds = new Set(
@@ -752,9 +745,7 @@ export default function ApprovalWorkflowSettings() {
                                 title={
                                   !hasDocApprovalAuthority
                                     ? 'This signatory does not have approval authority for this document type (Endorser Only in directory)'
-                                    : pipelineAlreadyHasApproverInSettings
-                                    ? `Only 1 approver is allowed per pipeline. ${existingApproverInSettings?.signatoryName || 'Another signer'} is already the designated Approver.`
-                                    : 'Designate as executive Approver'
+                                    : 'Designate as executive Approver (when 2+ approvers are configured, first to Approve finalizes and remaining approvers become Noted/Endorser only)'
                                 }
                               >
                                 Approve

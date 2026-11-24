@@ -85,9 +85,9 @@ export function isDocumentSasCreated(doc: Partial<ApprovableDocument>): boolean 
  */
 export function isDocumentOwner(
   doc: Partial<ApprovableDocument>,
-  user: UserContext
+  user: UserContext | null | undefined
 ): boolean {
-  if (!doc) return false;
+  if (!doc || !user) return false;
 
   const docCreatorUid = doc.createdByUid || doc.createdById || '';
   if (user.uid && docCreatorUid && user.uid === docCreatorUid) {

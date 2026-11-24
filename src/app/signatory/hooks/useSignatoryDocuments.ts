@@ -12,6 +12,7 @@ import type { LiquidationDocument } from '../../modules/finance/types/liquidatio
 import type { PostActivityReportDocument } from '../../modules/post-activity-reports/types/par.types';
 import { subscribeToProposals } from '../../modules/activity-proposals/services/proposal.service';
 import { subscribeToSupplementalBudgetRequests } from '../../modules/supplemental-budget/services/sbr.service';
+import { isSignatoryTurnForSbr } from '../../modules/supplemental-budget/utils/sbr-validation.utils';
 import type { SupplementalBudgetRequest } from '../../modules/supplemental-budget/types/sbr.types';
 import { useAllLiquidations } from '../../modules/finance/hooks/useLiquidationStream';
 import { useAllPARsForSignatories } from '../../modules/post-activity-reports/hooks/usePostActivityReportStream';
@@ -389,14 +390,22 @@ export function useSignatoryDocuments(session: any) {
       }
 
       const chain = sbr.approvalChain || [];
-      const currentIdx = sbr.currentStepIndex ?? 0;
-      const currentStep = chain[currentIdx];
       const hasSignedPersonally = chain.some(
-        (step: any) => step && step.status === 'approved' && matchesSignatory(step)
+        (step: any) =>
+          step &&
+          (step.status === 'approved' || step.status === 'endorsed') &&
+          matchesSignatory(step)
       );
 
       if (canAccessProposal && sbr.status === 'pending_signatories' && !hasSignedPersonally) {
-        if (currentStep && matchesSignatory(currentStep)) {
+        const isMyTurn = isSignatoryTurnForSbr(sbr, {
+          uid: session?.uid,
+          id: session?.id,
+          email: session?.email,
+          role: session?.role,
+          roleTitle: session?.roleTitle,
+        });
+        if (isMyTurn) {
           pending.push(sbr);
         }
       }

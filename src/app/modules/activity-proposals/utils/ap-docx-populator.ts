@@ -16,6 +16,8 @@ import {
   resolveSignatureDataUrl,
   tryConvertPopulatedDocxToPdf,
 } from '../../workflow/utils/docx-template-engine';
+import { getSupplementalBudgetsByEvent } from '../../supplemental-budget/services/sbr.service';
+import { buildMergedFinancialProjectionsForExport } from '../../supplemental-budget/utils/sbr-validation.utils';
 
 const AP_TEMPLATE_URL = '/templates/ap_template.docx';
 
@@ -311,15 +313,16 @@ export async function buildAPTemplatePayload(proposal: Partial<ActivityProposal>
     }
   }
 
-  const fin = proposal.financialProjections || {
-    revenues: [],
-    expenses: [],
-    totalRevenue: 0,
-    totalExpenses: 0,
-    balance: 0,
-  };
-  const isZeroBudget = proposal.fundingSource === 'zero_budget';
-  const rawRevs = !isZeroBudget && Array.isArray(fin.revenues) ? fin.revenues : [];
+  let approvedSbrs: any[] = [];
+  if (proposal.id) {
+    try {
+      const sbrList = await getSupplementalBudgetsByEvent(proposal.id);
+      approvedSbrs = sbrList.filter((s) => s && !s.isDeleted && s.status === 'approved');
+    } catch {}
+  }
+
+  const { financialProjections: fin } = buildMergedFinancialProjectionsForExport(proposal, approvedSbrs);
+  const rawRevs = Array.isArray(fin.revenues) ? fin.revenues : [];
   const rawExps = Array.isArray(fin.expenses) ? fin.expenses : [];
 
   const revThisYearSum = rawRevs.reduce((acc, r) => acc + (Number(r.thisYearProposed) || 0), 0);
@@ -398,23 +401,42 @@ export async function buildAPTemplatePayload(proposal: Partial<ActivityProposal>
         description: rev.description || 'Revenue source',
         lastYearActual: rev.lastYearActual ? formatAmount(rev.lastYearActual) : '',
         thisYearProposed: rev.thisYearProposed ? formatAmount(rev.thisYearProposed) : '',
-        adjustment: rev.adjustment ? formatAmount(rev.adjustment) : '',
+        adjustment: rev.adjustment
+          ? `${Number(rev.adjustment) > 0 && String(rev.id || '').startsWith('sbr_') ? '+' : ''}${formatAmount(rev.adjustment)}`
+          : '',
         remarks: combinedRem,
       };
     }),
     expensesThisYearTotal: rawExps.length > 0 ? formatAmount(expThisYearSum) : '',
     expensesTotalAmount: formatAmount(fin.totalExpenses ?? 0),
-    expensesAdjustmentTotal: rawExps.length > 0 ? formatAmount(expAdjSum) : '',
+    expensesAdjustmentTotal:
+      rawExps.length > 0 && expAdjSum !== 0
+        ? `${expAdjSum > 0 ? '+' : ''}${formatAmount(expAdjSum)}`
+        : '',
     expensesSummaryRemarks: '',
     expenses:
       rawExps.length > 0
-        ? rawExps.map((exp) => ({
-            description: exp.description || 'Expense item',
-            lastYearActual: exp.lastYearActual !== undefined && exp.lastYearActual !== null ? formatAmount(exp.lastYearActual) : '',
-            thisYearProposed: exp.thisYearProposed !== undefined && exp.thisYearProposed !== null ? formatAmount(exp.thisYearProposed) : '',
-            adjustment: exp.adjustment !== undefined && exp.adjustment !== null ? formatAmount(exp.adjustment) : '',
-            remarks: exp.remarks || '',
-          }))
+        ? rawExps.map((exp) => {
+            const isSuppRow = String(exp.id || '').startsWith('sbr_exp_');
+            return {
+              description: exp.description || 'Expense item',
+              lastYearActual:
+                exp.lastYearActual !== undefined && exp.lastYearActual !== null && exp.lastYearActual !== 0
+                  ? formatAmount(exp.lastYearActual)
+                  : '',
+              thisYearProposed:
+                isSuppRow
+                  ? ''
+                  : exp.thisYearProposed !== undefined && exp.thisYearProposed !== null
+                  ? formatAmount(exp.thisYearProposed)
+                  : '',
+              adjustment:
+                exp.adjustment !== undefined && exp.adjustment !== null && exp.adjustment !== 0
+                  ? `${isSuppRow && Number(exp.adjustment) > 0 ? '+' : ''}${formatAmount(exp.adjustment)}`
+                  : '',
+              remarks: exp.remarks || '',
+            };
+          })
         : [{ description: '', lastYearActual: '', thisYearProposed: '', adjustment: '', remarks: '' }],
     balanceThisYearProposed: `P ${balanceSign}${formatAmount(absBalance)}`,
     balanceTotalAmount: `P ${balanceSign}${formatAmount(absBalance)}`,

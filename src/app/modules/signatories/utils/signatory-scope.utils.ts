@@ -3,7 +3,8 @@ import type { InstitutionalSignatory, WorkflowDocumentType } from '../types/sign
 /**
  * Returns the normalized array of authorized workflow documents for a signatory.
  */
-export function getSignatoryAuthorizedWorkflows(sig: InstitutionalSignatory): WorkflowDocumentType[] {
+export function getSignatoryAuthorizedWorkflows(sig: InstitutionalSignatory | null | undefined): WorkflowDocumentType[] {
+  if (!sig) return ['proposal', 'liquidation'];
   if (Array.isArray(sig.applicableWorkflows)) {
     return sig.applicableWorkflows;
   }
@@ -21,9 +22,10 @@ export function getSignatoryAuthorizedWorkflows(sig: InstitutionalSignatory): Wo
  * Guarantees that Accountants are strictly for Liquidations and never Activity Proposals or PAR.
  */
 export function isSignatoryApplicableTo(
-  sig: InstitutionalSignatory,
+  sig: InstitutionalSignatory | null | undefined,
   formType: WorkflowDocumentType | 'proposal' | 'liquidation' | 'par'
 ): boolean {
+  if (!sig) return false;
   const roleLower = (sig.role || '').toLowerCase();
   const titleLower = (sig.roleTitle || '').toLowerCase();
   const isAccountant =

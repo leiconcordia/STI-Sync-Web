@@ -13,34 +13,56 @@ import {
   doc,
   addDoc,
   getDoc,
+  getDocFromCache,
   getDocs,
+  getDocsFromCache,
   updateDoc,
+  runTransaction,
   query,
   where,
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
+import {
+  resolveSignatoryDecisionCapabilities,
+  applySingleApprovalDemotion,
+  applySelfEndorseDemotion,
+  restoreDemotedApproversOnRevision,
+  findApprovedStep,
+} from '../../workflow/utils/approver-resolution.utils';
 import { db, sanitizeFirestorePayload } from '../../../../services/firebase';
 import { logAuditEvent } from '../../audit/services/audit.service';
 import { createNotification } from '../../notifications/services/notification.service';
 import { getInstitutionalSignatories } from '../../signatories/services/signatory.service';
+import { resolveAdviserActorAuditContext } from '../../organizations/services/organization.service';
 import { isSignatoryApplicableTo } from '../../signatories/types/signatory.types';
+import {
+  getDefaultWorkflowSettings,
+  findMatchedSignatoryForStep,
+} from '../../workflow/services/approval-workflow.service';
 import { deductSupplementalBudget } from '../../finance/services/finance.service';
-import { deductMiscFeeBucketOnDisbursement } from '../../finance/services/misc-fee.service';
+import {
+  deductMiscFeeBucketOnDisbursement,
+  MISC_FEE_LEDGER_COLLECTION,
+} from '../../finance/services/misc-fee.service';
 import { deductRetainedFundOnProposalApproval } from '../../finance/services/retained-fund.service';
 import type { ProposalApprovalStep, ProposalBucketAllocation } from '../../activity-proposals/types/proposal.types';
 import type { InstitutionalSignatory } from '../../signatories/types/signatory.types';
 import {
   buildSbrReferenceCode,
+  cloneParentApSignatoryPipeline,
   computeSupplementalItemsTotal,
   doesSbrRequireSignatories,
   IN_FLIGHT_SBR_STATUSES,
+  matchesSbrSignatoryStep,
   mergeBaseAndSupplementalAllocations,
+  normalizeSbrApprovalChain,
 } from '../utils/sbr-validation.utils';
 import type {
   CreateSupplementalBudgetPayload,
   SupplementalBudgetRequest,
   SupplementalEventAllocation,
+  SupplementalEventExpenseItem,
   SupplementalHistoryEntry,
   SupplementalVoucherRecord,
 } from '../types/sbr.types';
@@ -48,6 +70,34 @@ import type {
 export const SUPPLEMENTAL_BUDGET_COLLECTION = 'supplemental_budget_requests';
 const EVENTS_COLLECTION = 'events';
 const PROPOSALS_COLLECTION = 'activity_proposals';
+
+function isFirestoreQuotaError(err: any): boolean {
+  const code = String(err?.code || '').toLowerCase();
+  const msg = String(err?.message || '').toLowerCase();
+  return code === 'resource-exhausted' || msg.includes('quota exceeded') || msg.includes('resource-exhausted');
+}
+
+async function getDocSafe(ref: ReturnType<typeof doc>) {
+  try {
+    return await getDoc(ref);
+  } catch (err: any) {
+    if (isFirestoreQuotaError(err)) {
+      return await getDocFromCache(ref);
+    }
+    throw err;
+  }
+}
+
+async function getDocsSafe(q: any) {
+  try {
+    return await getDocs(q);
+  } catch (err: any) {
+    if (isFirestoreQuotaError(err)) {
+      return await getDocsFromCache(q);
+    }
+    throw err;
+  }
+}
 
 export interface SbrActor {
   uid: string;
@@ -75,43 +125,122 @@ function makeHistoryEntry(
 }
 
 /**
- * Generates a default sequential institutional signatory chain for School Budget / SAS SBRs.
+ * Resolves the default signatory pipeline for a Supplemental Budget Request:
+ * 1. Copies the Parent Activity Proposal's exact configured approval pipeline (`activity_proposals/{eventId}` or `events/{eventId}`)
+ *    with internal SAS/Adviser steps stripped and statuses reset to `pending`.
+ * 2. Fallback (only if parent AP had no institutional signatories, e.g. original AP was Org Funds or Zero Budget):
+ *    uses the configured Default AP Workflow Template (`admin_ap` / `adviser_ap`) matched to active proposal signatories.
  */
-export async function generateDefaultSbrSignatoryChain(
-  signatoriesOverride?: InstitutionalSignatory[]
-): Promise<ProposalApprovalStep[]> {
-  const all = signatoriesOverride || (await getInstitutionalSignatories());
-  const activeProposalSigners = all.filter(
+export async function resolveDefaultSbrPipelineFromParentAp(params: {
+  eventId?: string;
+  parentEvent?: any;
+  isSasInstitutional: boolean;
+  signatoriesOverride?: InstitutionalSignatory[];
+}): Promise<{
+  chain: ProposalApprovalStep[];
+  source: 'parent_ap' | 'default_ap_template';
+}> {
+  // 1. Try parentEvent passed in memory first
+  const fromMemory = cloneParentApSignatoryPipeline(params.parentEvent);
+  if (fromMemory.length > 0) {
+    return { chain: fromMemory, source: 'parent_ap' };
+  }
+
+  // 2. Fetch parent AP / Event doc from Firestore to copy its exact pipeline
+  if (params.eventId) {
+    for (const colName of [PROPOSALS_COLLECTION, EVENTS_COLLECTION]) {
+      try {
+        const snap = await getDoc(doc(db, colName, params.eventId));
+        if (snap.exists()) {
+          const cloned = cloneParentApSignatoryPipeline(snap.data());
+          if (cloned.length > 0) {
+            return { chain: cloned, source: 'parent_ap' };
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 3. Fallback: Default AP Workflow Template (never dumps all signatories blindly)
+  const allSignatories = params.signatoriesOverride || (await getInstitutionalSignatories());
+  const activeProposalSigners = allSignatories.filter(
     (s) => s.isActive !== false && isSignatoryApplicableTo(s, 'proposal')
   );
 
-  // Order: non-approvers (endorsers like Program Head / Academic Head / School Admin) first, final approvers (President) last
-  const roleOrder = (role: string, canApprove?: boolean) => {
-    const r = String(role || '').toLowerCase();
-    if (canApprove || r === 'school_president' || r.includes('president')) return 99;
-    if (r === 'school_admin' || r.includes('admin')) return 40;
-    if (r === 'academic_head' || r.includes('academic')) return 30;
-    if (r === 'program_head' || r.includes('program')) return 20;
-    return 10;
-  };
+  try {
+    const wfSettings = await getDefaultWorkflowSettings();
+    const pipelineKey = params.isSasInstitutional ? 'admin_ap' : 'adviser_ap';
+    const templateSteps = wfSettings?.[pipelineKey] || [];
 
-  const sorted = [...activeProposalSigners].sort(
-    (a, b) => roleOrder(a.role, a.canApproveProposal) - roleOrder(b.role, b.canApproveProposal)
+    const mappedTemplate = templateSteps
+      .map((tpl: any, idx: number) => {
+        const matched = findMatchedSignatoryForStep(tpl, activeProposalSigners);
+        if (!matched) return null;
+        return {
+          id: `sbr_tpl_${idx + 1}_${matched.id}`,
+          step: idx + 1,
+          stageIndex: tpl.stageIndex ?? idx + 1,
+          stageName: tpl.stageName || `Stage ${tpl.stageIndex ?? idx + 1}`,
+          role: matched.role || tpl.role,
+          roleTitle: matched.roleTitle || tpl.roleTitle || matched.role,
+          actionType: tpl.actionType || (matched.canApproveProposal ? 'approve' : 'endorse'),
+          signatoryLabel:
+            tpl.signatoryLabel ||
+            matched.defaultSignatoryLabel ||
+            (matched.canApproveProposal ? 'Approved by' : 'Endorsed by'),
+          signatoryUid: matched.uid || matched.id,
+          signatoryName: matched.name,
+          signatoryEmail: matched.email,
+          department: matched.department || tpl.department,
+          status: 'pending' as const,
+        };
+      })
+      .filter(Boolean);
+
+    const cleanedTemplate = cloneParentApSignatoryPipeline({ approvalChain: mappedTemplate });
+    if (cleanedTemplate.length > 0) {
+      return { chain: cleanedTemplate, source: 'default_ap_template' };
+    }
+  } catch {}
+
+  // Final safety fallback: only permanent / final approver signatory (e.g., School President)
+  const finalApprovers = activeProposalSigners.filter(
+    (s) => s.canApproveProposal || String(s.role || '').toLowerCase().includes('president')
+  );
+  const minimal = (finalApprovers.length > 0 ? finalApprovers : activeProposalSigners.slice(0, 1)).map(
+    (s, idx) => ({
+      id: `sbr_step_${idx + 1}_${s.id}`,
+      step: idx + 1,
+      stageIndex: idx + 1,
+      stageName: `Stage ${idx + 1}`,
+      role: s.role,
+      roleTitle: s.roleTitle || s.role,
+      actionType: (s.canApproveProposal || s.actionType === 'approve' ? 'approve' : 'endorse') as 'approve' | 'endorse',
+      signatoryLabel: s.defaultSignatoryLabel || (s.canApproveProposal ? 'Approved by' : 'Endorsed by'),
+      signatoryUid: s.uid || s.id,
+      signatoryName: s.name,
+      signatoryEmail: s.email,
+      status: 'pending' as const,
+    })
   );
 
-  return sorted.map((s, idx) => ({
-    id: `sbr_step_${idx + 1}_${s.id}`,
-    step: idx + 1,
-    stageIndex: idx + 1,
-    role: s.role,
-    roleTitle: s.roleTitle || s.role,
-    actionType: s.canApproveProposal || s.actionType === 'approve' ? 'approve' : 'endorse',
-    signatoryLabel: s.defaultSignatoryLabel || (s.canApproveProposal ? 'Approved by' : 'Endorsed by'),
-    signatoryUid: s.uid || s.id,
-    signatoryName: s.name,
-    signatoryEmail: s.email,
-    status: 'pending' as const,
-  }));
+  return { chain: minimal, source: 'default_ap_template' };
+}
+
+/**
+ * Backwards-compatible wrapper that copies the parent AP pipeline when eventId is supplied.
+ */
+export async function generateDefaultSbrSignatoryChain(
+  signatoriesOverride?: InstitutionalSignatory[],
+  options?: { eventId?: string; parentEvent?: any; isSasInstitutional?: boolean }
+): Promise<ProposalApprovalStep[]> {
+  const res = await resolveDefaultSbrPipelineFromParentAp({
+    eventId: options?.eventId,
+    parentEvent: options?.parentEvent,
+    isSasInstitutional: Boolean(options?.isSasInstitutional),
+    signatoriesOverride,
+  });
+  return res.chain;
 }
 
 /**
@@ -166,7 +295,16 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
     collection(db, SUPPLEMENTAL_BUDGET_COLLECTION),
     where('eventId', '==', eventId)
   );
-  const snap = await getDocs(q);
+  let snap;
+  try {
+    snap = await getDocsSafe(q);
+  } catch (err: any) {
+    if (isFirestoreQuotaError(err)) {
+      console.warn('[sbr.service] Skipping parent event rollup read due to Firestore quota:', err);
+      return;
+    }
+    throw err;
+  }
   const allSbrs = snap.docs
     .map((d) => ({ id: d.id, ...(d.data() as any) }) as SupplementalBudgetRequest)
     .filter((s) => !s.isDeleted);
@@ -178,6 +316,7 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
   ) / 100;
 
   const supplementalAllocations: SupplementalEventAllocation[] = [];
+  const supplementalExpenseItems: SupplementalEventExpenseItem[] = [];
   let hasSupplementalSchoolBudget = false;
   approvedSbrs.forEach((s) => {
     if (s.fundingSource === 'school_budget') hasSupplementalSchoolBudget = true;
@@ -188,11 +327,31 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
         sbrReferenceCode: s.referenceCode,
       });
     });
+    (s.additionalItems || []).forEach((it) => {
+      supplementalExpenseItems.push({
+        id: it.id,
+        sbrId: s.id,
+        sbrReferenceCode: s.referenceCode,
+        description: it.description,
+        quantity: it.quantity,
+        unit: it.unit,
+        unitCost: it.unitCost,
+        totalAmount: it.totalAmount,
+        fundingSource: s.fundingSource,
+        ...(it.remarks ? { remarks: it.remarks } : {}),
+      });
+    });
   });
 
   const syncDoc = async (collectionName: string) => {
     const ref = doc(db, collectionName, eventId);
-    const evSnap = await getDoc(ref);
+    let evSnap;
+    try {
+      evSnap = await getDocSafe(ref);
+    } catch (err: any) {
+      if (isFirestoreQuotaError(err)) return;
+      throw err;
+    }
     if (!evSnap.exists()) return;
     const evData = evSnap.data() as any;
 
@@ -215,6 +374,7 @@ export async function syncParentEventSupplementalRollup(eventId: string): Promis
       supplementalBudgetTotal,
       effectiveApprovedBudget,
       supplementalAllocations,
+      supplementalExpenseItems,
       approvedSupplementalCount: approvedSbrs.length,
       hasPendingSupplementalRequest: hasPending,
       hasSupplementalSchoolBudget,
@@ -315,7 +475,7 @@ export async function getSupplementalBudgetById(
   sbrId: string
 ): Promise<SupplementalBudgetRequest | null> {
   if (!sbrId) return null;
-  const snap = await getDoc(doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId));
+  const snap = await getDocSafe(doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId));
   if (!snap.exists()) return null;
   return { id: snap.id, ...(snap.data() as any) } as SupplementalBudgetRequest;
 }
@@ -351,8 +511,15 @@ export async function createSupplementalBudgetRequest(
   const miscNames = normalizedAllocations.filter((a) => a.fundType === 'misc_fee').map((a) => a.bucketName);
 
   let approvalChain: ProposalApprovalStep[] = payload.approvalChain || [];
+  let pipelineSource: SupplementalBudgetRequest['pipelineSource'] =
+    approvalChain.length > 0 ? 'custom' : undefined;
   if (requiresSignatories && approvalChain.length === 0) {
-    approvalChain = await generateDefaultSbrSignatoryChain();
+    const resolved = await resolveDefaultSbrPipelineFromParentAp({
+      eventId: payload.eventId,
+      isSasInstitutional: payload.isSasInstitutional,
+    });
+    approvalChain = resolved.chain;
+    pipelineSource = resolved.source;
   }
 
   let status: SupplementalBudgetRequest['status'] = 'draft';
@@ -397,6 +564,10 @@ export async function createSupplementalBudgetRequest(
     }
   }
 
+  approvalChain = requiresSignatories
+    ? normalizeSbrApprovalChain(approvalChain, status === 'pending_signatories')
+    : [];
+
   const record: Omit<SupplementalBudgetRequest, 'id'> = {
     referenceCode,
     eventId: payload.eventId,
@@ -437,6 +608,8 @@ export async function createSupplementalBudgetRequest(
         : null,
     approvalChain,
     currentStepIndex: 0,
+    currentStageIndex: 1,
+    ...(pipelineSource ? { pipelineSource } : {}),
     isReturned: false,
     ledgerDeducted: false,
     revisionCount: 0,
@@ -513,17 +686,11 @@ export async function updateSupplementalBudgetRequest(
 
   let approvalChain = payload.approvalChain ?? current.approvalChain ?? [];
   if (requiresSignatories && approvalChain.length === 0) {
-    approvalChain = await generateDefaultSbrSignatoryChain();
-  }
-  // Reset any rejected/returned step statuses back to pending on resubmission
-  if (payload.submitImmediately && approvalChain.length > 0) {
-    approvalChain = approvalChain.map((step) => ({
-      ...step,
-      status: 'pending' as const,
-      signedAt: undefined,
-      signatureUrl: undefined,
-      remarks: undefined,
-    }));
+    const resolved = await resolveDefaultSbrPipelineFromParentAp({
+      eventId: current.eventId,
+      isSasInstitutional: current.isSasInstitutional,
+    });
+    approvalChain = resolved.chain;
   }
 
   let nextStatus = current.status;
@@ -559,6 +726,13 @@ export async function updateSupplementalBudgetRequest(
     }
   }
 
+  approvalChain = requiresSignatories
+    ? normalizeSbrApprovalChain(
+        restoreDemotedApproversOnRevision(approvalChain),
+        nextStatus === 'pending_signatories'
+      )
+    : [];
+
   const patch: Record<string, any> = {
     reasonCategory: payload.reasonCategory ?? current.reasonCategory,
     justification: (payload.justification ?? current.justification).trim(),
@@ -574,6 +748,7 @@ export async function updateSupplementalBudgetRequest(
     requiresSignatories,
     approvalChain,
     currentStepIndex: 0,
+    currentStageIndex: 1,
     status: nextStatus,
     isPendingSasVetting,
     isReturned: payload.submitImmediately ? false : current.isReturned,
@@ -605,6 +780,7 @@ export async function approveAndForwardSbrByAdviser(
   if (!current) throw new Error('Supplemental Budget Request not found.');
 
   const nowIso = new Date().toISOString();
+  const auditCtx = await resolveAdviserActorAuditContext(current.organizationId, adviser);
   const isPendingSasVetting = current.requiresSignatories;
   const nextHistory = [
     ...(current.history || []),
@@ -613,8 +789,8 @@ export async function approveAndForwardSbrByAdviser(
       adviser,
       remarks ||
         (current.requiresSignatories
-          ? 'Approved by Club Adviser and forwarded to SAS for Misc Fee vetting.'
-          : 'Approved by Club Adviser and forwarded to SAS for direct approval.')
+          ? `Approved by ${auditCtx.roleTitleLabel} and forwarded to SAS for Misc Fee vetting.`
+          : `Approved by ${auditCtx.roleTitleLabel} and forwarded to SAS for direct approval.`)
     ),
   ];
 
@@ -629,6 +805,8 @@ export async function approveAndForwardSbrByAdviser(
         reviewedByUid: adviser.uid,
         reviewedByName: adviser.name,
         reviewedByEmail: adviser.email,
+        reviewedByAdviserRole: auditCtx.reviewedByAdviserRole,
+        ...(auditCtx.actingOnBehalfOfName ? { actingOnBehalfOfName: auditCtx.actingOnBehalfOfName } : {}),
         reviewedAt: nowIso,
         remarks: remarks || '',
         ...(adviser.signatureUrl ? { signatureUrl: adviser.signatureUrl } : {}),
@@ -744,6 +922,11 @@ export async function approveSbrBySasDirect(
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
 
+  const nextHistory = [
+    ...(current.history || []),
+    makeHistoryEntry('sas_approved', admin, remarks || 'Directly approved by SAS Admin.'),
+  ];
+
   await updateDoc(
     doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
     sanitizeFirestorePayload({
@@ -753,15 +936,15 @@ export async function approveSbrBySasDirect(
         vettedAt: new Date().toISOString(),
         ...(remarks ? { remarks } : {}),
       },
-      history: [
-        ...(current.history || []),
-        makeHistoryEntry('sas_approved', admin, remarks || 'Directly approved by SAS Admin.'),
-      ],
+      history: nextHistory,
       updatedAt: serverTimestamp(),
     })
   );
 
-  await finalizeApprovedSupplementalBudget(sbrId, admin);
+  await finalizeApprovedSupplementalBudget(sbrId, admin, {
+    ...current,
+    history: nextHistory,
+  });
 }
 
 /**
@@ -779,8 +962,14 @@ export async function endorseAndForwardSbrBySas(
 
   let chain = customChain && customChain.length > 0 ? customChain : current.approvalChain || [];
   if (chain.length === 0) {
-    chain = await generateDefaultSbrSignatoryChain();
+    const resolved = await resolveDefaultSbrPipelineFromParentAp({
+      eventId: current.eventId,
+      isSasInstitutional: current.isSasInstitutional,
+    });
+    chain = resolved.chain;
   }
+
+  chain = normalizeSbrApprovalChain(chain, true);
 
   // If no institutional signatories exist in system, finalize directly so workflow never deadlocks
   if (chain.length === 0) {
@@ -796,6 +985,7 @@ export async function endorseAndForwardSbrBySas(
       isReturned: false,
       approvalChain: chain,
       currentStepIndex: 0,
+      currentStageIndex: 1,
       sasVettedBy: {
         uid: admin.uid,
         name: admin.name,
@@ -882,22 +1072,37 @@ export async function rejectSbrBySas(
 }
 
 /**
- * Institutional Signatory Action: Sign/Approve, Return, or Reject the current sequential step.
+ * Institutional Signatory Action: Approve, Endorse & Forward, Return, or Reject the current step.
+ * Uses an atomic Firestore transaction to enforce Runtime Single-Approval Governance (Option A):
+ * - First Approver to click `approve` finalizes the SBR immediately and auto-demotes all other
+ *   unsigned Approvers to `Noted by:` (`actionType: 'endorse'`, `demotedFromApprover: true`).
+ * - Approver clicking `forward` marks themselves `Endorsed by:` and keeps downstream/peer Approvers active.
  */
 export async function processSbrSignatoryDecision(
   sbrId: string,
   signatory: SbrActor,
-  decision: 'approve' | 'return' | 'reject',
+  decision: 'approve' | 'forward' | 'return' | 'reject',
   remarks?: string
-): Promise<void> {
+): Promise<{
+  isFullyApproved: boolean;
+  wasCoercedByPriorApproval?: boolean;
+  approvedBySignatoryName?: string;
+}> {
+  const sbrRef = doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId);
   const current = await getSupplementalBudgetById(sbrId);
   if (!current) throw new Error('Supplemental Budget Request not found.');
 
-  const chain = [...(current.approvalChain || [])];
-  const stepIdx = current.currentStepIndex ?? 0;
-  const nowIso = new Date().toISOString();
-
   if (decision === 'return') {
+    const chain = restoreDemotedApproversOnRevision([...(current.approvalChain || [])]);
+    const activeStage = current.currentStageIndex ?? 1;
+    const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+    const matchedIdx = chain.findIndex((s: any) => {
+      const isSigned = s.status === 'approved' || s.status === 'endorsed' || s.status === 'waived';
+      if (isSigned) return false;
+      if (hasStages && (s.stageIndex ?? 1) !== activeStage) return false;
+      return matchesSbrSignatoryStep(s, signatory);
+    });
+    const stepIdx = matchedIdx >= 0 ? matchedIdx : (current.currentStepIndex ?? 0);
     if (chain[stepIdx]) {
       chain[stepIdx] = {
         ...chain[stepIdx],
@@ -906,7 +1111,7 @@ export async function processSbrSignatoryDecision(
       };
     }
     await updateDoc(
-      doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
+      sbrRef,
       sanitizeFirestorePayload({
         status: 'for_revision',
         isReturned: true,
@@ -923,19 +1128,29 @@ export async function processSbrSignatoryDecision(
       })
     );
     await syncParentEventSupplementalRollup(current.eventId);
-    return;
+    return { isFullyApproved: false };
   }
 
   if (decision === 'reject') {
+    const chain = [...(current.approvalChain || [])];
+    const activeStage = current.currentStageIndex ?? 1;
+    const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+    const matchedIdx = chain.findIndex((s: any) => {
+      const isSigned = s.status === 'approved' || s.status === 'endorsed' || s.status === 'waived';
+      if (isSigned) return false;
+      if (hasStages && (s.stageIndex ?? 1) !== activeStage) return false;
+      return matchesSbrSignatoryStep(s, signatory);
+    });
+    const stepIdx = matchedIdx >= 0 ? matchedIdx : (current.currentStepIndex ?? 0);
     if (chain[stepIdx]) {
       chain[stepIdx] = {
         ...chain[stepIdx],
-        status: 'rejected',
+        status: 'rejected' as any,
         remarks: remarks?.trim() || '',
       };
     }
     await updateDoc(
-      doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
+      sbrRef,
       sanitizeFirestorePayload({
         status: 'rejected',
         isReturned: false,
@@ -952,49 +1167,223 @@ export async function processSbrSignatoryDecision(
       })
     );
     await syncParentEventSupplementalRollup(current.eventId);
-    return;
+    return { isFullyApproved: false };
   }
 
-  // decision === 'approve'
-  if (chain[stepIdx]) {
-    chain[stepIdx] = {
-      ...chain[stepIdx],
-      status: 'approved',
+  // decision === 'approve' | 'forward' -> atomic transaction (with quota-safe cache fallback)
+  const buildDecisionMutation = (docData: SupplementalBudgetRequest) => {
+    const chain = [...(docData.approvalChain || [])];
+    const activeStage = docData.currentStageIndex ?? 1;
+    const hasStages = chain.some((s) => typeof s.stageIndex === 'number');
+    const priorApprovedStep = findApprovedStep(chain);
+    const wasAlreadyApproved = Boolean(priorApprovedStep) || docData.status === 'approved';
+    const isStepDone = (s: any) => s && (s.status === 'approved' || s.status === 'endorsed' || s.status === 'waived');
+
+    let stepIdx = chain.findIndex((s: any) => {
+      if (isStepDone(s)) return false;
+      if (!wasAlreadyApproved && hasStages && (s.stageIndex ?? 1) !== activeStage) return false;
+      return matchesSbrSignatoryStep(s, signatory);
+    });
+    if (stepIdx === -1) {
+      stepIdx = docData.currentStepIndex ?? 0;
+    }
+    if (stepIdx < 0 || stepIdx >= chain.length) {
+      throw new Error('No pending approval step found for your account on this Supplemental Budget Request.');
+    }
+
+    const targetStep = chain[stepIdx];
+    const capabilities = resolveSignatoryDecisionCapabilities({
+      chain,
+      myStepIndex: stepIdx,
+      signatory,
+      docType: 'proposal',
+    });
+
+    let newStatus: 'endorsed' | 'approved' = 'endorsed';
+    let wasCoercedByPriorApproval = false;
+
+    if (capabilities.isAlreadyApproved || wasAlreadyApproved) {
+      newStatus = 'endorsed';
+      wasCoercedByPriorApproval = decision === 'approve';
+    } else if (capabilities.canApprove) {
+      if (decision === 'forward') {
+        if (!capabilities.canEndorseInsteadOfApprove) {
+          throw new Error(
+            'You are the last remaining Approver in this pipeline and cannot endorse without granting approval. Please click Approve.'
+          );
+        }
+        newStatus = 'endorsed';
+      } else {
+        newStatus = 'approved';
+      }
+    } else {
+      newStatus = 'endorsed';
+    }
+
+    const nowIso = new Date().toISOString();
+    let updatedStep: any = {
+      ...targetStep,
+      status: newStatus,
       signedAt: nowIso,
       signedByUid: signatory.uid,
       signedByName: signatory.name,
       ...(signatory.email ? { signedByEmail: signatory.email } : {}),
       ...(signatory.signatureUrl ? { signatureUrl: signatory.signatureUrl } : {}),
       ...(remarks ? { remarks: remarks.trim() } : {}),
-    } as any;
-  }
+    };
 
-  const nextIdx = stepIdx + 1;
-  const isFinalStep = nextIdx >= chain.length;
+    if (newStatus === 'approved') {
+      updatedStep.actionType = 'approve';
+      updatedStep.signatoryLabel = 'Approved by:';
+    } else if (capabilities.canApprove && decision === 'forward') {
+      updatedStep = applySelfEndorseDemotion(updatedStep, 'Endorsed by:');
+    } else if ((capabilities.isAlreadyApproved || wasAlreadyApproved) && targetStep.actionType === 'approve') {
+      updatedStep.actionType = 'endorse';
+      updatedStep.signatoryLabel = 'Noted by:';
+      updatedStep.demotedFromApprover = true;
+      updatedStep.demotedReason = 'already_approved';
+      if (capabilities.approvedBySignatoryName) {
+        updatedStep.demotedBySignatoryName = capabilities.approvedBySignatoryName;
+      }
+    }
 
-  await updateDoc(
-    doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
-    sanitizeFirestorePayload({
-      approvalChain: chain,
-      currentStepIndex: isFinalStep ? stepIdx : nextIdx,
-      history: [
-        ...(current.history || []),
-        makeHistoryEntry(
-          'signatory_signed',
-          signatory,
-          remarks?.trim() ||
-            (isFinalStep
-              ? `Final approval granted by ${signatory.name}.`
-              : `Endorsed by ${signatory.name}.`)
-        ),
-      ],
+    chain[stepIdx] = updatedStep;
+
+    let workingChain = chain;
+    if (newStatus === 'approved') {
+      workingChain = applySingleApprovalDemotion(chain, stepIdx, {
+        demotedLabel: 'Noted by:',
+        activateWaitingSteps: true,
+      });
+    } else if (newStatus === 'endorsed' && capabilities.canApprove) {
+      workingChain = chain.map((s, idx) =>
+        (s.stageIndex ?? 1) === activeStage && idx !== stepIdx && s.status === 'waiting'
+          ? { ...s, status: 'current' as any }
+          : s
+      );
+    }
+
+    const allStepsDone = workingChain.every(isStepDone);
+    const isFullyApproved = wasAlreadyApproved || newStatus === 'approved' || allStepsDone;
+
+    let nextStage = activeStage;
+    let nextStepIdx = stepIdx;
+
+    if (!allStepsDone) {
+      if (hasStages) {
+        const stageComplete = workingChain
+          .filter((s) => (s.stageIndex ?? 1) === activeStage)
+          .every(isStepDone);
+        if (stageComplete) {
+          const remainingStages = workingChain
+            .filter((s) => !isStepDone(s))
+            .map((s) => s.stageIndex ?? 1)
+            .sort((a, b) => a - b);
+          nextStage = remainingStages[0] ?? activeStage + 1;
+          workingChain = workingChain.map((s) =>
+            (s.stageIndex ?? 1) === nextStage && !isStepDone(s)
+              ? { ...s, status: 'current' as any }
+              : s
+          );
+        }
+        const firstUnsigned = workingChain.findIndex((s) => !isStepDone(s));
+        nextStepIdx = firstUnsigned >= 0 ? firstUnsigned : stepIdx;
+      } else {
+        nextStepIdx = Math.min(workingChain.length - 1, stepIdx + 1);
+        if (workingChain[nextStepIdx] && !isStepDone(workingChain[nextStepIdx])) {
+          workingChain[nextStepIdx] = { ...workingChain[nextStepIdx], status: 'current' as any };
+        }
+      }
+    }
+
+    const nextHistory = [
+      ...(docData.history || []),
+      makeHistoryEntry(
+        'signatory_signed',
+        signatory,
+        remarks?.trim() ||
+          (newStatus === 'approved'
+            ? `Final approval granted by ${signatory.name}.`
+            : capabilities.isDemotedToEndorserOnly || wasCoercedByPriorApproval
+            ? `Noted by ${signatory.name} (already approved).`
+            : `Endorsed by ${signatory.name}.`)
+      ),
+    ];
+
+    const payload = sanitizeFirestorePayload({
+      approvalChain: workingChain,
+      currentStepIndex: nextStepIdx,
+      currentStageIndex: nextStage,
+      history: nextHistory,
       updatedAt: serverTimestamp(),
-    })
-  );
+    });
 
-  if (isFinalStep) {
-    await finalizeApprovedSupplementalBudget(sbrId, signatory);
+    const projectedSbr: SupplementalBudgetRequest = {
+      ...docData,
+      approvalChain: workingChain,
+      currentStepIndex: nextStepIdx,
+      currentStageIndex: nextStage,
+      history: nextHistory,
+    };
+
+    return {
+      payload,
+      projectedSbr,
+      isFullyApproved,
+      wasAlreadyApproved,
+      wasCoercedByPriorApproval,
+      approvedBySignatoryName: capabilities.approvedBySignatoryName,
+    };
+  };
+
+  let txResult: {
+    projectedSbr: SupplementalBudgetRequest;
+    isFullyApproved: boolean;
+    wasAlreadyApproved: boolean;
+    wasCoercedByPriorApproval: boolean;
+    approvedBySignatoryName?: string;
+  };
+
+  try {
+    txResult = await runTransaction(db, async (tx) => {
+      const snap = await tx.get(sbrRef);
+      if (!snap.exists()) throw new Error('Supplemental Budget Request not found.');
+      const docData = { id: snap.id, ...(snap.data() as any) } as SupplementalBudgetRequest;
+      const computed = buildDecisionMutation(docData);
+      tx.update(sbrRef, computed.payload);
+      return {
+        projectedSbr: computed.projectedSbr,
+        isFullyApproved: computed.isFullyApproved,
+        wasAlreadyApproved: computed.wasAlreadyApproved,
+        wasCoercedByPriorApproval: computed.wasCoercedByPriorApproval,
+        approvedBySignatoryName: computed.approvedBySignatoryName,
+      };
+    });
+  } catch (err: any) {
+    if (!isFirestoreQuotaError(err)) {
+      throw err;
+    }
+    console.warn('[sbr.service] runTransaction hit Firestore quota; falling back to direct updateDoc:', err);
+    const computed = buildDecisionMutation(current);
+    await updateDoc(sbrRef, computed.payload);
+    txResult = {
+      projectedSbr: computed.projectedSbr,
+      isFullyApproved: computed.isFullyApproved,
+      wasAlreadyApproved: computed.wasAlreadyApproved,
+      wasCoercedByPriorApproval: computed.wasCoercedByPriorApproval,
+      approvedBySignatoryName: computed.approvedBySignatoryName,
+    };
   }
+
+  if (txResult.isFullyApproved && !txResult.wasAlreadyApproved) {
+    await finalizeApprovedSupplementalBudget(sbrId, signatory, txResult.projectedSbr);
+  }
+
+  return {
+    isFullyApproved: txResult.isFullyApproved,
+    wasCoercedByPriorApproval: txResult.wasCoercedByPriorApproval,
+    approvedBySignatoryName: txResult.approvedBySignatoryName,
+  };
 }
 
 /**
@@ -1006,31 +1395,20 @@ export async function processSbrSignatoryDecision(
  */
 export async function finalizeApprovedSupplementalBudget(
   sbrId: string,
-  approver: SbrActor
+  approver: SbrActor,
+  preloadedSbr?: SupplementalBudgetRequest
 ): Promise<void> {
-  const sbr = await getSupplementalBudgetById(sbrId);
+  const sbr = preloadedSbr || (await getSupplementalBudgetById(sbrId));
   if (!sbr) throw new Error('Supplemental Budget Request not found.');
 
   const deductionKeys: string[] = [...(sbr.ledgerDeductionKeys || [])];
+  const isOrgFunds = sbr.fundingSource === 'organization_funds';
+  let ledgerDeductedNow = Boolean(sbr.ledgerDeducted);
 
-  if (!sbr.ledgerDeducted && sbr.requestedAmount > 0) {
-    if (sbr.fundingSource === 'organization_funds') {
-      const ledgerId = await deductSupplementalBudget({
-        sbrId: sbr.id,
-        referenceCode: sbr.referenceCode,
-        eventId: sbr.eventId,
-        eventTitle: sbr.eventTitle,
-        organizationId: sbr.organizationId,
-        organizationName: sbr.organizationName,
-        isSasInstitutional: false,
-        amount: sbr.requestedAmount,
-        semesterId: sbr.semesterId,
-        schoolYear: sbr.schoolYear || undefined,
-        semester: sbr.semester || undefined,
-        performedBy: approver.name,
-      });
-      if (ledgerId) deductionKeys.push(`org_ledger:${ledgerId}`);
-    } else if (sbr.fundingSource === 'retained_sao_fund') {
+  // Organization Funds SBRs require explicit Club acknowledgment & deduction inside Officer Finance Center.
+  // School Budget (Misc Fees) and SAS Retained Fund SBRs encumber immediately upon final institutional approval.
+  if (!isOrgFunds && !sbr.ledgerDeducted && sbr.requestedAmount > 0) {
+    if (sbr.fundingSource === 'retained_sao_fund') {
       const ledgerId = await deductSupplementalBudget({
         sbrId: sbr.id,
         referenceCode: sbr.referenceCode,
@@ -1058,6 +1436,7 @@ export async function finalizeApprovedSupplementalBudget(
         ledgerDocIdOverride: `sbr_${sbr.id}`,
       });
       deductionKeys.push(`retained:sbr_${sbr.id}`);
+      ledgerDeductedNow = true;
     } else if (sbr.fundingSource === 'school_budget') {
       const miscAllocs = (sbr.allocations || []).filter((a) => a.fundType === 'misc_fee');
       const bucketIds = miscAllocs.map((a) => a.bucketId).filter(Boolean);
@@ -1105,6 +1484,7 @@ export async function finalizeApprovedSupplementalBudget(
         });
         if (ledgerId) deductionKeys.push(`sao_ledger:${ledgerId}`);
       }
+      ledgerDeductedNow = true;
     }
   }
 
@@ -1114,7 +1494,8 @@ export async function finalizeApprovedSupplementalBudget(
       status: 'approved',
       isPendingSasVetting: false,
       isReturned: false,
-      ledgerDeducted: true,
+      ledgerDeducted: ledgerDeductedNow,
+      requiresClubLedgerAcknowledgment: isOrgFunds && !ledgerDeductedNow,
       ledgerDeductionKeys: Array.from(new Set(deductionKeys)),
       approvedAt: serverTimestamp(),
       approvedBy: approver.name,
@@ -1123,7 +1504,9 @@ export async function finalizeApprovedSupplementalBudget(
         makeHistoryEntry(
           'approved',
           approver,
-          `Approved (+₱${sbr.requestedAmount.toLocaleString()}) and encumbered from ${sbr.fundingSource.replace(/_/g, ' ')}.`
+          isOrgFunds
+            ? `Approved (+₱${sbr.requestedAmount.toLocaleString()}). Ready for Club acknowledgment & deduction in Finance Center.`
+            : `Approved (+₱${sbr.requestedAmount.toLocaleString()}) and encumbered from ${sbr.fundingSource.replace(/_/g, ' ')}.`
         ),
       ],
       updatedAt: serverTimestamp(),
@@ -1143,6 +1526,66 @@ export async function finalizeApprovedSupplementalBudget(
       targetName: `${sbr.referenceCode} – ${sbr.eventTitle}`,
     });
   } catch {}
+}
+
+/**
+ * Club Treasury Acknowledgment (Finance Center):
+ * Explicitly acknowledges an approved `organization_funds` Supplemental Budget Request
+ * and idempotently deducts the supplemental amount from `organization_ledger`.
+ */
+export async function acknowledgeAndDeductOrgSupplementalBudget(
+  sbrId: string,
+  actor: SbrActor
+): Promise<string | null> {
+  const sbr = await getSupplementalBudgetById(sbrId);
+  if (!sbr) throw new Error('Supplemental Budget Request not found.');
+  if (sbr.status !== 'approved') {
+    throw new Error('Only approved Supplemental Budget Requests can be deducted from the Club Ledger.');
+  }
+  if (sbr.fundingSource !== 'organization_funds') {
+    throw new Error('Only Club Treasury (organization_funds) supplemental budgets use Finance Center acknowledgment.');
+  }
+
+  const ledgerId = await deductSupplementalBudget({
+    sbrId: sbr.id,
+    referenceCode: sbr.referenceCode,
+    eventId: sbr.eventId,
+    eventTitle: sbr.eventTitle,
+    organizationId: sbr.organizationId,
+    organizationName: sbr.organizationName,
+    isSasInstitutional: false,
+    amount: sbr.requestedAmount,
+    semesterId: sbr.semesterId,
+    schoolYear: sbr.schoolYear || undefined,
+    semester: sbr.semester || undefined,
+    performedBy: actor.name,
+  });
+
+  const deductionKeys = Array.from(
+    new Set([...(sbr.ledgerDeductionKeys || []), ...(ledgerId ? [`org_ledger:${ledgerId}`] : [])])
+  );
+
+  await updateDoc(
+    doc(db, SUPPLEMENTAL_BUDGET_COLLECTION, sbrId),
+    sanitizeFirestorePayload({
+      ledgerDeducted: true,
+      requiresClubLedgerAcknowledgment: false,
+      ledgerAcknowledgedBy: actor.name,
+      ledgerAcknowledgedAt: serverTimestamp(),
+      ledgerDeductionKeys: deductionKeys,
+      history: [
+        ...(sbr.history || []),
+        makeHistoryEntry(
+          'approved',
+          actor,
+          `Acknowledged in Finance Center and deducted ₱${sbr.requestedAmount.toLocaleString()} from Club Treasury Ledger.`
+        ),
+      ],
+      updatedAt: serverTimestamp(),
+    })
+  );
+
+  return ledgerId;
 }
 
 /**
@@ -1216,6 +1659,19 @@ export async function attachSupplementalDisbursementVoucher(
       updatedAt: serverTimestamp(),
     })
   );
+
+  // Sync cheque number metadata onto the existing Misc Fee ledger entry without double-deducting
+  if (current.fundingSource === 'school_budget' && voucher.mode === 'separate' && voucher.chequeNumber) {
+    try {
+      const miscLedgerRef = doc(db, MISC_FEE_LEDGER_COLLECTION, `sbr_${sbrId}`);
+      const miscSnap = await getDoc(miscLedgerRef);
+      if (miscSnap.exists()) {
+        await updateDoc(miscLedgerRef, {
+          chequeNumber: voucher.chequeNumber,
+        });
+      }
+    } catch {}
+  }
 }
 
 /**

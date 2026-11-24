@@ -53,7 +53,9 @@ import {
   getEventBaseApprovedBudget,
   getEventEffectiveApprovedBudget,
   hasBlockingPendingSbrForLiquidation,
+  mergeLiquidationBaselineWithSupplementalItems,
 } from '../../modules/supplemental-budget/utils/sbr-validation.utils';
+import { useEventSupplementalBudgets } from '../../modules/supplemental-budget/hooks/useSupplementalBudgetStream';
 import {
   attachCashierSettlementProofs,
   createLiquidationReport,
@@ -1324,13 +1326,17 @@ export default function OfficerLiquidationModal({
     };
   }, [selectedEvent, effectiveReport, editingReport, userRole, userName, effectiveIsAdviser, isSasCreator, orgId, todayStr, resolvedSasAdminName]);
 
-  // Extract proposed baseline items from selected event
+  const { approvedRequests: approvedEventSbrs = [] } = useEventSupplementalBudgets(selectedEvent?.id);
+
+  // Extract proposed baseline items from selected event + approved Supplemental Budget items
   const proposedBaselineItems = useMemo(() => {
     if (!selectedEvent) return [];
 
+    let baseItems: Array<{ id: string; title: string; baselineAmount: number }> = [];
+
     // Check budgetItems
     if (Array.isArray(selectedEvent.budgetItems) && selectedEvent.budgetItems.length > 0) {
-      return selectedEvent.budgetItems.map((bi: any, idx: number) => {
+      baseItems = selectedEvent.budgetItems.map((bi: any, idx: number) => {
         const allocated = Number(
           bi.approvedAmount || bi.totalCost || (Number(bi.quantity || 1) * Number(bi.unitCost || 0)) || 0
         );
@@ -1340,34 +1346,34 @@ export default function OfficerLiquidationModal({
           baselineAmount: allocated,
         };
       });
-    }
-
-    // Check financialProjections.expenses
-    if (
+    } else if (
       Array.isArray(selectedEvent.financialProjections?.expenses) &&
       selectedEvent.financialProjections.expenses.length > 0
     ) {
-      return selectedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
+      // Check financialProjections.expenses
+      baseItems = selectedEvent.financialProjections.expenses.map((exp: any, idx: number) => ({
         id: exp.id || `prop_exp_${idx}`,
         title: exp.description || exp.item || `Proposed Item ${idx + 1}`,
         baselineAmount: Number(exp.totalAmount || exp.thisYearProposed || 0),
       }));
-    }
-
-    // Check budgetCustodians
-    if (
+    } else if (
       Array.isArray((selectedEvent as any).budgetCustodians) &&
       (selectedEvent as any).budgetCustodians.length > 0
     ) {
-      return (selectedEvent as any).budgetCustodians.map((c: any, idx: number) => ({
+      // Check budgetCustodians
+      baseItems = (selectedEvent as any).budgetCustodians.map((c: any, idx: number) => ({
         id: c.id || `prop_cust_${idx}`,
         title: c.purpose || c.item || `Allocation ${idx + 1}`,
         baselineAmount: Number(c.allocatedAmount || 0),
       }));
     }
 
-    return [];
-  }, [selectedEvent]);
+    return mergeLiquidationBaselineWithSupplementalItems(
+      baseItems,
+      approvedEventSbrs,
+      (selectedEvent as any).supplementalExpenseItems || []
+    );
+  }, [selectedEvent, approvedEventSbrs]);
 
   // Dynamic category list: Proposed baseline items + Other / General Expenses (or fallback categories)
   const categoriesList = useMemo(() => {
@@ -2546,6 +2552,64 @@ export default function OfficerLiquidationModal({
               </div>
             )}
 
+            {/* Supplemental Disbursement Vouchers (from Approved SBRs) */}
+            {approvedEventSbrs.filter((s) => s.fundingSource === 'school_budget' || s.fundingSource === 'retained_sao_fund').length > 0 && (
+              <div className="space-y-2 mb-3">
+                {approvedEventSbrs
+                  .filter((s) => s.fundingSource === 'school_budget' || s.fundingSource === 'retained_sao_fund')
+                  .map((sbr) => {
+                    const sv = sbr.disbursementVoucher;
+                    return (
+                      <div
+                        key={sbr.id}
+                        className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs ${
+                          sv
+                            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950'
+                            : 'bg-amber-50/80 border-amber-200 text-amber-950'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className="font-bold flex items-center gap-2 flex-wrap">
+                            <span>Supplemental Disbursement Voucher ({sbr.referenceCode})</span>
+                            <span
+                              className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                                sv
+                                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                                  : 'bg-amber-100 text-amber-800 border-amber-300'
+                              }`}
+                            >
+                              {sv
+                                ? sv.mode === 'bundled_with_primary'
+                                  ? 'Bundled with Primary'
+                                  : 'Attached'
+                                : 'Pending Voucher'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] font-mono mt-0.5 opacity-90">
+                            {sv
+                              ? sv.mode === 'bundled_with_primary'
+                                ? `+${formatCurrency(sbr.requestedAmount)} • Covered under Primary Event Voucher`
+                                : `Cheque #${sv.chequeNumber || sv.voucherNumber || 'N/A'} • Released: ${sv.releaseDate || 'N/A'} • +${formatCurrency(sv.disbursedAmount ?? sbr.requestedAmount)}`
+                              : `+${formatCurrency(sbr.requestedAmount)} approved • Attach Supplemental Voucher in Utils → Disbursement Voucher`}
+                          </p>
+                        </div>
+                        {sv?.attachmentUrl && (
+                          <a
+                            href={sv.attachmentUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg text-xs inline-flex items-center gap-1.5 shrink-0"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>View Supp. Voucher</span>
+                          </a>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {/* Disbursing Employee Name */}
               <div>
@@ -2981,10 +3045,24 @@ export default function OfficerLiquidationModal({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3 min-w-[170px]">
-                          <span className={`text-xs font-bold truncate max-w-[180px] ${isSelected ? 'text-white' : 'text-slate-900'}`} title={cat.title}>
-                            {cat.title}
-                          </span>
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className={`text-xs font-bold truncate max-w-[160px] ${isSelected ? 'text-white' : 'text-slate-900'}`} title={cat.title}>
+                              {cat.title}
+                            </span>
+                            {(cat as any).isSupplemental && (
+                              <span
+                                title={`Supplemental Budget ${(cat as any).sbrReferenceCode || ''}`}
+                                className={`text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded-full shrink-0 ${
+                                  isSelected
+                                    ? 'bg-amber-400/25 text-amber-200 border border-amber-300/40'
+                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                }`}
+                              >
+                                +SBR
+                              </span>
+                            )}
+                          </div>
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
                             isSelected ? 'bg-white/20 text-[#FFD41C]' : 'bg-slate-100 text-slate-600'
                           }`}>
                             {catItems.length} {catItems.length === 1 ? 'item' : 'items'}
@@ -3014,10 +3092,15 @@ export default function OfficerLiquidationModal({
               {/* Active Category Header & Action Banner (No '+ Add Receipt to Category' button in cards) */}
               <div className="p-4 bg-gradient-to-r from-blue-50/80 via-white to-slate-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-2xs">
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-[#001A4D] text-[#FFD41C]">
                       Active Category
                     </span>
+                    {(currentCategory as any)?.isSupplemental && (
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                        Supplemental • {(currentCategory as any).sbrReferenceCode}
+                      </span>
+                    )}
                     <h3 className="text-sm font-extrabold text-[#001A4D]">
                       {currentCategory?.title}
                     </h3>

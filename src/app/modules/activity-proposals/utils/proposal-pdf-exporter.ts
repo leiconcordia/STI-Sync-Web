@@ -25,6 +25,8 @@ import { resolveSignatoryLabel } from '../../signatories/utils/signatory-label.u
 import type { ActivityProposal, ProposalApprovalStep, ProposalTargetAudience } from '../types/proposal.types';
 import { STI_LOGO_BASE64 } from './sti-logo-asset';
 import { formatDateLong } from './proposal-calculations';
+import { getSupplementalBudgetsByEvent } from '../../supplemental-budget/services/sbr.service';
+import { buildMergedFinancialProjectionsForExport } from '../../supplemental-budget/utils/sbr-validation.utils';
 
 export interface ExportProposalPdfOptions {
   watermarkStatus?: boolean;
@@ -956,15 +958,19 @@ export async function exportActivityProposalPDF(
     y += 4.5;
 
     // ─── 5. ROW 15: FINANCIAL PROJECTIONS (EXACT AP_FORMAT_EMPTY.DOCX MATRIX) ─
-    const fin = proposal.financialProjections || {
-      revenues: [],
-      expenses: [],
-      totalRevenue: 0,
-      totalExpenses: 0,
-      balance: 0,
-    };
-    const isZeroBudget = proposal.fundingSource === 'zero_budget';
-    const rawRevs = !isZeroBudget && Array.isArray(fin.revenues) ? fin.revenues : [];
+    let approvedSbrs: any[] = [];
+    if (proposal.id) {
+      try {
+        const sbrList = await getSupplementalBudgetsByEvent(proposal.id);
+        approvedSbrs = sbrList.filter((s) => s && !s.isDeleted && s.status === 'approved');
+      } catch {}
+    }
+
+    const { financialProjections: fin } = buildMergedFinancialProjectionsForExport(
+      proposal,
+      approvedSbrs
+    );
+    const rawRevs = Array.isArray(fin.revenues) ? fin.revenues : [];
     const rawExps = Array.isArray(fin.expenses) ? fin.expenses : [];
 
     ensureSpace(34);
@@ -1069,6 +1075,7 @@ export async function exportActivityProposalPDF(
     };
 
     const drawFinItemRow = (item?: {
+      id?: string;
       description?: string;
       lastYearActual?: number | null;
       thisYearProposed?: number | null;
@@ -1077,6 +1084,7 @@ export async function exportActivityProposalPDF(
     }): void => {
       doc.setFont('times', 'normal');
       doc.setFontSize(8.0);
+      const isSuppRow = Boolean(item?.id && String(item.id).startsWith('sbr_'));
       const descText = item?.description || '';
       const remText = item?.remarks || '';
       const descLines: string[] = descText ? doc.splitTextToSize(descText, fDescW - 2.6) : [];
@@ -1109,11 +1117,12 @@ export async function exportActivityProposalPDF(
       if (item?.lastYearActual !== undefined && item?.lastYearActual !== null && item.lastYearActual !== 0) {
         doc.text(formatPdfAmount(item.lastYearActual), xLast + fLastW - 1.2, y + 3.5, { align: 'right' });
       }
-      if (item?.thisYearProposed !== undefined && item?.thisYearProposed !== null) {
+      if (!isSuppRow && item?.thisYearProposed !== undefined && item?.thisYearProposed !== null) {
         doc.text(formatPdfAmount(item.thisYearProposed), xThis + fThisW - 1.2, y + 3.5, { align: 'right' });
       }
       if (item?.adjustment !== undefined && item?.adjustment !== null && item.adjustment !== 0) {
-        doc.text(formatPdfAmount(item.adjustment), xAdj + fAdjW - 1.2, y + 3.5, { align: 'right' });
+        const adjPrefix = isSuppRow && item.adjustment > 0 ? '+' : '';
+        doc.text(`${adjPrefix}${formatPdfAmount(item.adjustment)}`, xAdj + fAdjW - 1.2, y + 3.5, { align: 'right' });
       }
       if (remLines.length > 0) doc.text(remLines, xRem + 1.2, y + 3.5);
 
@@ -1136,7 +1145,7 @@ export async function exportActivityProposalPDF(
       'Revenue:',
       rawRevs.length > 0 ? formatPdfAmount(revThisYearSum) : '',
       rawRevs.length > 0 ? formatPdfAmount(fin.totalRevenue) : '',
-      rawRevs.length > 0 && revAdjSum !== 0 ? formatPdfAmount(revAdjSum) : '',
+      rawRevs.length > 0 && revAdjSum !== 0 ? `${revAdjSum > 0 ? '+' : ''}${formatPdfAmount(revAdjSum)}` : '',
       pdfRevSummaryRem
     );
 
@@ -1163,7 +1172,7 @@ export async function exportActivityProposalPDF(
       'Expenses:',
       rawExps.length > 0 ? formatPdfAmount(expThisYearSum) : '',
       rawExps.length > 0 || (fin.totalExpenses ?? 0) > 0 ? formatPdfAmount(fin.totalExpenses) : '',
-      rawExps.length > 0 && expAdjSum !== 0 ? formatPdfAmount(expAdjSum) : ''
+      rawExps.length > 0 && expAdjSum !== 0 ? `${expAdjSum > 0 ? '+' : ''}${formatPdfAmount(expAdjSum)}` : ''
     );
 
     if (rawExps.length > 0) {
